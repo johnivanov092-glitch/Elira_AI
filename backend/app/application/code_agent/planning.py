@@ -249,7 +249,7 @@ def error_fingerprint(tool: str, args: dict[str, Any], tool_meta: dict[str, Any]
     """Stable identity of a FAILURE for bounded recovery: tool + operation/path
     + stable error/exit. Numbers are normalized so a shifting line number does
     not defeat the match. Returns '' when the call did not fail."""
-    ok = bool((tool_meta or {}).get("ok", True))
+    ok = (tool_meta or {}).get("ok") is True
     exit_code = (tool_meta or {}).get("exit_code")
     failed = (not ok) or (isinstance(exit_code, int) and exit_code != 0)
     if not failed:

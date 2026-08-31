@@ -1,3 +1,4 @@
+import type { DocumentQa } from "../api/codeAgent";
 import type { Turn } from "./types";
 
 export type FileArtifact = {
@@ -13,6 +14,8 @@ export type FileArtifact = {
 export type DownloadArtifact = {
   url: string;
   name: string;
+  /** Present only when the runtime validated the exact published PDF/DOCX bytes. */
+  documentQa?: DocumentQa;
   /** Identity of the producing tool-call (its position in the run) folded with the
    *  URL — so re-generating the SAME filename (identical URL) yields a NEW key and
    *  re-opens the panel, instead of being suppressed as unchanged. */
@@ -29,7 +32,7 @@ export type ServerArtifact = {
 export type Artifacts = {
   file?: FileArtifact;
   console?: string;
-  download?: DownloadArtifact;
+  downloads: DownloadArtifact[];
   server?: ServerArtifact;
 };
 
@@ -47,12 +50,13 @@ function safeLoopbackUrl(value: unknown): string | undefined {
 }
 
 /** Derive previewable artifacts from a run's tool calls: the latest written
- *  file (write_file/edit_file), the latest generated download (file_gen), and
- *  the latest shell/sandbox output. */
+ *  file (write_file/edit_file), every successful generated download, and the
+ *  latest shell/sandbox output. Tool-call identity is preserved even when two
+ *  publications happen to use the same visible filename. */
 export function deriveArtifacts(turns: Turn[]): Artifacts {
   let file: FileArtifact | undefined;
   let consoleOut: string | undefined;
-  let download: DownloadArtifact | undefined;
+  const downloads: DownloadArtifact[] = [];
   let server: ServerArtifact | undefined;
   let callIdx = 0; // global tool-call position across the run — the download's identity
   for (const t of turns) {
@@ -66,17 +70,21 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
           old: c.old_content,
           action: c.diff_action,
         };
-      } else if ((c.tool === "file_gen" || c.tool === "resource_publish") && c.ok !== false && c.download_url) {
+      }
+      if (c.ok !== false && c.download_url) {
         // Deterministic: comes from the runtime's verified structured fields (set
         // ONLY after the file is verified on disk), not from any URL the model may
         // or may not have written into its answer. The key folds this call's
         // position so a repeat publish of the SAME url re-opens the panel.
-        download = {
+        const download = {
           url: c.download_url,
           name: c.download_name || c.touched_path?.split(/[\\/]/).pop() || "файл",
           key: `${callIdx}:${c.download_url}`,
+          documentQa: c.document_qa,
         };
-      } else if (c.tool === "run_server") {
+        downloads.push(download);
+      }
+      if (c.tool === "run_server") {
         const action = String(c.arguments?.action || "start").toLowerCase();
         const url = c.ok !== false ? safeLoopbackUrl(c.actual_url || c.local_url) : undefined;
         if (url && c.server_started !== false) {
@@ -97,7 +105,7 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
       }
     }
   }
-  return { file, console: consoleOut, download, server };
+  return { file, console: consoleOut, downloads, server };
 }
 
 export function serverArtifactKey(a: Artifacts): string {
@@ -107,7 +115,7 @@ export function serverArtifactKey(a: Artifacts): string {
 /** Stable key for the current download artifact (tool-call position + URL) — drives
  *  auto-open, and distinguishes two generations of the SAME filename. */
 export function downloadArtifactKey(a: Artifacts): string {
-  return a.download ? a.download.key : "";
+  return a.downloads.at(-1)?.key ?? "";
 }
 
 /** Stable key for the current file artifact (path + size) — drives auto-open. */

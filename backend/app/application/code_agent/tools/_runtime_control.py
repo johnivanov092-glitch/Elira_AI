@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.application.agent_kernel.tool_result import ensure_tool_result
 from app.application.code_agent.tools._runtime_control_contract import (
     RESULT_STATUSES as _RESULT_STATUSES,
     RuntimeRequest as _RuntimeRequest,
@@ -618,8 +619,7 @@ def tool_runtime_control(
             }
         else:
             raise ValueError(f"unsupported runtime operation: {op}")
-        if not isinstance(result, dict):
-            raise TypeError("runtime operation returned a non-object result")
+        result = ensure_tool_result(result, source=f"runtime operation {op!r}")
         raw_status = str(result.get("status") or "").strip()
         if raw_status == "cancelled":
             return _text({
@@ -639,7 +639,7 @@ def tool_runtime_control(
                 "request": request,
                 "result": result,
             })
-        if raw_status == "failed" or not bool(result.get("ok", True)):
+        if raw_status == "failed" or result.get("ok") is False:
             raw_error = result.get("error") or "runtime operation failed"
             if isinstance(raw_error, dict):
                 message = str(raw_error.get("message") or raw_error)

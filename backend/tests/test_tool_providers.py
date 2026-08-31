@@ -222,10 +222,11 @@ class ExceptionContainmentTest(unittest.TestCase):
         self.assertIn("ERROR", result.tool_meta["text"])
         self.assertIn("boom", result.tool_meta["text"])
 
-    def test_provider_returning_non_dict_normalized_to_text(self) -> None:
+    def test_provider_returning_non_dict_is_a_contract_error(self) -> None:
         weird = _FakeProvider("weird", tool_names=["x"], dispatch_result="just a string")  # type: ignore[arg-type]
         result = ToolRegistry([weird]).dispatch("x", {})
-        self.assertEqual(result.tool_meta["text"], "just a string")
+        self.assertIs(result.tool_meta["ok"], False)
+        self.assertEqual(result.tool_meta["error"], "invalid_tool_result")
 
 
 # ── BuiltinToolProvider integration ────────────────────────────

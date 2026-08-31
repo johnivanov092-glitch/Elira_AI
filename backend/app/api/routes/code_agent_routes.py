@@ -515,6 +515,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 permission_mode=payload.permission_mode,
                 thinking=payload.thinking,
                 reasoning_effort=payload.reasoning_effort,
+                resource_refs=resource_refs,
             )
             for event in _stream_with_workflow_requests(
                 events,

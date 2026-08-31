@@ -663,6 +663,7 @@ def publish_copy(
     dest_dir: Path,
     final_name: str,
     cap: int | None = None,
+    expected_sha256: str | None = None,
 ) -> tuple[int, str]:
     """Stream a REGULAR in-workspace file into ``dest_dir/final_name`` (a single
     name component) for delivery via the existing download route.
@@ -698,6 +699,7 @@ def publish_copy(
             final_name=final_name,
             cap=limit,
             temp_prefix=".publish-",
+            expected_sha256=expected_sha256,
         )
     except ResourceError:
         raise

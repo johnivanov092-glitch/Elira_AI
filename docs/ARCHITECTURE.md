@@ -47,7 +47,33 @@ returns to the same `run_code_agent`, executor and provider registry.
   sources. The model may load further groups with `capability_load`.
 - A requested download cannot finalize until an artifact receipt exists. The
   loop requires `resource_publish`, producing the existing clickable UI download
-  card instead of printing a Windows path as if it were a link.
+  card instead of printing a Windows path as if it were a link. Every distinct
+  successful publication remains available as its own download chip and as an
+  item in the preview panel, including repeated publications with the same
+  visible filename.
+- PDF/DOCX publication is fail-closed: the runtime binds structural checks,
+  rendered page count and vision inspection to the exact published SHA-256.
+  Failed or incomplete QA emits no download artifact. An exact page count is an
+  optional task contract, and model prose cannot upgrade a missing external QA
+  receipt to `passed`.
+- File reads have a Qwen-specific deterministic recovery layer. A missing,
+  truncated `read_file` path may be replaced only by one unique same-directory,
+  same-extension prefix match from the immediately preceding `glob`; a third
+  identical failed path is refused without another filesystem read. A missing
+  project filename may also resolve to one exact attached ResourceRef name and
+  is then read through the existing resource extractor without materializing a
+  copy. Ambiguous matches fail closed.
+- Local price-list assembly/BOM requests cannot finalize on model arithmetic.
+  `bom_validate` reads the declared XLSX/CSV columns and deterministically
+  validates exact codes, numeric stock, quantities and prices, then calculates
+  markup, VAT, services and totals. A successful result is sealed with the
+  catalog SHA-256 and an immutable receipt; any failed revalidation revokes it.
+  BOM documents are generated from that snapshot rather than model arithmetic,
+  and arbitrary prebuilt files are not publishable as the validated BOM. A
+  failed validation has no canonical total.
+  If the model still reports a mandatory component absent after Library search,
+  the Evidence Router requires Web search for a sourced compatible alternative
+  before allowing the BOM flow to continue.
 - MCP/LSP remain per-run and appear only after a relevant `runtime_control`
   request. Infrastructure intent preloads typed IT Ops and SSH; no MCP is started
   merely because a domain policy matched.

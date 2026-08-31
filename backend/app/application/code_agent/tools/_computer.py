@@ -96,66 +96,82 @@ def tool_computer(
     """
     act = (action or "screenshot").strip().lower()
     if act not in _VALID_ACTIONS:
-        return {"text": f"ERROR: unknown action '{action}'. Valid: {', '.join(sorted(_VALID_ACTIONS))}."}
+        return {
+            "ok": False,
+            "error": "unknown_action",
+            "text": f"ERROR: unknown action '{action}'. Valid: {', '.join(sorted(_VALID_ACTIONS))}.",
+        }
 
     # ── screenshot: capture + let the vision model interpret it ──────────────
     if act == "screenshot":
         png, size, err = _grab_png()
         if png is None:
-            return {"text": f"ERROR: could not capture screen: {err}"}
+            return {"ok": False, "error": "capture_failed", "text": f"ERROR: could not capture screen: {err}"}
         try:
             from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
         except Exception as exc:  # pragma: no cover - import guard
-            return {"text": f"ERROR: vision support unavailable: {exc}"}
+            return {"ok": False, "error": "vision_unavailable", "text": f"ERROR: vision support unavailable: {exc}"}
         w, h = size or (0, 0)
         if not is_vision_enabled():
-            return {"text": (
-                f"Скриншот сделан ({w}×{h} px), но зрение выключено — описать не могу. "
-                "Включи VISION_ENABLED=1 на сервере, чтобы агент мог «видеть» экран."
-            )}
+            return {
+                "ok": False,
+                "error": "vision_disabled",
+                "text": (
+                    f"Скриншот сделан ({w}×{h} px), но зрение выключено — описать не могу. "
+                    "Включи VISION_ENABLED=1 на сервере, чтобы агент мог «видеть» экран."
+                ),
+            }
         description = describe_image("screen.png", png, prompt=(prompt or _DEFAULT_SCREEN_PROMPT))
         if not description:
-            return {"text": f"Скриншот сделан ({w}×{h} px), но зрение не вернуло описание (сервис недоступен)."}
-        return {"text": f"Скриншот рабочего стола ({w}×{h} px):\n{description}"}
+            return {
+                "ok": False,
+                "error": "vision_empty",
+                "text": f"Скриншот сделан ({w}×{h} px), но зрение не вернуло описание (сервис недоступен).",
+            }
+        return {"ok": True, "text": f"Скриншот рабочего стола ({w}×{h} px):\n{description}"}
 
     # Every non-screenshot action needs real input control.
     gui, err = _load_pyautogui()
     if gui is None:
-        return {"text": (
-            "ERROR: управление вводом недоступно — не удалось загрузить pyautogui "
-            f"({err}). Установи пакет в окружение бэкенда."
-        )}
+        return {
+            "ok": False,
+            "error": "input_unavailable",
+            "text": (
+                "ERROR: управление вводом недоступно — не удалось загрузить pyautogui "
+                f"({err}). Установи пакет в окружение бэкенда."
+            ),
+        }
 
     try:
         if act in {"left_click", "right_click", "double_click", "middle_click", "move"}:
             xy = _coerce_xy(x, y)
             if xy is None:
-                return {"text": f"ERROR: action '{act}' requires integer x and y."}
+                return {"ok": False, "error": "invalid_coordinates", "text": f"ERROR: action '{act}' requires integer x and y."}
             px, py = xy
             if act == "move":
                 gui.moveTo(px, py)
-                return {"text": f"Курсор перемещён в ({px}, {py})."}
+                return {"ok": True, "text": f"Курсор перемещён в ({px}, {py})."}
             button = "right" if act == "right_click" else "middle" if act == "middle_click" else "left"
             n = 2 if act == "double_click" else max(1, int(clicks or 1))
             gui.click(x=px, y=py, clicks=n, button=button)
-            return {"text": f"Клик {button}×{n} в ({px}, {py})."}
+            return {"ok": True, "text": f"Клик {button}×{n} в ({px}, {py})."}
 
         if act == "type":
             if not text:
-                return {"text": "ERROR: action 'type' requires non-empty text."}
+                return {"ok": False, "error": "text_required", "text": "ERROR: action 'type' requires non-empty text."}
             gui.write(str(text), interval=0.01)
-            return {"text": f"Введён текст ({len(str(text))} симв.)."}
+            return {"ok": True, "text": f"Введён текст ({len(str(text))} симв.)."}
 
         if act == "key":
             combo = keys if isinstance(keys, list) else ([keys] if isinstance(keys, str) and keys else [])
             combo = [str(k).strip().lower() for k in combo if str(k).strip()]
             if not combo:
-                return {"text": "ERROR: action 'key' requires `keys` (e.g. [\"ctrl\",\"c\"] or [\"enter\"])."}
+                return {"ok": False, "error": "keys_required", "text": "ERROR: action 'key' requires `keys` (e.g. [\"ctrl\",\"c\"] or [\"enter\"])."}
             if len(combo) == 1:
                 gui.press(combo[0])
             else:
                 gui.hotkey(*combo)
-            return {"text": f"Нажато: {'+'.join(combo)}."}
+            return {"ok": True, "text": f"Нажато: {'+'.join(combo)}."}
 
         if act == "scroll":
             step = abs(int(amount or 3)) * 100
@@ -164,8 +180,8 @@ def tool_computer(
             if xy is not None:
                 gui.moveTo(*xy)
             gui.scroll(dy)
-            return {"text": f"Прокрутка {direction} на {abs(int(amount or 3))} шага."}
+            return {"ok": True, "text": f"Прокрутка {direction} на {abs(int(amount or 3))} шага."}
     except Exception as exc:  # pragma: no cover - runtime input failure
-        return {"text": f"ERROR: действие '{act}' не выполнено: {exc}"}
+        return {"ok": False, "error": "action_failed", "text": f"ERROR: действие '{act}' не выполнено: {exc}"}
 
-    return {"text": f"ERROR: action '{act}' not handled."}
+    return {"ok": False, "error": "action_not_handled", "text": f"ERROR: action '{act}' not handled."}

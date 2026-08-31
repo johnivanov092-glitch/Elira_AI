@@ -76,6 +76,7 @@ from app.application.code_agent.tools._content import (  # noqa: F401
     tool_translator,
     tool_webhook,
 )
+from app.application.code_agent.tools._bom import tool_bom_validate  # noqa: F401
 from app.application.code_agent.tools._vision import (  # noqa: F401
     tool_ocr_file,
     tool_read_image,
@@ -123,6 +124,7 @@ __all__ = [
     "tool_translator",
     "tool_regex",
     "tool_csv",
+    "tool_bom_validate",
     "tool_converter",
     "tool_http_api",
     "tool_sql",

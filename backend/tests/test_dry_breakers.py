@@ -1,10 +1,15 @@
-"""DRY sequence breakers — regression for the IP-mutation bug.
+"""DRY sequence breakers — regressions for exact technical values.
 
 Live: a network scan made the model walk IPs (192.168→192.169→192.166→192.170…)
 and DNS servers (8.8.8.8→9.9.9.9→6.6.6.6…). The correct IP was in context; DRY
 (anti-repetition) penalised the repeated octets and pushed the model to MUTATE
 them. Adding "." (and other separators) to dry_sequence_breakers stops DRY treating
 an IP/MAC/number as a penalizable repeat, while prose runaway is still caught.
+
+Live: after ``glob`` returned a long underscore-delimited filename, production
+DRY made Qwen abbreviate or mutate that exact path in the next ``read_file``
+call. Path separators must also reset DRY matching so tool arguments can copy
+verified paths character-for-character.
 """
 from __future__ import annotations
 
@@ -37,6 +42,11 @@ class DryBreakersTest(unittest.TestCase):
         brks = _ANTI_REPEAT_SAMPLING.get("dry_sequence_breakers")
         for d in "0123456789":
             self.assertIn(d, brks)
+
+    def test_file_path_separators_are_breakers(self):
+        brks = _ANTI_REPEAT_SAMPLING.get("dry_sequence_breakers")
+        for ch in ("_", "\\"):
+            self.assertIn(ch, brks)
 
     def test_breakers_are_whitelisted(self):
         self.assertIn("dry_sequence_breakers", _SAMPLING_EXTRA_KEYS)

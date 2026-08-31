@@ -104,7 +104,13 @@ def _data_url(filename: str, contents: bytes) -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def describe_image(filename: str, contents: bytes, *, prompt: str | None = None) -> str | None:
+def describe_image(
+    filename: str,
+    contents: bytes,
+    *,
+    prompt: str | None = None,
+    timeout_seconds: float | None = None,
+) -> str | None:
     """Describe an image via the vision model (:8004). Returns the text
     description, or ``None`` if the call fails. Callers
     decide what to do with ``None`` (e.g. leave preview empty)."""
@@ -134,7 +140,7 @@ def describe_image(filename: str, contents: bytes, *, prompt: str | None = None)
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=cfg.timeout_seconds,
+            timeout=timeout_seconds if timeout_seconds is not None else cfg.timeout_seconds,
         )
         response.raise_for_status()
         data = response.json()

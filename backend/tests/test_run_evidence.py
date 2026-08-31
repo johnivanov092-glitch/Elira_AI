@@ -161,6 +161,124 @@ def test_document_claim_requires_successful_exact_file_gen_artifact() -> None:
     assert evidence.unbacked_document_claims("Готово, вот report.pdf") == []
 
 
+def test_document_qa_receipt_must_match_published_artifact_hash() -> None:
+    evidence = RunEvidence()
+
+    _record(
+        evidence,
+        "resource_publish",
+        output={
+            "ok": True,
+            "download_name": "proposal.docx",
+            "download_url": "/api/skills/download/proposal.docx",
+            "sha256": "a" * 64,
+            "document_qa": {
+                "status": "passed",
+                "sha256": "b" * 64,
+                "page_count": 1,
+                "expected_page_count": 1,
+                "renderer": "microsoft_word",
+                "vision_status": "passed",
+                "issues": [],
+            },
+        },
+    )
+    assert evidence.has_verified_document_artifacts is False
+
+    matching = RunEvidence()
+    _record(
+        matching,
+        "resource_publish",
+        output={
+            "ok": True,
+            "download_name": "proposal.docx",
+            "download_url": "/api/skills/download/proposal.docx",
+            "sha256": "c" * 64,
+            "document_qa": {
+                "status": "passed",
+                "sha256": "c" * 64,
+                "page_count": 1,
+                "expected_page_count": 1,
+                "renderer": "microsoft_word",
+                "vision_status": "passed",
+                "issues": [],
+            },
+        },
+    )
+    assert matching.has_verified_document_artifacts is True
+
+
+def test_file_gen_qa_and_artifact_share_the_mutation_epoch() -> None:
+    evidence = RunEvidence()
+    digest = "f" * 64
+
+    _record(
+        evidence,
+        "file_gen",
+        output={
+            "ok": True,
+            "download_name": "proposal.pdf",
+            "sha256": digest,
+            "touched_path": "generated/proposal.pdf",
+            "document_qa": {
+                "status": "passed",
+                "target": "proposal.pdf",
+                "sha256": digest,
+            },
+        },
+        state_changed=True,
+    )
+
+    qa = evidence.receipts_of_kind(EvidenceKind.DOCUMENT_QA)[0]
+    artifact = evidence.receipts_of_kind(EvidenceKind.ARTIFACT)[0]
+    assert qa.project_epoch == artifact.project_epoch == evidence.project_epoch == 1
+    assert evidence.has_verified_document_artifacts is True
+
+
+def test_failed_document_qa_blocks_model_claim_without_artifact() -> None:
+    evidence = RunEvidence()
+    _record(
+        evidence,
+        "resource_publish",
+        output={
+            "ok": False,
+            "project_path": "proposal.docx",
+            "document_qa": {
+                "status": "failed",
+                "sha256": "d" * 64,
+                "issues": [{"code": "layout_issue", "message": "Сломан заголовок."}],
+            },
+            "verifier": True,
+        },
+    )
+
+    assert evidence.has_unverified_document_qa_claim("Оба КП проверены, QA passed")
+    assert evidence.document_qa_backstop().startswith("Документ не опубликован")
+
+
+def test_failed_document_qa_is_recorded_when_executor_status_is_error() -> None:
+    evidence = RunEvidence()
+    _record(
+        evidence,
+        "resource_publish",
+        status="error",
+        output={
+            "ok": False,
+            "document_qa": {
+                "status": "failed",
+                "sha256": "e" * 64,
+                "target": "second.docx",
+                "issues": [],
+            },
+        },
+    )
+
+    receipts = evidence.receipts_of_kind(EvidenceKind.DOCUMENT_QA)
+    assert len(receipts) == 1
+    assert receipts[0].target == "second.docx"
+    assert receipts[0].passed is False
+
+
 def test_web_search_is_discovery_not_external_source_evidence() -> None:
     evidence = RunEvidence()
 

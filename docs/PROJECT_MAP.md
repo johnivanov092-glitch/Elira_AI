@@ -33,6 +33,7 @@ move Elira's backend state or tools into that repository.
 | Prompts/schemas | `backend/app/application/code_agent/prompts.py`, `tool_schemas.py` |
 | Domain/Capability/Evidence routing + built-in groups | `backend/app/application/code_agent/capabilities.py` |
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
+| Deterministic local price-list/BOM validation | `backend/app/application/code_agent/tools/_bom.py` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
 | Workflow/data runtime adapters | `backend/app/application/code_agent/tools/_runtime_control_workflows.py`, `_runtime_control_data.py` |

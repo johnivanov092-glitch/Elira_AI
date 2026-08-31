@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from app.application.agent_kernel.tool_result import ensure_tool_result
+
 _TOOLSPEC_NEW_COLUMNS = [
     ("permission",       "TEXT NOT NULL DEFAULT 'auto'"),
     ("side_effect",      "INTEGER NOT NULL DEFAULT 0"),
@@ -377,12 +379,12 @@ def execute_tool(
         return {"ok": False, "error": f"No handler for tool: {name}"}
 
     try:
-        result = handler(payload)
-        if not isinstance(result, dict):
-            result = {"ok": True, "result": result}
-        return result
+        return ensure_tool_result(
+            handler(payload),
+            source=f"registered tool {name!r}",
+        )
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), "text": f"ERROR: {exc}"}
 
 
 def validate_tool_args(

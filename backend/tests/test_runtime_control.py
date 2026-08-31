@@ -22,6 +22,17 @@ from app.application.projects.scope import project_scope_id  # noqa: E402
 
 
 class RuntimeControlContractTest(unittest.TestCase):
+    def test_inner_runtime_result_requires_boolean_ok(self) -> None:
+        with patch(
+            "app.application.code_agent.tools._runtime_control._runtime_status",
+            return_value={"status": "completed"},
+        ):
+            result = tool_runtime_control(ROOT, operation="status")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["message"], "invalid_tool_result")
+
     def test_failure_is_typed(self) -> None:
         result = tool_runtime_control(ROOT, operation="not_supported")
 

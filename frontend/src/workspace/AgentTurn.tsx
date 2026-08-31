@@ -1,10 +1,12 @@
-import { Brain, ChevronDown, Loader2, RotateCcw, Volume2 } from "lucide-react";
+import { Brain, CheckCircle2, ChevronDown, Download, Loader2, RotateCcw, Volume2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
+import { DownloadLink } from "../components/DownloadLink";
 import { AnswerMediaGallery } from "./AnswerMediaGallery";
 import { ToolCallGroup } from "./ToolCallGroup";
 import type { AnswerMediaItem, CompletionStatus, CriterionState } from "../api/codeAgent";
 import type { AgentTurnData } from "./types";
+import { deriveArtifacts } from "./artifacts";
 import { getAutoSpeak, speak } from "./voice";
 import { cn } from "../ui/cn";
 
@@ -46,6 +48,7 @@ function AnswerWithMedia({ text, media }: { text: string; media: AnswerMediaItem
 // turns on each token (callbacks from useAgentRun are stable useCallbacks).
 export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { turn: AgentTurnData; onResume?: (turnId: string, runId: string) => void }) {
   const idle = turn.running && !turn.text && !turn.reasoning && !turn.brainPhase && turn.toolCalls.length === 0 && !turn.activeTool;
+  const downloads = deriveArtifacts([turn]).downloads;
   const [speaking, setSpeaking] = useState(false);
 
   // Auto-speak: only when this turn transitions running -> done while mounted
@@ -109,17 +112,45 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
         </div>
       )}
 
-      {turn.text && !turn.running && (
-        <button
-          type="button"
-          onClick={() => void onSpeak()}
-          disabled={speaking}
-          title="Озвучить голосом Elira"
-          aria-label="Озвучить"
-          className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] text-mut transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
-        >
-          <Volume2 size={12} className={speaking ? "animate-pulse text-ac" : ""} /> Озвучить
-        </button>
+      {!turn.running && (turn.text || downloads.length > 0) && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {turn.text && (
+            <button
+              type="button"
+              onClick={() => void onSpeak()}
+              disabled={speaking}
+              title="Озвучить голосом Elira"
+              aria-label="Озвучить"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] text-mut transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
+            >
+              <Volume2 size={12} className={speaking ? "animate-pulse text-ac" : ""} /> Озвучить
+            </button>
+          )}
+          {downloads.length > 0 && <span className="ml-0.5 text-[11px] text-mut">Файлы:</span>}
+          {downloads.map((download) => (
+            <DownloadLink
+              key={download.key}
+              data-download-chip={download.key}
+              url={download.url}
+              name={download.name}
+              title={`Скачать ${download.name}`}
+              aria-label={`Скачать ${download.name}`}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-acl bg-card px-2.5 py-1.5 text-[11px] font-medium text-ac transition-colors hover:bg-acs"
+            >
+              <Download size={12} className="shrink-0" />
+              <span className="max-w-[260px] truncate">{download.name}</span>
+              {download.documentQa?.status === "passed" && (
+                <span
+                  data-document-qa="passed"
+                  className="inline-flex shrink-0 items-center gap-1 border-l border-acl pl-1.5 text-[10px] text-success"
+                >
+                  <CheckCircle2 size={11} />
+                  {download.documentQa.page_count ? `${download.documentQa.page_count} стр.` : "Проверено"}
+                </span>
+              )}
+            </DownloadLink>
+          ))}
+        </div>
       )}
 
       {(turn.genTokens ?? 0) > 0 && (

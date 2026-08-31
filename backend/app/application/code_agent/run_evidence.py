@@ -11,6 +11,7 @@ class EvidenceKind(str, Enum):
     MUTATION = "mutation"
     VERIFICATION = "verification"
     ARTIFACT = "artifact"
+    DOCUMENT_QA = "document_qa"
     EXTERNAL_SOURCE = "external_source"
 
 
@@ -21,6 +22,8 @@ class EvidenceReceipt:
     project_epoch: int
     passed: bool
     target: str = ""
+    sha256: str = ""
+    status: str = ""
 
 
 _OBSERVATION_TOOLS = frozenset({
@@ -195,6 +198,15 @@ _DOCGEN_EXISTING_RE = re.compile(
     r"\bне\s+(?:был[оаи]?\s+)?(?:создан|сгенерирован|подготовлен|сохран[её]н)\w*\b)",
     re.IGNORECASE,
 )
+_DOCUMENT_QA_CLAIM_RE = re.compile(
+    r"(?:\bqa\s*(?:passed|pass|пройден\w*)\b|"
+    r"\b(?:документ\w*|файл\w*|кп|оформлен\w*|в[её]рстк\w*)\b.{0,60}"
+    r"\bпроверен\w*\b|\bпроверен\w*\b.{0,60}"
+    r"\b(?:документ\w*|файл\w*|кп|оформлен\w*|в[её]рстк\w*)\b|"
+    r"\b\d+\s+страниц(?:а|ы)?\s+на\s+(?:документ|файл)\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+_QA_DOCUMENT_EXTENSIONS = (".docx", ".pdf")
 
 
 def _basename(path: str) -> str:
@@ -363,6 +375,34 @@ class RunEvidence:
     def generated_documents(self) -> tuple[str, ...]:
         return tuple(sorted(self._generated_documents))
 
+    @property
+    def has_document_artifacts(self) -> bool:
+        return any(
+            receipt.target.lower().endswith(_QA_DOCUMENT_EXTENSIONS)
+            for receipt in self.receipts_of_kind(EvidenceKind.ARTIFACT)
+        )
+
+    @property
+    def has_verified_document_artifacts(self) -> bool:
+        latest_by_target: dict[str, EvidenceReceipt] = {}
+        for receipt in self.receipts_of_kind(EvidenceKind.ARTIFACT):
+            if receipt.target.lower().endswith(_QA_DOCUMENT_EXTENSIONS):
+                latest_by_target[receipt.target.lower()] = receipt
+        artifacts = tuple(latest_by_target.values())
+        if not artifacts:
+            return False
+        qa_receipts = self.receipts_of_kind(EvidenceKind.DOCUMENT_QA)
+        return all(
+            bool(artifact.sha256)
+            and any(
+                qa.passed
+                and qa.sha256 == artifact.sha256
+                and qa.project_epoch == artifact.project_epoch
+                for qa in qa_receipts
+            )
+            for artifact in artifacts
+        )
+
     def receipts_of_kind(self, kind: EvidenceKind) -> tuple[EvidenceReceipt, ...]:
         return tuple(receipt for receipt in self._receipts if receipt.kind is kind)
 
@@ -406,6 +446,43 @@ class RunEvidence:
     def unbacked_document_claims(self, answer: str) -> list[str]:
         return unbacked_document_claims(answer, self._generated_documents)
 
+    def has_unverified_document_qa_claim(self, answer: str) -> bool:
+        latest_qa_by_target: dict[str, EvidenceReceipt] = {}
+        for receipt in self.receipts_of_kind(EvidenceKind.DOCUMENT_QA):
+            latest_qa_by_target[receipt.target.casefold()] = receipt
+        latest_qa_incomplete = any(
+            not receipt.passed for receipt in latest_qa_by_target.values()
+        )
+        has_document_evidence = bool(
+            self.has_document_artifacts
+            or latest_qa_by_target
+        )
+        return bool(
+            has_document_evidence
+            and _DOCUMENT_QA_CLAIM_RE.search(answer or "")
+            and (latest_qa_incomplete or not self.has_verified_document_artifacts)
+        )
+
+    def document_qa_backstop(self) -> str:
+        names = sorted({
+            receipt.target
+            for receipt in self.receipts_of_kind(EvidenceKind.ARTIFACT)
+            if receipt.target.lower().endswith(_QA_DOCUMENT_EXTENSIONS)
+        })
+        if not names:
+            return (
+                "Документ не опубликован: внешняя проверка не пройдена или не завершена. "
+                "Утверждение модели о пройденном QA удалено; исправьте документ и "
+                "повторите публикацию."
+            )
+        listed = ", ".join(names)
+        subject = "Файлы опубликованы" if len(names) > 1 else "Файл опубликован"
+        return (
+            f"{subject} ({listed}), но внешняя проверка не подтверждена. "
+            "Утверждение модели о пройденном QA удалено; перед использованием "
+            "проверьте визуальное превью или повторите генерацию с document QA."
+        )
+
     def record_tool_result(
         self,
         *,
@@ -417,6 +494,34 @@ class RunEvidence:
         state_changed: bool,
     ) -> None:
         tool = str(tool_name or "").strip()
+        document_qa = output.get("document_qa")
+        if isinstance(document_qa, dict):
+            qa_status = str(document_qa.get("status") or "unverified").strip().lower()
+            qa_target = str(
+                document_qa.get("target")
+                or output.get("download_name")
+                or output.get("project_path")
+                or arguments.get("project_path")
+                or ""
+            ).strip()
+            qa_epoch = self._project_epoch + (
+                1
+                if execution_status == "ok"
+                and output.get("ok") is not False
+                and state_changed
+                else 0
+            )
+            self._receipts.append(EvidenceReceipt(
+                EvidenceKind.DOCUMENT_QA,
+                tool,
+                qa_epoch,
+                execution_status == "ok"
+                and output.get("ok") is not False
+                and qa_status == "passed",
+                _basename(qa_target),
+                str(document_qa.get("sha256") or ""),
+                qa_status,
+            ))
         if execution_status != "ok":
             return
 
@@ -473,6 +578,7 @@ class RunEvidence:
                 self._project_epoch,
                 True,
                 _basename(name),
+                str(output.get("sha256") or ""),
             ))
 
         if (
@@ -488,6 +594,7 @@ class RunEvidence:
                 self._project_epoch,
                 True,
                 _basename(name),
+                str(output.get("sha256") or ""),
             ))
 
         if provider_ok and tool_provides_external_source(tool, text_result):

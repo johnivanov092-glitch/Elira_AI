@@ -33,7 +33,7 @@ class ToolProvider(Protocol):
     Implementations must NEVER raise from `dispatch`. All known
     failure modes (sandbox violations, bad arguments, network
     issues, server crashes) are reported by returning a tool_meta
-    dict with `{"text": "ERROR: ..."}`. Letting an exception
+    dict with `{"ok": false, "text": "ERROR: ..."}`. Letting an exception
     propagate would crash the streaming generator that wraps the
     whole agent loop.
     """
@@ -65,5 +65,5 @@ class ToolProvider(Protocol):
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Execute one tool call. `args` is already a dict (the
         registry handles JSON-string → dict conversion). Always
-        returns a dict with at least a `text` field; never raises."""
+        returns a dict with boolean `ok` and a `text` field; never raises."""
         ...

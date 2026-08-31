@@ -16,6 +16,7 @@ from app.application.code_agent.tools import (
     build_tool_dispatch,
     build_tool_schemas,
 )
+from app.application.agent_kernel.tool_result import ensure_tool_result
 
 
 logger = logging.getLogger(__name__)
@@ -78,9 +79,4 @@ class BuiltinToolProvider:
             # record the ERROR text as a successful call (the real Mini CRM
             # App.css event did exactly that).
             return {"ok": False, "error": "tool_exception", "text": f"ERROR: {exc}"}
-        # tools.py returns either a dict (with `text` + optional extras)
-        # or, rarely, a non-dict — normalize to keep the registry's
-        # caller invariants stable.
-        if isinstance(result, dict):
-            return result
-        return {"text": str(result)}
+        return ensure_tool_result(result, source=f"built-in tool {tool_name!r}")

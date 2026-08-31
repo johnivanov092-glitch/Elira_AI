@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, FileText, Folder, Loader2, X } from "lucide-react";
+import { CheckCircle2, ChevronRight, Download, FileText, Folder, Loader2, X } from "lucide-react";
 import { DownloadLink } from "../components/DownloadLink";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { getAdvancedProjectTree, readAdvancedProjectFile } from "../api/project";
@@ -32,39 +32,92 @@ function pdfPreviewUrl(url: string, name: string): string | null {
 export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artifacts; project: string; onClose: () => void }) {
   const file = artifacts.file;
   const server = artifacts.server;
+  const downloads = artifacts.downloads;
+  const newestDownload = downloads.at(-1);
+  const [selectedDownloadKey, setSelectedDownloadKey] = useState(newestDownload?.key ?? "");
+  const selectedDownload = selectedDownloadKey
+    ? downloads.find((item) => item.key === selectedDownloadKey) ?? newestDownload
+    : undefined;
   const isHtml = !!file && /\.html?$/i.test(file.path);
   const isMd = !!file && /\.(md|markdown)$/i.test(file.path);
-  const pdfUrl = artifacts.download
-    ? pdfPreviewUrl(artifacts.download.url, artifacts.download.name)
+  const pdfUrl = selectedDownload
+    ? pdfPreviewUrl(selectedDownload.url, selectedDownload.name)
     : null;
-  const [tab, setTab] = useState<Tab>(server || isHtml || isMd || pdfUrl ? "preview" : file ? "code" : "console");
+  const [tab, setTab] = useState<Tab>(server || isHtml || isMd || downloads.length > 0 ? "preview" : file ? "code" : "console");
 
   useEffect(() => {
-    if (server || pdfUrl) setTab("preview");
-  }, [server?.key, artifacts.download?.key, pdfUrl]);
+    if (!newestDownload) return;
+    setSelectedDownloadKey(newestDownload.key);
+    setTab("preview");
+  }, [newestDownload?.key]);
+
+  useEffect(() => {
+    if (!server) return;
+    setSelectedDownloadKey("");
+    setTab("preview");
+  }, [server?.key]);
+
+  function selectDownload(key: string) {
+    setSelectedDownloadKey(key);
+    setTab("preview");
+  }
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-line bg-side">
       <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
-        <span className="truncate font-mono text-[11.5px] text-t2">{server?.url ?? file?.path ?? artifacts.download?.name ?? "превью"}</span>
+        <span className="truncate font-mono text-[11.5px] text-t2">{selectedDownload?.name ?? server?.url ?? file?.path ?? "превью"}</span>
         <button type="button" onClick={onClose} aria-label="Закрыть" className="ml-auto grid h-6 w-6 place-items-center rounded-md border border-line text-t2 hover:bg-hover hover:text-tx">
           <X size={14} />
         </button>
       </div>
 
-      {artifacts.download && (
-        <div className="flex items-center gap-2 border-b border-line bg-card px-3 py-2.5">
-          <FileText size={15} className="shrink-0 text-ac" />
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-t2" title={artifacts.download.name}>
-            {artifacts.download.name}
-          </span>
-          <DownloadLink
-            url={artifacts.download.url}
-            name={artifacts.download.name}
-            className="shrink-0 rounded-md border border-line bg-surface px-2 py-1 text-[11.5px] font-medium text-ac hover:bg-hover"
-          >
-            📥 Скачать
-          </DownloadLink>
+      {downloads.length > 0 && (
+        <div className="border-b border-line bg-card px-2.5 py-2">
+          <div className="mb-1.5 px-1 text-[10.5px] font-medium uppercase tracking-wide text-mut">
+            Файлы · {downloads.length}
+          </div>
+          <div className="max-h-44 space-y-1 overflow-y-auto pr-0.5">
+            {downloads.map((download) => {
+              const active = download.key === selectedDownload?.key;
+              return (
+                <div
+                  key={download.key}
+                  data-artifact-option={download.key}
+                  className={cn(
+                    "flex min-w-0 items-center gap-1 rounded-lg border px-1.5 py-1 transition-colors",
+                    active ? "border-acl bg-acs" : "border-transparent hover:border-line hover:bg-hover",
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => selectDownload(download.key)}
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left"
+                    title={`Открыть ${download.name}`}
+                  >
+                    <FileText size={14} className={cn("shrink-0", active ? "text-ac" : "text-mut")} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-mono text-[11px] text-t2">{download.name}</span>
+                      {download.documentQa?.status === "passed" && (
+                        <span data-document-qa="passed" className="mt-0.5 flex items-center gap-1 text-[9.5px] text-success">
+                          <CheckCircle2 size={10} /> Проверено
+                          {download.documentQa.page_count ? ` · ${download.documentQa.page_count} стр.` : ""}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  <DownloadLink
+                    url={download.url}
+                    name={download.name}
+                    title={`Скачать ${download.name}`}
+                    aria-label={`Скачать ${download.name}`}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ac hover:bg-surface"
+                  >
+                    <Download size={13} />
+                  </DownloadLink>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -86,17 +139,34 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
 
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === "preview" && (
-          server ? (
+          pdfUrl ? (
+            <iframe
+              title="PDF preview"
+              src={pdfUrl}
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : selectedDownload ? (
+            <div className="grid h-full place-items-center px-5 text-center">
+              <div className="max-w-[300px] rounded-xl border border-line bg-card px-4 py-4">
+                <FileText size={24} className="mx-auto mb-2 text-ac" />
+                <div className="truncate font-mono text-[12px] text-t2" title={selectedDownload.name}>{selectedDownload.name}</div>
+                <p className="mt-1.5 text-[11.5px] leading-relaxed text-mut">
+                  Встроенное визуальное превью для этого формата недоступно. Файл можно скачать отдельно.
+                </p>
+                <DownloadLink
+                  url={selectedDownload.url}
+                  name={selectedDownload.name}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-acl bg-acs px-3 py-1.5 text-[11.5px] font-medium text-ac hover:bg-hover"
+                >
+                  <Download size={13} /> Скачать
+                </DownloadLink>
+              </div>
+            </div>
+          ) : server ? (
             <iframe
               title="live preview"
               sandbox="allow-scripts allow-forms allow-modals allow-same-origin"
               src={server.url}
-              className="h-full w-full border-0 bg-white"
-            />
-          ) : pdfUrl ? (
-            <iframe
-              title="PDF preview"
-              src={pdfUrl}
               className="h-full w-full border-0 bg-white"
             />
           ) : isHtml && file ? (

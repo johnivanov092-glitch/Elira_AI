@@ -176,6 +176,7 @@ _UNITY_READ_ONLY_TOOLS = frozenset({
 _UNITY_CAMERA_READ_ACTIONS = frozenset({
     "ping", "get_brain_status", "list_cameras", "screenshot", "screenshot_multiview",
 })
+BROWSER_CHANGE_ACTIONS = frozenset({"fill", "select", "check", "uncheck", "click"})
 
 
 def _creative_mcp_parts(tool_name: str) -> tuple[str, str] | None:
@@ -205,15 +206,33 @@ def creative_batch_contains_arbitrary_code(value: Any) -> bool:
 
 
 def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
-    """Call-level read/change classification for mixed creative MCP surfaces.
+    """Call-level read/change classification for mixed tool surfaces.
 
-    Only the two explicitly configured editor bridges receive this treatment.
-    Unknown MCP tools remain changes and therefore fail closed to approval.
+    Unknown actions and MCP tools remain changes and therefore fail closed to
+    approval.
     """
     payload = args if isinstance(args, dict) else {}
-    if str(tool_name or "").strip() == "capability_load":
+    name = str(tool_name or "").strip()
+    if name == "capability_load":
         return False
-    if str(tool_name or "").strip() == "runtime_control":
+    if name == "browser":
+        actions = payload.get("actions")
+        if actions is None or actions == []:
+            return False
+        if not isinstance(actions, list):
+            return True
+        for action in actions:
+            if not isinstance(action, dict):
+                return True
+            keys = {str(key).strip().lower() for key in action}
+            if keys & BROWSER_CHANGE_ACTIONS:
+                return True
+            if "wait" not in keys:
+                return True
+        return False
+    if name == "computer":
+        return str(payload.get("action") or "screenshot").strip().lower() != "screenshot"
+    if name == "runtime_control":
         return str(payload.get("operation") or "").strip().lower() not in {
             "status", "mcp_list", "lsp_list", "telegram_status",
             "telegram_test", "telegram_users", "itops_assets", "vault_status",
@@ -223,7 +242,7 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
             "memory_list", "memory_search", "memory_recall", "library_list",
             "library_search", "library_context", "project_status",
         }
-    parts = _creative_mcp_parts(tool_name)
+    parts = _creative_mcp_parts(name)
     if parts is None:
         return True
     server, original = parts

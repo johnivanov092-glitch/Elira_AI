@@ -29,6 +29,19 @@ export type AnswerMediaItem = {
   source: string;
 };
 
+export type DocumentQa = {
+  status: "passed" | "failed" | "unverified";
+  sha256?: string;
+  format?: "docx" | "pdf";
+  renderer?: string;
+  target?: string;
+  attempt?: number;
+  page_count?: number | null;
+  expected_page_count?: number | null;
+  vision_status?: "passed" | "failed" | "unverified" | "not_run";
+  issues?: { code: string; message: string }[];
+};
+
 export type CodeAgentToolCall = {
   step: number;
   tool: string;
@@ -52,6 +65,8 @@ export type CodeAgentToolCall = {
   project_path?: string;
   size?: number;
   sha256?: string;
+  /** PDF/DOCX: server-owned render/page-count/vision verdict for these exact bytes. */
+  document_qa?: DocumentQa;
   /** run_server: server-owned address of the process that actually survived
    *  startup. Used for live Preview; never parsed from model prose. */
   actual_url?: string;

@@ -42,7 +42,7 @@ def tool_grep(
     try:
         regex = re.compile(pattern)
     except re.error as exc:
-        return {"text": f"ERROR: invalid regex: {exc}"}
+        return {"ok": False, "error": "invalid_regex", "text": f"ERROR: invalid regex: {exc}"}
     if base.is_file():
         files = [base]
     else:
@@ -82,7 +82,7 @@ def tool_grep(
         if len(out) >= _GREP_MAX_MATCHES:
             out.append(f"[... truncated at {_GREP_MAX_MATCHES} matches]")
             break
-    return {"text": "\n".join(out) if out else f"No matches for '{pattern}' in {path}"}
+    return {"ok": True, "text": "\n".join(out) if out else f"No matches for '{pattern}' in {path}"}
 
 
 # ─── project_map ─────────────────────────────────────────────────────────────
@@ -211,7 +211,7 @@ def tool_project_map(
     """
     base = _resolve_safe(project_root, path) if path else project_root.resolve()
     if not base.is_dir():
-        return {"text": f"ERROR: not a directory: {path or '.'}"}
+        return {"ok": False, "error": "not_a_directory", "text": f"ERROR: not a directory: {path or '.'}"}
     project_base = project_root.resolve()
     try:
         base.relative_to(project_base)
@@ -307,7 +307,7 @@ def tool_project_map(
     sections.append(f"File tree (depth {max_depth}):\n{tree_body}")
     if sig_blocks:
         sections.append("Signatures (top-level):\n\n" + "\n\n".join(sig_blocks))
-    return {"text": "\n\n".join(sections)}
+    return {"ok": True, "text": "\n\n".join(sections)}
 
 
 def tool_remember(
@@ -402,8 +402,17 @@ def tool_recall(
         result = {"ok": False, "error": f"RAG service unavailable: {exc}"}
     if not result.get("ok"):
         if sections:  # facts are still useful even if the semantic side failed
-            return {"text": "\n\n".join(sections)}
-        return {"text": f"ERROR: {result.get('error', 'recall failed')}"}
+            return {
+                "ok": True,
+                "partial": True,
+                "text": "\n\n".join(sections),
+                "warning": str(result.get("error") or "semantic recall failed"),
+            }
+        return {
+            "ok": False,
+            "error": "recall_failed",
+            "text": f"ERROR: {result.get('error', 'recall failed')}",
+        }
 
     sem_items = result.get("items", []) or []
     if sem_items:
@@ -420,5 +429,5 @@ def tool_recall(
         sections.append("\n".join(slines))
 
     if not sections:
-        return {"text": f"No matches for '{query}' (min_score={min_score})"}
-    return {"text": "\n\n".join(sections)}
+        return {"ok": True, "text": f"No matches for '{query}' (min_score={min_score})"}
+    return {"ok": True, "text": "\n\n".join(sections)}

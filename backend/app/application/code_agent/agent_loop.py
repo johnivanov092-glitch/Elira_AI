@@ -35,10 +35,15 @@ from app.application.code_agent.capabilities import (
     builtin_tools_for_groups,
     normalize_capability_groups,
     route_request_capabilities,
+    is_local_tabular_catalog_probe,
+    requires_bom_validation,
+    should_require_local_catalog_search,
+    should_require_web_catalog_fallback,
     should_escalate_web_after_failure,
     should_escalate_web_from_answer,
 )
 from app.application.code_agent.answer_media import merge_answer_media
+from app.application.code_agent.document_validation import infer_expected_page_count
 from app.application.code_agent.planning import (
     PlanArtifact,
     build_planning_messages,
@@ -96,6 +101,7 @@ from app.application.code_agent.inline_tool_calls import (
     _extract_inline_tool_calls,
     _strip_tool_call_markup,
 )
+from app.application.code_agent.tools._files import recover_read_path_from_glob
 # System-prompt construction extracted to .prompts; re-exported so the loop and
 # tests keep importing these from agent_loop unchanged.
 from app.application.code_agent.prompts import (  # noqa: F401
@@ -162,12 +168,15 @@ _ANTI_REPEAT_SAMPLING = {
     # →192.170… during a network scan, plus a walk through 8.8.8.8/9.9.9.9/6.6.6.6).
     # Keeps the llama.cpp defaults (\n : " *) so repeated PROSE — the ×20-paragraph
     # runaway — is still caught (a repeated sentence resets only at its own period).
+    # File-path delimiters are breakers too: without "_" / "\\", copying a long
+    # path verbatim from glob into read_file is treated as repetition and Qwen
+    # abbreviates or mutates the tool argument.
     # Digits are breakers too: a repeated number/model-code (RTX 5090 in every table
     # row, a price repeated down a column) was DRY-penalised and the model dropped a
     # digit to dodge it (live: "5090"→"509"/"090"). A digit resets the match, so
     # numbers survive verbatim; word-based degeneration (no digits) is still caught.
     "dry_sequence_breakers": [
-        "\n", ":", "\"", "*", ".", "-", "/", ",", ";", "=",
+        "\n", ":", "\"", "*", ".", "-", "/", "\\", "_", ",", ";", "=",
         "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     ],
 }
@@ -691,6 +700,7 @@ def _stream_code_agent_core(
     resume: bool = False,
     pause_for_workflow_request: bool = False,
     workflow_approval: dict[str, Any] | None = None,
+    resource_refs: list[dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -907,6 +917,7 @@ def _stream_code_agent_core(
         # so nothing is injected there (zero tokens, canaries untouched).
         task_spec = derive_task_spec(user_message, project_root=root)
         task_spec_source = "current_message" if task_spec is not None else "none"
+        document_page_count_contract = infer_expected_page_count(user_message)
         if task_spec is None and is_continuation_message(user_message):
             # FIX-8: ONLY on an explicit continuation ("делай"/"продолжай"/"да") —
             # restore the most recent STRUCTURED TaskSpec from the user's history so
@@ -918,6 +929,14 @@ def _stream_code_agent_core(
                     if _hist_spec is not None:
                         task_spec = _hist_spec
                         task_spec_source = "conversation_history"
+                        break
+        if document_page_count_contract is None and is_continuation_message(user_message):
+            for _m in reversed(conversation_history or []):
+                if isinstance(_m, dict) and _m.get("role") == "user":
+                    document_page_count_contract = infer_expected_page_count(
+                        str(_m.get("content") or "")
+                    )
+                    if document_page_count_contract is not None:
                         break
         if task_spec is not None:
             effective_user_message = f"{taskspec_context(task_spec)}\n\n{effective_user_message}"
@@ -982,6 +1001,17 @@ def _stream_code_agent_core(
         _failure_counts: dict[str, int] = {}
         _download_delivery_correction_sent = False
         _evidence_answer_correction_sent = False
+        _local_tabular_catalog_probe_seen = False
+        _library_search_seen = False
+        _local_catalog_correction_sent = False
+        _web_catalog_fallback_correction_sent = False
+        _catalog_web_fallback_required = False
+        _catalog_web_fetch_seen = False
+        _catalog_web_fetch_correction_sent = False
+        _bom_snapshot: dict[str, Any] | None = None
+        _bom_validation_correction_sent = False
+        _last_glob_matches: tuple[str, ...] = ()
+        _read_file_failures: dict[str, int] = {}
         pending_redirected_jobs: set[int] = set()
 
         # TaskSpec per-criterion state (Ph7.4/7.5): DONE is decided by verifiers,
@@ -1507,6 +1537,88 @@ def _stream_code_agent_core(
                     )
                     continue
                 if (
+                    not _local_catalog_correction_sent
+                    and should_require_local_catalog_search(
+                        final_text,
+                        local_tabular_probe_seen=_local_tabular_catalog_probe_seen,
+                        library_search_seen=_library_search_seen,
+                    )
+                ):
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal local-catalog correction] Нельзя считать нулевой "
+                            "exact-match или показанные head()/первые N строк доказательством "
+                            "отсутствия позиции в локальном прайсе. Выполни "
+                            "runtime_control(operation='library_search', query=...) с "
+                            "несколькими независимыми токенами назначения, категории и, если "
+                            "известны, бренда/модели. Если документ не находится в Library, "
+                            "повтори локальный поиск по отдельным токенам без жёсткой фразы. "
+                            "Только после этой проверки можно подтвердить отсутствие или "
+                            "искать внешнюю альтернативу. Эта коррекция одноразовая."
+                        ),
+                    })
+                    _local_catalog_correction_sent = True
+                    call_log.append("completion blocked by unverified local-catalog absence")
+                    continue
+                if (
+                    not _web_catalog_fallback_correction_sent
+                    and should_require_web_catalog_fallback(
+                        user_message,
+                        final_text,
+                        library_search_seen=_library_search_seen,
+                        external_source_seen=run_evidence.has_external_source,
+                    )
+                ):
+                    _web_was_activated = "web" not in active_capability_groups
+                    if _web_was_activated:
+                        active_capability_groups.add("web")
+                        registry = rebuild_registry()
+                        all_schemas = registry.collect_schemas()
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal catalog Web fallback] Обязательный компонент "
+                            "сборки не подтверждён после полного локального Library-поиска. "
+                            "Нельзя завершать неполный BOM: вызови web_search, затем "
+                            "web_fetch для первичного/магазинного источника и предложи "
+                            "совместимую внешнюю альтернативу с подтверждёнными моделью, "
+                            "ценой/наличием и URL. Локальные позиции не заменяй внешними, "
+                            "если они уже подтверждены."
+                        ),
+                    })
+                    _web_catalog_fallback_correction_sent = True
+                    _catalog_web_fallback_required = True
+                    call_log.append("completion blocked by missing catalog Web fallback")
+                    if _web_was_activated:
+                        yield {
+                            "type": "runtime_activation_changed",
+                            "run_id": rid,
+                            "step": step,
+                            "source": "catalog_absence_fallback",
+                            "runtime_activation": runtime_activation_snapshot(),
+                        }
+                    continue
+                if (
+                    _catalog_web_fallback_required
+                    and not _catalog_web_fetch_seen
+                    and not _catalog_web_fetch_correction_sent
+                ):
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal catalog source correction] Одного web_search "
+                            "недостаточно. Вызови web_fetch для выбранного результата и "
+                            "подтверди на странице точную модель, совместимость и цену/наличие."
+                        ),
+                    })
+                    _catalog_web_fetch_correction_sent = True
+                    call_log.append("completion blocked until catalog source fetch")
+                    continue
+                if (
                     "web" not in active_capability_groups
                     and not _evidence_answer_correction_sent
                     and should_escalate_web_from_answer(final_text)
@@ -1532,6 +1644,26 @@ def _stream_code_agent_core(
                         "source": "evidence_uncertain_answer",
                         "runtime_activation": runtime_activation_snapshot(),
                     }
+                    continue
+                if (
+                    requires_bom_validation(user_message)
+                    and _bom_snapshot is None
+                    and not _bom_validation_correction_sent
+                ):
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal BOM correction] Нельзя завершать локальную "
+                            "спецификацию/КП с арифметикой модели. Вызови bom_validate "
+                            "по исходному XLSX/CSV: передай точные колонки, выбранные коды "
+                            "и количества, остаток, наценку, НДС и услуги. Используй только "
+                            "подтверждённые rows/total из результата. Если ok=false — исправь "
+                            "подбор; не создавай и не публикуй финальный документ до ok=true."
+                        ),
+                    })
+                    _bom_validation_correction_sent = True
+                    call_log.append("completion blocked by missing deterministic BOM validation")
                     continue
                 if (
                     request_route.download_requested
@@ -1561,12 +1693,58 @@ def _stream_code_agent_core(
                     request_route.download_requested
                     and not run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
                 )
+                bom_validation_failed = bool(
+                    requires_bom_validation(user_message)
+                    and _bom_snapshot is None
+                )
+                catalog_web_failed = bool(
+                    _catalog_web_fallback_required
+                    and not _catalog_web_fetch_seen
+                )
                 if download_delivery_failed:
                     final_text = (
                         "Файл не был опубликован: Workflow не получил подтверждённый "
                         "download artifact, поэтому кнопка скачивания не создана."
                     )
-                answer_status = "degraded" if download_delivery_failed else "complete"
+                elif bom_validation_failed:
+                    final_text = (
+                        "BOM не завершён: детерминированная проверка кодов, остатков, "
+                        "цен, НДС и итогов не получила статус ok=true. Непроверенные "
+                        "позиции и суммы не публикуются."
+                    )
+                elif catalog_web_failed:
+                    final_text = (
+                        "BOM не завершён: внешняя альтернатива не подтверждена чтением "
+                        "источника. Результат Web-поиска без web_fetch не считается "
+                        "проверкой модели, совместимости и наличия."
+                    )
+                elif requires_bom_validation(user_message) and _bom_snapshot is not None:
+                    artifact_note = (
+                        " Финальный файл опубликован."
+                        if run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
+                        else ""
+                    )
+                    final_text = (
+                        "BOM детерминированно проверен по локальному каталогу. "
+                        f"Канонический итог: {_bom_snapshot['total']}."
+                        f"{artifact_note} Receipt: "
+                        f"{_bom_snapshot['receipt_sha256']}."
+                    )
+                unverified_document_qa_claim = (
+                    run_evidence.has_unverified_document_qa_claim(final_text)
+                )
+                if unverified_document_qa_claim:
+                    final_text = run_evidence.document_qa_backstop()
+                answer_status = (
+                    "degraded"
+                    if (
+                        download_delivery_failed
+                        or bom_validation_failed
+                        or catalog_web_failed
+                        or unverified_document_qa_claim
+                    )
+                    else "complete"
+                )
                 # Evidence remains structured in the done event for observability,
                 # but it cannot block finalization or rewrite the model's answer.
                 criteria.finalize_conditionals()
@@ -1645,6 +1823,51 @@ def _stream_code_agent_core(
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
+                _read_requested_path = ""
+                _read_recovered_from = ""
+                if name == "read_file":
+                    _read_resource_resolved = False
+                    _read_requested_path = str(parsed_args.get("path") or "").strip()
+                    _read_target = Path(_read_requested_path)
+                    if not _read_target.is_absolute():
+                        _read_target = root / _read_target
+                    try:
+                        _project_file_exists = _read_target.resolve().is_file()
+                    except OSError:
+                        _project_file_exists = False
+                    _recovered_path = recover_read_path_from_glob(
+                        root,
+                        _read_requested_path,
+                        _last_glob_matches,
+                    )
+                    if _recovered_path:
+                        _read_recovered_from = _read_requested_path
+                        parsed_args["path"] = _recovered_path
+                    elif not _project_file_exists:
+                        _requested_name = Path(_read_requested_path.replace("\\", "/")).name.casefold()
+                        _resource_matches = [
+                            ref for ref in (resource_refs or [])
+                            if Path(str(ref.get("name") or "").replace("\\", "/")).name.casefold()
+                            == _requested_name
+                            and str(ref.get("resource_id") or "").strip()
+                        ]
+                        if len(_resource_matches) == 1:
+                            _resource_ref = _resource_matches[0]
+                            _read_resource_resolved = True
+                            parsed_args["_runtime_resource_id"] = str(
+                                _resource_ref["resource_id"]
+                            )
+                            parsed_args["_runtime_resource_name"] = str(
+                                _resource_ref.get("name") or ""
+                            )
+                    if (
+                        not _recovered_path
+                        and not _read_resource_resolved
+                        and _read_file_failures.get(_read_requested_path, 0) >= 2
+                    ):
+                        parsed_args["_runtime_refuse_reason"] = (
+                            "Сначала используй glob, ResourceRef или другой подтверждённый путь."
+                        )
                 if name == "ask_user":
                     _question = str(parsed_args.get("question") or "").strip()
                     _raw_opts = parsed_args.get("options")
@@ -1893,6 +2116,38 @@ def _stream_code_agent_core(
                     # permission is inherited so bypass stays bypass end-to-end.
                     parsed_args["run_id"] = rid
                     parsed_args["permission_mode"] = permission_mode
+                if name in {"file_gen", "resource_publish"}:
+                    # Bind document-QA retry accounting to this run. The schema does
+                    # not expose run_id, so the model cannot choose or reuse it.
+                    parsed_args["run_id"] = rid
+                    if requires_bom_validation(user_message):
+                        if _bom_snapshot is None:
+                            parsed_args["_runtime_refuse_reason"] = (
+                                "Сначала вызови bom_validate и получи ok=true; затем "
+                                "создавай финальный BOM-документ."
+                            )
+                        elif name == "file_gen":
+                            parsed_args["_runtime_bom_snapshot"] = dict(_bom_snapshot)
+                        else:
+                            parsed_args["_runtime_refuse_reason"] = (
+                                "Произвольный файл нельзя связать с BOM receipt. "
+                                "Создай финальный документ через file_gen: runtime "
+                                "подставит только канонические rows/total."
+                            )
+                if document_page_count_contract is not None:
+                    is_generated_document = (
+                        name == "file_gen"
+                        and str(parsed_args.get("format") or "").strip().lower()
+                        in {"word", "docx", "pdf"}
+                    )
+                    is_published_document = (
+                        name == "resource_publish"
+                        and str(parsed_args.get("project_path") or "").strip().lower()
+                        .endswith((".docx", ".pdf"))
+                    )
+                    if is_generated_document or is_published_document:
+                        # The user contract outranks a model-supplied guess/omission.
+                        parsed_args["expected_page_count"] = document_page_count_contract
                 # Phase is presentation-only. Evidence is recorded only after
                 # successful executor return below, never from model intent.
                 if RunEvidence.is_verification_tool(name, arguments=parsed_args):
@@ -2275,6 +2530,64 @@ def _stream_code_agent_core(
                         pending_redirected_jobs.discard(_job_pid)
                 text_result = str(tool_meta.get("text", ""))
                 _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
+                if _tool_ok and name == "glob":
+                    _last_glob_matches = tuple(
+                        line.strip()
+                        for line in text_result.splitlines()
+                        if line.strip()
+                        and not line.startswith("ERROR:")
+                        and not line.startswith("No files match")
+                    )
+                if name == "read_file" and _read_requested_path:
+                    if _tool_ok:
+                        _read_file_failures.pop(_read_requested_path, None)
+                    elif tool_meta.get("error") != "read_retry_exhausted":
+                        _read_file_failures[_read_requested_path] = (
+                            _read_file_failures.get(_read_requested_path, 0) + 1
+                        )
+                if name == "bom_validate":
+                    _bom_snapshot = None
+                    if _tool_ok:
+                        from app.application.code_agent.tools._bom import make_bom_snapshot
+
+                        _bom_snapshot = make_bom_snapshot(tool_meta)
+                        if _bom_snapshot is None:
+                            _tool_ok = False
+                            tool_meta.update({
+                                "ok": False,
+                                "error": "invalid_bom_snapshot",
+                                "text": (
+                                    "ERROR: bom_validate returned no immutable "
+                                    "rows/total/catalog receipt."
+                                ),
+                            })
+                            text_result = str(tool_meta["text"])
+                if _read_recovered_from:
+                    _recovery_note = (
+                        "[runtime: однозначно восстановил обрезанный путь из результата "
+                        f"предыдущего glob: '{_read_recovered_from}' → "
+                        f"'{parsed_args.get('path')}']\n"
+                    )
+                    text_result = _recovery_note + text_result
+                    tool_meta["text"] = text_result
+                    tool_meta["recovered_from"] = _read_recovered_from
+                    tool_meta["recovered_path"] = str(parsed_args.get("path") or "")
+                if _tool_ok and is_local_tabular_catalog_probe(name, parsed_args):
+                    _local_tabular_catalog_probe_seen = True
+                if (
+                    _tool_ok
+                    and name == "runtime_control"
+                    and str(parsed_args.get("operation") or "").strip().lower()
+                    == "library_search"
+                    and str(parsed_args.get("query") or "").strip()
+                ):
+                    _library_search_seen = True
+                if (
+                    _tool_ok
+                    and name == "web_fetch"
+                    and _catalog_web_fallback_required
+                ):
+                    _catalog_web_fetch_seen = True
                 _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
                 _evidence_web_activated = False
                 if _failed_call:
@@ -2309,7 +2622,10 @@ def _stream_code_agent_core(
                     "type": "tool_call",
                     "step": step,
                     "tool": name,
-                    "arguments": redact_secrets(parsed_args),
+                    "arguments": redact_secrets({
+                        key: value for key, value in parsed_args.items()
+                        if not key.startswith("_runtime_")
+                    }),
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                     # Server-owned mutation flag (ToolSpec.side_effect + real
@@ -2342,7 +2658,7 @@ def _stream_code_agent_core(
                 for opt in (
                     "touched_path", "old_content", "new_content", "diff_action",
                     "exit_code", "verifier", "evidence", "download_url",
-                    "download_name", "project_path", "size", "sha256",
+                    "download_name", "project_path", "size", "sha256", "document_qa",
                     "actual_url", "local_url", "actual_port", "port", "pid",
                     "server_started", "media", "action", "kind", "status",
                     "job_id", "log_path", "recovered",
@@ -2350,6 +2666,8 @@ def _stream_code_agent_core(
                     "remote_pid", "remote_pid_pending",
                     "remote_cleanup_supported", "remote_cleanup_status",
                     "remote_process_identity_captured", "remote_cleanup_ready",
+                    "error", "recovered_from", "recovered_path",
+                    "resolved_from_resource", "resource_id", "resource_name",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
@@ -2478,6 +2796,7 @@ def stream_code_agent(
     reasoning_effort: str | None = None,
     pause_for_workflow_request: bool = False,
     workflow_approval: dict[str, Any] | None = None,
+    resource_refs: list[dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -2504,6 +2823,7 @@ def stream_code_agent(
         "thinking": selected_reasoning_effort != "none",
         "reasoning_effort": selected_reasoning_effort,
         "pause_for_workflow_request": bool(pause_for_workflow_request),
+        "resource_refs": list(resource_refs or []),
     }
     terminal = False
     answer_media = merge_answer_media(
@@ -2553,6 +2873,7 @@ def stream_code_agent(
             resume=resume,
             pause_for_workflow_request=pause_for_workflow_request,
             workflow_approval=workflow_approval,
+            resource_refs=resource_refs,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)
@@ -2676,6 +2997,7 @@ def run_code_agent(
     pause_for_workflow_request: bool = False,
     resume: bool = False,
     workflow_approval: dict[str, Any] | None = None,
+    resource_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.
@@ -2719,6 +3041,7 @@ def run_code_agent(
         pause_for_workflow_request=pause_for_workflow_request,
         resume=resume,
         workflow_approval=workflow_approval,
+        resource_refs=resource_refs,
     ):
         et = event.get("type")
         if et == "tool_call":

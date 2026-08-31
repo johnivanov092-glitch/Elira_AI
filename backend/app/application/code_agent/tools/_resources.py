@@ -9,6 +9,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.application.code_agent.document_validation import (
+    DOCUMENT_QA_ATTEMPT_LIMIT,
+    clear_document_qa_failures,
+    document_sha256,
+    document_qa_attempts,
+    normalize_expected_page_count,
+    record_document_qa_failure,
+    validate_document,
+)
+
 _ERROR_TEXT = {
     "unknown_operation": "operation must be inspect, extract_text or transcribe",
     "invalid_execution_target": "execution_target must be auto, local_gpu, local_cpu or server_gpu",
@@ -225,7 +235,7 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
 #    structured download artifact via the EXISTING /api/skills/download route. ──
 
 _PUBLISH_ERROR_TEXT = {
-    "unsupported_arguments": "resource_publish accepts only project_path and download_name",
+    "unsupported_arguments": "resource_publish accepts only project_path, download_name and expected_page_count",
     "invalid_source": "project_path must be a valid relative or absolute filesystem path",
     "source_not_file": "project_path must be an existing regular file",
     "source_outside_workspace": "project_path could not be read",
@@ -233,8 +243,35 @@ _PUBLISH_ERROR_TEXT = {
     "destination_exists": "a download with that name already exists; choose another name",
     "integrity_mismatch": "the published copy did not match the source; nothing was published",
     "resource_too_large": "the file is too large to publish",
+    "invalid_expected_page_count": "expected_page_count must be an integer from 1 to 100",
+    "document_validation_failed": "document QA failed; fix the reported issues before publishing",
+    "document_validation_unverified": "document QA could not produce a complete external verdict",
+    "document_validation_attempts_exhausted": "this artifact already failed QA twice in the current run",
+    "bom_validation_required": "a successful bom_validate call is required before publishing this BOM artifact",
     "publish_failed": "could not publish the file",
 }
+
+def _document_qa_refusal(code: str, qa: dict[str, Any]) -> dict[str, Any]:
+    refusal = _publish_refusal(code)
+    issues = qa.get("issues") if isinstance(qa.get("issues"), list) else []
+    issue_text = "; ".join(
+        f"{str(item.get('code') or 'issue')}: {str(item.get('message') or '').strip()}"
+        for item in issues
+        if isinstance(item, dict)
+    )[:1500]
+    refusal.update({
+        "document_qa": qa,
+        "sha256": str(qa.get("sha256") or ""),
+        "verifier": True,
+        "evidence": str(qa.get("status") or "unverified"),
+        "text": (
+            f"{refusal['text']} Document QA: status={qa.get('status')}; "
+            f"page_count={qa.get('page_count')}; expected_page_count={qa.get('expected_page_count')}; "
+            f"attempt={qa.get('attempt', 0)}/{DOCUMENT_QA_ATTEMPT_LIMIT}; "
+            f"issues={issue_text or 'none'}."
+        ),
+    })
+    return refusal
 
 
 def _publish_refusal(code: str) -> dict[str, Any]:
@@ -256,8 +293,15 @@ def _safe_download_name(name: str) -> str | None:
     return raw
 
 
-def tool_resource_publish(project_root: Any, project_path: str = "",
-                          download_name: str = "", **extra: Any) -> dict[str, Any]:
+def tool_resource_publish(
+    project_root: Any,
+    project_path: str = "",
+    download_name: str = "",
+    expected_page_count: int | None = None,
+    run_id: str = "",
+    _runtime_refuse_reason: str = "",
+    **extra: Any,
+) -> dict[str, Any]:
     """Publish an already-produced local file to the user as a structured
     download artifact. Args: project_path (relative to the project or absolute)
     and optional download_name (a plain safe
@@ -268,8 +312,14 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
     from app.application.media import resource_store
     from app.core.config import DATA_DIR, GENERATED_DIR
 
+    if _runtime_refuse_reason:
+        return _publish_refusal("bom_validation_required")
     if extra:
         return _publish_refusal("unsupported_arguments")
+    try:
+        expected_page_count = normalize_expected_page_count(expected_page_count)
+    except ValueError:
+        return _publish_refusal("invalid_expected_page_count")
     root = _Path(str(project_root)).resolve()
     src = _safe_dest(root, str(project_path or ""))
     if src is None:
@@ -283,6 +333,54 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
     if name is None:
         return _publish_refusal("invalid_download_name")
 
+    document_qa: dict[str, Any] | None = None
+    if src.suffix.lower() in {".docx", ".pdf"}:
+        source_sha256 = document_sha256(src)
+        previous_attempts = document_qa_attempts(
+            str(run_id or ""),
+            name,
+            expected_page_count,
+        )
+        if previous_attempts >= DOCUMENT_QA_ATTEMPT_LIMIT:
+            return _document_qa_refusal(
+                "document_validation_attempts_exhausted",
+                {
+                    "status": "failed",
+                    "sha256": source_sha256,
+                    "format": src.suffix.lower().lstrip("."),
+                    "renderer": "not_run",
+                    "page_count": None,
+                    "expected_page_count": expected_page_count,
+                    "vision_status": "not_run",
+                    "attempt": previous_attempts,
+                    "target": name,
+                    "issues": [{
+                        "code": "qa_attempts_exhausted",
+                        "message": "Документ с этим именем уже дважды не прошёл document QA в текущем запуске.",
+                    }],
+                },
+            )
+        document_qa = dict(validate_document(
+            src,
+            expected_page_count=expected_page_count,
+        ))
+        document_qa["target"] = name
+        qa_status = str(document_qa.get("status") or "unverified")
+        if qa_status != "passed":
+            attempt = record_document_qa_failure(
+                str(run_id or ""),
+                name,
+                expected_page_count,
+            )
+            document_qa["attempt"] = attempt
+            code = (
+                "document_validation_failed"
+                if qa_status == "failed"
+                else "document_validation_unverified"
+            )
+            return _document_qa_refusal(code, document_qa)
+        clear_document_qa_failures(str(run_id or ""), name)
+
     try:
         size, sha256 = resource_store.publish_copy(
             workspace_root=src.parent,
@@ -290,6 +388,11 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
             destination_root=DATA_DIR,
             dest_dir=GENERATED_DIR,
             final_name=name,
+            expected_sha256=(
+                str(document_qa.get("sha256") or "")
+                if document_qa is not None
+                else None
+            ),
         )
     except resource_store.ResourceError as exc:
         code = exc.reason if exc.reason in _PUBLISH_ERROR_TEXT else "publish_failed"
@@ -303,7 +406,7 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
         display_path = str(src)
     # download_name is set ONLY here, AFTER a verified atomic publish.  This proves
     # byte delivery, not that an arbitrary .pdf/.docx suffix contains that format.
-    return {
+    result = {
         "ok": True,
         "text": f"Published {display_path} as downloadable file {name} ({size} bytes).",
         "project_path": display_path,
@@ -312,3 +415,10 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
         "size": size,
         "sha256": sha256,
     }
+    if document_qa is not None:
+        result.update({
+            "document_qa": document_qa,
+            "verifier": True,
+            "evidence": "document_qa_passed",
+        })
+    return result

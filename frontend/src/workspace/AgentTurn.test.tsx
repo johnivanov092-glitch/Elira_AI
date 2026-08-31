@@ -103,6 +103,96 @@ describe("AgentTurn structured analysis status", () => {
     expect(html).toContain("href=\"https://evil.example/api/extra/tracker.svg\"");
   });
 
+  it("renders a download chip beside the voice action for a published artifact", () => {
+    const turn: AgentTurnData = {
+      kind: "agent",
+      id: "agent-download",
+      toolCalls: [{
+        step: 12,
+        tool: "resource_publish",
+        arguments: { project_path: "generated/report.xlsx" },
+        result: "Published report.xlsx",
+          ok: true,
+          download_url: "/api/skills/download/report.xlsx",
+          download_name: "report.xlsx",
+      }],
+      text: "Файл готов.",
+      running: false,
+    };
+
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+
+    expect(html).toContain("Озвучить");
+    expect(html).toContain("Скачать");
+    expect(html).toContain('download="report.xlsx"');
+    expect(html.indexOf("Озвучить")).toBeLessThan(html.indexOf("Скачать"));
+  });
+
+  it("shows the runtime-owned QA receipt on a validated document chip", () => {
+    const turn: AgentTurnData = {
+      kind: "agent",
+      id: "agent-validated-download",
+      toolCalls: [{
+        step: 12,
+        tool: "resource_publish",
+        arguments: { project_path: "generated/proposal.pdf" },
+        result: "Published proposal.pdf",
+        ok: true,
+        download_url: "/api/skills/download/proposal.pdf",
+        download_name: "proposal.pdf",
+        document_qa: {
+          status: "passed",
+          sha256: "abc",
+          page_count: 2,
+          expected_page_count: 2,
+          vision_status: "passed",
+        },
+      }],
+      text: "Файл готов.",
+      running: false,
+    };
+
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+
+    expect(html).toContain('data-document-qa="passed"');
+    expect(html).toContain("2 стр.");
+  });
+
+  it("renders every published artifact as its own download chip", () => {
+    const turn: AgentTurnData = {
+      kind: "agent",
+      id: "agent-downloads",
+      toolCalls: [
+        {
+          step: 12,
+          tool: "resource_publish",
+          arguments: { project_path: "generated/proposal-ddr4.docx" },
+          result: "Published proposal-ddr4.docx",
+          ok: true,
+          download_url: "/api/skills/download/proposal-ddr4.docx",
+          download_name: "proposal-ddr4.docx",
+        },
+        {
+          step: 13,
+          tool: "resource_publish",
+          arguments: { project_path: "generated/proposal-ddr5.docx" },
+          result: "Published proposal-ddr5.docx",
+          ok: true,
+          download_url: "/api/skills/download/proposal-ddr5.docx",
+          download_name: "proposal-ddr5.docx",
+        },
+      ],
+      text: "Оба файла готовы.",
+      running: false,
+    };
+
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+
+    expect(html.match(/data-download-chip=/g)).toHaveLength(2);
+    expect(html).toContain('download="proposal-ddr4.docx"');
+    expect(html).toContain('download="proposal-ddr5.docx"');
+  });
+
   it("never inserts the gallery inside a fenced code block", () => {
     const turn: AgentTurnData = {
       kind: "agent",

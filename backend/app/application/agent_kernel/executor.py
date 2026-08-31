@@ -30,6 +30,7 @@ from app.application.agent_kernel.execution_context import (
     set_execution_channel,
     set_permission_mode,
 )
+from app.application.agent_kernel.tool_result import ensure_tool_result
 
 DispatchFn = Callable[[str, dict[str, Any]], dict[str, Any]]
 
@@ -112,7 +113,7 @@ def permission_mode_auto_approves(request: ToolExecutionRequest) -> bool:
 
         spec = get_tool(request.tool_name)
         is_change = True if spec is None else bool(spec.get("side_effect", False))
-        if request.tool_name == "runtime_control" or "__" in request.tool_name:
+        if request.tool_name in {"browser", "computer", "runtime_control"} or "__" in request.tool_name:
             is_change = tool_call_is_change(request.tool_name, request.args)
         channel = (
             "remote"
@@ -237,8 +238,7 @@ def execute_tool(
 
     raw = _result_box.get("raw", {"ok": False, "text": "ERROR: tool returned no result", "error": "no_result"})
 
-    if not isinstance(raw, dict):
-        raw = {"text": str(raw)}
+    raw = ensure_tool_result(raw, source=f"tool {tool_name!r}")
 
     # Normalise: callers expect a "text" key for LLM feedback
     if "text" not in raw:
@@ -251,7 +251,7 @@ def execute_tool(
         raw = {**raw, "text": text[:max_chars] + _TRUNCATION_SUFFIX}
 
     # 6. Emit audit event
-    status = "ok" if raw.get("ok", True) else "error"
+    status = "ok" if raw["ok"] else "error"
     _emit_executed(request, raw, status)
 
     return ToolExecutionResult(
@@ -275,8 +275,8 @@ def _emit_executed(req: ToolExecutionRequest, result: dict, status: str) -> None
                 "workflow_id": req.workflow_id,
                 "step_id": req.step_id,
                 "status": status,
-                "ok": result.get("ok", True),
-                "success": result.get("ok", True),
+                "ok": result["ok"],
+                "success": result["ok"],
                 "error": result.get("error"),
             },
         )

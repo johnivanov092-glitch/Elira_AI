@@ -353,6 +353,8 @@ def test_memory_tool_schemas_distinguish_project_rag_from_user_memory() -> None:
     assert "not long-term user memory" in recall_description
     assert "memory_search" in runtime_description
     assert "memory_list" in runtime_description
+    assert "local Library catalog" in runtime_description
+    assert "negative conclusion" in runtime_description
     operations = schemas["runtime_control"]["parameters"]["properties"]["operation"]["enum"]
     assert "project_index" in operations
     assert "project_status" in operations

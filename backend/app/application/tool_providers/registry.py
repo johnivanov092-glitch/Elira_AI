@@ -24,6 +24,7 @@ import logging
 from typing import Any, Iterable
 
 from app.application.tool_providers.base import ToolDispatchResult, ToolProvider
+from app.application.agent_kernel.tool_result import ensure_tool_result
 
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,11 @@ class ToolRegistry:
         provider = self._resolve_provider(tool_name)
         if provider is None:
             return ToolDispatchResult(
-                tool_meta={"text": f"ERROR: unknown tool '{tool_name}'"},
+                tool_meta={
+                    "ok": False,
+                    "error": "unknown_tool",
+                    "text": f"ERROR: unknown tool '{tool_name}'",
+                },
                 parsed_args=args,
             )
         try:
@@ -104,9 +109,11 @@ class ToolRegistry:
                 "ToolRegistry: provider %r leaked an exception from dispatch(%r)",
                 getattr(provider, "name", "?"), tool_name,
             )
-            tool_meta = {"text": f"ERROR: {exc}"}
-        if not isinstance(tool_meta, dict):
-            tool_meta = {"text": str(tool_meta)}
+            tool_meta = {"ok": False, "error": "provider_exception", "text": f"ERROR: {exc}"}
+        tool_meta = ensure_tool_result(
+            tool_meta,
+            source=f"provider result for {tool_name!r}",
+        )
         return ToolDispatchResult(tool_meta=tool_meta, parsed_args=args)
 
     def dispatch_raw(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -117,7 +124,7 @@ class ToolRegistry:
         """
         provider = self._resolve_provider(tool_name)
         if provider is None:
-            return {"text": f"ERROR: unknown tool '{tool_name}'"}
+            return {"ok": False, "error": "unknown_tool", "text": f"ERROR: unknown tool '{tool_name}'"}
         try:
             result = provider.dispatch(tool_name, args)
         except Exception as exc:
@@ -125,8 +132,11 @@ class ToolRegistry:
                 "ToolRegistry.dispatch_raw: provider %r leaked exception for %r",
                 getattr(provider, "name", "?"), tool_name,
             )
-            result = {"text": f"ERROR: {exc}"}
-        return result if isinstance(result, dict) else {"text": str(result)}
+            result = {"ok": False, "error": "provider_exception", "text": f"ERROR: {exc}"}
+        return ensure_tool_result(
+            result,
+            source=f"provider result for {tool_name!r}",
+        )
 
     # ── Helpers ─────────────────────────────────────────────────
 

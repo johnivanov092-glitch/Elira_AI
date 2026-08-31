@@ -242,6 +242,7 @@ def build_continuation_kwargs(
         "permission_mode": str(req.get("permission_mode") or "ask"),
         "thinking": thinking,
         "reasoning_effort": reasoning_effort,
+        "resource_refs": list(req.get("resource_refs") or []),
     }
 
 
@@ -263,6 +264,7 @@ def stream_delivery_session(
     permission_mode: str = "ask",
     thinking: bool = False,
     reasoning_effort: str | None = None,
+    resource_refs: list[dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Public stream for a NEW user submission (`POST /api/code-agent/stream`)."""
     rid = run_id or uuid.uuid4().hex
@@ -289,6 +291,7 @@ def stream_delivery_session(
         "permission_mode": permission_mode,
         "thinking": thinking,
         "reasoning_effort": reasoning_effort,
+        "resource_refs": list(resource_refs or []),
     }
     shaped = _delivery_shaped(user_message, project_root)
     if not shaped:

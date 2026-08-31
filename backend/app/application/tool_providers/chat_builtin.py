@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.application.agent_kernel.tool_result import ensure_tool_result
+
 
 class ChatBuiltinToolProvider:
     """Dispatch layer for tools registered in tool_registry.db."""
@@ -39,9 +41,10 @@ class ChatBuiltinToolProvider:
 
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         from app.application.tool_registry.runtime import _execute_raw
-        result = _execute_raw(tool_name, args)
-        if not isinstance(result, dict):
-            return {"text": str(result)}
+        result = ensure_tool_result(
+            _execute_raw(tool_name, args),
+            source=f"registered tool {tool_name!r}",
+        )
         if "text" not in result:
             result = {**result, "text": json.dumps(result, ensure_ascii=False)}
         return result

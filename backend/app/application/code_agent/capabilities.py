@@ -42,7 +42,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     }),
     "data": frozenset({
         "sandbox_run", "sandbox_reset", "translator", "regex", "csv",
-        "converter", "sql", "encrypt", "archiver",
+        "bom_validate", "converter", "sql", "encrypt", "archiver",
     }),
     "memory": frozenset({"recall", "remember"}),
     "operations": frozenset({"reconcile_server_facts", "webhook"}),
@@ -125,6 +125,32 @@ _MODEL_UNCERTAINTY_RE = re.compile(
     r"информация\s+не\s+найдена|cannot\s+determine|unknown|no\s+data)\b)",
     re.IGNORECASE,
 )
+_LOCAL_TABULAR_READ_RE = re.compile(
+    r"\b(?:pd\.|pandas\.)?(?:read_excel|read_csv)\s*\(|"
+    r"\b(?:openpyxl\.)?load_workbook\s*\(",
+    re.IGNORECASE,
+)
+_LOCAL_CATALOG_ABSENCE_RE = re.compile(
+    r"(?:\b(?:прайс|каталог|таблиц)\w*\b[^\n.!?]{0,180}"
+    r"\b(?:нет|не\s+(?:наш\w*|найд\w*)|отсутств\w*)\b|"
+    r"\b(?:нет|не\s+(?:наш\w*|найд\w*)|отсутств\w*)\b"
+    r"[^\n.!?]{0,180}\b(?:прайс|каталог|таблиц)\w*\b|"
+    r"\b(?:price\s*list|catalog|spreadsheet)\b[^\n.!?]{0,180}"
+    r"\b(?:no|not\s+found|absent)\b|"
+    r"\b(?:no|not\s+found|absent)\b[^\n.!?]{0,180}"
+    r"\b(?:price\s*list|catalog|spreadsheet)\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+_BOM_SOURCE_RE = re.compile(
+    r"(?:\b(?:xlsx|xlsm|csv|price\s*list|catalog)\b|прайс\w*|каталог\w*)",
+    re.IGNORECASE,
+)
+_BOM_DELIVERABLE_RE = re.compile(
+    r"(?:\bBOM\b|спецификац\w*|коммерческ\w*\s+предлож\w*|"
+    r"(?:собер|сборк)\w*[^\n.!?]{0,100}(?:компьютер|пк)|"
+    r"(?:компьютер|пк)[^\n.!?]{0,100}(?:собер|сборк)\w*)",
+    re.IGNORECASE,
+)
 _EXTERNAL_FAILURE_TOOLS = frozenset({
     "web_fetch", "http_api", "browser", "ssh_run",
     "ssh_run_ps", "itops_mikrotik_inventory", "itops_network_inventory",
@@ -179,6 +205,8 @@ def route_request_capabilities(
         groups.add("resources")
     if _DATA_REQUEST_RE.search(text):
         groups.add("data")
+    if requires_bom_validation(text):
+        groups.add("data")
 
     evidence_reasons: list[str] = []
     if _WEB_EVIDENCE_RE.search(text):
@@ -230,6 +258,58 @@ def should_escalate_web_after_failure(
 def should_escalate_web_from_answer(answer: str) -> bool:
     """Detect an unresolved/uncertain draft before it reaches the user."""
     return bool(_MODEL_UNCERTAINTY_RE.search(str(answer or "")))
+
+
+def is_local_tabular_catalog_probe(
+    tool_name: str,
+    arguments: dict[str, object] | None = None,
+) -> bool:
+    """Detect ad-hoc reads of local tabular data through the Python sandbox.
+
+    Writing a workbook is deliberately excluded: the completion guard is only
+    relevant when the model queried local source data before claiming absence.
+    """
+    if str(tool_name or "").strip().lower() != "sandbox_run":
+        return False
+    code = str((arguments or {}).get("code") or "")
+    return bool(_LOCAL_TABULAR_READ_RE.search(code))
+
+
+def should_require_local_catalog_search(
+    answer: str,
+    *,
+    local_tabular_probe_seen: bool,
+    library_search_seen: bool,
+) -> bool:
+    """Block one unsupported local-catalog absence conclusion.
+
+    The caller owns the one-shot retry flag. Keeping that state out of this
+    predicate makes the matching rule deterministic and easy to regression-test.
+    """
+    if not local_tabular_probe_seen or library_search_seen:
+        return False
+    return bool(_LOCAL_CATALOG_ABSENCE_RE.search(str(answer or "")))
+
+
+def requires_bom_validation(user_message: str) -> bool:
+    """Whether a local-catalog request must use deterministic BOM arithmetic."""
+    text = str(user_message or "")
+    return bool(_BOM_SOURCE_RE.search(text) and _BOM_DELIVERABLE_RE.search(text))
+
+
+def should_require_web_catalog_fallback(
+    user_message: str,
+    answer: str,
+    *,
+    library_search_seen: bool,
+    external_source_seen: bool,
+) -> bool:
+    """Require Web evidence when a mandatory BOM item remains absent locally."""
+    if not requires_bom_validation(user_message):
+        return False
+    if not library_search_seen or external_source_seen:
+        return False
+    return bool(_LOCAL_CATALOG_ABSENCE_RE.search(str(answer or "")))
 
 
 def capability_groups_for_profile(profile_name: str) -> frozenset[str]:

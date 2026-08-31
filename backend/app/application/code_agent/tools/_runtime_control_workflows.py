@@ -28,7 +28,7 @@ def workflow_control(
             include_disabled=bool(config.get("include_disabled", True)),
             source=str(config.get("source") or "").strip() or None,
         )
-        return {"workflows": items, "total": total}
+        return {"ok": True, "workflows": items, "total": total}
     if operation == "workflow_upsert":
         template = config.get("template", config)
         if not isinstance(template, dict) or not template:
@@ -37,6 +37,7 @@ def workflow_control(
         if workflow_id:
             candidate["id"] = workflow_id
         return {
+            "ok": True,
             "workflow": store.upsert_workflow_template(
                 db_path=db_path,
                 template=candidate,
@@ -48,7 +49,10 @@ def workflow_control(
             "workflow_id",
             "ID Workflow",
         )
-        return store.delete_workflow_template(db_path=db_path, workflow_id=wid)
+        return {
+            "ok": True,
+            **store.delete_workflow_template(db_path=db_path, workflow_id=wid),
+        }
     if operation == "workflow_run":
         wid = require_id(
             workflow_id or str(config.get("workflow_id") or ""),
@@ -67,7 +71,7 @@ def workflow_control(
             permission_mode=permission_mode,
             db_path=db_path,
         )
-        return {"run": run}
+        return {"ok": True, "run": run}
     if operation == "workflow_runs":
         items, total = store.list_workflow_runs(
             db_path=db_path,
@@ -78,7 +82,7 @@ def workflow_control(
             limit=max(1, int(config.get("limit") or 100)),
             offset=max(0, int(config.get("offset") or 0)),
         )
-        return {"runs": items, "total": total}
+        return {"ok": True, "runs": items, "total": total}
     if operation == "workflow_resume":
         rid = require_id(
             run_id or str(config.get("run_id") or ""),
@@ -89,6 +93,7 @@ def workflow_control(
         if not isinstance(patch, dict):
             raise ValueError("config.context_patch must be an object")
         return {
+            "ok": True,
             "run": runtime.resume_workflow_run(
                 rid,
                 context_patch=patch,
@@ -101,7 +106,10 @@ def workflow_control(
             "run_id",
             "ID запуска Workflow",
         )
-        return {"run": runtime.cancel_workflow_run(rid, db_path=db_path)}
+        return {
+            "ok": True,
+            "run": runtime.cancel_workflow_run(rid, db_path=db_path),
+        }
     if operation == "workflow_trigger_list":
         enabled = config.get("enabled")
         items, total = store.list_workflow_triggers(
@@ -109,6 +117,7 @@ def workflow_control(
             enabled=bool(enabled) if isinstance(enabled, bool) else None,
         )
         return {
+            "ok": True,
             "triggers": items,
             "total": total,
             "scheduler": triggers.scheduler_status(db_path=db_path),
@@ -130,6 +139,7 @@ def workflow_control(
                 "ID Workflow",
             )
         return {
+            "ok": True,
             "trigger": store.upsert_workflow_trigger(
                 db_path=db_path,
                 trigger=candidate,
@@ -141,11 +151,14 @@ def workflow_control(
             "trigger_id",
             "ID триггера",
         )
-        return store.delete_workflow_trigger(db_path=db_path, trigger_id=tid)
+        return {
+            "ok": True,
+            **store.delete_workflow_trigger(db_path=db_path, trigger_id=tid),
+        }
     if operation == "workflow_scheduler_status":
-        return {"scheduler": triggers.scheduler_status(db_path=db_path)}
+        return {"ok": True, "scheduler": triggers.scheduler_status(db_path=db_path)}
     if operation == "workflow_scheduler_start":
-        return {"scheduler": triggers.start_scheduler()}
+        return {"ok": True, "scheduler": triggers.start_scheduler()}
     if operation == "workflow_scheduler_stop":
-        return {"scheduler": triggers.stop_scheduler()}
+        return {"ok": True, "scheduler": triggers.stop_scheduler()}
     raise ValueError(f"unsupported Workflow operation: {operation}")

@@ -18,7 +18,7 @@ def tool_sandbox_run(
     Reset with `sandbox_reset`.
     """
     if not isinstance(code, str) or not code.strip():
-        return {"text": "ERROR: code is empty"}
+        return {"ok": False, "error": "code_required", "text": "ERROR: code is empty"}
     from app.application.code_agent.sandbox import run_in_sandbox
 
     del timeout  # compatibility input; Workflow Stop owns termination
@@ -39,7 +39,12 @@ def tool_sandbox_run(
         parts.append(f"STDOUT:\n{result['stdout']}")
     if result.get("stderr"):
         parts.append(f"STDERR:\n{result['stderr']}")
-    return {"text": "\n".join(parts)}
+    ok = not result.get("error") and int(result.get("exit_code") or 0) == 0
+    return {
+        "ok": ok,
+        "error": None if ok else "sandbox_failed",
+        "text": "\n".join(parts),
+    }
 
 
 def tool_sandbox_reset(project_root: Path) -> dict[str, Any]:
@@ -49,7 +54,11 @@ def tool_sandbox_reset(project_root: Path) -> dict[str, Any]:
 
     result = reset_sandbox(project_root)
     if not result.get("ok"):
-        return {"text": f"ERROR: {result.get('error', 'reset failed')}"}
+        return {
+            "ok": False,
+            "error": "sandbox_reset_failed",
+            "text": f"ERROR: {result.get('error', 'reset failed')}",
+        }
     if not result.get("existed"):
-        return {"text": "Sandbox did not exist (nothing to reset)."}
-    return {"text": f"Sandbox reset: {result['sandbox_path']}"}
+        return {"ok": True, "text": "Sandbox did not exist (nothing to reset)."}
+    return {"ok": True, "text": f"Sandbox reset: {result['sandbox_path']}"}

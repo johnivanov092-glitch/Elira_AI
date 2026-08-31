@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.application.agent_kernel.impact_policy import BROWSER_CHANGE_ACTIONS
+
 # Phase A — JS auto-render: static (BeautifulSoup) extraction returns little/no
 # text for SPA / JS-rendered pages (currency tickers, dashboards). Below this many
 # characters web_fetch transparently retries with the headless browser and keeps
@@ -375,7 +377,7 @@ def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str,
     from app.application.web_evidence import corpus as _corpus
     from app.application.web_evidence.retrieval import web_query
     res = web_query(run_id, query, doc_id=(doc_id or None), top_k=top_k)
-    if not res.get("ok", True):
+    if res.get("ok") is not True:
         return {"text": f"ERROR: {res.get('error')}", "ok": False}
     results = res.get("results") or []
     if not results:
@@ -653,7 +655,18 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     # the actions to have happened (not a plain render). The action summary goes ONLY in the
     # human `text` field — NEVER in `evidence`, so a criterion token can't match the echoed
     # fill value instead of the real rendered DOM.
-    interacted = bool(steps) and applied >= 1
+    requested_interactions = sum(
+        1
+        for action in (steps or [])
+        if isinstance(action, dict) and BROWSER_CHANGE_ACTIONS.intersection(action)
+    )
+    invalid_steps = any(
+        not isinstance(action, dict)
+        or not ({"wait"} | BROWSER_CHANGE_ACTIONS).intersection(action)
+        for action in (steps or [])
+    )
+    actions_complete = not invalid_steps and applied == requested_interactions
+    interacted = requested_interactions > 0 and actions_complete
     act_note = ""
     if steps:
         done = "; ".join(
@@ -669,11 +682,14 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     if vp_signal:
         fit = "нет горизонтального переполнения" if vp_signal["no_hoverflow"] else "ЕСТЬ горизонтальный скролл"
         vp_note = f"[viewport {vp_signal['width']}px: {fit}]\n"
-    return {
+    result = {
         "text": f"[browser: {final_url}]\n{vp_note}{act_note}TITLE: {title}\n\n{text}",
-        "ok": True,
+        "ok": actions_complete,
         "verifier": True,
         "evidence": (f"TITLE: {title}\n{text}")[:8000],   # DOM only — no action echo
         "interacted": interacted,
         "viewport": vp_signal,   # {checked,width,no_hoverflow} or None — drives layout verdict
     }
+    if not actions_complete:
+        result["error"] = "browser_actions_incomplete"
+    return result

@@ -24,6 +24,12 @@ class AnswerPurityPromptTest(unittest.TestCase):
         t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
         self.assertIn("ФАКТЫ О РЕАЛЬНЫХ ОРГАНИЗАЦИЯХ", t)
 
+    def test_local_catalog_absence_requires_structured_search(self):
+        t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
+        self.assertIn("ЛОКАЛЬНЫЕ ПРАЙСЫ И КАТАЛОГИ", t)
+        self.assertIn("library_search", t)
+        self.assertIn("head()", t)
+
 
 if __name__ == "__main__":
     unittest.main()

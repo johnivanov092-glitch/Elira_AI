@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib
 import glob as globlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from app.application.code_agent.tools._sandbox import SandboxError, _resolve_safe
 
@@ -82,6 +82,55 @@ def _fuzzy_find(target: Path) -> Path | None:
     if best is not None and best_r >= 0.70 and (best_r - second_r) >= 0.08:
         return best
     return None
+
+
+def recover_read_path_from_glob(
+    project_root: Path,
+    requested_path: str,
+    candidates: Iterable[str],
+) -> str | None:
+    """Resolve a Qwen-truncated filename from the latest explicit glob result.
+
+    Recovery is deliberately narrower than fuzzy filesystem matching: the parent
+    directory and extension must agree, the requested stem must be a meaningful
+    prefix, and exactly one previously observed candidate may match.  This keeps
+    the runtime from silently choosing between similarly named documents.
+    """
+    requested = str(requested_path or "").strip().strip("`\"'").replace("\\", "/")
+    if not requested:
+        return None
+    try:
+        if _resolve_safe(project_root, requested).is_file():
+            return None
+    except (OSError, SandboxError, ValueError):
+        return None
+
+    requested_obj = Path(requested)
+    requested_prefix = _norm_name(requested_obj.stem)
+    if len(requested_prefix) < 4:
+        return None
+    requested_parent = requested_obj.parent.as_posix().casefold().rstrip("/")
+    requested_suffix = requested_obj.suffix.casefold()
+    matches: list[str] = []
+    for raw_candidate in candidates:
+        candidate = str(raw_candidate or "").strip().replace("\\", "/")
+        if not candidate:
+            continue
+        candidate_obj = Path(candidate)
+        if candidate_obj.parent.as_posix().casefold().rstrip("/") != requested_parent:
+            continue
+        if requested_suffix and candidate_obj.suffix.casefold() != requested_suffix:
+            continue
+        if not _norm_name(candidate_obj.stem).startswith(requested_prefix):
+            continue
+        try:
+            if not _resolve_safe(project_root, candidate).is_file():
+                continue
+        except (OSError, SandboxError, ValueError):
+            continue
+        matches.append(candidate)
+    unique_matches = list(dict.fromkeys(matches))
+    return unique_matches[0] if len(unique_matches) == 1 else None
 
 
 def _dir_hint(target: Path, cap: int = 8) -> str:
@@ -233,7 +282,36 @@ def tool_read_file(
     path: str,
     offset: int = 0,
     limit: int = 2000,
+    _runtime_refuse_reason: str = "",
+    _runtime_resource_id: str = "",
+    _runtime_resource_name: str = "",
 ) -> dict[str, Any]:
+    if _runtime_resource_id:
+        from app.application.code_agent.tools._resources import tool_resource_process
+
+        result = tool_resource_process(
+            resource_id=_runtime_resource_id,
+            operation="extract_text",
+            execution_target="auto",
+        )
+        result["resolved_from_resource"] = True
+        result["resource_name"] = _runtime_resource_name
+        if result.get("ok"):
+            result["text"] = (
+                "[runtime: имя отсутствующего project-файла однозначно сопоставлено "
+                f"с прикреплённым ResourceRef '{_runtime_resource_name}']\n"
+                + str(result.get("text") or "")
+            )
+        return result
+    if _runtime_refuse_reason:
+        return {
+            "ok": False,
+            "error": "read_retry_exhausted",
+            "text": (
+                "ERROR: read_file уже дважды завершился одинаковой ошибкой для "
+                f"'{path}'; не повторяй тот же путь. {_runtime_refuse_reason}"
+            ),
+        }
     target = _resolve_safe(project_root, path)
     resolved_note = ""
     if not target.is_file():
@@ -265,10 +343,14 @@ def tool_read_file(
             return {"ok": False, "error": "extraction_failed",
                     "text": f"ERROR: не удалось извлечь текст из {target.suffix} ({path}): {exc}"}
         if not doc_text.strip():
-            return {"text": (
-                f"[{target.suffix}: текст не извлечён — вероятно скан без текстового "
-                f"слоя (нужен OCR) или пустой файл: {path}]"
-            )}
+            return {
+                "ok": False,
+                "error": "document_text_empty",
+                "text": (
+                    f"[{target.suffix}: текст не извлечён — вероятно скан без текстового "
+                    f"слоя (нужен OCR) или пустой файл: {path}]"
+                ),
+            }
         text = _to_text_newlines(doc_text)
         lines = text.splitlines(keepends=True)
         start = max(0, int(offset))
@@ -277,7 +359,7 @@ def tool_read_file(
         numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
         suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
         header = f"[текст извлечён из {target.suffix} через file_extract: {target.name}]\n"
-        return {"text": resolved_note + header + numbered + suffix, "touched_path": path}
+        return {"ok": True, "text": resolved_note + header + numbered + suffix, "touched_path": path}
 
     if _looks_binary(raw):
         if target.suffix.lower() in _IMAGE_EXTS:
@@ -289,13 +371,20 @@ def tool_read_file(
             except Exception as exc:
                 _ocr = f"ERROR: OCR failed: {exc}"
             if _ocr and not _ocr.startswith("ERROR"):
-                return {"text": resolved_note + f"[текст с изображения через OCR: {target.name}]\n{_ocr}", "touched_path": path}
+                return {"ok": True, "text": resolved_note + f"[текст с изображения через OCR: {target.name}]\n{_ocr}", "touched_path": path}
             if _ocr.startswith("ERROR"):
-                return {"text": resolved_note + f"[{target.name}: {_ocr}. Для описания картинки вызови `read_image`.]"}
-            return {"text": resolved_note + (
-                f"[{target.suffix} {target.name}: OCR не нашёл текста (похоже, обычное "
-                f"фото, а не скан документа). Для описания изображения вызови `read_image`.]"
-            )}
+                return {
+                    "ok": False,
+                    "error": "ocr_failed",
+                    "text": resolved_note + f"[{target.name}: {_ocr}. Для описания картинки вызови `read_image`.]",
+                }
+            return {
+                "ok": True,
+                "text": resolved_note + (
+                    f"[{target.suffix} {target.name}: OCR не нашёл текста (похоже, обычное "
+                    f"фото, а не скан документа). Для описания изображения вызови `read_image`.]"
+                ),
+            }
         return {"ok": False, "error": "binary_file",
                 "text": f"ERROR: binary file (not text): {path}"}
 
@@ -320,6 +409,7 @@ def tool_read_file(
     numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
     suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
     return {
+        "ok": True,
         "text": resolved_note + numbered + suffix,
         "touched_path": path,
     }
@@ -393,6 +483,7 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
         }
     action = "Overwrote" if existed else "Created"
     return {
+        "ok": True,
         "text": f"{action} {path} ({len(content)} chars)",
         "touched_path": path,
         "old_content": old_content,
@@ -468,6 +559,7 @@ def tool_edit_file(
         return {"ok": False, "error": "write_failed",
                 "text": f"ERROR: failed to write {path}: {exc}"}
     return {
+        "ok": True,
         "text": f"Edited {path} (1 replacement)",
         "touched_path": path,
         "old_content": current,
@@ -481,7 +573,7 @@ def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
     root = project_root.resolve()
     normalized = str(pattern or "").strip()
     if not normalized:
-        return {"text": "ERROR: glob pattern is empty"}
+        return {"ok": False, "error": "pattern_required", "text": "ERROR: glob pattern is empty"}
     pattern_path = Path(normalized).expanduser()
     absolute_pattern = pattern_path.is_absolute()
     matches: list[str] = []
@@ -498,8 +590,8 @@ def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
             continue
     matches.sort()
     if not matches:
-        return {"text": f"No files match '{pattern}'"}
-    return {"text": "\n".join(matches[:200])}
+        return {"ok": True, "text": f"No files match '{pattern}'"}
+    return {"ok": True, "text": "\n".join(matches[:200])}
 
 
 def tool_path_exists(project_root: Path, *, path: str) -> dict[str, Any]:

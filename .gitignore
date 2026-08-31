@@ -194,6 +194,7 @@ backend/.env.local
 /Task_Agent.txt
 /start-claude-full.ps1
 /data/agent_workspace/
+/data/sandbox/
 /data/ssh_acl.json
 /data/*.db-shm
 /data/*.db-wal

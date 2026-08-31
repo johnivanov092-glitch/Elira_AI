@@ -313,45 +313,45 @@ class LspToolProvider:
 
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Run one LSP tool. NEVER raises — every failure path returns a
-        ``{"text": "ERROR: ..."}`` dict so the agent loop stays alive."""
+        structured result so the agent loop stays alive."""
         try:
             return self._dispatch_inner(tool_name, args)
         except LspError as exc:
-            return {"text": f"ERROR: LSP request failed: {exc}"}
+            return {"ok": False, "error": "lsp_request_failed", "text": f"ERROR: LSP request failed: {exc}"}
         except Exception as exc:  # defense-in-depth: dispatch must never escape
             logger.warning("lsp dispatch %r raised: %s", tool_name, exc, exc_info=True)
-            return {"text": f"ERROR: {exc}"}
+            return {"ok": False, "error": "lsp_exception", "text": f"ERROR: {exc}"}
 
     def _dispatch_inner(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         args = args or {}
         path = args.get("path")
         if not isinstance(path, str) or not path.strip():
-            return {"text": "ERROR: 'path' is required"}
+            return {"ok": False, "error": "path_required", "text": "ERROR: 'path' is required"}
 
         server_id, client, err = self._pick_client(args.get("language"))
         if err is not None or client is None or server_id is None:
-            return {"text": f"ERROR: {err}"}
+            return {"ok": False, "error": "lsp_server_unavailable", "text": f"ERROR: {err}"}
 
         # The language server still needs a cwd for relative paths and workspace
         # semantics. Absolute paths are allowed anywhere the current OS token can
         # read; this is not an authorization boundary.
         root_str = getattr(client, "_cwd", None)
         if not root_str:
-            return {"text": "ERROR: LSP server has no project root; restart it with a project_root"}
+            return {"ok": False, "error": "lsp_project_root_missing", "text": "ERROR: LSP server has no project root; restart it with a project_root"}
         project_root = Path(root_str)
 
         target = _resolve_safe(project_root, path)
         if not target.is_file():
-            return {"text": f"ERROR: not a file or does not exist: {path}"}
+            return {"ok": False, "error": "file_not_found", "text": f"ERROR: not a file or does not exist: {path}"}
 
         try:
             text = target.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            return {"text": f"ERROR: cannot read {path}: {exc}"}
+            return {"ok": False, "error": "read_failed", "text": f"ERROR: cannot read {path}: {exc}"}
 
         uri = _path_to_uri(str(target))
         if not uri:
-            return {"text": f"ERROR: cannot form file URI for {path}"}
+            return {"ok": False, "error": "file_uri_failed", "text": f"ERROR: cannot form file URI for {path}"}
 
         cancel_token = register_run_cancel_callback(lambda: stop_server(server_id))
         try:
@@ -370,7 +370,7 @@ class LspToolProvider:
                 return self._do_locations(
                     client, server_id, uri, args, project_root, kind="references"
                 )
-            return {"text": f"ERROR: unknown LSP tool '{tool_name}'"}
+            return {"ok": False, "error": "unknown_tool", "text": f"ERROR: unknown LSP tool '{tool_name}'"}
         finally:
             unregister_run_cancel_callback(cancel_token)
 
@@ -383,6 +383,8 @@ class LspToolProvider:
         if diags is None:
             # No push arrived within settle — likely still indexing.
             return {
+                "ok": False,
+                "error": "lsp_not_ready",
                 "text": (
                     "Language server has not produced diagnostics yet (still indexing); "
                     "retry shortly."
@@ -398,6 +400,7 @@ class LspToolProvider:
             body += f"\n[... {total - len(shown)} more diagnostics omitted]"
         body = _truncate_middle(body, _TEXT_LIMIT)
         return {
+            "ok": True,
             "text": body,
             "meta": {
                 "lsp_server": server_id,
@@ -419,7 +422,7 @@ class LspToolProvider:
         line = args.get("line")
         character = args.get("character")
         if not isinstance(line, int) or not isinstance(character, int):
-            return {"text": "ERROR: 'line' and 'character' must be integers (0-based)"}
+            return {"ok": False, "error": "position_required", "text": "ERROR: 'line' and 'character' must be integers (0-based)"}
 
         if kind == "definition":
             locs = client.definition(uri, line, character)
@@ -435,6 +438,7 @@ class LspToolProvider:
             body += f"\n[... {total - len(shown)} more results omitted]"
         body = _truncate_middle(body, _TEXT_LIMIT)
         return {
+            "ok": True,
             "text": body,
             "meta": {
                 "lsp_server": server_id,

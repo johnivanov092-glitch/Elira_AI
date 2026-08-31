@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote as url_quote
 
+from app.application.code_agent.document_validation import (
+    DOCUMENT_QA_ATTEMPT_LIMIT,
+    clear_document_qa_failures,
+    document_qa_attempts,
+    document_sha256,
+    normalize_expected_page_count,
+    record_document_qa_failure,
+    validate_document,
+)
 from app.application.code_agent.tools._sandbox import _resolve_safe
 
 
@@ -18,6 +30,53 @@ from app.application.code_agent.tools._sandbox import _resolve_safe
 # shows "no visual preview" rather than rendering raw bytes.
 
 _GENERATED_SUBDIR = "generated"
+
+
+def _discard_unverified_generated_document(path: Path) -> None:
+    """Delete only a file created inside the server-owned generated directory."""
+    try:
+        from app.core.config import GENERATED_DIR
+
+        target = path.resolve()
+        target.relative_to(GENERATED_DIR.resolve())
+        target.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        return
+
+
+def _generated_download_name(fmt: str, requested: str) -> str | None:
+    from app.application.code_agent.tools._resources import _safe_download_name
+
+    extension = {"word": ".docx", "docx": ".docx", "excel": ".xlsx", "xlsx": ".xlsx", "pdf": ".pdf"}[fmt]
+    raw = str(requested or "").strip() or f"elira_{time.time_ns()}{extension}"
+    if not raw.lower().endswith(extension):
+        raw += extension
+    return _safe_download_name(raw)
+
+
+def _document_qa_failure(code: str, qa: dict[str, Any]) -> dict[str, Any]:
+    issues = qa.get("issues")
+    issue_text = "; ".join(
+        f"{str(item.get('code') or 'issue')}: {str(item.get('message') or '').strip()}"
+        for item in issues
+        if isinstance(item, dict)
+    )[:1500] if isinstance(issues, list) else ""
+    return {
+        "ok": False,
+        "error": code,
+        "text": (
+            f"ERROR: document QA status={qa.get('status')}; "
+            f"page_count={qa.get('page_count')}; "
+            f"expected_page_count={qa.get('expected_page_count')}; "
+            f"attempt={qa.get('attempt', 0)}/{DOCUMENT_QA_ATTEMPT_LIMIT}; "
+            f"issues={issue_text or 'none'}."
+        ),
+        "download_name": str(qa.get("target") or ""),
+        "document_qa": qa,
+        "sha256": str(qa.get("sha256") or ""),
+        "verifier": True,
+        "evidence": str(qa.get("status") or "unverified"),
+    }
 
 
 def _mirror_into_project(project_root: Path, src_path: str, filename: str) -> str | None:
@@ -40,12 +99,13 @@ def _mirror_into_project(project_root: Path, src_path: str, filename: str) -> st
 
 
 def _format_runtime_result(label: str, result: dict[str, Any]) -> dict[str, Any]:
-    # An errored runtime call must report ok=False — otherwise the loop defaults a
-    # missing `ok` to True and an "ERROR: …" text is read as success (the live bug
-    # where an invalid http_api URL showed ok=True).
     if not result.get("ok"):
-        return {"text": f"ERROR: {result.get('error') or 'unknown error'}", "ok": False}
-    return {"text": f"{label}:\n{json.dumps(result, ensure_ascii=False, indent=2)}"}
+        error = str(result.get("error") or "unknown_error")
+        return {"ok": False, "error": error, "text": f"ERROR: {error}"}
+    return {
+        "ok": True,
+        "text": f"{label}:\n{json.dumps(result, ensure_ascii=False, indent=2)}",
+    }
 
 
 def tool_translator(
@@ -59,9 +119,13 @@ def tool_translator(
 
     result = translate_text(text, target_lang=target_lang, model=model)
     if not result.get("ok"):
-        return {"text": f"ERROR: translation failed: {result.get('error') or 'unknown error'}"}
+        return {
+            "ok": False,
+            "error": "translation_failed",
+            "text": f"ERROR: translation failed: {result.get('error') or 'unknown error'}",
+        }
     translated = result.get("translated") or result.get("translation") or result.get("text") or ""
-    return {"text": str(translated).strip() or json.dumps(result, ensure_ascii=False)}
+    return {"ok": True, "text": str(translated).strip() or json.dumps(result, ensure_ascii=False)}
 
 
 def tool_regex(
@@ -86,7 +150,7 @@ def tool_csv(
 
     target = _resolve_safe(project_root, file_path)
     if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {file_path}"}
+        return {"ok": False, "error": "file_not_found", "text": f"ERROR: not a file or does not exist: {file_path}"}
     return _format_runtime_result("CSV analysis", analyze_csv(str(target), query=query))
 
 
@@ -100,7 +164,7 @@ def tool_converter(
 
     target = _resolve_safe(project_root, source_path)
     if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {source_path}"}
+        return {"ok": False, "error": "file_not_found", "text": f"ERROR: not a file or does not exist: {source_path}"}
     return _format_runtime_result("Conversion result", convert_file(str(target), target_format=target_format))
 
 
@@ -152,14 +216,14 @@ def tool_sql(
         result = list_databases()
     elif mode == "describe":
         if not db_path.strip():
-            return {"text": "ERROR: db_path is required for action=describe"}
+            return {"ok": False, "error": "db_path_required", "text": "ERROR: db_path is required for action=describe"}
         result = describe_db(db_path)
     elif mode == "query":
         if not db_path.strip() or not query.strip():
-            return {"text": "ERROR: db_path and query are required for action=query"}
+            return {"ok": False, "error": "query_arguments_required", "text": "ERROR: db_path and query are required for action=query"}
         result = run_sql(db_path, query, params=params, max_rows=int(max_rows))
     else:
-        return {"text": "ERROR: action must be one of: list, describe, query"}
+        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be one of: list, describe, query"}
     return _format_runtime_result("SQL result", result)
 
 
@@ -175,14 +239,14 @@ def tool_encrypt(
     mode = (action or "").strip().lower()
     if mode == "encrypt":
         if not text:
-            return {"text": "ERROR: text is required for action=encrypt"}
+            return {"ok": False, "error": "text_required", "text": "ERROR: text is required for action=encrypt"}
         result = encrypt_text(text)
     elif mode == "decrypt":
         if not token:
-            return {"text": "ERROR: token is required for action=decrypt"}
+            return {"ok": False, "error": "token_required", "text": "ERROR: token is required for action=decrypt"}
         result = decrypt_text(token)
     else:
-        return {"text": "ERROR: action must be encrypt or decrypt"}
+        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be encrypt or decrypt"}
     return _format_runtime_result("Encryption result", result)
 
 
@@ -200,17 +264,17 @@ def tool_archiver(
     mode = (action or "").strip().lower()
     if mode == "create":
         if not source_path:
-            return {"text": "ERROR: source_path is required for action=create"}
+            return {"ok": False, "error": "source_path_required", "text": "ERROR: source_path is required for action=create"}
         source = _resolve_safe(project_root, source_path)
         result = create_zip(str(source), output_name=output_name)
     elif mode == "extract":
         if not zip_path:
-            return {"text": "ERROR: zip_path is required for action=extract"}
+            return {"ok": False, "error": "zip_path_required", "text": "ERROR: zip_path is required for action=extract"}
         archive = _resolve_safe(project_root, zip_path)
         safe_dest = str(_resolve_safe(project_root, dest)) if dest else ""
         result = extract_zip(str(archive), dest=safe_dest)
     else:
-        return {"text": "ERROR: action must be create or extract"}
+        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be create or extract"}
     return _format_runtime_result("Archive result", result)
 
 
@@ -232,7 +296,7 @@ def tool_webhook(
     elif mode == "clear":
         result = clear_webhooks()
     else:
-        return {"text": "ERROR: action must be store, list, or clear"}
+        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be store, list, or clear"}
     return _format_runtime_result("Webhook result", result)
 
 
@@ -261,26 +325,72 @@ def tool_file_gen(
     headers: list[Any] | None = None,
     data: list[Any] | None = None,
     filename: str = "",
+    expected_page_count: int | None = None,
+    run_id: str = "",
+    _runtime_refuse_reason: str = "",
+    _runtime_bom_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if _runtime_refuse_reason:
+        return {
+            "ok": False,
+            "error": "bom_validation_required",
+            "text": f"ERROR: {_runtime_refuse_reason}",
+        }
+    try:
+        expected_page_count = normalize_expected_page_count(expected_page_count)
+    except ValueError:
+        return {
+            "ok": False,
+            "error": "invalid_expected_page_count",
+            "text": "ERROR: expected_page_count must be an integer from 1 to 100.",
+        }
+
     fmt = (format or "").strip().lower()
-    if fmt in ("word", "docx"):
-        from app.application.skills import generate_word
-
-        result = generate_word(title or "", content or "", filename or "")
-    elif fmt in ("excel", "xlsx"):
-        from app.application.skills import generate_excel
-
-        result = generate_excel(title or "", data or [], headers or None, filename or "")
-    elif fmt == "pdf":
-        from app.application.skills import generate_pdf
-
-        result = generate_pdf(title or "", content or "", filename or "")
-    else:
+    if fmt not in {"word", "docx", "excel", "xlsx", "pdf"}:
         return {
             "ok": False,
             "error": "unsupported_format",
             "text": f"ERROR: unsupported format '{format}'. Use 'word', 'excel', or 'pdf'.",
         }
+    if _runtime_bom_snapshot is not None:
+        from app.application.code_agent.tools._bom import canonical_bom_file_inputs
+
+        try:
+            canonical_inputs = canonical_bom_file_inputs(
+                _runtime_bom_snapshot,
+                format=fmt,
+            )
+        except (TypeError, ValueError):
+            return {
+                "ok": False,
+                "error": "invalid_bom_snapshot",
+                "text": "ERROR: canonical BOM receipt is invalid.",
+            }
+        title = str(canonical_inputs["title"])
+        content = str(canonical_inputs["content"] or "")
+        headers = canonical_inputs["headers"]
+        data = canonical_inputs["data"]
+    fname = _generated_download_name(fmt, filename)
+    if fname is None:
+        return {
+            "ok": False,
+            "error": "invalid_download_name",
+            "text": "ERROR: filename must be a plain safe filename.",
+        }
+    extension = Path(fname).suffix.lower()
+    stage_name = f".elira-stage-{uuid.uuid4().hex}{extension}"
+    if fmt in ("word", "docx"):
+        from app.application.skills import generate_word
+
+        result = generate_word(title or "", content or "", stage_name)
+    elif fmt in ("excel", "xlsx"):
+        from app.application.skills import generate_excel
+
+        result = generate_excel(title or "", data or [], headers or None, stage_name)
+    else:
+        from app.application.skills import generate_pdf
+
+        result = generate_pdf(title or "", content or "", stage_name)
 
     if not result.get("ok"):
         return {
@@ -308,22 +418,107 @@ def tool_file_gen(
             ),
         }
 
-    fname = str(result.get("filename") or "")
-    download_url = str(result.get("download_url") or "")
-    rel = _mirror_into_project(project_root, src_path, fname)
+    document_qa: dict[str, Any] | None = None
+    if fmt in {"word", "docx", "pdf"}:
+        source_sha256 = document_sha256(_p)
+        previous_attempts = document_qa_attempts(
+            str(run_id or ""), fname, expected_page_count,
+        )
+        if previous_attempts >= DOCUMENT_QA_ATTEMPT_LIMIT:
+            _discard_unverified_generated_document(_p)
+            return _document_qa_failure("document_validation_attempts_exhausted", {
+                "status": "failed",
+                "sha256": source_sha256,
+                "format": extension.lstrip("."),
+                "renderer": "not_run",
+                "page_count": None,
+                "expected_page_count": expected_page_count,
+                "vision_status": "not_run",
+                "attempt": previous_attempts,
+                "target": fname,
+                "issues": [{
+                    "code": "qa_attempts_exhausted",
+                    "message": "Документ с этим именем уже дважды не прошёл document QA в текущем запуске.",
+                }],
+            })
+        document_qa = dict(validate_document(
+            _p,
+            expected_page_count=expected_page_count,
+        ))
+        document_qa["target"] = fname
+        qa_status = str(document_qa.get("status") or "unverified")
+        if qa_status != "passed":
+            document_qa["attempt"] = record_document_qa_failure(
+                str(run_id or ""), fname, expected_page_count,
+            )
+            _discard_unverified_generated_document(_p)
+            code = (
+                "document_validation_failed"
+                if qa_status == "failed"
+                else "document_validation_unverified"
+            )
+            return _document_qa_failure(code, document_qa)
+        clear_document_qa_failures(str(run_id or ""), fname)
+
+    from app.application.media import resource_store
+    from app.core.config import DATA_DIR, GENERATED_DIR
+
+    try:
+        size, sha256 = resource_store.publish_copy(
+            workspace_root=_p.parent,
+            source=_p,
+            destination_root=DATA_DIR,
+            dest_dir=GENERATED_DIR,
+            final_name=fname,
+            expected_sha256=(
+                str(document_qa.get("sha256") or "")
+                if document_qa is not None
+                else None
+            ),
+        )
+    except resource_store.ResourceError as exc:
+        _discard_unverified_generated_document(_p)
+        return {
+            "ok": False,
+            "error": exc.reason,
+            "text": f"ERROR: generated file could not be published: {exc.reason}.",
+        }
+    except Exception:  # noqa: BLE001 - keep filesystem details out of model output
+        _discard_unverified_generated_document(_p)
+        return {
+            "ok": False,
+            "error": "publish_failed",
+            "text": "ERROR: generated file could not be published.",
+        }
+    _discard_unverified_generated_document(_p)
+    published_path = GENERATED_DIR / fname
+    download_url = f"/api/skills/download/{url_quote(fname, safe='')}"
+    rel = _mirror_into_project(project_root, str(published_path), fname)
     summary = (
-        f"Generated {fmt} file {fname} ({result.get('size')} bytes).\n"
+        f"Generated {fmt} file {fname} ({size} bytes).\n"
         f"Download: {download_url}"
     )
     if rel:
         summary += f"\nSaved into project: {rel}"
-    out: dict[str, Any] = {"ok": True, "text": summary}
+    out: dict[str, Any] = {
+        "ok": True,
+        "text": summary,
+        "download_url": download_url,
+        "download_name": fname,
+        "size": size,
+        "sha256": sha256,
+    }
+    if _runtime_bom_snapshot is not None:
+        out["bom_receipt_sha256"] = str(
+            _runtime_bom_snapshot.get("receipt_sha256") or ""
+        )
     # Structured delivery fields — the UI renders a deterministic download artifact
     # from these (it does NOT depend on the model echoing the URL in its answer).
-    if download_url:
-        out["download_url"] = download_url
-        out["download_name"] = fname
     if rel:
         out["touched_path"] = rel
         out["diff_action"] = "create"
+    if document_qa is not None:
+        out["document_qa"] = document_qa
+        out["verifier"] = True
+        out["evidence"] = "document_qa_passed"
     return out

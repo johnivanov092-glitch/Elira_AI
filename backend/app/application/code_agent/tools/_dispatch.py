@@ -48,6 +48,7 @@ from app.application.code_agent.tools._content import (
     tool_translator,
     tool_webhook,
 )
+from app.application.code_agent.tools._bom import tool_bom_validate
 from app.application.code_agent.tools._vision import (
     tool_ocr_file,
     tool_read_image,
@@ -96,6 +97,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "translator": lambda **kw: tool_translator(project_root, **kw),
         "regex": lambda **kw: tool_regex(project_root, **kw),
         "csv": lambda **kw: tool_csv(project_root, **kw),
+        "bom_validate": lambda **kw: tool_bom_validate(project_root, **kw),
         "converter": lambda **kw: tool_converter(project_root, **kw),
         "http_api": lambda **kw: tool_http_api(project_root, **kw),
         "sql": lambda **kw: tool_sql(project_root, **kw),

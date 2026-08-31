@@ -150,7 +150,7 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             **_new_process_group_kwargs(),
         )
     except Exception as exc:
-        return {"text": f"ERROR: {exc}"}
+        return {"ok": False, "error": "process_start_failed", "text": f"ERROR: {exc}"}
 
     _register_shell_proc(run_id, proc)
     cancelled = False
@@ -186,7 +186,7 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             _kill_proc_tree(proc)
         except Exception:
             pass
-        return {"text": f"ERROR: {exc}"}
+        return {"ok": False, "error": "process_wait_failed", "text": f"ERROR: {exc}"}
     finally:
         # Let the readers finish flushing whatever the process wrote/buffered.
         t_out.join(timeout=5)
@@ -214,7 +214,11 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     out, err = _decode_console(b"".join(out_buf)), _decode_console(b"".join(err_buf))
 
     if cancelled:
-        return {"text": f"$ {cleaned_command}\nПрервано пользователем (Стоп)."}
+        return {
+            "ok": False,
+            "error": "cancelled",
+            "text": f"$ {cleaned_command}\nПрервано пользователем (Стоп).",
+        }
 
     stdout, stderr = out or "", err or ""
     parts = [f"$ {cleaned_command}", f"exit={proc.returncode}"]
@@ -224,12 +228,16 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
         parts.append(f"STDERR:\n{_truncate_middle(stderr.rstrip(), _SHELL_STDERR_LIMIT)}")
     if proc.returncode not in (0, None) and raw_ssh_hint:
         parts.append(raw_ssh_hint)
-    # exit_code travels in the meta so the UI can colour the call by SEMANTIC
-    # success (a non-zero exit reads as failure) instead of "the process ran".
-    # We keep the top-level `ok` unset (a non-zero exit isn't always a failure —
-    # grep/findstr return 1 for "no match") so the executor's approval/verify
-    # logic is unchanged; the UI decides how to render exit_code itself.
-    return {"text": "\n".join(parts), "exit_code": proc.returncode}
+    # exit_code is the shell command's explicit completion contract. Commands
+    # such as grep/findstr that use non-zero as a domain result should be handled
+    # by their dedicated tools or explicitly normalized by the command itself.
+    ok = proc.returncode == 0
+    return {
+        "ok": ok,
+        "error": None if ok else "nonzero_exit",
+        "text": "\n".join(parts),
+        "exit_code": proc.returncode,
+    }
 
 
 # ─── run_server: background process launcher ────────────────────────────────
@@ -1072,6 +1080,7 @@ def _tool_run_server_impl(
     if act == "stop_all":
         n = stop_all_servers()
         return {
+            "ok": True,
             "text": (
                 f"Stopped/cancelled {n} running background process(es); "
                 "terminal job records remain available for audit."
@@ -1280,7 +1289,7 @@ def _tool_run_server_impl(
             return result
         with _SERVERS_LOCK:
             _LIVE_SERVERS.pop(int(pid), None)
-        return {"text": f"Stopped {h.kind} pid={pid} — {h.command}"}
+        return {"ok": True, "text": f"Stopped {h.kind} pid={pid} — {h.command}"}
 
     if act != "start":
         return {

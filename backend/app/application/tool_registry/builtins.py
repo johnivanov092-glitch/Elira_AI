@@ -403,6 +403,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("translator",  "Translator",   "text",    "Translate text with the local LLM",        60, 10000, True),
         ("regex",       "Regex",        "text",    "Test a regular expression against text",   15, 20000, True),
         ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
+        ("bom_validate", "BOM Validate", "data",    "Validate catalog codes, stock, prices, VAT and totals deterministically", 60, 50000, True),
         ("converter",   "Converter",    "media",   "Convert files between supported formats",  60, 10000, True),
         ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
         ("ocr_file",    "OCR File",     "vision",  "Extract text from a scanned document/image",   120, 50000, True),
@@ -422,12 +423,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("archiver",       "Archiver",       "media",   "Create or extract ZIP archives",        60, 20000, False),
         ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
         ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
-        ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel/PDF file",        60,  5000, False),
+        ("file_gen",       "File Gen",       "media",   "Generate and validate a Word/Excel/PDF file", 120, 10000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
-        ("resource_publish", "Publish Resource", "media", "Publish an already-produced project file to the user as a downloadable artifact (streaming, integrity-verified, no overwrite) via the existing download route", 60, 5000, True),
+        ("resource_publish", "Publish Resource", "media", "Validate and publish an already-produced project file as a downloadable artifact (streaming, hash-bound, no overwrite) via the existing download route", 120, 10000, True),
         ("resource_remote_process", "Remote OCR Process", "media", "Send a file attached to this run to the trusted remote OCR worker, verify the result, and attach the recognized text as a new resource (data egress; approval required)", 900, 5000, False),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
         ("runtime_control", "Runtime Control", "system", "Manage integration runtimes through Workflow UI", 900, 50000, False),
+        ("reconcile_server_facts", "Reconcile Server Facts", "system", "Probe the live inference server, persist the observation and report configuration drift", 30, 10000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
@@ -440,7 +442,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     _legacy_scope_labels = {
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
         "path_exists": ["fs.read"],
-        "project_map": ["fs.read"], "recall": ["fs.read"],
+        "project_map": ["fs.read"], "reconcile_server_facts": ["net.outbound"],
+        "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"], "browser": ["net.outbound"],
         "web_query": ["fs.read"],   # reads the local corpus, no network
         "web_sitemap": ["net.outbound"],  # fetches sitemap.xml/robots.txt (SSRF-guarded)

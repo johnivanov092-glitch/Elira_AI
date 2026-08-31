@@ -33,11 +33,11 @@ describe("deriveArtifacts — file_gen download artifact", () => {
         },
       ]),
     ]);
-    expect(a.download).toEqual({
+    expect(a.downloads).toEqual([{
       url: "/api/skills/download/report.docx",
       name: "report.docx",
       key: "1:/api/skills/download/report.docx",
-    });
+    }]);
     expect(downloadArtifactKey(a)).toBe("1:/api/skills/download/report.docx");
   });
 
@@ -53,7 +53,7 @@ describe("deriveArtifacts — file_gen download artifact", () => {
         { tool: "file_gen", ok: true, download_url: url, download_name: "report.docx" },
       ]),
     ]);
-    expect(first.download?.url).toBe(second.download?.url); // identical URL…
+    expect(first.downloads[0]?.url).toBe(second.downloads[0]?.url); // identical URL…
     expect(downloadArtifactKey(first)).not.toBe(downloadArtifactKey(second)); // …distinct key
   });
 
@@ -68,14 +68,14 @@ describe("deriveArtifacts — file_gen download artifact", () => {
         },
       ]),
     ]);
-    expect(a.download?.name).toBe("x.xlsx");
+    expect(a.downloads[0]?.name).toBe("x.xlsx");
   });
 
   it("ignores a failed file_gen (no download artifact)", () => {
     const a = deriveArtifacts([
       agentTurn([{ tool: "file_gen", ok: false, download_url: "/api/skills/download/x.docx" }]),
     ]);
-    expect(a.download).toBeUndefined();
+    expect(a.downloads).toEqual([]);
     expect(downloadArtifactKey(a)).toBe("");
   });
 
@@ -85,7 +85,7 @@ describe("deriveArtifacts — file_gen download artifact", () => {
         { tool: "write_file", touched_path: "src/a.ts", new_content: "x", diff_action: "create" },
       ]),
     ]);
-    expect(a.download).toBeUndefined();
+    expect(a.downloads).toEqual([]);
     expect(a.file?.path).toBe("src/a.ts");
   });
 });
@@ -102,18 +102,18 @@ describe("deriveArtifacts — resource_publish download artifact (R4B)", () => {
         },
       ]),
     ]);
-    expect(a.download).toEqual({
+    expect(a.downloads).toEqual([{
       url: "/api/skills/download/clip.mp3",
       name: "clip.mp3",
       key: "1:/api/skills/download/clip.mp3",
-    });
+    }]);
   });
 
   it("ignores a failed resource_publish (no download card)", () => {
     const a = deriveArtifacts([
       agentTurn([{ tool: "resource_publish", ok: false, download_url: "/api/skills/download/x.mp3" }]),
     ]);
-    expect(a.download).toBeUndefined();
+    expect(a.downloads).toEqual([]);
   });
 
   it("gives the SAME published url from two tool-calls distinct artifact keys", () => {
@@ -127,8 +127,78 @@ describe("deriveArtifacts — resource_publish download artifact (R4B)", () => {
         { tool: "resource_publish", ok: true, download_url: url, download_name: "clip.mp3" },
       ]),
     ]);
-    expect(first.download?.url).toBe(second.download?.url);
+    expect(first.downloads[0]?.url).toBe(second.downloads[0]?.url);
     expect(downloadArtifactKey(first)).not.toBe(downloadArtifactKey(second));
+  });
+
+  it("keeps every distinct published file in production order", () => {
+    const a = deriveArtifacts([
+      agentTurn([
+        {
+          tool: "resource_publish",
+          ok: true,
+          download_url: "/api/skills/download/proposal-ddr4.docx",
+          download_name: "proposal-ddr4.docx",
+        },
+        {
+          tool: "resource_publish",
+          ok: true,
+          download_url: "/api/skills/download/proposal-ddr5.docx",
+          download_name: "proposal-ddr5.docx",
+        },
+      ]),
+    ]);
+
+    expect(a.downloads.map((item) => item.name)).toEqual([
+      "proposal-ddr4.docx",
+      "proposal-ddr5.docx",
+    ]);
+    expect(downloadArtifactKey(a)).toBe("2:/api/skills/download/proposal-ddr5.docx");
+  });
+
+  it("carries the server-owned document QA receipt into the download artifact", () => {
+    const a = deriveArtifacts([
+      agentTurn([{
+        tool: "resource_publish",
+        ok: true,
+        download_url: "/api/skills/download/proposal.pdf",
+        download_name: "proposal.pdf",
+        document_qa: {
+          status: "passed",
+          sha256: "abc",
+          page_count: 1,
+          vision_status: "passed",
+        },
+      }]),
+    ]);
+
+    expect(a.downloads[0]?.documentQa).toMatchObject({
+      status: "passed",
+      page_count: 1,
+      sha256: "abc",
+    });
+  });
+
+  it("keeps repeated successful publications with the same visible filename", () => {
+    const a = deriveArtifacts([
+      agentTurn([
+        {
+          tool: "resource_publish",
+          ok: true,
+          download_url: "/api/skills/download/report.pdf?v=1",
+          download_name: "report.pdf",
+        },
+        {
+          tool: "resource_publish",
+          ok: true,
+          download_url: "/api/skills/download/report.pdf?v=2",
+          download_name: "report.pdf",
+        },
+      ]),
+    ]);
+
+    expect(a.downloads).toHaveLength(2);
+    expect(a.downloads[0]?.key).not.toBe(a.downloads[1]?.key);
   });
 });
 

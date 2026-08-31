@@ -135,7 +135,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "status use project_index/project_status. Also manages: portable vault "
                     "status/backup/restore/lock, MCP and LSP config/lifecycle, Telegram "
                     "config/lifecycle/users, plugins, IT Ops assets/profiles, Workflow "
-                    "templates/runs/triggers, memory, and library. Every call returns a "
+                    "templates/runs/triggers, memory, and library. For a local Library catalog, "
+                    "use library_search with separate category/function/brand/model tokens before "
+                    "a negative conclusion; exact filters or truncated samples do not prove "
+                    "absence. Every call returns a "
                     "structured completed/failed/needs_* result. Secret values are never "
                     "arguments; use only an opaque secret_ref created by a needs_secret card."
                 ),
@@ -420,7 +423,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "ffmpeg / python / file_gen). Takes project_path (a RELATIVE path to an "
                     "existing file in the project workspace, NOT absolute) and an optional "
                     "download_name (a plain filename, no directories; default = the source's "
-                    "safe basename). It copies the file to the download area and returns a "
+                    "safe basename). For PDF/DOCX the runtime performs external document QA "
+                    "before publication. If the task promises an exact page count, pass the "
+                    "optional expected_page_count; omit it otherwise. It copies the file to the download area and returns a "
                     "download_url — it never overwrites an existing download of the same name."
                 ),
                 "parameters": {
@@ -429,6 +434,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "project_path": {"type": "string", "description": "Relative path to an existing file in the project workspace to deliver (never absolute, no '..')."},
                         "download_name": {"type": "string", "description": "Optional plain filename for the download (no path, no directories). Default: the source's safe basename."},
+                        "expected_page_count": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Optional exact page-count contract for PDF/DOCX. Use only when the user/task explicitly requires it."},
                     },
                     "required": ["project_path"],
                 },
@@ -855,6 +861,68 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "bom_validate",
+                "description": (
+                    "Детерминированно проверить спецификацию/BOM по локальному XLSX/CSV: "
+                    "точные коды, наименования, цены, числовой остаток, количество, наценку, "
+                    "НДС и итог. Используй результат rows/total как единственный источник "
+                    "цифр для КП; при ok=false исправь подбор и вызови снова. Модель не должна "
+                    "сама пересчитывать суммы. Service items не ищутся в каталоге и не получают "
+                    "наценку. prices_include_vat=true означает, что входные цены уже содержат НДС."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "catalog_path": {"type": "string", "description": "Project-relative or absolute path to a local .xlsx, .xlsm or .csv price list."},
+                        "sheet_name": {"type": "string", "description": "Optional XLSX sheet name; default is the active sheet."},
+                        "header_row": {"type": "integer", "minimum": 1, "description": "One-based header row; default 1."},
+                        "code_column": {"type": "string", "description": "Exact header containing product/article codes."},
+                        "name_column": {"type": "string", "description": "Exact header containing product names."},
+                        "price_column": {"type": "string", "description": "Exact header containing numeric unit prices."},
+                        "stock_column": {"type": "string", "description": "Exact header containing numeric available quantities."},
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "code": {"type": "string"},
+                                    "quantity": {"type": "integer", "minimum": 1},
+                                },
+                                "required": ["code", "quantity"],
+                            },
+                        },
+                        "service_items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "code": {"type": "string"},
+                                    "name": {"type": "string"},
+                                    "quantity": {"type": "integer", "minimum": 1},
+                                    "unit_price": {"type": "number", "minimum": 0},
+                                },
+                                "required": ["code", "name", "quantity", "unit_price"],
+                            },
+                        },
+                        "markup_percent": {"type": "number", "minimum": 0, "description": "Markup applied only to catalog unit prices; default 0."},
+                        "vat_rate": {"type": "number", "minimum": 0, "maximum": 100, "description": "VAT percent; default 12."},
+                        "prices_include_vat": {"type": "boolean", "description": "True when catalog and service prices already include VAT; default true."},
+                        "expected_total": {"type": "number", "minimum": 0, "description": "Optional total from the generated document; mismatch makes ok=false."},
+                    },
+                    "required": [
+                        "catalog_path", "code_column", "name_column", "price_column",
+                        "stock_column", "items",
+                    ],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "converter",
                 "description": "Convert a local file using built-in converters: CSV to XLSX, JSON to CSV, MD to DOCX, XLSX to CSV.",
                 "parameters": {
@@ -979,10 +1047,12 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "Generate a Word (.docx), Excel (.xlsx), or PDF (.pdf) document. "
                     "Returns a download URL and saves the file into the project's "
                     "generated/ folder. For Word, pass `content` as plain text; lines "
-                    "starting with '## '/'### ' become headings, '- '/'* ' bullets, "
+                     "starting with '## '/'### ' become headings, '- '/'* ' bullets, "
                     "'N. ' numbered list items. For PDF, pass `content` as plain text "
                     "(rendered verbatim, line breaks preserved). For Excel, pass "
-                    "`headers` (column names) and `data` (a list of row arrays)."
+                    "`headers` (column names) and `data` (a list of row arrays). "
+                    "PDF/DOCX are rendered and externally inspected before a download URL is returned. "
+                    "Pass expected_page_count only when the task explicitly requires an exact count."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1001,6 +1071,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "description": "Excel rows, each a list of cell values. Used when format=excel.",
                         },
                         "filename": {"type": "string", "description": "Optional output filename (extension appended if missing)."},
+                        "expected_page_count": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Optional exact page-count contract for PDF/DOCX."},
                     },
                     "required": ["format"],
                 },

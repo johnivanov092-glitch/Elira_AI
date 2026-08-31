@@ -78,15 +78,34 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
         return_value={"ok": True, "filename": "shot.png", "view_url": "/view"},
     ):
         checks.append(("screenshot", provider.dispatch("screenshot", {"url": "https://example.com"})))
-    with patch(
-        "app.application.skills.generate_word",
-        return_value={
-            "ok": True,
-            "filename": "fake.docx",
-            "path": str(tmp_path / "fake.docx"),
-            "size": 4,
-            "download_url": "/download",
-        },
+    with (
+        patch(
+            "app.application.skills.generate_word",
+            return_value={
+                "ok": True,
+                "filename": "fake.docx",
+                "path": str(tmp_path / "fake.docx"),
+                "size": 4,
+                "download_url": "/download",
+            },
+        ),
+        patch(
+            "app.application.code_agent.tools._content.validate_document",
+            return_value={
+                "status": "passed",
+                "sha256": "a" * 64,
+                "format": "docx",
+                "renderer": "test",
+                "page_count": 1,
+                "expected_page_count": None,
+                "vision_status": "passed",
+                "issues": [],
+            },
+        ),
+        patch(
+            "app.application.media.resource_store.publish_copy",
+            return_value=(4, "a" * 64),
+        ),
     ):
         checks.append(("file_gen", provider.dispatch("file_gen", {"format": "word", "content": "hello"})))
 

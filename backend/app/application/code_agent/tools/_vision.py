@@ -105,4 +105,4 @@ def tool_ocr_file(
     text = ocr_document(target.name, contents, language=(language or None))
     if not text:
         return {"text": f"ERROR: OCR found no text in {path} (service unreachable or no recognizable text).", "ok": False}
-    return {"text": f"OCR text from {path}:\n{text}"}
+    return {"ok": True, "text": f"OCR text from {path}:\n{text}"}

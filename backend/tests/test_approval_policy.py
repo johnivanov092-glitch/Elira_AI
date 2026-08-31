@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from app.application.agent_kernel.impact_policy import (
     ASK,
     AUTO,
@@ -50,3 +52,43 @@ def test_high_impact_shell_detection_only_classifies_workflow_impact() -> None:
     assert shell_command_is_high_impact("Remove-Item -Recurse C:\\temp\\cache")
     assert not shell_command_is_high_impact("npm run build")
     assert evidence_for_tool_call("run_bash", {"command": "npm run build"}).impact == "material"
+
+
+def _local_ask_request(tool_name: str, args: dict) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        run_id="run",
+        agent_id="code-agent",
+        project_scope_id="",
+        tool_name=tool_name,
+        args=args,
+        source="workflow",
+        permission_mode="ask",
+    )
+
+
+def test_browser_permission_is_classified_from_actions() -> None:
+    passive = _local_ask_request("browser", {"url": "https://example.com"})
+    interactive = _local_ask_request(
+        "browser",
+        {
+            "url": "https://example.com",
+            "actions": [{"fill": "Email", "value": "user@example.com"}],
+        },
+    )
+    with patch(
+        "app.application.tool_registry.runtime.get_tool",
+        return_value={"side_effect": False},
+    ):
+        assert permission_mode_auto_approves(passive) is True
+        assert permission_mode_auto_approves(interactive) is False
+
+
+def test_computer_permission_is_classified_from_action() -> None:
+    screenshot = _local_ask_request("computer", {"action": "screenshot"})
+    click = _local_ask_request("computer", {"action": "left_click", "x": 10, "y": 20})
+    with patch(
+        "app.application.tool_registry.runtime.get_tool",
+        return_value={"side_effect": True},
+    ):
+        assert permission_mode_auto_approves(screenshot) is True
+        assert permission_mode_auto_approves(click) is False

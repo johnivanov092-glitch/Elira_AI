@@ -32,6 +32,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from app.application.agent_kernel.tool_result import ensure_tool_result
 from app.application.tool_providers.ssh_acl import (
     get_allowed_hosts,
     is_ssh_enabled,
@@ -617,16 +618,17 @@ def tool_ssh_write(*, host: str, path: str, content: str, append: bool = False) 
     only the destination path is shell-quoted."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"ok": False, "error": "invalid_host", "text": f"ERROR: {err}"}
     if not isinstance(path, str) or not path.strip():
-        return {"text": "ERROR: path is empty"}
+        return {"ok": False, "error": "path_required", "text": "ERROR: path is empty"}
     if not isinstance(content, str):
-        return {"text": "ERROR: content must be a string"}
+        return {"ok": False, "error": "invalid_content", "text": "ERROR: content must be a string"}
     werr = _write_remote_bytes(host, path, content.encode("utf-8"), append=append)
     if werr is not None:
-        return {"text": f"ERROR: {werr}"}
+        return {"ok": False, "error": "write_failed", "text": f"ERROR: {werr}"}
     verb = "Appended to" if append else "Wrote"
     return {
+        "ok": True,
         "text": f"{verb} ssh:{host}:{path} ({len(content)} chars)",
         "touched_host": host,
         "touched_path": path,
@@ -641,31 +643,33 @@ def tool_ssh_replace(*, host: str, path: str, old: str, new: str) -> dict[str, A
     changed, so a no-op (pattern absent) reads as no-progress, not success."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"ok": False, "error": "invalid_host", "text": f"ERROR: {err}"}
     if not isinstance(path, str) or not path.strip():
-        return {"text": "ERROR: path is empty"}
+        return {"ok": False, "error": "path_required", "text": "ERROR: path is empty"}
     if not isinstance(old, str) or old == "":
-        return {"text": "ERROR: `old` must be a non-empty string"}
+        return {"ok": False, "error": "old_required", "text": "ERROR: `old` must be a non-empty string"}
     if not isinstance(new, str):
-        return {"text": "ERROR: `new` must be a string"}
+        return {"ok": False, "error": "invalid_new", "text": "ERROR: `new` must be a string"}
 
     raw, rerr = _read_remote_bytes(host, path, None)
     if rerr is not None:
-        return {"text": f"ERROR: {rerr}"}
+        return {"ok": False, "error": "read_failed", "text": f"ERROR: {rerr}"}
     # surrogateescape round-trips arbitrary bytes losslessly, so untouched content
     # keeps its exact encoding; only `old`→`new` is applied as UTF-8.
     text = raw.decode("utf-8", errors="surrogateescape")
     count = text.count(old)
     if count == 0:
         return {
+            "error": "old_not_found",
             "text": f"ssh_replace {host}:{path}: подстрока «{old[:60]}» НЕ найдена — файл не изменён.",
             "ok": False,
         }
     new_bytes = text.replace(old, new).encode("utf-8", errors="surrogateescape")
     werr = _write_remote_bytes(host, path, new_bytes)
     if werr is not None:
-        return {"text": f"ERROR: {werr}"}
+        return {"ok": False, "error": "write_failed", "text": f"ERROR: {werr}"}
     return {
+        "ok": True,
         "text": f"ssh_replace {host}:{path}: заменено {count}× «{old[:40]}» → «{new[:40]}».",
         "touched_host": host,
         "touched_path": path,
@@ -1404,9 +1408,12 @@ class SshToolProvider:
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         handler = _DISPATCH.get(tool_name)
         if handler is None:
-            return {"text": f"ERROR: unknown SSH tool '{tool_name}'"}
+            return {"ok": False, "error": "unknown_tool", "text": f"ERROR: unknown SSH tool '{tool_name}'"}
         try:
-            result = handler(**args)
+            result = ensure_tool_result(
+                handler(**args),
+                source=f"SSH tool {tool_name!r}",
+            )
             if (
                 self._project_root is not None
                 and (
@@ -1426,7 +1433,7 @@ class SshToolProvider:
                 )
             return result
         except TypeError as exc:
-            return {"text": f"ERROR: bad arguments to {tool_name}: {exc}"}
+            return {"ok": False, "error": "bad_arguments", "text": f"ERROR: bad arguments to {tool_name}: {exc}"}
         except Exception as exc:
             logger.exception("ssh tool %s crashed", tool_name)
-            return {"text": f"ERROR: {exc}"}
+            return {"ok": False, "error": "tool_exception", "text": f"ERROR: {exc}"}
