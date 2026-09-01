@@ -461,8 +461,7 @@ def compute_placement_request(
     """Build existing ask_user arguments when transcription placement is open."""
     if str(arguments.get("operation") or "").strip().lower() != "transcribe":
         return None
-    requested = str(arguments.get("execution_target") or "auto").strip().lower()
-    if requested != "auto" or explicit_compute_target(task_text) is not None:
+    if explicit_compute_target(task_text) is not None:
         return None
     resource_id = str(arguments.get("resource_id") or "").strip()
     if not any(

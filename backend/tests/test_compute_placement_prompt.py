@@ -182,6 +182,50 @@ def test_runtime_intercepts_implicit_auto_and_uses_existing_ask_user(tmp_path) -
     assert not any(event.get("tool") == "resource_process" for event in events)
 
 
+def test_runtime_intercepts_target_chosen_only_by_model(tmp_path) -> None:
+    record = resource_store.register_resource(
+        original_name="voice.ogg",
+        content_type="audio/ogg",
+        owner_session="placement-model-choice-test",
+        data=b"OggS fake audio",
+    )
+    available = ("local_gpu", "server_cpu")
+    try:
+        with patch.object(
+            execution,
+            "available_execution_targets",
+            return_value=available,
+        ):
+            events = list(stream_code_agent(
+                user_message="Сделай расшифровку вложения",
+                project_root=tmp_path,
+                run_id="placement-model-choice-intercept",
+                resource_refs=[resource_store.resource_ref(record)],
+                base_tools=["resource_process"],
+                chat_fn=lambda **_kwargs: _tool_call(
+                    "resource_process",
+                    {
+                        "resource_id": record.resource_id,
+                        "operation": "transcribe",
+                        "execution_target": "local_gpu",
+                    },
+                ),
+                auto_remember=False,
+                permission_mode="bypass",
+                pause_for_workflow_request=True,
+            ))
+    finally:
+        resource_store.discard(record)
+
+    request = next(event for event in events if event["type"] == "workflow_request")
+    assert request["request"]["schema"]["properties"]["answer"]["enum"] == [
+        "Автоматически (auto)",
+        "Локальный GPU (local_gpu)",
+        "Серверный CPU (server_cpu)",
+    ]
+    assert not any(event.get("tool") == "resource_process" for event in events)
+
+
 def test_explicit_automatic_placement_does_not_require_question() -> None:
     from app.application.code_agent.prompts import compute_placement_request
 
