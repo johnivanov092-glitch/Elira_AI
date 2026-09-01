@@ -1,8 +1,10 @@
 # AI Inference Server
 
-Elira offloads model inference and selected LAN services to a dedicated server.
+Elira uses a dedicated LAN host for model inference. The same physical host also
+runs independently managed LAN integrations such as SearXNG and Home Assistant;
+they do not expand the inference server's ownership into a second agent runtime.
 The Tauri UI, backend, orchestration, tools, memory, and approvals stay on the
-main PC; no service endpoint is a second agent runtime.
+main PC.
 
 This page is a self-contained summary for working inside the `Elira_AI` repo.
 The authoritative operational docs (hardware, ROCm, Docker ops, model
@@ -62,7 +64,6 @@ LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
 LOCAL_EMBED_MODEL=local-embed
 LOCAL_EMBED_API_KEY=local
 LOCAL_EMBED_TIMEOUT_SECONDS=30
-LOCAL_EMBED_DIM=1024
 
 OCR_URL=http://192.168.88.15:8002/ocr
 SEARXNG_URL=http://192.168.88.15:8003

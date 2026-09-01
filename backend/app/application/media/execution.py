@@ -418,7 +418,12 @@ def adapter_capability(adapter: WorkloadAdapter) -> Capability:
 
 
 def valid_execution_target(target: str) -> bool:
-    return target in {t.value for t in ExecutionTarget}
+    return target in accepted_execution_targets()
+
+
+def accepted_execution_targets() -> tuple[str, ...]:
+    """Model/API inputs, including the temporary legacy alias."""
+    return tuple(target.value for target in ExecutionTarget)
 
 
 def normalize_execution_target(target: str) -> str:
@@ -451,6 +456,19 @@ def capability_catalog(adapters: AdapterSet | None = None) -> list[dict[str, Any
             "limitations": list(cap.limitations),
         })
     return catalog
+
+
+def available_execution_targets(
+    operation: str,
+    adapters: AdapterSet | None = None,
+) -> tuple[str, ...]:
+    """Canonical targets currently available for one operation, in route order."""
+    op = str(operation or "").strip().lower()
+    return tuple(
+        str(item["target"])
+        for item in capability_catalog(adapters)
+        if item.get("available") is True and op in set(item.get("operations") or ())
+    )
 
 
 def select(operation: str, requested_target: str,

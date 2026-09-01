@@ -20,9 +20,11 @@ class Check:
     payload: dict[str, Any] | None = None
     api_key: str = ""
     expected_embedding_dimension: int | None = None
+    require_chat_content: bool = False
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_EMBEDDING_DIMENSION = 1024
 
 
 def load_environment() -> None:
@@ -34,14 +36,6 @@ def load_environment() -> None:
     backend = ROOT / "backend"
     load_dotenv(backend / ".env", override=False)
     load_dotenv(backend / ".env.local", override=False)
-
-
-def _positive_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
 
 
 def _run(check: Check) -> dict[str, Any]:
@@ -60,7 +54,11 @@ def _run(check: Check) -> dict[str, Any]:
         data = response.json()
         if check.expected_embedding_dimension is not None:
             rows = data.get("data") if isinstance(data, dict) else None
-            vector = rows[0].get("embedding") if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None
+            vector = (
+                rows[0].get("embedding")
+                if isinstance(rows, list) and rows and isinstance(rows[0], dict)
+                else None
+            )
             actual = len(vector) if isinstance(vector, list) else 0
             if actual != check.expected_embedding_dimension:
                 return {
@@ -73,7 +71,30 @@ def _run(check: Check) -> dict[str, Any]:
                         f"{check.expected_embedding_dimension}, got {actual}"
                     ),
                 }
-        return {"service": check.service, "ok": True, "status": response.status_code, "url": check.url}
+        if check.require_chat_content:
+            choices = data.get("choices") if isinstance(data, dict) else None
+            message = (
+                choices[0].get("message")
+                if isinstance(choices, list)
+                and choices
+                and isinstance(choices[0], dict)
+                else None
+            )
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                return {
+                    "service": check.service,
+                    "ok": False,
+                    "status": response.status_code,
+                    "url": check.url,
+                    "error": "chat completion returned empty content",
+                }
+        return {
+            "service": check.service,
+            "ok": True,
+            "status": response.status_code,
+            "url": check.url,
+        }
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else 0
         return {
@@ -105,7 +126,6 @@ def build_checks(*, skip_generation: bool) -> list[Check]:
     embed_model = os.getenv("LOCAL_EMBED_MODEL", "local-embed")
     llm_key = os.getenv("LLAMA_SERVER_API_KEY", "local")
     embed_key = os.getenv("LOCAL_EMBED_API_KEY", "local")
-    embed_dim = _positive_int("LOCAL_EMBED_DIM", 1024)
 
     checks = [
         Check("main-models", "GET", f"{llm}/models", 30, api_key=llm_key),
@@ -117,7 +137,7 @@ def build_checks(*, skip_generation: bool) -> list[Check]:
             60,
             payload={"model": embed_model, "input": "Elira smoke"},
             api_key=embed_key,
-            expected_embedding_dimension=embed_dim,
+            expected_embedding_dimension=EXPECTED_EMBEDDING_DIMENSION,
         ),
         Check("ocr-health", "GET", ocr.rsplit("/", 1)[0] + "/health", 30),
         Check(
@@ -139,10 +159,11 @@ def build_checks(*, skip_generation: bool) -> list[Check]:
             payload={
                 "model": model,
                 "messages": [{"role": "user", "content": "Reply with OK."}],
-                "max_tokens": 64,
+                "max_tokens": 128,
                 "temperature": 0,
             },
             api_key=llm_key,
+            require_chat_content=True,
         ))
     return checks
 

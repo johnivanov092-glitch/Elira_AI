@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+LOCAL_EMBED_DIMENSION = 1024
 
 
 @dataclass(frozen=True)
@@ -194,7 +195,7 @@ def local_embed_config() -> LocalEmbedConfig:
         model=os.getenv("LOCAL_EMBED_MODEL", "local-embed").strip() or "local-embed",
         api_key=os.getenv("LOCAL_EMBED_API_KEY", "local").strip() or "local",
         timeout_seconds=_env_float("LOCAL_EMBED_TIMEOUT_SECONDS", 30.0),
-        dimension=_env_optional_int("LOCAL_EMBED_DIM") or 1024,
+        dimension=LOCAL_EMBED_DIMENSION,
     )
 
 

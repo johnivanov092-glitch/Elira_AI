@@ -52,8 +52,7 @@ class RegistrationTest(unittest.TestCase):
 class CapabilityDiscoveryTest(unittest.TestCase):
     def test_reports_configured_state_honestly(self):
         from app.application.code_agent.run_journal import discover_capabilities
-        with patch.dict("os.environ", {"VISION_ENABLED": "true", "OCR_ENABLED": "true"}):
-            caps = discover_capabilities(model="m", tools=["read_file"])
+        caps = discover_capabilities(model="m", tools=["read_file"])
         self.assertTrue(caps["vision"]["available"])
         self.assertTrue(caps["ocr"]["available"])
         self.assertEqual(caps["ocr"]["provider"], "server-ocr")
@@ -61,8 +60,7 @@ class CapabilityDiscoveryTest(unittest.TestCase):
 
     def test_vision_and_ocr_are_not_feature_gated(self):
         from app.application.code_agent.run_journal import discover_capabilities
-        with patch.dict("os.environ", {"VISION_ENABLED": "false", "OCR_ENABLED": "false"}), \
-             patch("shutil.which", return_value=None), \
+        with patch("shutil.which", return_value=None), \
              patch("app.application.pdf.runtime._TESSERACT_CANDIDATES", []):
             caps = discover_capabilities(model="m", tools=["read_file"])
         self.assertTrue(caps["vision"]["available"])
@@ -75,27 +73,23 @@ class ErrorPathTest(unittest.TestCase):
     """A service error must be ok=False + a clear ERROR text — the loop treats a
     missing `ok` as True, so an un-gated ERROR result read as success in events."""
 
-    def test_disabled_vision_is_ok_false(self):
-        with patch.dict("os.environ", {"VISION_ENABLED": "false"}):
-            out = _vision.tool_read_image(Path("."), path="x.png")
+    def test_missing_vision_file_is_ok_false(self):
+        out = _vision.tool_read_image(Path("."), path="x.png")
         self.assertFalse(out["ok"])
         self.assertIn("ERROR", out["text"])
 
-    def test_disabled_ocr_is_ok_false(self):
-        with patch.dict("os.environ", {"OCR_ENABLED": "false"}):
-            out = _vision.tool_ocr_file(Path("."), path="x.png")
+    def test_missing_ocr_file_is_ok_false(self):
+        out = _vision.tool_ocr_file(Path("."), path="x.png")
         self.assertFalse(out["ok"])
         self.assertIn("ERROR", out["text"])
 
     def test_missing_file_is_ok_false(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.dict("os.environ", {"VISION_ENABLED": "true", "OCR_ENABLED": "true"}):
+        with tempfile.TemporaryDirectory() as tmp:
             self.assertFalse(_vision.tool_read_image(Path(tmp), path="no.png")["ok"])
             self.assertFalse(_vision.tool_ocr_file(Path(tmp), path="no.png")["ok"])
 
     def test_unreachable_service_is_ok_false_not_false_success(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.dict("os.environ", {"VISION_ENABLED": "true", "OCR_ENABLED": "true"}):
+        with tempfile.TemporaryDirectory() as tmp:
             img = Path(tmp) / "a.png"
             img.write_bytes(b"\x89PNG\r\n\x1a\n0000")
             with patch("app.infrastructure.llm.vision_ocr.describe_image", return_value=None):

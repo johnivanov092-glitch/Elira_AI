@@ -146,6 +146,16 @@ Windows elevation is executed by the Tauri native bridge in
 `src-tauri/src/main.rs`, which opens UAC and binds the result to the Workflow
 request. The backend does not require permanent administrator rights.
 
+Compute placement is an `input` request, not permission. For attached audio or
+video transcription, the runtime reads currently available canonical targets
+from `application/media/execution.py`. If at least two placements are available
+and the user did not explicitly choose one, a model-defaulted/omitted `auto` call
+is deterministically converted into the existing `ask_user` request. The same
+workflow resumes with that answer and passes the selected target to
+`resource_process`. `auto` is itself an explicit user choice and keeps the order
+`local_gpu -> server_cpu -> local_cpu`. The legacy input `server_gpu` normalizes
+to `server_cpu`; results and telemetry expose only the canonical name.
+
 ## Integration boundary
 
 Built-in schema composition is owned by

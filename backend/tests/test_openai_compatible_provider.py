@@ -545,6 +545,7 @@ class LocalEmbedProviderTest(unittest.TestCase):
             "LOCAL_EMBED_BASE_URL": "http://ai-server:8001/v1",
             "LOCAL_EMBED_MODEL": "local-embed",
             "LOCAL_EMBED_API_KEY": "local-key",
+            # Must not weaken the fixed Qwen embedding-space contract.
             "LOCAL_EMBED_DIM": "3",
         }
 
@@ -554,14 +555,14 @@ class LocalEmbedProviderTest(unittest.TestCase):
             self.assertIsNone(openai_compatible.embed_text("hi"))
 
     def test_embed_text_parses_openai_payload(self) -> None:
-        response = _Response({"data": [{"embedding": [0.1, 0.2, 0.3]}]})
+        response = _Response({"data": [{"embedding": [0.1] * 1024}]})
         with patch.dict(os.environ, self._embed_env(), clear=False), patch(
             "app.infrastructure.llm.openai_compatible.requests.post",
             return_value=response,
         ) as post:
             vec = openai_compatible.embed_text("привет")
 
-        self.assertEqual(vec, [0.1, 0.2, 0.3])
+        self.assertEqual(vec, [0.1] * 1024)
         self.assertEqual(post.call_args.kwargs["json"]["model"], "local-embed")
         self.assertEqual(post.call_args.kwargs["json"]["input"], "привет")
 
@@ -583,7 +584,11 @@ class LocalEmbedProviderTest(unittest.TestCase):
             vec = openai_compatible.embed_text("dimension mismatch")
 
         self.assertIsNone(vec)
-        self.assertIn("expected=3 actual=2", "\n".join(logs.output))
+        self.assertIn("expected=1024 actual=2", "\n".join(logs.output))
+
+    def test_embedding_dimension_is_fixed_not_env_overridable(self) -> None:
+        with patch.dict(os.environ, {"LOCAL_EMBED_DIM": "3"}, clear=False):
+            self.assertEqual(openai_compatible.local_embed_config().dimension, 1024)
 
     def test_rag_get_embedding_uses_endpoint_no_legacy_fallback(self) -> None:
         """When the endpoint is enabled, get_embedding must use it and must NOT

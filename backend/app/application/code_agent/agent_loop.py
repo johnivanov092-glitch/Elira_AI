@@ -109,6 +109,8 @@ from app.application.code_agent.prompts import (  # noqa: F401
     _CODE_AGENT_BASE_TOOLS,
     _build_base_system_prompt,
     _build_system_prompt,
+    compute_placement_request,
+    explicit_compute_target,
 )
 from app.application.persona.service import mode_temperature
 from app.core.redaction import redact_secrets
@@ -1869,6 +1871,31 @@ def _stream_code_agent_core(
                         parsed_args["_runtime_refuse_reason"] = (
                             "Сначала используй glob, ResourceRef или другой подтверждённый путь."
                         )
+                if name == "resource_process":
+                    _explicit_target = explicit_compute_target(user_message)
+                    if (
+                        str(parsed_args.get("operation") or "").strip().lower()
+                        == "transcribe"
+                        and str(parsed_args.get("execution_target") or "auto").strip().lower()
+                        == "auto"
+                        and _explicit_target is not None
+                    ):
+                        # User/workflow choice outranks an omitted/model-defaulted
+                        # auto target and is passed through the canonical tool.
+                        parsed_args["execution_target"] = _explicit_target
+                    _placement_request = compute_placement_request(
+                        task_text=user_message,
+                        arguments=parsed_args,
+                        resource_refs=resource_refs,
+                    )
+                    if _placement_request is not None:
+                        # Reuse the existing ask_user state machine exactly. The
+                        # assistant message shares this call object, so keep its
+                        # function name/arguments consistent for the continuation.
+                        name = "ask_user"
+                        parsed_args = _placement_request
+                        fn["name"] = name
+                        fn["arguments"] = dict(parsed_args)
                 if name == "ask_user":
                     _question = str(parsed_args.get("question") or "").strip()
                     _raw_opts = parsed_args.get("options")

@@ -21,7 +21,10 @@ from app.application.code_agent.document_validation import (
 
 _ERROR_TEXT = {
     "unknown_operation": "operation must be inspect, extract_text or transcribe",
-    "invalid_execution_target": "execution_target must be auto, local_gpu, local_cpu or server_cpu",
+    "invalid_execution_target": (
+        "execution_target must be auto, local_gpu, local_cpu or server_cpu "
+        "(legacy server_gpu is also accepted)"
+    ),
     "unsupported_arguments": "resource_process accepts only resource_id, operation and execution_target",
     "resource_not_found": "resource not found",
 }

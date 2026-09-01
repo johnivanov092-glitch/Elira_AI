@@ -7,6 +7,7 @@ Re-exported from agent_loop for backward compatibility.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -389,26 +390,9 @@ def _compute_placement_prompt(
         return ""
     if not any(str(ref.get("kind") or "") in {"audio", "video"} for ref in resource_refs or ()):
         return ""
-    try:
-        from app.application.media.execution import capability_catalog
-
-        available = [
-            str(item.get("target") or "")
-            for item in capability_catalog()
-            if item.get("available") is True
-            and "transcribe" in set(item.get("operations") or ("transcribe",))
-        ]
-    except Exception:
+    choices = _compute_placement_choices()
+    if len(choices) < 3:  # auto plus at least two real placements
         return ""
-    available = list(dict.fromkeys(target for target in available if target))
-    if len(available) < 2:
-        return ""
-    labels = {
-        "local_gpu": "Локальный GPU (local_gpu)",
-        "server_cpu": "Серверный CPU (server_cpu)",
-        "local_cpu": "Локальный CPU (local_cpu)",
-    }
-    choices = ["Автоматически (auto)"] + [labels[target] for target in available if target in labels]
     return (
         "[COMPUTE PLACEMENT]\n"
         "Для транскрибации доступны несколько мест выполнения. Это размещение работы, "
@@ -421,3 +405,73 @@ def _compute_placement_prompt(
         "явно указано, не задавай повторный вопрос. Доступные варианты сейчас:\n- "
         + "\n- ".join(choices)
     )
+
+
+_PLACEMENT_LABELS = {
+    "local_gpu": "Локальный GPU (local_gpu)",
+    "server_cpu": "Серверный CPU (server_cpu)",
+    "local_cpu": "Локальный CPU (local_cpu)",
+}
+
+
+def _compute_placement_choices() -> list[str]:
+    try:
+        from app.application.media.execution import available_execution_targets
+
+        available = available_execution_targets("transcribe")
+    except Exception:
+        return []
+    return ["Автоматически (auto)"] + [
+        _PLACEMENT_LABELS[target]
+        for target in available
+        if target in _PLACEMENT_LABELS
+    ]
+
+
+def explicit_compute_target(task_text: str) -> str | None:
+    """Return one unambiguous placement explicitly selected by the user."""
+    text = str(task_text or "").casefold()
+    matches: set[str] = set()
+    patterns = {
+        "local_gpu": (
+            r"\blocal_gpu\b|локальн\w*\s+(?:gpu|гпу|видеокарт\w*)|"
+            r"(?:gpu|гпу|видеокарт\w*)\s+на\s+(?:этой|локальн\w*)",
+        ),
+        "server_cpu": (
+            r"\bserver_(?:cpu|gpu)\b|на\s+сервер\w*|серверн\w*\s+cpu",
+        ),
+        "local_cpu": (r"\blocal_cpu\b|локальн\w*\s+cpu",),
+        "auto": (
+            r"\bauto\b|автоматическ\w*|как\s+лучше|оптимальн\w*|"
+            r"выбер\w*\s+(?:сам|сама)",
+        ),
+    }
+    for target, target_patterns in patterns.items():
+        if any(re.search(pattern, text, re.IGNORECASE) for pattern in target_patterns):
+            matches.add(target)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def compute_placement_request(
+    *,
+    task_text: str,
+    arguments: dict[str, Any],
+    resource_refs: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Build existing ask_user arguments when transcription placement is open."""
+    if str(arguments.get("operation") or "").strip().lower() != "transcribe":
+        return None
+    requested = str(arguments.get("execution_target") or "auto").strip().lower()
+    if requested != "auto" or explicit_compute_target(task_text) is not None:
+        return None
+    resource_id = str(arguments.get("resource_id") or "").strip()
+    if not any(
+        str(ref.get("resource_id") or "").strip() == resource_id
+        and str(ref.get("kind") or "") in {"audio", "video"}
+        for ref in resource_refs or ()
+    ):
+        return None
+    choices = _compute_placement_choices()
+    if len(choices) < 3:
+        return None
+    return {"question": "Где выполнить расшифровку?", "options": choices}

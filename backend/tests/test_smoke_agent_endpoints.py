@@ -27,7 +27,7 @@ def test_build_checks_covers_configured_service_topology() -> None:
         "VISION_BASE_URL": "http://services:8004/v1",
         "ELIRA_TTS_URL": "http://services:8005",
         "ELIRA_STT_URL": "http://services:8006",
-        "LOCAL_EMBED_DIM": "1024",
+        "LOCAL_EMBED_DIM": "3",
     }
     with patch.dict(os.environ, env, clear=True):
         checks = smoke.build_checks(skip_generation=False)
@@ -72,3 +72,27 @@ def test_embedding_smoke_fails_closed_on_dimension_mismatch() -> None:
 
     assert result["ok"] is False
     assert result["error"] == "embedding dimension mismatch: expected 3, got 2"
+
+
+def test_chat_smoke_fails_closed_on_empty_content() -> None:
+    check = smoke.Check(
+        "main-chat",
+        "POST",
+        "http://services:8000/v1/chat/completions",
+        30,
+        require_chat_content=True,
+    )
+    response = type(
+        "Response",
+        (),
+        {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": ""}}]},
+        },
+    )()
+    with patch.object(smoke.requests, "request", return_value=response):
+        result = smoke._run(check)
+
+    assert result["ok"] is False
+    assert result["error"] == "chat completion returned empty content"

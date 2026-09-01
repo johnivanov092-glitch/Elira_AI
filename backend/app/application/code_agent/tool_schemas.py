@@ -12,6 +12,7 @@ from app.application.code_agent.capabilities import (
     CAPABILITY_GROUPS,
     capability_catalog_text,
 )
+from app.application.media.execution import accepted_execution_targets
 
 
 # Web-corpus schema additions are always available; runtime availability is the
@@ -353,7 +354,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
-                        "execution_target": {"type": "string", "enum": ["auto", "local_gpu", "local_cpu", "server_cpu", "server_gpu"], "description": "Where to run compute. server_gpu is a deprecated alias for server_cpu. When multiple targets are available, do not default to auto unless the user selected automatic placement; ask via ask_user."},
+                        "execution_target": {"type": "string", "enum": list(accepted_execution_targets()), "description": "Where to run compute. server_gpu is a deprecated alias for server_cpu. When multiple targets are available, do not default to auto unless the user selected automatic placement; ask via ask_user."},
                     },
                     "required": ["resource_id", "operation"],
                 },
