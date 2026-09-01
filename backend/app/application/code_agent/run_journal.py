@@ -440,7 +440,7 @@ def discover_capabilities(*, model: str, tools: list[str]) -> dict[str, Any]:
     """Report configured capabilities without probing or inventing endpoints."""
     from app.application.code_agent.tool_schemas import build_tool_schemas
     from app.infrastructure.llm.openai_compatible import local_embed_config, local_llm_config
-    from app.infrastructure.llm.vision_ocr import is_ocr_enabled, is_vision_enabled, vision_config
+    from app.infrastructure.llm.vision_ocr import ocr_config, vision_config
 
     known_tools = set(tools)
     known_tools.update(
@@ -458,14 +458,14 @@ def discover_capabilities(*, model: str, tools: list[str]) -> dict[str, Any]:
             tesseract = next((path for path in _TESSERACT_CANDIDATES if Path(path).is_file()), None)
         except (ImportError, OSError):
             tesseract = None
-    # OCR is reachable via the configured server (OCR_ENABLED -> :8002 PaddleOCR)
-    # or a local tesseract fallback — report either. Vision follows VISION_ENABLED
-    # (-> :8004). Report CONFIGURED state only (no network probe — keep run-start
-    # fast and non-blocking, per this function's contract). The old code hardcoded
-    # vision=False and only checked local tesseract, so a fully-working server
-    # vision/OCR setup was falsely reported as a missing capability.
-    vision_ok = bool(is_vision_enabled())
-    ocr_server = bool(is_ocr_enabled())
+    # Explicit tools always attempt their configured server. Report CONFIGURED
+    # state only (no network probe — keep run-start fast and non-blocking); the
+    # tool result itself reports reachability failures. Local tesseract remains
+    # an OCR fallback.
+    vision = vision_config()
+    ocr = ocr_config()
+    vision_ok = bool(vision.base_url)
+    ocr_server = bool(ocr.url)
     available = {
         "llm": {"available": bool(llm.enabled), "model": model},
         "embedding": {"available": bool(embed.enabled), "model": embed.model},
@@ -473,7 +473,7 @@ def discover_capabilities(*, model: str, tools: list[str]) -> dict[str, Any]:
             "available": ocr_server or bool(tesseract),
             "provider": "server-ocr" if ocr_server else ("tesseract" if tesseract else None),
         },
-        "vision": {"available": vision_ok, "model": vision_config().model if vision_ok else None},
+        "vision": {"available": vision_ok, "model": vision.model if vision_ok else None},
         "web": {"available": "web_search" in known_tools and "web_fetch" in known_tools},
         "tools": {"available": True, "names": sorted(known_tools)},
     }

@@ -7,7 +7,7 @@ workload adapter chosen for the requested execution target (R2). Results are
 bounded; every failure is a stable machine-readable ``error`` with ``ok=False``
 (a processing error can never be silently reported as success).
 
-R2 adds ``execution_target`` (auto | local_gpu | local_cpu | server_gpu). inspect
+R2 adds ``execution_target`` (auto | local_gpu | local_cpu | server_cpu). inspect
 and extract_text run only on local_cpu; transcribe is routed by the selector in
 ``execution`` — the general compute-target framework, of which transcription is
 the first workload adapter.
@@ -34,7 +34,7 @@ _SAFE_ADAPTER_ERRORS = frozenset({
     "transcription_failed",
     "transcription_empty",
     "local_gpu_unavailable",
-    "server_gpu_unavailable",
+    "server_cpu_unavailable",
     "local_cpu_unavailable",
 })
 
@@ -140,7 +140,7 @@ def _transcribe(record: resource_store.ResourceRecord, execution_target: str,
             backend=None,
         )
     # Route to a workload adapter for the requested execution target (fallback
-    # only for auto: local_gpu → server_gpu → local_cpu).
+    # only for auto: local_gpu → server_cpu → local_cpu).
     sel = execution.select(TRANSCRIBE, execution_target, adapters)
     if sel.error is not None or sel.adapter is None:
         return _selection_error(TRANSCRIBE, record.resource_id, execution_target, sel)
@@ -224,7 +224,7 @@ def process_resource(record: resource_store.ResourceRecord, operation: str,
     on the chosen execution target. The caller MUST have verified the run binding
     first. inspect/extract_text run only on local_cpu; transcribe is routed."""
     op = str(operation or "").strip().lower()
-    target = str(execution_target or execution.ExecutionTarget.AUTO.value).strip().lower()
+    target = execution.normalize_execution_target(execution_target)
 
     if op in (INSPECT, EXTRACT_TEXT):
         sel = execution.select(op, target, adapters)

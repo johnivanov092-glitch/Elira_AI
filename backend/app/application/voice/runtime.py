@@ -1,6 +1,6 @@
 """Living Persona step D (slice 1) — TTS client for Elira's voice.
 
-Thin client over the self-hosted Piper HTTP service (CPU, LAN). The base URL is
+Thin client over the self-hosted Silero v4_ru HTTP service (CPU, LAN). The base URL is
 `ELIRA_TTS_URL` (default the LAN server on :8005). Strictly local — audio never
 leaves the network. Fully best-effort: status/list never raise; synthesize
 raises only so the route can surface a clean error.

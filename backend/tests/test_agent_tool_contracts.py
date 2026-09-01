@@ -163,9 +163,9 @@ def test_computer_screenshot_requires_a_vision_description(tmp_path: Path) -> No
             "app.application.code_agent.tools._computer._grab_png",
             return_value=(b"png", (1280, 720), None),
         ),
-        patch("app.infrastructure.llm.vision_ocr.is_vision_enabled", return_value=False),
+        patch("app.infrastructure.llm.vision_ocr.describe_image", return_value=None),
     ):
         result = tool_computer(tmp_path, action="screenshot")
 
     assert result["ok"] is False
-    assert result["error"] == "vision_disabled"
+    assert result["error"] == "vision_empty"

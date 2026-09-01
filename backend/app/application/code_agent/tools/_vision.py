@@ -61,7 +61,7 @@ def tool_read_image(
         image_name = target.name
 
     try:
-        from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
+        from app.infrastructure.llm.vision_ocr import describe_image
     except Exception:  # pragma: no cover - import guard
         return {"text": "ERROR: vision support unavailable",
                 "ok": False, "error": "vision_unavailable"}
@@ -89,7 +89,7 @@ def tool_ocr_file(
     language: str = "",
 ) -> dict[str, Any]:
     try:
-        from app.infrastructure.llm.vision_ocr import is_ocr_enabled, ocr_document
+        from app.infrastructure.llm.vision_ocr import ocr_document
     except Exception as exc:  # pragma: no cover - import guard
         return {"text": f"ERROR: OCR support unavailable: {exc}", "ok": False}
 

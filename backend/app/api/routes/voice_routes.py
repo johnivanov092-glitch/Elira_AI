@@ -1,7 +1,7 @@
 """Living Persona step D (slice 1) — voice (TTS) API.
 
 POST /api/voice/tts {text, voice} -> audio/wav (synthesized by the self-hosted
-Piper service). GET /api/voice/voices + /api/voice/status for the picker.
+Silero v4_ru service). GET /api/voice/voices + /api/voice/status for the picker.
 """
 from __future__ import annotations
 

@@ -64,7 +64,6 @@ def _env_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class VisionConfig:
-    enabled: bool
     base_url: str
     model: str
     api_key: str
@@ -82,7 +81,6 @@ _DEFAULT_VISION_PROMPT = (
 
 def vision_config() -> VisionConfig:
     return VisionConfig(
-        enabled=True,
         base_url=_env_value("VISION_BASE_URL", "http://192.168.88.15:8004/v1").rstrip("/"),
         model=_env_value("VISION_MODEL", "vision-model").strip() or "vision-model",
         api_key=_env_value("VISION_API_KEY", "local").strip() or "local",
@@ -90,10 +88,6 @@ def vision_config() -> VisionConfig:
         max_tokens=_env_int("VISION_MAX_TOKENS", 1024),
         prompt=_env_value("VISION_PROMPT", _DEFAULT_VISION_PROMPT).strip() or _DEFAULT_VISION_PROMPT,
     )
-
-
-def is_vision_enabled() -> bool:
-    return True
 
 
 def _data_url(filename: str, contents: bytes) -> str:
@@ -163,7 +157,6 @@ def describe_image(
 
 @dataclass(frozen=True)
 class OcrConfig:
-    enabled: bool
     url: str
     language: str
     pdf_fallback: bool
@@ -172,16 +165,11 @@ class OcrConfig:
 
 def ocr_config() -> OcrConfig:
     return OcrConfig(
-        enabled=True,
         url=_env_value("OCR_URL", "http://192.168.88.15:8002/ocr").rstrip("/"),
         language=_env_value("OCR_LANGUAGE", "auto").strip() or "auto",
         pdf_fallback=_env_bool("OCR_PDF_FALLBACK", True),
         timeout_seconds=_env_float("OCR_TIMEOUT_SECONDS", 300.0),
     )
-
-
-def is_ocr_enabled() -> bool:
-    return True
 
 
 def ocr_document(filename: str, contents: bytes, *, language: str | None = None) -> str | None:

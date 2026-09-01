@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = sqlite_data_file("rag_memory.db", key_tables=("rag_items",))
 SEED_RAG_TEXT = "rag alpha memory"
 EMBED_MODEL = "local-embed"
-# Informational only — the store is dimension-agnostic (it packs whatever the
-# endpoint returns and reads the dim back from the vector itself). This records
-# the live `local-embed` (Qwen3-Embedding-0.6B) space. The legacy nomic 768-dim
-# vectors were already migrated out via scripts/reembed_rag.py.
+# The store can decode legacy rows of any dimension, while the provider validates
+# every new vector against LOCAL_EMBED_DIM before it reaches this service. This
+# records the live `local-embed` (Qwen3-Embedding-0.6B) space. The legacy nomic
+# 768-dim vectors were already migrated out via scripts/reembed_rag.py.
 EMBED_DIM = 1024
 
 

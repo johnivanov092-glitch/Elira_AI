@@ -109,7 +109,7 @@ def tool_web_search(
     # the TOOL, not only in the schema — action envelopes pass arbitrary args, so
     # a schema-only gate breaks the bit-identical-off promise. Validation is
     # strict (1..5, single query only), and every error path carries ok=False —
-    # the executor treats a missing "ok" as success (no green error calls).
+    # the executor contract is fail-closed (no green error calls).
     # Strict by schema (John's W6 round-2): the schema says integer, so ONLY a
     # real int passes — no implicit int() coercion (2.9 silently became page 2,
     # True became page 1, "2" slipped through). bool is an int subclass → an

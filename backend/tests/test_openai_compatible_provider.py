@@ -545,6 +545,7 @@ class LocalEmbedProviderTest(unittest.TestCase):
             "LOCAL_EMBED_BASE_URL": "http://ai-server:8001/v1",
             "LOCAL_EMBED_MODEL": "local-embed",
             "LOCAL_EMBED_API_KEY": "local-key",
+            "LOCAL_EMBED_DIM": "3",
         }
 
     def test_disabled_embed_returns_none(self) -> None:
@@ -570,6 +571,19 @@ class LocalEmbedProviderTest(unittest.TestCase):
             side_effect=openai_compatible.requests.RequestException("down"),
         ):
             self.assertIsNone(openai_compatible.embed_text("x"))
+
+    def test_embed_text_rejects_unexpected_dimension(self) -> None:
+        response = _Response({"data": [{"embedding": [0.1, 0.2]}]})
+        with patch.dict(os.environ, self._embed_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ), self.assertLogs(
+            "app.infrastructure.llm.openai_compatible", level="WARNING"
+        ) as logs:
+            vec = openai_compatible.embed_text("dimension mismatch")
+
+        self.assertIsNone(vec)
+        self.assertIn("expected=3 actual=2", "\n".join(logs.output))
 
     def test_rag_get_embedding_uses_endpoint_no_legacy_fallback(self) -> None:
         """When the endpoint is enabled, get_embedding must use it and must NOT

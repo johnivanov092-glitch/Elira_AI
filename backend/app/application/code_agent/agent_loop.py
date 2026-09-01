@@ -884,6 +884,7 @@ def _stream_code_agent_core(
                 model_name=model,
                 profile_name=profile_name,
                 task_text=user_message,
+                resource_refs=resource_refs,
             )
             if request_route.evidence_reasons:
                 system_prompt += (

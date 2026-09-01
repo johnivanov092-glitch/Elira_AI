@@ -61,7 +61,7 @@ def _local_adapter(target, *, detected=True, device="test-gpu", transcribe_fn=No
 def _adapters(*, gpu=None, server=None, cpu=None):
     gpu = gpu if gpu is not None else _local_adapter("local_gpu", detected=False)
     cpu = cpu if cpu is not None else _local_adapter("local_cpu", detected=False)
-    server = server if server is not None else ex.ServerGpuTranscribeAdapter(
+    server = server if server is not None else ex.ServerCpuTranscribeAdapter(
         health_fn=lambda: True, transcribe_fn=lambda *a, **k: "server-text")
     return ex.AdapterSet((gpu, server, cpu))
 
@@ -404,7 +404,7 @@ class RoutingTest(unittest.TestCase):
         server_tx = mock.Mock(return_value="server-text")
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=True, transcribe_fn=lambda *a, **k: "local-gpu-text"),
-            server=ex.ServerGpuTranscribeAdapter(health_fn=server_health, transcribe_fn=server_tx))
+            server=ex.ServerCpuTranscribeAdapter(health_fn=server_health, transcribe_fn=server_tx))
         out = processing.process_resource(_rec(), "transcribe", "local_gpu", adapters)
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["selected_target"], "local_gpu")
@@ -418,7 +418,7 @@ class RoutingTest(unittest.TestCase):
             raise RuntimeError("cuda oom /root/model")
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=True, transcribe_fn=boom),
-            server=ex.ServerGpuTranscribeAdapter(health_fn=lambda: True, transcribe_fn=server_tx))
+            server=ex.ServerCpuTranscribeAdapter(health_fn=lambda: True, transcribe_fn=server_tx))
         out = processing.process_resource(_rec(), "transcribe", "local_gpu", adapters)
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "transcription_failed")
@@ -431,7 +431,7 @@ class RoutingTest(unittest.TestCase):
         server_tx = mock.Mock(return_value="server")
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=True, transcribe_fn=lambda *a, **k: "local"),
-            server=ex.ServerGpuTranscribeAdapter(health_fn=server_health, transcribe_fn=server_tx))
+            server=ex.ServerCpuTranscribeAdapter(health_fn=server_health, transcribe_fn=server_tx))
         out = processing.process_resource(_rec(), "transcribe", "auto", adapters)
         self.assertTrue(out["ok"])
         self.assertEqual(out["selected_target"], "local_gpu")
@@ -443,18 +443,18 @@ class RoutingTest(unittest.TestCase):
             raise RuntimeError("gpu died")
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=True, transcribe_fn=boom),
-            server=ex.ServerGpuTranscribeAdapter(health_fn=lambda: True,
+            server=ex.ServerCpuTranscribeAdapter(health_fn=lambda: True,
                                                  transcribe_fn=lambda *a, **k: "server-text"))
         out = processing.process_resource(_rec(), "transcribe", "auto", adapters)
         self.assertTrue(out["ok"], out)
-        self.assertEqual(out["selected_target"], "server_gpu")
+        self.assertEqual(out["selected_target"], "server_cpu")
         steps = {step["target"] for step in out.get("fallback_chain", [])}
         self.assertIn("local_gpu", steps)                  # honest fallback record
 
     def test_auto_server_failure_falls_to_local_cpu(self):
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=False),
-            server=ex.ServerGpuTranscribeAdapter(
+            server=ex.ServerCpuTranscribeAdapter(
                 health_fn=lambda: True,
                 transcribe_fn=mock.Mock(side_effect=RuntimeError("stt down"))),
             cpu=_local_adapter("local_cpu", detected=True, transcribe_fn=lambda *a, **k: "cpu-text"))
@@ -462,6 +462,21 @@ class RoutingTest(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["selected_target"], "local_cpu")
         self.assertEqual(out["text"], "cpu-text")
+
+    def test_legacy_server_gpu_alias_returns_canonical_server_cpu(self):
+        adapters = _adapters(
+            server=ex.ServerCpuTranscribeAdapter(
+                health_fn=lambda: True,
+                transcribe_fn=lambda *a, **k: "server-text",
+            )
+        )
+
+        out = processing.process_resource(_rec(), "transcribe", "server_gpu", adapters)
+
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["requested_target"], "server_cpu")
+        self.assertEqual(out["selected_target"], "server_cpu")
+        self.assertEqual(out["backend"], "server-stt")
 
     def test_one_adapter_handles_all_containers(self):
         seen_paths = []

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 from app.application.code_agent import tool_policy
 
@@ -307,6 +308,7 @@ def _build_system_prompt(
     model_name: str = "",
     profile_name: str = "Инженерный",
     task_text: str = "",
+    resource_refs: list[dict[str, Any]] | None = None,
 ) -> str:
     from app.application.instructions.loader import load_instructions
     from app.application.projects.scope import project_scope_id as _scope_id
@@ -363,4 +365,59 @@ def _build_system_prompt(
     for _rule in select_niche_rules(task_text):
         parts.append("--- Ниша-правило (по теме запроса) ---\n" + _rule)
 
+    placement = _compute_placement_prompt(
+        active_tools=active_tools,
+        resource_refs=resource_refs,
+    )
+    if placement:
+        parts.append(placement)
+
     return "\n\n".join(parts)
+
+
+def _compute_placement_prompt(
+    *,
+    active_tools: tuple[str, ...] | list[str] | None,
+    resource_refs: list[dict[str, Any]] | None,
+) -> str:
+    """Describe live placement choices for attached transcription workloads.
+
+    This is deliberately prompt context for the existing ``ask_user`` tool, not
+    a permission policy or a second workflow state machine.
+    """
+    if "resource_process" not in set(active_tools or ()):
+        return ""
+    if not any(str(ref.get("kind") or "") in {"audio", "video"} for ref in resource_refs or ()):
+        return ""
+    try:
+        from app.application.media.execution import capability_catalog
+
+        available = [
+            str(item.get("target") or "")
+            for item in capability_catalog()
+            if item.get("available") is True
+            and "transcribe" in set(item.get("operations") or ("transcribe",))
+        ]
+    except Exception:
+        return ""
+    available = list(dict.fromkeys(target for target in available if target))
+    if len(available) < 2:
+        return ""
+    labels = {
+        "local_gpu": "Локальный GPU (local_gpu)",
+        "server_cpu": "Серверный CPU (server_cpu)",
+        "local_cpu": "Локальный CPU (local_cpu)",
+    }
+    choices = ["Автоматически (auto)"] + [labels[target] for target in available if target in labels]
+    return (
+        "[COMPUTE PLACEMENT]\n"
+        "Для транскрибации доступны несколько мест выполнения. Это размещение работы, "
+        "а не permission/разрешение. Если пользователь в текущем запросе явно не выбрал "
+        "auto, local_gpu, server_cpu или local_cpu, ОБЯЗАТЕЛЬНО сначала вызови "
+        "`ask_user(question=\"Где выполнить расшифровку?\", options=["
+        + ", ".join(f'\"{choice}\"' for choice in choices)
+        + "])`. Используй выбранное значение как execution_target и только затем вызывай "
+        "resource_process. Не выбирай auto за пользователя. Если место выполнения уже "
+        "явно указано, не задавай повторный вопрос. Доступные варианты сейчас:\n- "
+        + "\n- ".join(choices)
+    )

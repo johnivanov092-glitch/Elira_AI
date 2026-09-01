@@ -339,11 +339,13 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "returns metadata; 'extract_text' extracts document text; 'transcribe' "
                     "runs speech-to-text. Takes a resource_id (NOT a path); the file must be "
                     "attached to THIS run. execution_target chooses WHERE compute runs: "
-                    "'auto' (runtime picks: local GPU → server → local CPU), 'local_gpu' "
+                    "'auto' (runtime picks: local GPU → server CPU → local CPU), 'local_gpu' "
                     "(строго локальная видеокарта — «используй локальное железо/видеокарту / "
                     "обработай локально на GPU»; если недоступна — честная ошибка, файл НЕ "
-                    "уходит на сервер), 'local_cpu' (локальный CPU), 'server_gpu' (серверный "
-                    "STT). Use local_gpu ONLY when the user explicitly asks for local/GPU."
+                    "уходит на сервер), 'local_cpu' (локальный CPU), 'server_cpu' (серверный "
+                    "CPU STT). 'server_gpu' is a deprecated input alias for server_cpu. If "
+                    "several targets are available and the user did not choose one, use the "
+                    "existing ask_user tool before this call; placement is not permission."
                 ),
                 "parameters": {
                     "type": "object",
@@ -351,7 +353,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
-                        "execution_target": {"type": "string", "enum": ["auto", "local_gpu", "local_cpu", "server_gpu"], "description": "Where to run compute. Default 'auto'. Use 'local_gpu' only when the user explicitly asks to run locally / on the GPU."},
+                        "execution_target": {"type": "string", "enum": ["auto", "local_gpu", "local_cpu", "server_cpu", "server_gpu"], "description": "Where to run compute. server_gpu is a deprecated alias for server_cpu. When multiple targets are available, do not default to auto unless the user selected automatic placement; ask via ask_user."},
                     },
                     "required": ["resource_id", "operation"],
                 },

@@ -302,11 +302,9 @@ def _describe_inline_image(chunk: dict[str, Any], image_index: int) -> str:
         return "[MCP image unavailable: invalid image size]"
 
     try:
-        from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
+        from app.infrastructure.llm.vision_ocr import describe_image
     except Exception:  # pragma: no cover - optional runtime import guard
         return "[MCP image received, but vision support is unavailable]"
-    if not is_vision_enabled():
-        return "[MCP image received, but vision is disabled]"
     try:
         description = describe_image(
             f"mcp-capture-{image_index}{suffix}",

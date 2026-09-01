@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Generator
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -181,6 +184,7 @@ class LocalEmbedConfig:
     model: str
     api_key: str
     timeout_seconds: float
+    dimension: int
 
 
 def local_embed_config() -> LocalEmbedConfig:
@@ -190,6 +194,7 @@ def local_embed_config() -> LocalEmbedConfig:
         model=os.getenv("LOCAL_EMBED_MODEL", "local-embed").strip() or "local-embed",
         api_key=os.getenv("LOCAL_EMBED_API_KEY", "local").strip() or "local",
         timeout_seconds=_env_float("LOCAL_EMBED_TIMEOUT_SECONDS", 30.0),
+        dimension=_env_optional_int("LOCAL_EMBED_DIM") or 1024,
     )
 
 
@@ -226,7 +231,19 @@ def embed_text(text: str) -> list[float] | None:
     if rows and isinstance(rows[0], dict):
         vec = rows[0].get("embedding")
         if isinstance(vec, list) and vec:
-            return [float(x) for x in vec]
+            try:
+                vector = [float(x) for x in vec]
+            except (TypeError, ValueError):
+                return None
+            if len(vector) != cfg.dimension:
+                logger.warning(
+                    "embedding_dimension_mismatch model=%s expected=%d actual=%d",
+                    cfg.model,
+                    cfg.dimension,
+                    len(vector),
+                )
+                return None
+            return vector
     return None
 
 

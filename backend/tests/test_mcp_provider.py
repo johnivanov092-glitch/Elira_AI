@@ -376,10 +376,6 @@ class ProviderDispatchTest(McpProviderTestBase):
         payload = base64.b64encode(b"small-png-payload").decode("ascii")
         with (
             mock.patch(
-                "app.infrastructure.llm.vision_ocr.is_vision_enabled",
-                return_value=True,
-            ),
-            mock.patch(
                 "app.infrastructure.llm.vision_ocr.describe_image",
                 return_value="A Unity scene with a clipped button.",
             ) as describe,
@@ -408,11 +404,11 @@ class ProviderDispatchTest(McpProviderTestBase):
         self.assertIn("invalid base64", result["text"])
         self.assertNotIn(secret_payload, result["text"])
 
-    def test_inline_image_disabled_is_explicit_and_bounded(self) -> None:
+    def test_inline_image_unavailable_is_explicit_and_bounded(self) -> None:
         payload = base64.b64encode(b"image").decode("ascii")
         with mock.patch(
-            "app.infrastructure.llm.vision_ocr.is_vision_enabled",
-            return_value=False,
+            "app.infrastructure.llm.vision_ocr.describe_image",
+            return_value=None,
         ):
             result = self.provider_mod._flatten_mcp_result({
                 "content": [
@@ -421,7 +417,7 @@ class ProviderDispatchTest(McpProviderTestBase):
                 ],
             })
         self.assertIn("Screenshot captured.", result["text"])
-        self.assertIn("vision is disabled", result["text"])
+        self.assertIn("vision returned no description", result["text"])
         self.assertNotIn(payload, result["text"])
 
 

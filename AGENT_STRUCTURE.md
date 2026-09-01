@@ -62,6 +62,26 @@ trigger words, prompt-тексты или имена инструментов и
   `impact_policy`;
 - runtime/provider status, если он применим.
 
+## Выбор размещения вычислений
+
+Размещение workload не является permission. Для операции с несколькими
+доступными compute-targets агент использует уже существующий `ask_user` и
+workflow-состояние `needs_input`, после ответа продолжает тот же запуск и
+передаёт выбранный target в канонический tool:
+
+```text
+resource + операция
+  -> capability_catalog (только доступные targets)
+  -> ask_user: auto / local_gpu / server_cpu / local_cpu
+  -> ответ пользователя
+  -> resource_process(execution_target=<выбор>)
+```
+
+`auto` — явный вариант пользователя с порядком `local_gpu -> server_cpu ->
+local_cpu`. Он не подставляется агентом вместо вопроса при нескольких доступных
+targets. Старое входное имя `server_gpu` принимается как временный alias, но
+результаты и телеметрия всегда используют `server_cpu`.
+
 ## Добавление возможности
 
 1. Добавить handler или provider adapter к существующему dispatch seam.

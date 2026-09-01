@@ -2,8 +2,9 @@
 """Voice-cloning dataset prep (Living Persona step D — custom voices).
 
 Turns a folder of raw recordings of ONE speaker into a clean, segmented,
-transcribed dataset ready for Piper fine-tuning (LJSpeech layout) — and just as
-usable for XTTS/StyleTTS2. Engine-agnostic: this is the common first step.
+transcribed dataset in a simple LJSpeech-compatible layout. It is only dataset
+preparation: the current Silero v4_ru service does not support custom voices,
+so using this output requires a separately selected cloning/training engine.
 
 Audio backend = soundfile + numpy (pip-only, no system ffmpeg). soundfile's
 bundled libsndfile decodes wav/flac/ogg/opus — which covers WhatsApp voice
@@ -165,7 +166,7 @@ def main() -> None:
     ap.add_argument("--output", required=True, help="dataset output folder")
     ap.add_argument("--stt-url", default=os.environ.get("ELIRA_STT_URL", "http://192.168.88.15:8006"))
     ap.add_argument("--lang", default="ru", help="STT language hint ('' = auto)")
-    ap.add_argument("--target-sr", type=int, default=22050, help="Piper trains at 22050")
+    ap.add_argument("--target-sr", type=int, default=22050, help="output sample rate")
     ap.add_argument("--min-sec", type=float, default=3.0)
     ap.add_argument("--max-sec", type=float, default=15.0)
     ap.add_argument("--no-transcribe", action="store_true", help="skip STT (clips only)")

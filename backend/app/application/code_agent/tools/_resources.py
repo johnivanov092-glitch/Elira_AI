@@ -21,7 +21,7 @@ from app.application.code_agent.document_validation import (
 
 _ERROR_TEXT = {
     "unknown_operation": "operation must be inspect, extract_text or transcribe",
-    "invalid_execution_target": "execution_target must be auto, local_gpu, local_cpu or server_gpu",
+    "invalid_execution_target": "execution_target must be auto, local_gpu, local_cpu or server_cpu",
     "unsupported_arguments": "resource_process accepts only resource_id, operation and execution_target",
     "resource_not_found": "resource not found",
 }
@@ -46,7 +46,7 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
                           execution_target: str = "auto", **extra: Any) -> dict[str, Any]:
     """Process a durable resource. Args: resource_id (opaque
     id, NOT a path), operation (inspect | extract_text | transcribe), and
-    execution_target (auto | local_gpu | local_cpu | server_gpu). Read-only; one
+    execution_target (auto | local_gpu | local_cpu | server_cpu). Read-only; one
     bounded result; stable ``error`` code with ok=False on any refusal."""
     from app.application.media import execution, processing, resource_store
 
@@ -59,6 +59,7 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
         return _refusal("unknown_operation", requested_target=safe_target)
     if not execution.valid_execution_target(target):
         return _refusal("invalid_execution_target", requested_target=None)
+    target = execution.normalize_execution_target(target)
     # Do not silently accept path/url/argv/backend-like model arguments. The
     # runtime owns every execution detail; extra keys fail closed without echoing
     # their names or values.

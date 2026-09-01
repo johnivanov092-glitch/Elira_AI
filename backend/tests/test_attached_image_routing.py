@@ -62,10 +62,6 @@ def test_read_image_uses_bytes_from_durable_resource_id() -> None:
     )
     with tempfile.TemporaryDirectory() as tmp, \
             mock.patch(
-                "app.infrastructure.llm.vision_ocr.is_vision_enabled",
-                return_value=True,
-            ), \
-            mock.patch(
                 "app.infrastructure.llm.vision_ocr.describe_image",
                 return_value="the attached screenshot",
             ) as describe:

@@ -9,8 +9,11 @@ framework, run binding, and this selector's shape do not change.
 Execution targets are GENERAL compute homes, not modes:
 - ``local_cpu``  — this host's CPU (always present for pure-Python ops);
 - ``local_gpu``  — this host's GPU via a locally-installed runtime;
-- ``server_gpu`` — the existing server-owned STT service (ELIRA_STT_URL);
-- ``auto``       — deterministic pick: local_gpu → server_gpu → local_cpu.
+- ``server_cpu`` — the existing CPU STT service (ELIRA_STT_URL);
+- ``auto``       — deterministic pick: local_gpu → server_cpu → local_cpu.
+
+``server_gpu`` remains an accepted legacy input alias but is normalized before
+selection, results, and telemetry are emitted.
 
 Capability probes are cheap, bounded, best-effort and HONEST: fixed argv,
 shell=False, short timeouts, TTL-cached, thread-safe, no secrets / env / absolute
@@ -45,13 +48,15 @@ class ExecutionTarget(str, Enum):
     AUTO = "auto"
     LOCAL_GPU = "local_gpu"
     LOCAL_CPU = "local_cpu"
+    SERVER_CPU = "server_cpu"
+    # Input compatibility only. Never emit this value in new results/telemetry.
     SERVER_GPU = "server_gpu"
 
 
 # Operations that only ever run on the local CPU (pure-Python; no GPU/server).
 _LOCAL_ONLY_OPERATIONS = frozenset({ResourceOperation.INSPECT.value, ResourceOperation.EXTRACT_TEXT.value})
 # Deterministic auto order for a GPU-capable workload (transcribe).
-_AUTO_ORDER = (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_GPU.value, ExecutionTarget.LOCAL_CPU.value)
+_AUTO_ORDER = (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_CPU.value, ExecutionTarget.LOCAL_CPU.value)
 
 _MAX_RESULT_CHARS = 20000
 _STT_TIMEOUT_SECONDS = 3600
@@ -222,12 +227,12 @@ class WorkloadAdapter(Protocol):
 
 
 @dataclass
-class ServerGpuTranscribeAdapter:
+class ServerCpuTranscribeAdapter:
     """Reuses ONLY the existing server-owned STT runtime (ELIRA_STT_URL). Never
     accepts a URL/host from the model; transport timeout is 3600s."""
 
     operation: str = ResourceOperation.TRANSCRIBE.value
-    target: str = ExecutionTarget.SERVER_GPU.value
+    target: str = ExecutionTarget.SERVER_CPU.value
     backend: str = "server-stt"
     health_fn: Callable[[], bool] | None = None
     transcribe_fn: Callable[..., str] | None = None
@@ -269,6 +274,10 @@ class ServerGpuTranscribeAdapter:
             return _fail(self.operation, rid, "transcription_empty",
                          "speech-to-text returned no text", self.target)
         return _transcript_result(record, text, self.target)
+
+
+# Compatibility for imports only. Instances use the canonical server_cpu target.
+ServerGpuTranscribeAdapter = ServerCpuTranscribeAdapter
 
 
 @dataclass
@@ -358,12 +367,12 @@ def default_adapters() -> AdapterSet:
     # (available == detected AND wired): the strict readiness probes report ready
     # only when the runtime prerequisites are present, so until the pinned deps are
     # provisioned the local targets are unavailable and auto falls through to
-    # server_gpu. Imported lazily to avoid a media-package import cycle.
+    # server_cpu. Imported lazily to avoid a media-package import cycle.
     from app.application.media import local_transcription as lt
     return AdapterSet((
         _LocalTranscribeAdapter(ExecutionTarget.LOCAL_GPU.value, lt.gpu_runtime_ready,
                                 transcribe_fn=lt.gpu_transcribe_fn),
-        ServerGpuTranscribeAdapter(),
+        ServerCpuTranscribeAdapter(),
         _LocalTranscribeAdapter(ExecutionTarget.LOCAL_CPU.value, lt.cpu_runtime_ready,
                                 transcribe_fn=lt.cpu_transcribe_fn),
     ))
@@ -412,13 +421,21 @@ def valid_execution_target(target: str) -> bool:
     return target in {t.value for t in ExecutionTarget}
 
 
+def normalize_execution_target(target: str) -> str:
+    """Normalize accepted compatibility aliases to the canonical target name."""
+    value = str(target or ExecutionTarget.AUTO.value).strip().lower()
+    if value == ExecutionTarget.SERVER_GPU.value:
+        return ExecutionTarget.SERVER_CPU.value
+    return value
+
+
 def capability_catalog(adapters: AdapterSet | None = None) -> list[dict[str, Any]]:
     """Public projection of every execution target. local_cpu always lists the
     pure-local ops it can always do (inspect/extract_text) plus transcribe when a
     local CPU runtime exists."""
     adapter_set = _adapter_set(adapters)
     catalog: list[dict[str, Any]] = []
-    for target in (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_GPU.value,
+    for target in (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_CPU.value,
                    ExecutionTarget.LOCAL_CPU.value):
         adapter = adapter_set.get(ResourceOperation.TRANSCRIBE.value, target)
         cap = adapter_capability(adapter) if adapter is not None else Capability(target, False, "unknown")
@@ -442,11 +459,12 @@ def select(operation: str, requested_target: str,
     semantics. Fallback is allowed ONLY for auto; strict targets never fall back."""
     adapter_set = _adapter_set(adapters)
     op = str(operation or "").strip().lower()
-    target = str(requested_target or ExecutionTarget.AUTO.value).strip().lower()
-    if not valid_execution_target(target):
-        return Selection(target=target, error="invalid_execution_target",
+    raw_target = str(requested_target or ExecutionTarget.AUTO.value).strip().lower()
+    if not valid_execution_target(raw_target):
+        return Selection(target=raw_target, error="invalid_execution_target",
                          message=f"execution_target must be one of "
                                  f"{sorted(t.value for t in ExecutionTarget)}")
+    target = normalize_execution_target(raw_target)
 
     # inspect / extract_text: local_cpu only.
     if op in _LOCAL_ONLY_OPERATIONS:

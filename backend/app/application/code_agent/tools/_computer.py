@@ -108,19 +108,10 @@ def tool_computer(
         if png is None:
             return {"ok": False, "error": "capture_failed", "text": f"ERROR: could not capture screen: {err}"}
         try:
-            from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
+            from app.infrastructure.llm.vision_ocr import describe_image
         except Exception as exc:  # pragma: no cover - import guard
             return {"ok": False, "error": "vision_unavailable", "text": f"ERROR: vision support unavailable: {exc}"}
         w, h = size or (0, 0)
-        if not is_vision_enabled():
-            return {
-                "ok": False,
-                "error": "vision_disabled",
-                "text": (
-                    f"Скриншот сделан ({w}×{h} px), но зрение выключено — описать не могу. "
-                    "Включи VISION_ENABLED=1 на сервере, чтобы агент мог «видеть» экран."
-                ),
-            }
         description = describe_image("screen.png", png, prompt=(prompt or _DEFAULT_SCREEN_PROMPT))
         if not description:
             return {

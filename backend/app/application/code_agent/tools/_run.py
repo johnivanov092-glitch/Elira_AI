@@ -848,9 +848,9 @@ def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
 #                 (reuses skills.runtime.screenshot_url).
 #   * no port   → native window: full-screen grab via Pillow.ImageGrab.
 #
-# Delivery is "screenshot + vision, with fallback": if VISION_ENABLED, the PNG
-# is described by the vision model (:8004) and that text goes back to the agent
-# so it can read what it built. If vision is off / unreachable, we degrade
+# Delivery is "screenshot + vision, with fallback": the PNG is described by the
+# configured vision model (:8004) and that text goes back to the agent so it can
+# read what it built. If vision is unreachable, we degrade
 # gracefully to the screenshot path + process status — never an exception, since
 # this is best-effort instrumentation, not a gate.
 
@@ -926,15 +926,14 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
         header += f"\n  page title: {title}"
 
     # Vision channel with graceful fallback. Read the PNG bytes and describe via
-    # the same :8004 path read_image uses; if vision is off/unreachable, return
-    # the path + status so the agent can still open it later with read_image.
+    # the same :8004 path read_image uses; if unavailable, return the path +
+    # status so the agent can still retry later with read_image.
     try:
-        from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
+        from app.infrastructure.llm.vision_ocr import describe_image
     except Exception:
-        is_vision_enabled = None  # type: ignore[assignment]
         describe_image = None  # type: ignore[assignment]
 
-    if is_vision_enabled and is_vision_enabled():
+    if describe_image is not None:
         try:
             contents = Path(shot_path).read_bytes()
         except Exception:
@@ -946,13 +945,13 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
                 f"{textwrap.indent(description.strip(), '    ')}"
             )
         return (
-            f"{header}\n  (vision is on but returned no description — service "
+            f"{header}\n  (vision returned no description — service "
             f"unreachable or empty. Try read_image('{shot_path}') to retry.)"
         )
 
     return (
-        f"{header}\n  (vision is off: set VISION_ENABLED=1 on the server, or call "
-        f"read_image('{shot_path}') once enabled, to get a text description of what rendered.)"
+        f"{header}\n  (vision support could not be loaded; call "
+        f"read_image('{shot_path}') to retry.)"
     )
 
 

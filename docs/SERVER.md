@@ -1,8 +1,8 @@
 # AI Inference Server
 
-Elira offloads only model inference to a dedicated LAN server. The Tauri UI,
-backend, tools, memory, and approvals stay on the main PC; the server exposes
-OpenAI-compatible chat and embedding endpoints over the LAN.
+Elira offloads model inference and selected LAN services to a dedicated server.
+The Tauri UI, backend, orchestration, tools, memory, and approvals stay on the
+main PC; no service endpoint is a second agent runtime.
 
 This page is a self-contained summary for working inside the `Elira_AI` repo.
 The authoritative operational docs (hardware, ROCm, Docker ops, model
@@ -20,15 +20,24 @@ here, and do not store keys, passwords, or tokens here.
 
 ## Services
 
-Four containers; the GPU services use `ghcr.io/ggml-org/llama.cpp:server-rocm`,
-embeddings use `ghcr.io/ggml-org/llama.cpp:server` (CPU), OCR uses PaddleOCR (CPU):
+Current service topology:
 
-| Service | Container | Endpoint | OpenAI model | Backing model (current, swappable) | Compute |
-|---------|-----------|----------|--------------|------------------------------------|---------|
-| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model` | Qwen3.8 (swappable), 131K ctx | GPU (ROCm) |
-| Vision (multimodal) | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | `vision-model` | MiniCPM-V 4.6 (Q5_K_M) + mmproj-f16 | GPU (ROCm) |
-| Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | `local-embed` | Qwen3-Embedding-0.6B GGUF, dim 1024 | CPU |
-| OCR | `elira-ocr` | `http://192.168.88.15:8002/ocr` | — | PaddleOCR | CPU |
+| Service | Runtime | Endpoint | Backing model / contract | Compute |
+|---------|---------|----------|--------------------------|---------|
+| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model`: Qwen3.8-27B Q6_K, ctx 131072 | GPU (ROCm) |
+| Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | Qwen3-Embedding-0.6B Q8, dim 1024, ctx 4096 | CPU |
+| OCR | `elira-ocr` | `http://192.168.88.15:8002/ocr` | PaddleOCR multipart API | CPU |
+| Search | `elira-searxng` | `http://192.168.88.15:8003` | SearXNG JSON search API | CPU |
+| Vision | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | MiniCPM-V 4.6 Q5 + F16 projector, ctx 8192 | GPU (ROCm) |
+| TTS | systemd service | `http://192.168.88.15:8005` | Silero v4_ru HTTP API | CPU |
+| STT | `elira-stt` | `http://192.168.88.15:8006` | Faster Whisper Large v3 HTTP API | CPU |
+
+LAN integrations on the same host are separate from model inference:
+
+| Integration | Runtime | Endpoint |
+|-------------|---------|----------|
+| Home Assistant | `homeassistant` | `http://192.168.88.15:8123` |
+| Home Assistant MCP | `hass-mcp` | `http://192.168.88.15:8124` |
 
 - Monitoring (Netdata): `http://192.168.88.15:19999`
 - Backing models change on swaps; `../Elira_AI_Server/Server/ACCESS.md` is the
@@ -53,6 +62,13 @@ LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
 LOCAL_EMBED_MODEL=local-embed
 LOCAL_EMBED_API_KEY=local
 LOCAL_EMBED_TIMEOUT_SECONDS=30
+LOCAL_EMBED_DIM=1024
+
+OCR_URL=http://192.168.88.15:8002/ocr
+SEARXNG_URL=http://192.168.88.15:8003
+VISION_BASE_URL=http://192.168.88.15:8004/v1
+ELIRA_TTS_URL=http://192.168.88.15:8005
+ELIRA_STT_URL=http://192.168.88.15:8006
 ```
 
 For chat, `LLAMA_SERVER_TIMEOUT_SECONDS` is the connection-establishment
@@ -69,7 +85,17 @@ Two separate accounts / aliases; key material lives outside both repos:
 
 Full access inventory and smoke tests: `../Elira_AI_Server/Server/ACCESS.md`.
 
-## Smoke test (chat)
+## Smoke test
+
+The repository smoke reads `backend/.env` and `backend/.env.local`, checks all
+ports 8000–8006, validates the 1024-dimensional embedding contract, and performs
+one bounded chat completion:
+
+```powershell
+backend\.venv\Scripts\python.exe scripts\smoke_agent_endpoints.py
+```
+
+Single chat probe, when needed:
 
 ```powershell
 $body = @{model='local-model'; messages=@(@{role='user'; content='Return OK'}); max_tokens=4} | ConvertTo-Json -Depth 6
