@@ -85,6 +85,12 @@ def execute_workflow_run(
     def _update_run(run_key: str, **fields: Any) -> dict[str, Any]:
         return _update_workflow_run_for_db(resolved_db_path, run_key, **fields)
 
+    def _durable_cancelled() -> dict[str, Any] | None:
+        current = _get_workflow_run(run_id)
+        if current and current.get("status") == "cancelled":
+            return current
+        return None
+
     run = _get_workflow_run(run_id)
     if not run:
         raise ValueError(f"Workflow run '{run_id}' not found")
@@ -126,6 +132,9 @@ def execute_workflow_run(
         # disconnect (Stop button). The workflow runs in a daemon thread that
         # can't be interrupted mid-LLM-call, so we break between steps — the
         # next step never starts and the run is recorded as cancelled.
+        cancelled_run = _durable_cancelled()
+        if cancelled_run is not None:
+            return cancelled_run
         if cancel_check and cancel_check():
             run = _get_workflow_run(run_id) or run
             return cancel_run(
@@ -191,6 +200,9 @@ def execute_workflow_run(
         # Stop may arrive while the model or a tool is running. Re-check before
         # recording that step as failed/completed so cancellation remains the
         # authoritative terminal state.
+        cancelled_run = _durable_cancelled()
+        if cancelled_run is not None:
+            return cancelled_run
         if cancel_check and cancel_check():
             run = _get_workflow_run(run_id) or run
             return cancel_run(
@@ -302,13 +314,18 @@ def execute_workflow_run(
             )
 
         current_step_id = step_outcome.next_step_id
-        advance_to_next_step(
+        advanced_run = advance_to_next_step(
             run_id=run_id,
             next_step_id=current_step_id,
             step_results=step_results,
             update_workflow_run=_update_run,
         )
+        if advanced_run.get("status") == "cancelled":
+            return advanced_run
 
+    cancelled_run = _durable_cancelled()
+    if cancelled_run is not None:
+        return cancelled_run
     return complete_after_step(
         run_id=run_id,
         workflow_id=run["workflow_id"],
@@ -418,7 +435,7 @@ def resume_workflow_run(
         raise ValueError("Only paused workflow runs can be resumed")
 
     merged_context = merge_resumed_context(run, context_patch)
-    _update_workflow_run_for_db(
+    resumed_run = _update_workflow_run_for_db(
         resolved_db_path,
         run_id,
         status="running",
@@ -426,6 +443,8 @@ def resume_workflow_run(
         error={},
         requested_pause=False,
     )
+    if resumed_run.get("status") != "running":
+        return resumed_run
     return execute_workflow_run(
         run_id=run_id,
         db_path=resolved_db_path,
@@ -447,19 +466,20 @@ def cancel_workflow_run(
     if run["status"] in {"completed", "partial", "failed", "cancelled"}:
         raise ValueError("Terminal workflow runs cannot be cancelled")
 
-    # Agent steps use a deterministic child run id. Signal that child first so
-    # Stop closes the provider stream and terminates registered OS processes,
-    # instead of waiting for the step to return on its own.
+    # Tool steps bind processes/provider callbacks to the Workflow run id;
+    # agent steps use a deterministic child id. Signal both through the existing
+    # cancellation seam before committing the durable terminal transition.
     current_step_id = str(run.get("current_step_id") or "").strip()
-    if current_step_id:
-        stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
-        code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
-        try:
-            from app.application.code_agent.agent_loop import request_cancel
+    try:
+        from app.application.code_agent.agent_loop import request_cancel
 
+        request_cancel(run_id)
+        if current_step_id:
+            stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
+            code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
             request_cancel(code_agent_run_id)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     return cancel_run(
         run_id=run_id,

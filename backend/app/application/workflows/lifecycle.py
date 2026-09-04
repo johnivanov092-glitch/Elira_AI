@@ -35,6 +35,8 @@ def fail_missing_step(
         error=error,
         finished_at=now_func(),
     )
+    if failed_run.get("status") != "failed":
+        return failed_run
     record_workflow_run_state(
         failed_run,
         status="failed",
@@ -80,6 +82,8 @@ def pause_after_step(
         pending_steps=[next_step_id],
         requested_pause=False,
     )
+    if paused_run.get("status") != "paused":
+        return paused_run
     record_workflow_run_state(
         paused_run,
         status="paused",
@@ -115,6 +119,8 @@ def fail_step_and_finish(
         error={"step_id": current_step_id, "message": error_message},
         finished_at=now_func(),
     )
+    if failed_run.get("status") != "failed":
+        return failed_run
     record_workflow_run_state(
         failed_run,
         status="failed",
@@ -155,6 +161,8 @@ def complete_after_step(
         error={},
         finished_at=now_func(),
     )
+    if completed_run.get("status") != "completed":
+        return completed_run
     record_workflow_run_state(
         completed_run,
         status="completed",
@@ -207,6 +215,8 @@ def cancel_run(
         pending_steps=[],
         finished_at=now_func(),
     )
+    if cancelled.get("status") != "cancelled":
+        return cancelled
     record_workflow_run_state(
         cancelled,
         status="cancelled",

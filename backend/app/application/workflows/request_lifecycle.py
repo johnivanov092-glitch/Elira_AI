@@ -110,6 +110,14 @@ def pause_workflow_for_request(
         error={},
         requested_pause=False,
     )
+    if waiting_run.get("status") != waiting_status:
+        finalize_workflow_request(
+            db_path=db_path,
+            request_id=str(request["request_id"]),
+            status="cancelled",
+            action="cancel",
+        )
+        return waiting_run
 
     from app.application.workflows.execution import record_workflow_run_state
 
@@ -168,6 +176,8 @@ def start_code_agent_workflow_run(
         trigger_source=_CODE_AGENT_TRIGGER_SOURCE,
         permission_mode=permission_mode,
     )
+    if run.get("status") != "running":
+        return run
     emit_workflow_event(
         "workflow.run.started",
         _CODE_AGENT_WORKFLOW_ID,
@@ -186,6 +196,8 @@ def finish_code_agent_workflow_run(
     run = get_workflow_run(db_path=db_path, run_id=workflow_run_id)
     if not run:
         return {}
+    if run.get("status") in {"completed", "partial", "failed", "cancelled"}:
+        return run
     stop_reason = str(done_event.get("stop_reason") or "")
     completion_status = str(done_event.get("completion_status") or "none")
     if stop_reason == "cancelled":
@@ -226,6 +238,8 @@ def finish_code_agent_workflow_run(
         ),
         finished_at=now_utc(),
     )
+    if finished.get("status") != status:
+        return finished
     emit_workflow_event(
         "workflow.run.completed" if status != "cancelled" else "workflow.run.cancelled",
         str(run["workflow_id"]),
@@ -399,7 +413,7 @@ def resolve_request(
             **({"approved_tool": approved_tool} if approved_tool else {}),
         }
         context[_RESOLUTIONS_CONTEXT_KEY] = resolutions
-        update_workflow_run(
+        resumed_run = update_workflow_run(
             db_path=db_path,
             run_id=str(run["run_id"]),
             status="running",
@@ -408,6 +422,14 @@ def resolve_request(
             pending_steps=[str(request["step_id"])],
             error={},
         )
+        if resumed_run.get("status") != "running":
+            finalized = finalize_workflow_request(
+                db_path=db_path,
+                request_id=request_id,
+                status="cancelled",
+                action="cancel",
+            )
+            return {"request": finalized or claimed_request, "run": resumed_run}
         emit_workflow_event(
             "serverRequest/resolved",
             str(run["workflow_id"]),

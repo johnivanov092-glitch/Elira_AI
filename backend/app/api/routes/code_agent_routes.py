@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import uuid
 from typing import Any, Callable, Literal, Optional
 from urllib.parse import urlparse, urlunparse
@@ -42,6 +43,7 @@ from app.application.library.runtime import inject_library_context
 from app.core.data_files import data_subdir
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
+logger = logging.getLogger(__name__)
 
 CodeAgentMode = Literal["code", "search"]
 _FAVICON_MAX_BYTES = 128 * 1024
@@ -379,6 +381,13 @@ def _composer_workflow_run_id(code_agent_run_id: str) -> str:
     return f"wfr-code-{digest}"
 
 
+def _cancel_live_run(run_id: str) -> bool:
+    """Stop the delivery session and whichever live slice currently owns it."""
+    session_found = request_session_cancel(run_id)
+    runtime_found = request_cancel(run_id)
+    return session_found or runtime_found
+
+
 def _stream_with_workflow_requests(
     events,
     *,
@@ -465,6 +474,21 @@ def _stream_with_workflow_requests(
         raise
     finally:
         if not terminal_seen:
+            # A chat switch keeps its reader alive in backgroundRuns and never
+            # reaches this finalizer. Reaching it means the transport actually
+            # disappeared, so stop both the delivery session and its live slice
+            # before closing the durable Workflow projection.
+            _cancel_live_run(code_agent_run_id)
+            close_events = getattr(events, "close", None)
+            if callable(close_events):
+                try:
+                    close_events()
+                except Exception:
+                    logger.warning(
+                        "code-agent stream cleanup failed for %s",
+                        code_agent_run_id,
+                        exc_info=True,
+                    )
             finish_code_agent_workflow_run(
                 db_path=db_path,
                 workflow_run_id=workflow_run_id,
@@ -591,9 +615,8 @@ def resume_run(run_id: str) -> StreamingResponse:
 def cancel(payload: CodeAgentCancelRequest) -> dict[str, Any]:
     # Delivery: a Stop must terminate the WHOLE session (all remaining slices),
     # not just the live slice — the session flag covers the between-slice gap.
-    session_found = request_session_cancel(payload.run_id)
-    found = request_cancel(payload.run_id)
-    return {"ok": True, "found": found or session_found, "run_id": payload.run_id}
+    found = _cancel_live_run(payload.run_id)
+    return {"ok": True, "found": found, "run_id": payload.run_id}
 
 
 @router.get("/context-profile")

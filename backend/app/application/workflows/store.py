@@ -625,6 +625,12 @@ def list_workflow_runs(
 
 
 def update_workflow_run(*, db_path: str | Path, run_id: str, now_func=now_utc, **fields: Any) -> dict[str, Any]:
+    """Update a non-cancelled run and return its current durable state.
+
+    Once cancellation is committed it is terminal. The predicate is part of the
+    UPDATE itself so a worker finishing concurrently cannot revive a run after
+    Stop with ``completed``, ``failed``, ``paused`` or ``running``.
+    """
     if not fields:
         return get_workflow_run(db_path=db_path, run_id=run_id) or {}
 
@@ -663,7 +669,10 @@ def update_workflow_run(*, db_path: str | Path, run_id: str, now_func=now_utc, *
     params.append(run_id)
     with _connect(db_path) as connection:
         connection.execute(
-            f"UPDATE workflow_runs SET {', '.join(sets)} WHERE run_id = ?",
+            (
+                f"UPDATE workflow_runs SET {', '.join(sets)} "
+                "WHERE run_id = ? AND status != 'cancelled'"
+            ),
             params,
         )
 
