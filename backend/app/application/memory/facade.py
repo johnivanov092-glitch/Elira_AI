@@ -19,7 +19,100 @@ triggering each engine's import-time DB init just by importing this module.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+_OWNERSHIP_CONTEXT_RE = re.compile(
+    r"\b(?:помни(?:шь|те)?|мы\s+(?:обсуждали|говорили)|у\s+(?:меня|нас)|"
+    r"мо(?:й|я|ё|е|и|ю|его|ей|ём|ем|ему|им|ими|их)|"
+    r"наш(?:а|е|и|у|его|ей|ем|ему|им|ими|их)?|"
+    r"remember|we\s+discussed|my|our)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_ENTITY_RE = re.compile(
+    r"(?<![\w@])(?:[A-ZА-ЯЁ][a-zа-яё]{2,}|[A-Z][A-Za-z0-9_-]{2,})(?!\w)"
+)
+_NON_ENTITY_WORDS = frozenset({
+    "авто", "без", "вот", "где", "давай", "для", "если", "зачем",
+    "как", "какая", "какие", "какой", "когда", "кто", "можно", "нужно",
+    "объясни", "покажи", "почему", "привет", "проверь", "продолжи", "сделай",
+    "такая", "такой", "что", "who", "what", "when", "where", "why", "how",
+    "explain", "show", "check", "continue", "hello", "пользователь", "мой",
+    "моя", "моё", "мои", "наш", "наша", "наше", "наши", "elira", "клиент",
+    "компания", "проект", "сервер", "заказчик", "партнёр", "партнер",
+    "сотрудник", "подрядчик", "организация", "жена", "муж", "мама", "папа",
+    "дочь", "сын", "семья", "она", "он", "они", "это", "the", "his", "her",
+})
+_TECHNICAL_ACRONYMS = frozenset({
+    "api", "cpu", "db", "gpu", "http", "https", "llm", "ocr", "rag", "ram",
+    "sql", "sse", "ssh", "stt", "tts", "ui", "ux", "vram",
+})
+_CONTEXT_SEARCH_TERMS = (
+    (re.compile(r"\bклиент\w*\b", re.IGNORECASE | re.UNICODE), "клиент"),
+    (re.compile(r"\bкомпан\w*\b", re.IGNORECASE | re.UNICODE), "компания"),
+    (re.compile(r"\bпроект\w*\b", re.IGNORECASE | re.UNICODE), "проект"),
+    (re.compile(r"\bсервер\w*\b", re.IGNORECASE | re.UNICODE), "сервер"),
+    (re.compile(r"\bзаказчик\w*\b", re.IGNORECASE | re.UNICODE), "заказчик"),
+    (re.compile(r"\bпартн[её]р\w*\b", re.IGNORECASE | re.UNICODE), "партнёр"),
+    (re.compile(r"\bсотрудник\w*\b", re.IGNORECASE | re.UNICODE), "сотрудник"),
+    (re.compile(r"\bподрядчик\w*\b", re.IGNORECASE | re.UNICODE), "подрядчик"),
+    (re.compile(r"\bорганизац\w*\b", re.IGNORECASE | re.UNICODE), "организация"),
+    (re.compile(r"\bжен(?:а|у|ы|е|ой)\b", re.IGNORECASE | re.UNICODE), "жена"),
+    (re.compile(r"\bмуж(?:а|у|ем)?\b", re.IGNORECASE | re.UNICODE), "муж"),
+    (re.compile(r"\bмам(?:а|у|ы|е|ой)\b", re.IGNORECASE | re.UNICODE), "мама"),
+    (re.compile(r"\bпап(?:а|у|ы|е|ой)\b", re.IGNORECASE | re.UNICODE), "папа"),
+    (re.compile(r"\bдоч(?:ь|ери|ерью)\b", re.IGNORECASE | re.UNICODE), "дочь"),
+    (re.compile(r"\bсын(?:а|у|ом)?\b", re.IGNORECASE | re.UNICODE), "сын"),
+    (re.compile(r"\bсемь(?:я|и|ю|ёй|е)\b", re.IGNORECASE | re.UNICODE), "семья"),
+)
+
+
+def _stored_fact_entities(text: str) -> tuple[str, ...]:
+    """Conservative named anchors; sentence capitalization alone is insufficient."""
+    entities: list[str] = []
+    seen: set[str] = set()
+    for match in _ENTITY_RE.finditer(text or ""):
+        value = match.group(0).strip()
+        folded = value.casefold()
+        if folded in _NON_ENTITY_WORDS or folded in _TECHNICAL_ACRONYMS:
+            continue
+        prefix = text[:match.start()].rstrip(" \t\"'«(")
+        sentence_initial = not prefix or prefix[-1] in ".!?\n"
+        labelled = bool(re.match(r"[\"'»)]?\s*[:—–-]", text[match.end():]))
+        suffix = text[match.end():]
+        owner = re.match(r"\s+(?:это\s+)?(?:мо[йяеёи]|наш[ае]?|наши)\s+", suffix, re.IGNORECASE)
+        related = bool(owner and any(
+            pattern.match(suffix[owner.end():]) for pattern, _ in _CONTEXT_SEARCH_TERMS
+        ))
+        identifier = any(char.isdigit() or char in "_-" for char in value) or (
+            not value.isupper() and any(char.isupper() for char in value[1:])
+        )
+        if sentence_initial and not labelled and not identifier and not related:
+            continue
+        if folded not in seen:
+            entities.append(value)
+            seen.add(folded)
+    return tuple(entities)
+
+
+def _contains_entity(text: object, entity: str) -> bool:
+    return bool(
+        re.search(
+            rf"(?<!\w){re.escape(entity)}(?!\w)",
+            str(text or ""),
+            re.IGNORECASE | re.UNICODE,
+        )
+    )
+
+
+def _topic_tokens(text: str) -> set[str]:
+    # Shared verbs/adjectives do not establish relevance to a private fact.
+    return {
+        canonical
+        for pattern, canonical in _CONTEXT_SEARCH_TERMS
+        if pattern.search(text)
+    }
 
 
 def default_profile() -> str:
@@ -140,6 +233,76 @@ def authoritative_facts(
     )
     items = result.get("items", []) or []
     return [item for item in items if is_authoritative_fact(item)][:safe_limit]
+
+
+def resolve_relevant_facts(
+    query: str,
+    *,
+    limit: int = 8,
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve trusted user context before generation, with no model call.
+
+    Every substantive query reaches the lexical facts store. Injection is then
+    gated by an explicit user/work-context cue or an exact entity found in the
+    stored fact. This includes people, clients, companies, projects,
+    servers and other user-owned entities without dumping unrelated memory.
+    """
+    normalized_query = str(query or "").strip()
+    if not normalized_query:
+        return []
+    ownership_cue = bool(_OWNERSHIP_CONTEXT_RE.search(normalized_query))
+    query_topics = _topic_tokens(normalized_query)
+
+    from app.application.memory.policy import is_authoritative_fact
+
+    safe_limit = max(1, int(limit))
+    search_limit = max(safe_limit * 3, safe_limit)
+    canonical_terms = [
+        canonical
+        for pattern, canonical in _CONTEXT_SEARCH_TERMS
+        if ownership_cue and pattern.search(normalized_query)
+    ]
+    search_query = " ".join(dict.fromkeys((normalized_query, *canonical_terms)))
+    candidates: list[dict[str, Any]] = []
+    seen_candidates: set[object] = set()
+    result = search_facts(search_query, limit=search_limit, profile=profile)
+    for item in result.get("items", []) or []:
+        identity: object = item.get("id")
+        if identity is None:
+            identity = str(item.get("text") or "").casefold()
+        if identity in seen_candidates:
+            continue
+        seen_candidates.add(identity)
+        candidates.append(item)
+    ranked: list[tuple[float, int, int, dict[str, Any]]] = []
+    for index, item in enumerate(candidates):
+        if not is_authoritative_fact(item, allow_legacy_runtime_control=True):
+            continue
+        fact_text = str(item.get("text") or "")
+        exact_entities = {
+            entity.casefold()
+            for entity in _stored_fact_entities(fact_text)
+            if _contains_entity(normalized_query, entity)
+        }
+        exact_matches = len(exact_entities)
+        topic_overlap = len(query_topics.intersection(_topic_tokens(fact_text)))
+        if exact_matches == 0 and (not ownership_cue or topic_overlap == 0):
+            continue
+        score = (
+            (100.0 + exact_matches * 10.0)
+            if exact_matches
+            else max(1.0, 20.0 + topic_overlap * 5.0 - index)
+        )
+        selected = dict(item)
+        selected["retrieval_reason"] = (
+            "exact_entity" if exact_matches else "user_context"
+        )
+        selected["retrieval_score"] = score
+        ranked.append((score, int(item.get("importance") or 0), -index, selected))
+
+    ranked.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    return [row[3] for row in ranked[:safe_limit]]
 
 
 def list_profiles() -> dict[str, Any]:

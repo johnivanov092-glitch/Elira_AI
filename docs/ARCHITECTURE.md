@@ -120,9 +120,22 @@ returns to the same `run_code_agent`, executor and provider registry.
   curated row in place, including when the wording changes completely.
   `runtime_control(memory_search)` exposes fact IDs so the agent can make that
   replacement deterministic; lexical matching remains only a compatibility
-  fallback. Operational `volatile_fact` rows are non-authoritative and
-  `memory_prune` removes only aged volatile rows in addition to the existing
-  bounded semantic-memory prune.
+  fallback. Before the first model call, the harness sends each substantive user
+  request through `memory.resolve_relevant_facts`, using a separate raw
+  `memory_query` before attachments/Library enrichment. Resume preserves this
+  field; old journals and internal callers without it disable automatic recall.
+  The compatibility `run_agent` adapter requires this field explicitly; Telegram
+  supplies it only after its existing allowlist and memory-setting checks.
+  Prompt injection is then gated by user/work context or an exact stored entity
+  (people, clients, companies, projects and
+  servers). Exact entities rank above contextual matches and the injected block
+  is bounded. Operational `volatile_fact` rows and stored harness-behaviour
+  rules are non-authoritative. Legacy `runtime_control(memory_add)` rows remain
+  subject to prompt-override filtering, and selected rows are JSON-encoded before
+  inclusion in the prompt. Legacy rows are readable only through this relevance
+  gate; new rows use server-owned source `user_command` or `user_correction`.
+  Automatic retrieval never implies automatic write. `memory_prune` removes only aged
+  volatile rows in addition to the existing bounded semantic-memory prune.
 - Legacy ToolSpec policy columns are inventory compatibility only.
 
 ## Permission selector

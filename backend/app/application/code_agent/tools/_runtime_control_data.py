@@ -74,10 +74,7 @@ def memory_control(
         return facade.add_fact(
             value,
             category=str(config.get("category") or "fact"),
-            source=str(
-                config.get("source")
-                or ("user_correction" if replacement is not None else "runtime_control")
-            ),
+            source=("user_correction" if replacement is not None else "user_command"),
             importance=int(config.get("importance") or 5),
             profile=profile,
             replaces_id=replacement,

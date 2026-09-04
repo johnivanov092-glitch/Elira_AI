@@ -209,6 +209,7 @@ def process_message(token: str, message: dict[str, Any]) -> None:
             model_name=model or "auto",
             profile_name=profile,
             user_input=text,
+            memory_query=text if use_memory else "",
             use_memory=use_memory,
             use_web_search=use_web,
             agent_id="telegram",

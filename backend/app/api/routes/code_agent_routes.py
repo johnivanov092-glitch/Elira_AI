@@ -607,6 +607,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
             # run. The runtime ends naturally or through the Stop endpoint.
             events = stream_delivery_session(
                 user_message=user_message,
+                memory_query=payload.message,
                 project_root=_resolve_project_root(payload.project_root),
                 working_dir=payload.working_dir,
                 model=payload.model,

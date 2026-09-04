@@ -226,6 +226,9 @@ def build_continuation_kwargs(
         reasoning_effort = "none"
     return {
         "user_message": user_message,
+        # Old journals may contain only enriched/model-generated text. They
+        # cannot establish the raw-user boundary for automatic memory recall.
+        "memory_query": req.get("memory_query") or "",
         "project_root": str(req.get("project_root") or ""),
         "working_dir": req.get("working_dir"),
         "model": str(req.get("model") or "auto"),
@@ -250,6 +253,7 @@ def build_continuation_kwargs(
 def stream_delivery_session(
     *,
     user_message: str,
+    memory_query: str | None = None,
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
@@ -278,6 +282,7 @@ def stream_delivery_session(
         return
     first_kwargs: dict[str, Any] = {
         "user_message": user_message,
+        "memory_query": memory_query,
         "project_root": project_root,
         "working_dir": working_dir,
         "model": model,

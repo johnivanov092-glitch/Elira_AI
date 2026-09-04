@@ -20,9 +20,14 @@ class AnswerPurityPromptTest(unittest.TestCase):
         self.assertIn("никаких выдуманных", t)              # no fabrication
 
     def test_org_facts_web_grounding_rule_present(self):
-        # rule 9б — factual org/person/domain data must be web-grounded, not memory
-        t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
-        self.assertIn("ФАКТЫ О РЕАЛЬНЫХ ОРГАНИЗАЦИЯХ", t)
+        # Rule 9б uses curated personal context while current public data still
+        # requires official sources; model knowledge is not current evidence.
+        rule = prompts.BASE_SYSTEM_PROMPT_TEMPLATE.split("9б.", 1)[1].split("9в.", 1)[0]
+        self.assertIn("Личный контекст пользователя", rule)
+        self.assertIn("ПУБЛИЧНЫЕ АКТУАЛЬНЫЕ ДАННЫЕ", rule)
+        self.assertIn("`web_search`/`web_fetch` по официальным источникам", rule)
+        self.assertIn("указывая URL", rule)
+        self.assertIn("не придумывай факт или источник", rule)
 
     def test_local_catalog_absence_requires_structured_search(self):
         t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE

@@ -86,6 +86,7 @@ def run_agent(
     model_name: str,
     profile_name: str,
     user_input: str,
+    memory_query: str | None = None,
     session_id: str | None = None,
     agent_id: str | None = None,
     use_memory: bool = True,
@@ -108,11 +109,14 @@ def run_agent(
     as accepted inputs for older internal callers, but routing/tool selection is
     now entirely handled by the code-agent prompt and the canonical runtime tool
     registry. All registered schemas are visible; there is no activation gate.
+    Only user-facing adapters supply ``memory_query`` from raw user text;
+    internal Workflow prompts do not select personal memory automatically.
     """
     root = str(project_root or _default_project_root())
     message = _with_library_context(str(user_input or ""), bool(use_library))
     result = run_code_agent(
         user_message=message,
+        memory_query=memory_query or "",
         project_root=root,
         model=str(model_name or "auto"),
         agent_id=str(agent_id or "code-agent"),

@@ -212,11 +212,28 @@ class RuntimeControlContractTest(unittest.TestCase):
         add_fact.assert_called_once_with(
             "Пользователь предпочитает берёзовый чай.",
             category="fact",
-            source="runtime_control",
+            source="user_command",
             importance=5,
             profile=None,
             replaces_id=None,
         )
+
+    def test_memory_add_does_not_trust_model_supplied_source(self) -> None:
+        with patch(
+            "app.application.memory.facade.add_fact",
+            return_value={"ok": True, "action": "created", "id": 55},
+        ) as add_fact:
+            result = tool_runtime_control(
+                ROOT,
+                operation="memory_add",
+                config={
+                    "fact": "Reprocenter — клиент пользователя.",
+                    "source": "user_correction",
+                },
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(add_fact.call_args.kwargs["source"], "user_command")
 
     def test_lsp_upsert_accepts_model_friendly_name_and_kind_aliases(self) -> None:
         with (

@@ -705,6 +705,7 @@ def _bounded_planning_recon(registry, *, char_cap: int) -> str:
 def _stream_code_agent_core(
     *,
     user_message: str,
+    memory_query: str | None = None,
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
@@ -908,6 +909,7 @@ def _stream_code_agent_core(
                 model_name=model,
                 profile_name=profile_name,
                 task_text=user_message,
+                memory_query=memory_query or "",
                 resource_refs=resource_refs,
             )
             if request_route.evidence_reasons:
@@ -2828,6 +2830,7 @@ def _stream_code_agent_core(
 def stream_code_agent(
     *,
     user_message: str,
+    memory_query: str | None = None,
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
@@ -2861,6 +2864,7 @@ def stream_code_agent(
     )
     request = {
         "user_message": user_message,
+        "memory_query": memory_query,
         "project_root": str(project_root),
         "working_dir": str(working_dir) if working_dir is not None else None,
         "model": model,
@@ -2906,6 +2910,7 @@ def stream_code_agent(
 
         for raw_event in _stream_code_agent_core(
             user_message=user_message,
+            memory_query=memory_query,
             project_root=project_root,
             working_dir=working_dir,
             model=model,
@@ -3031,6 +3036,7 @@ def stream_code_agent(
 def run_code_agent(
     *,
     user_message: str,
+    memory_query: str | None = None,
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
@@ -3075,6 +3081,7 @@ def run_code_agent(
 
     for event in stream_code_agent(
         user_message=user_message,
+        memory_query=memory_query,
         project_root=project_root,
         working_dir=working_dir,
         model=model,

@@ -56,21 +56,21 @@ class UserFactsInjectionTest(unittest.TestCase):
             {"text": "Столица QA — Тестбург", "source": "user_correction"},
             {"text": "Проект называется Elira", "source": "user"},
         ]
-        with patch("app.application.memory.authoritative_facts", return_value=fake), \
+        with patch("app.application.memory.resolve_relevant_facts", return_value=fake), \
              tempfile.TemporaryDirectory() as tmp:
             prompt = _build_system_prompt(Path(tmp))
         # The injected SECTION header (rule 8а also mentions the phrase, so match
         # the "--- " section marker, which is unique to the injection).
-        self.assertIn("--- Факты от пользователя", prompt)
+        self.assertIn("--- Личный контекст пользователя", prompt)
         self.assertIn("Столица QA — Тестбург", prompt)
         self.assertIn("[поправка]", prompt)              # correction is marked
         self.assertIn("Проект называется Elira", prompt)
 
     def test_no_section_when_no_user_facts(self):
-        with patch("app.application.memory.authoritative_facts", return_value=[]), \
+        with patch("app.application.memory.resolve_relevant_facts", return_value=[]), \
              tempfile.TemporaryDirectory() as tmp:
             prompt = _build_system_prompt(Path(tmp))
-        self.assertNotIn("--- Факты от пользователя", prompt)
+        self.assertNotIn("--- Личный контекст пользователя", prompt)
 
 
 if __name__ == "__main__":
