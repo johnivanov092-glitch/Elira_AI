@@ -470,16 +470,13 @@ def cancel_workflow_run(
     # agent steps use a deterministic child id. Signal both through the existing
     # cancellation seam before committing the durable terminal transition.
     current_step_id = str(run.get("current_step_id") or "").strip()
-    try:
-        from app.application.code_agent.agent_loop import request_cancel
+    from app.application.code_agent.agent_loop import request_cancel
 
-        request_cancel(run_id)
-        if current_step_id:
-            stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
-            code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
-            request_cancel(code_agent_run_id)
-    except Exception:
-        pass
+    request_cancel(run_id)
+    if current_step_id:
+        stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
+        code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
+        request_cancel(code_agent_run_id)
 
     return cancel_run(
         run_id=run_id,

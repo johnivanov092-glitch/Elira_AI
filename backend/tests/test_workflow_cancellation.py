@@ -42,16 +42,13 @@ def test_cancelled_background_tool_run_cannot_complete(
 ) -> None:
     started = threading.Event()
     release = threading.Event()
-    finished = threading.Event()
+    worker_errors: list[BaseException] = []
 
     def blocking_tool(*args, **kwargs):
         started.set()
-        try:
-            if not release.wait(timeout=2.0):
-                raise AssertionError("test did not release the blocking tool")
-            return {"ok": True, "text": "late success"}
-        finally:
-            finished.set()
+        if not release.wait(timeout=2.0):
+            raise AssertionError("test did not release the blocking tool")
+        return {"ok": True, "text": "late success"}
 
     monkeypatch.setattr(
         "app.application.tool_registry.service.run_tool",
@@ -76,19 +73,33 @@ def test_cancelled_background_tool_run_cannot_complete(
         },
     )
 
-    created = runtime.start_workflow_run_background(
+    created = store.create_workflow_run_record(
+        db_path=isolated_workflow_db,
         workflow_id="test.cancel-in-flight",
         context={"project_root": str(tmp_path)},
         permission_mode="bypass",
-        db_path=isolated_workflow_db,
     )
     run_id = str(created["run_id"])
+
+    def execute_run() -> None:
+        try:
+            runtime.execute_workflow_run(
+                run_id=run_id,
+                db_path=isolated_workflow_db,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            worker_errors.append(exc)
+
+    worker = threading.Thread(target=execute_run)
+    worker.start()
     assert started.wait(timeout=1.0)
 
     cancelled = runtime.cancel_workflow_run(run_id, db_path=isolated_workflow_db)
     assert cancelled["status"] == "cancelled"
     release.set()
-    assert finished.wait(timeout=1.0)
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
+    assert not worker_errors
 
     current = store.get_workflow_run(db_path=isolated_workflow_db, run_id=run_id)
     assert current is not None
@@ -102,6 +113,45 @@ def test_cancelled_background_tool_run_cannot_complete(
         event.get("payload", {}).get("run_id") == run_id
         for event in completed_events
     )
+
+
+def test_workflow_cancel_is_not_committed_when_live_cleanup_fails(
+    isolated_workflow_db: Path,
+) -> None:
+    store.create_workflow_template(
+        db_path=isolated_workflow_db,
+        template={
+            "id": "test.cancel-cleanup-failure",
+            "name": "Cancel cleanup failure",
+            "graph": {
+                "entry_step": "command",
+                "steps": [
+                    {
+                        "id": "command",
+                        "type": "tool",
+                        "tool_name": "search_memory",
+                        "next": None,
+                    }
+                ],
+            },
+        },
+    )
+    created = store.create_workflow_run_record(
+        db_path=isolated_workflow_db,
+        workflow_id="test.cancel-cleanup-failure",
+    )
+    run_id = str(created["run_id"])
+
+    with mock.patch(
+        "app.application.code_agent.agent_loop.request_cancel",
+        side_effect=RuntimeError("transport close failed"),
+    ):
+        with pytest.raises(RuntimeError, match="transport close failed"):
+            runtime.cancel_workflow_run(run_id, db_path=isolated_workflow_db)
+
+    current = store.get_workflow_run(db_path=isolated_workflow_db, run_id=run_id)
+    assert current is not None
+    assert current["status"] == "running"
 
 
 def test_closing_unfinished_stream_requests_runtime_cancellation(
