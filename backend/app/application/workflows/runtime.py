@@ -472,13 +472,20 @@ def cancel_workflow_run(
     current_step_id = str(run.get("current_step_id") or "").strip()
     from app.application.code_agent.agent_loop import request_cancel
 
-    request_cancel(run_id)
+    cleanup_errors: list[Exception] = []
+    try:
+        request_cancel(run_id)
+    except Exception as exc:
+        cleanup_errors.append(exc)
     if current_step_id:
         stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
         code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
-        request_cancel(code_agent_run_id)
+        try:
+            request_cancel(code_agent_run_id)
+        except Exception as exc:
+            cleanup_errors.append(exc)
 
-    return cancel_run(
+    cancelled = cancel_run(
         run_id=run_id,
         run=run,
         update_workflow_run=lambda current_run_id, **fields: _update_workflow_run_for_db(
@@ -490,3 +497,9 @@ def cancel_workflow_run(
         emit_workflow_event=emit_workflow_event,
         now_func=now_utc,
     )
+    if cleanup_errors:
+        raise RuntimeError(
+            f"Workflow '{run_id}' was cancelled, but live cleanup failed: "
+            f"{cleanup_errors[0]}"
+        ) from cleanup_errors[0]
+    return cancelled

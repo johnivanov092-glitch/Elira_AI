@@ -478,12 +478,18 @@ def _stream_with_workflow_requests(
             # reaches this finalizer. Reaching it means the transport actually
             # disappeared, so stop both the delivery session and its live slice
             # before closing the durable Workflow projection.
-            _cancel_live_run(code_agent_run_id)
+            cleanup_error: Exception | None = None
+            try:
+                _cancel_live_run(code_agent_run_id)
+            except Exception as exc:
+                cleanup_error = exc
             close_events = getattr(events, "close", None)
             if callable(close_events):
                 try:
                     close_events()
-                except Exception:
+                except Exception as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
                     logger.warning(
                         "code-agent stream cleanup failed for %s",
                         code_agent_run_id,
@@ -498,6 +504,11 @@ def _stream_with_workflow_requests(
                     "error": "code-agent stream closed",
                 },
             )
+            if cleanup_error is not None:
+                raise RuntimeError(
+                    f"code-agent stream closed with incomplete live cleanup: "
+                    f"{cleanup_error}"
+                ) from cleanup_error
 
 
 @router.post("/stream")

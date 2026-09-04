@@ -513,7 +513,8 @@ def submit_workflow_response(
 
 def request_cancel(run_id: str) -> bool:
     """Flip the cancel event for `run_id`. Returns True if the run was
-    known, False otherwise.
+    known, False otherwise. Raises when owned live resources cannot be stopped,
+    so callers never acknowledge an incomplete cancellation.
 
     Beyond setting the flag (read between steps), this also KILLS any live
     shell process the run launched. A blocking tool runs in a daemon worker
@@ -530,26 +531,56 @@ def request_cancel(run_id: str) -> bool:
         )
     if ev is not None:
         ev.set()
+    cleanup_errors: list[Exception] = []
     if upstream_handle is not None:
         # Do not acknowledge /cancel until the provider's HTTP response is
         # closed. The UI may safely abort its SSE reader after this returns.
-        upstream_handle.close()
+        try:
+            upstream_handle.close()
+        except Exception as exc:
+            cleanup_errors.append(exc)
 
-    # Kill live shell processes regardless of whether the event is registered,
-    # so Stop works even on a run whose event was already cleaned up.
+    # Attempt every cleanup stage even if an earlier one failed. The caller is
+    # told about any surviving transport/process only after all owners had a
+    # chance to stop.
     try:
-        from app.application.code_agent.tools import (
-            cancel_run_callbacks,
-            kill_run_processes,
-        )
+        from app.application.code_agent.tools import kill_run_processes
+
         kill_run_processes(run_id)
-        cancel_run_callbacks(run_id)
-    except Exception:
-        logger.warning("tool cancellation failed for run %s", run_id, exc_info=True)
+    except Exception as exc:
+        cleanup_errors.append(exc)
     try:
-        _stop_run_servers(run_id)
-    except Exception:
-        logger.warning("stop_run_servers failed for run %s", run_id, exc_info=True)
+        from app.application.code_agent.tools import cancel_run_callbacks
+
+        cancel_run_callbacks(run_id)
+    except Exception as exc:
+        cleanup_errors.append(exc)
+    try:
+        from app.application.code_agent.tools._run import (
+            run_owned_servers,
+            stop_run_servers,
+        )
+
+        stopped_servers = stop_run_servers(run_id)
+        failed_remote_cleanup = [
+            item
+            for item in stopped_servers
+            if item.get("remote_cleanup_status")
+            not in {None, "stopped", "already_stopped"}
+        ]
+        remaining_servers = run_owned_servers(run_id)
+        if failed_remote_cleanup or remaining_servers:
+            raise RuntimeError(
+                "background process cleanup incomplete"
+                f" (remote_failures={len(failed_remote_cleanup)},"
+                f" remaining={len(remaining_servers)})"
+            )
+    except Exception as exc:
+        cleanup_errors.append(exc)
+    if cleanup_errors:
+        raise RuntimeError(
+            f"live cleanup failed for run {run_id}: {cleanup_errors[0]}"
+        ) from cleanup_errors[0]
     return ev is not None
 
 

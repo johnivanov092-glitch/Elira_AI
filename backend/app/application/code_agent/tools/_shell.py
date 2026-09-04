@@ -182,10 +182,7 @@ def register_run_cancel_callback(
             _RUN_CANCEL_CALLBACKS.setdefault(run_id, {})[callback_id] = callback
             token = (run_id, callback_id)
     if call_now:
-        try:
-            callback()
-        except Exception:
-            pass
+        callback()
     return token
 
 
@@ -203,36 +200,71 @@ def unregister_run_cancel_callback(token: tuple[str, int] | None) -> None:
 
 
 def cancel_run_callbacks(run_id: str) -> int:
-    """Invoke and clear every active provider abort hook for ``run_id``."""
+    """Invoke every provider abort hook, retaining failed hooks for retry."""
     with _LIVE_SHELL_LOCK:
         _KILLED_RUN_IDS.add(run_id)
-        callbacks = list(_RUN_CANCEL_CALLBACKS.pop(run_id, {}).values())
+        callbacks = list(_RUN_CANCEL_CALLBACKS.get(run_id, {}).items())
     invoked = 0
-    for callback in callbacks:
+    errors: list[Exception] = []
+    for callback_id, callback in callbacks:
         try:
             callback()
             invoked += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(exc)
+            continue
+        with _LIVE_SHELL_LOCK:
+            registered = _RUN_CANCEL_CALLBACKS.get(run_id)
+            if registered and registered.get(callback_id) is callback:
+                registered.pop(callback_id, None)
+                if not registered:
+                    _RUN_CANCEL_CALLBACKS.pop(run_id, None)
+    if errors:
+        raise RuntimeError(
+            f"{len(errors)} provider cancellation callback(s) failed: {errors[0]}"
+        ) from errors[0]
     return invoked
 
 
 def kill_run_processes(run_id: str) -> int:
     """Kill every live shell process spawned by `run_id`. Called by the agent
     loop's cancel path so Stop aborts a hung command immediately. Returns the
-    number of processes signalled."""
+    number of processes confirmed stopped and raises if any remain alive."""
     with _LIVE_SHELL_LOCK:
         procs = list(_LIVE_SHELL_PROCS.get(run_id, ()))
         _KILLED_RUN_IDS.add(run_id)
     killed = 0
+    failures: list[Exception] = []
     for proc in procs:
         try:
             if proc.poll() is None:
                 _kill_proc_tree(proc)
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    # A process may exit between wait() raising and poll().
+                    pass
+                if proc.poll() is None:
+                    failures.append(
+                        RuntimeError(
+                            f"process tree {getattr(proc, 'pid', '?')} is still alive"
+                        )
+                    )
+                else:
+                    killed += 1
+        except Exception as exc:
+            try:
+                still_alive = proc.poll() is None
+            except Exception:
+                still_alive = True
+            if still_alive:
+                failures.append(exc)
+            else:
                 killed += 1
-        except Exception:
-            # Process may have already exited between poll and kill.
-            pass
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} process tree(s) could not be terminated: {failures[0]}"
+        ) from failures[0]
     return killed
 
 

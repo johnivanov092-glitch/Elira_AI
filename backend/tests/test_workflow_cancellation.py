@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -14,6 +15,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes import code_agent_routes  # noqa: E402
+from app.application.code_agent import agent_loop  # noqa: E402
+from app.application.code_agent.tools import _shell  # noqa: E402
 from app.application.event_bus import runtime as event_bus  # noqa: E402
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.application.workflows import runtime, store  # noqa: E402
@@ -115,7 +118,7 @@ def test_cancelled_background_tool_run_cannot_complete(
     )
 
 
-def test_workflow_cancel_is_not_committed_when_live_cleanup_fails(
+def test_workflow_cancel_is_committed_but_error_surfaces_when_live_cleanup_fails(
     isolated_workflow_db: Path,
 ) -> None:
     store.create_workflow_template(
@@ -151,7 +154,43 @@ def test_workflow_cancel_is_not_committed_when_live_cleanup_fails(
 
     current = store.get_workflow_run(db_path=isolated_workflow_db, run_id=run_id)
     assert current is not None
-    assert current["status"] == "running"
+    assert current["status"] == "cancelled"
+
+
+def test_request_cancel_surfaces_provider_callback_failure() -> None:
+    run_id = "provider-cleanup-failure"
+    callback = mock.Mock(side_effect=RuntimeError("provider close failed"))
+    context_token = _shell.set_current_run_id(run_id)
+    try:
+        callback_token = _shell.register_run_cancel_callback(callback)
+    finally:
+        _shell.reset_current_run_id(context_token)
+
+    try:
+        with pytest.raises(RuntimeError, match="provider close failed"):
+            agent_loop.request_cancel(run_id)
+        callback.assert_called_once_with()
+    finally:
+        _shell.unregister_run_cancel_callback(callback_token)
+        _shell.clear_run_stop_marker(run_id)
+
+
+def test_kill_run_processes_surfaces_process_that_remains_alive() -> None:
+    run_id = "process-cleanup-failure"
+    process = mock.Mock(pid=7312)
+    process.poll.return_value = None
+    process.wait.side_effect = subprocess.TimeoutExpired("tool", 5)
+    with _shell._LIVE_SHELL_LOCK:
+        _shell._LIVE_SHELL_PROCS[run_id] = {process}
+
+    try:
+        with mock.patch.object(_shell, "_kill_proc_tree"):
+            with pytest.raises(RuntimeError, match="still alive"):
+                _shell.kill_run_processes(run_id)
+    finally:
+        with _shell._LIVE_SHELL_LOCK:
+            _shell._LIVE_SHELL_PROCS.pop(run_id, None)
+        _shell.clear_run_stop_marker(run_id)
 
 
 def test_closing_unfinished_stream_requests_runtime_cancellation(
@@ -219,3 +258,37 @@ def test_completed_stream_does_not_request_runtime_cancellation(
     )
     assert projected is not None
     assert projected["status"] == "completed"
+
+
+def test_stream_cleanup_failure_still_commits_cancelled_projection(
+    isolated_workflow_db: Path,
+) -> None:
+    run_id = "disconnect-cleanup-failure"
+    events = iter([
+        {"type": "run_started", "run_id": run_id},
+        {"type": "heartbeat", "run_id": run_id},
+    ])
+
+    with (
+        mock.patch.object(code_agent_routes, "request_session_cancel"),
+        mock.patch.object(
+            code_agent_routes,
+            "request_cancel",
+            side_effect=RuntimeError("provider close failed"),
+        ),
+    ):
+        stream = code_agent_routes._stream_with_workflow_requests(
+            events,
+            code_agent_run_id=run_id,
+            permission_mode="ask",
+        )
+        assert next(stream)["type"] == "run_started"
+        with pytest.raises(RuntimeError, match="provider close failed"):
+            stream.close()
+
+    projected = store.get_workflow_run(
+        db_path=isolated_workflow_db,
+        run_id=code_agent_routes._composer_workflow_run_id(run_id),
+    )
+    assert projected is not None
+    assert projected["status"] == "cancelled"
