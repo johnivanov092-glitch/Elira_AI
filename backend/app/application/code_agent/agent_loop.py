@@ -414,15 +414,6 @@ def _run_owned_servers(run_id: str) -> list[dict]:
         return []
 
 
-def _stop_run_servers(run_id: str) -> list[dict]:
-    """Stop every server this run started after an explicit Workflow Stop."""
-    try:
-        from app.application.code_agent.tools._run import stop_run_servers
-        return stop_run_servers(run_id)
-    except Exception:
-        return []
-
-
 def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
                               text_result: str, tool_ok: bool, auto: bool = False) -> bool:
     """Feed one executed tool call into the observational criterion tracker.

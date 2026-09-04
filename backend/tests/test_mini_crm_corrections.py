@@ -396,7 +396,6 @@ def _loop_env():
          patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS)), \
          patch.object(agent_loop, "_server_url_alive", return_value=True), \
          patch.object(agent_loop, "_run_owned_servers", return_value=[]), \
-         patch.object(agent_loop, "_stop_run_servers", return_value=[]), \
          patch.object(agent_loop.time, "monotonic", _CLOCK):
         yield
 
