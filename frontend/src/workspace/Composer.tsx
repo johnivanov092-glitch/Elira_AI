@@ -37,7 +37,7 @@ export function Composer({
   sessionId: string;
   onPlus: () => void;
   onPlugins: () => void;
-  onSend: (text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => void;
+  onSend: (text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => Promise<boolean>;
   /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
    *  pick one of the 4 backend workflow templates. */
   onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) => void;
@@ -107,6 +107,8 @@ export function Composer({
   // drains — so the message goes out WITH the attachments instead of silently
   // dropping the not-yet-ready ones.
   const [pendingSend, setPendingSend] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const submitRef = useRef<() => void>(() => {});
   const usage = contextUsage
@@ -138,7 +140,7 @@ export function Composer({
 
   function submit() {
     const text = value.trim();
-    if (!text || running) return;
+    if (!text || running || submittingRef.current) return;
     // Multi-agent runs through a separate pipeline endpoint that takes only the
     // query (no chat attachments). Route there and keep any staged files intact.
     if (multiAgent) {
@@ -156,9 +158,18 @@ export function Composer({
     // Only successfully-uploaded resources ride along; failed chips are dropped.
     const ready = attachments.filter((a) => a.status === "ready");
     const staged = ready.length ? ready : undefined;
-    onSend(text, mode, staged, permissionMode, reasoningEffort);
-    onChange("");
-    setAttachments([]);
+    submittingRef.current = true;
+    setSubmitting(true);
+    void onSend(text, mode, staged, permissionMode, reasoningEffort)
+      .then((started) => {
+        if (!started) return;
+        onChange("");
+        setAttachments([]);
+      })
+      .finally(() => {
+        submittingRef.current = false;
+        setSubmitting(false);
+      });
   }
 
   // Keep a ref to the latest submit() so the deferred-send effect always calls
@@ -247,7 +258,7 @@ export function Composer({
             effort={reasoningEffort}
             onChange={setReasoningEffort}
           />
-          <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
+          <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running || submitting} />
           <MultiAgentChip
             active={multiAgent}
             useOrchestrator={useOrchestrator}
@@ -350,6 +361,7 @@ export function Composer({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKey}
+            disabled={submitting}
             placeholder="Опиши задачу или перетащи файл…  Enter — отправить"
             className="max-h-[120px] flex-1 resize-none bg-transparent text-sm text-tx outline-none placeholder:text-mut"
           />
@@ -366,7 +378,7 @@ export function Composer({
             <button
               type="button"
               onClick={submit}
-              disabled={!value.trim()}
+              disabled={submitting || !value.trim()}
               aria-label="Отправить"
               title={pendingSend ? "Отправлю, как только загрузится файл" : undefined}
               className={cn(
@@ -374,7 +386,7 @@ export function Composer({
                 value.trim() ? "bg-ac" : "cursor-not-allowed bg-ac/40",
               )}
             >
-              {pendingSend ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              {pendingSend || submitting ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
             </button>
           )}
         </div>

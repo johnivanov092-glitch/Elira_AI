@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bindingFromSession, persistProjectSelection } from "./sessionBinding";
+import { bindingFromSession, persistProjectSelection, startWithServerSession } from "./sessionBinding";
 
 describe("per-session project binding", () => {
   it("does not inherit the previously displayed project or model", () => {
@@ -26,5 +26,34 @@ describe("per-session project binding", () => {
     const patchSession = vi.fn();
     await expect(persistProjectSelection(null, "C:/CRM BOT", patchSession)).resolves.toBe(false);
     expect(patchSession).not.toHaveBeenCalled();
+  });
+
+  it("creates a server session before starting the first run", async () => {
+    const order: string[] = [];
+    const createSession = vi.fn(async () => {
+      order.push("created");
+      return "s-1";
+    });
+    const startRun = vi.fn((sessionId: string) => order.push(`started:${sessionId}`));
+
+    await expect(startWithServerSession(null, createSession, startRun)).resolves.toBe("s-1");
+    expect(order).toEqual(["created", "started:s-1"]);
+  });
+
+  it("starts an existing server session without creating another one", async () => {
+    const createSession = vi.fn();
+    const startRun = vi.fn();
+
+    await expect(startWithServerSession("s-existing", createSession, startRun)).resolves.toBe("s-existing");
+    expect(createSession).not.toHaveBeenCalled();
+    expect(startRun).toHaveBeenCalledWith("s-existing");
+  });
+
+  it("does not start a run when server session creation fails", async () => {
+    const createSession = vi.fn().mockRejectedValue(new Error("offline"));
+    const startRun = vi.fn();
+
+    await expect(startWithServerSession(null, createSession, startRun)).rejects.toThrow("offline");
+    expect(startRun).not.toHaveBeenCalled();
   });
 });

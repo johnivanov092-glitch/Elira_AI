@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
+from dataclasses import dataclass, field
 
 from app.application.persona import evolution as persona_evolution
 from app.application.persona import store as persona_store
@@ -12,6 +14,75 @@ from app.core.persona_defaults import (
     PERSONA_MODES,
     PROFILE_MODE_OVERLAYS,
 )
+
+
+logger = logging.getLogger(__name__)
+
+PERSONA_PROMPT_CHAR_BUDGET = 1300
+_PROMOTED_TRAIT_CHAR_BUDGET = 96
+_PROMOTED_TRAIT_LAYERS = (
+    "behavior_rules",
+    "preferences",
+    "voice",
+    "values",
+    "tool_style",
+)
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit == 1:
+        return "…"
+    return text[: limit - 1].rstrip() + "…"
+
+
+@dataclass
+class PersonaPostTurnObservation:
+    """Trusted user-chat observation collected from the public SSE stream."""
+
+    dialog_id: str
+    session_id: str
+    profile_name: str
+    model_name: str
+    user_input: str
+    answer_text: str = ""
+    completed: bool = False
+    _persisted: bool = field(default=False, init=False, repr=False)
+
+    def record_event(self, event: dict[str, object]) -> None:
+        event_type = str(event.get("type") or "")
+        if event_type == "final_response":
+            self.answer_text = str(event.get("text") or "").strip()
+        elif event_type == "done":
+            self.completed = bool(event.get("ok")) and (
+                str(event.get("stop_reason") or "") == "answer"
+            )
+
+    def persist(self) -> None:
+        if self._persisted or not self.completed or not self.answer_text:
+            return
+        self._persisted = True
+        try:
+            observe_dialogue(
+                dialog_id=self.dialog_id,
+                session_id=self.session_id,
+                profile_name=self.profile_name,
+                model_name=self.model_name,
+                user_input=self.user_input,
+                answer_text=self.answer_text,
+                route=self.profile_name,
+                outcome_ok=True,
+            )
+        except Exception:
+            logger.warning(
+                "persona observation failed for user dialogue %s",
+                self.dialog_id,
+                exc_info=True,
+            )
 
 
 def to_mode(name: str) -> str:
@@ -77,16 +148,15 @@ def _honesty_boundary(payload: dict) -> str:
     return ""
 
 
-def _prompt_rules(payload: dict, limit: int = 3) -> list[str]:
-    """Prefer promoted traits, then fill the bounded block with core rules.
+def _promoted_traits(payload: dict) -> list[str]:
+    """Return at most one bounded promoted trait from every supported layer.
 
     Persona evolution appends accepted traits to their semantic layer. Compare
     each layer with the immutable base payload so promoted ``preferences``,
-    ``voice`` and ``values`` affect the live prompt too, without growing it on
-    every promotion.
+    ``voice`` and ``values`` cannot be starved by earlier-layer promotions.
     """
-    evolved: list[str] = []
-    for layer in ("behavior_rules", "preferences", "voice", "values", "tool_style"):
+    promoted: list[str] = []
+    for layer in _PROMOTED_TRAIT_LAYERS:
         base_items = {
             str(item).strip()
             for item in ELIRA_PERSONA_BASE_PAYLOAD.get(layer, [])
@@ -97,15 +167,32 @@ def _prompt_rules(payload: dict, limit: int = 3) -> list[str]:
             continue
         for item in reversed(current_items):
             text = str(item).strip()
-            if text and text not in base_items and text not in evolved:
-                evolved.append(text)
+            if text and text not in base_items:
+                bounded = _bounded_text(text, _PROMOTED_TRAIT_CHAR_BUDGET)
+                if bounded and bounded not in promoted:
+                    promoted.append(bounded)
+                break
+    return promoted
 
+
+def _core_rules(limit: int = 3) -> list[str]:
     core_rules = [
         str(item).strip()
         for item in ELIRA_PERSONA_BASE_PAYLOAD["behavior_rules"]
         if str(item).strip()
     ]
-    return (evolved + [item for item in core_rules if item not in evolved])[:limit]
+    return core_rules[:limit]
+
+
+def _fit_persona_prompt(body_lines: list[str], tail_lines: list[str]) -> str:
+    """Keep identity/calibration and fit lower-priority prose into the budget."""
+    tail = "\n".join(line for line in tail_lines if line)
+    body = "\n".join(line for line in body_lines if line)
+    separator = "\n" if body and tail else ""
+    available = PERSONA_PROMPT_CHAR_BUDGET - len(tail) - len(separator)
+    if available <= 0:
+        return _bounded_text(tail, PERSONA_PROMPT_CHAR_BUDGET)
+    return _bounded_text(body, available) + separator + tail
 
 
 def build_persona_prompt(
@@ -132,7 +219,7 @@ def build_persona_prompt(
         DEFAULT_MODEL_CALIBRATION
     )
 
-    rules = _prompt_rules(payload, limit=3)
+    rules = _core_rules(limit=3)
     # Always surface the honesty boundary: it lives in `boundaries` (not
     # behavior_rules), so the limit=3 cut above would otherwise drop it. For an
     # agent that acts on the real filesystem this is the most load-bearing rule.
@@ -141,7 +228,7 @@ def build_persona_prompt(
         rules = [*rules, honesty]
     rules_block = "\n".join(f"- {item}" for item in rules)
 
-    lines = [
+    body_lines = [
         "Ты — Elira, AI-ассистентка пользователя в Elira AI.",
         "Миссия: помогать честно, ясно и практически. Не выдумывать факты и не выдавать намерение за результат.",
         _short_profile_line(profile_key) + ".",
@@ -152,20 +239,30 @@ def build_persona_prompt(
     try:
         from app.application.persona.mood import mood_overlay_line
 
-        lines.append(mood_overlay_line())
+        body_lines.append(mood_overlay_line())
     except Exception:
         pass
 
-    lines += [
+    body_lines.append(
         f"Правила:\n{rules_block}",
-        f"Идентичность: ты Elira, никогда не называй себя именем модели или языковой моделью.",
-        _calibration_pragma(calibration_payload),
-    ]
+    )
 
     if task_context.strip():
-        lines.append(task_context.strip())
+        body_lines.append(task_context.strip())
 
-    return "\n".join(lines)
+    promoted = _promoted_traits(payload)
+    tail_lines = []
+    if promoted:
+        tail_lines.append(
+            "Развившиеся черты:\n" + "\n".join(f"- {item}" for item in promoted)
+        )
+    tail_lines.extend(
+        [
+            "Идентичность: ты Elira, никогда не называй себя именем модели или языковой моделью.",
+            _calibration_pragma(calibration_payload),
+        ]
+    )
+    return _fit_persona_prompt(body_lines, tail_lines)
 
 
 persona_store.bootstrap_if_needed()

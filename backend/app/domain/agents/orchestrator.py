@@ -22,7 +22,6 @@ from app.domain.agents.orchestrator_runtime import (
     build_self_improving_result,
     build_v8_state,
     normalize_v8_route,
-    observe_persona_dialogue,
     select_v8_graph,
 )
 from app.domain.agents.self_improve_runtime import run_self_improve_iterations
@@ -93,20 +92,6 @@ def run_agent_v8(
 
     latency = round(time.time() - run_started, 3)
     reflection = state.get("reflection", {}) or {}
-    answer_ok = bool(state.get("answer", "").strip()) and not state.get("failed_node")
-
-    persona_meta = observe_persona_dialogue(
-        dialog_id=run_id,
-        session_id=run_id,
-        profile_name=memory_profile,
-        model_name=model_name,
-        user_input=task,
-        answer_text=state.get("answer", ""),
-        route=mode,
-        reflection=reflection,
-        outcome_ok=answer_ok,
-    )
-
     return build_run_agent_v8_result(
         run_id=run_id,
         mode=mode,
@@ -116,7 +101,7 @@ def run_agent_v8(
         graph=graph,
         state=state,
         latency=latency,
-        persona_meta=persona_meta,
+        persona_meta=None,
     )
 
 
@@ -168,23 +153,11 @@ def run_self_improving_agent(
     reflection: dict | Any = loop_result.get("reflection", {}) or {}
     iterations = loop_result.get("iterations", [])
 
-    persona_meta = observe_persona_dialogue(
-        dialog_id=run_id or f"self-improve-{memory_profile}",
-        session_id=run_id or f"self-improve-{memory_profile}",
-        profile_name=memory_profile,
-        model_name=model_name,
-        user_input=task,
-        answer_text=answer,
-        route="self_improve",
-        reflection=reflection if isinstance(reflection, dict) else {},
-        outcome_ok=bool(answer.strip()),
-    )
-
     return build_self_improving_result(
         run_id=run_id,
         base=base,
         answer=answer,
         iterations=iterations,
         reflection=reflection,
-        persona_meta=persona_meta,
+        persona_meta=None,
     )

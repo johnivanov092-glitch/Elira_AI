@@ -20,6 +20,7 @@ from urllib.parse import urlparse, urlunparse
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from app.application.code_agent.agent_loop import (
     DEFAULT_MODEL,
@@ -41,6 +42,7 @@ from app.application.code_agent.delivery_session import (
 from app.application.code_agent import sessions as session_store
 from app.application.chat.local_chat import resolve_persona_mode
 from app.application.library.runtime import inject_library_context
+from app.application.persona.service import PersonaPostTurnObservation
 from app.core.data_files import data_subdir
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
@@ -333,6 +335,37 @@ class CodeAgentStreamRequest(CodeAgentRequest):
     )
 
 
+def _persona_observation(
+    *,
+    dialog_id: str,
+    session_id: object,
+    profile_name: str,
+    model_name: str,
+    user_input: str,
+) -> PersonaPostTurnObservation | None:
+    """Build an observation only for a server-owned user chat session."""
+    trusted_session_id = str(session_id or "").strip()
+    if not trusted_session_id:
+        return None
+    try:
+        if session_store.get_session(trusted_session_id) is None:
+            return None
+    except Exception:
+        logger.warning(
+            "persona provenance check failed for session %s",
+            trusted_session_id,
+            exc_info=True,
+        )
+        return None
+    return PersonaPostTurnObservation(
+        dialog_id=dialog_id,
+        session_id=trusted_session_id,
+        profile_name=profile_name,
+        model_name=model_name,
+        user_input=user_input,
+    )
+
+
 class CodeAgentCancelRequest(BaseModel):
     run_id: str
 
@@ -555,6 +588,18 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
         ),
         query=payload.message,
     )
+    profile_name = resolve_persona_mode(
+        payload.profile_name,
+        payload.message,
+        history,
+    )
+    persona_observation = _persona_observation(
+        dialog_id=run_id,
+        session_id=payload.session_id,
+        profile_name=profile_name,
+        model_name=payload.model,
+        user_input=payload.message,
+    )
 
     def gen():
         try:
@@ -574,11 +619,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 # Route Auto from the user's actual request, not from injected
                 # attachment/library text. Terse continuations may use recent
                 # chat history to retain the previous task profile.
-                profile_name=resolve_persona_mode(
-                    payload.profile_name,
-                    payload.message,
-                    history,
-                ),
+                profile_name=profile_name,
                 permission_mode=payload.permission_mode,
                 thinking=payload.thinking,
                 reasoning_effort=payload.reasoning_effort,
@@ -589,6 +630,8 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 code_agent_run_id=run_id,
                 permission_mode=payload.permission_mode,
             ):
+                if persona_observation is not None:
+                    persona_observation.record_event(event)
                 yield _sse_format(event)
         except Exception as exc:
             yield _sse_format({
@@ -601,6 +644,11 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
     return StreamingResponse(
         gen(),
         media_type="text/event-stream",
+        background=(
+            BackgroundTask(persona_observation.persist)
+            if persona_observation is not None
+            else None
+        ),
         headers={
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
@@ -628,6 +676,14 @@ def resume_run(run_id: str) -> StreamingResponse:
     attempt_number = int(state.get("resume_count") or 0) + 2
     root_workflow_run_id = _composer_workflow_run_id(run_id)
     workflow_run_id = _composer_workflow_attempt_run_id(run_id, attempt_number)
+    profile_name = str(request_data.get("profile_name") or "Инженерный")
+    persona_observation = _persona_observation(
+        dialog_id=f"{run_id}:attempt-{attempt_number}",
+        session_id=request_data.get("session_id"),
+        profile_name=profile_name,
+        model_name=str(request_data.get("model") or "auto"),
+        user_input=str(request_data.get("user_message") or ""),
+    )
 
     def gen():
         # Delivery: manual Resume is one user action — it gets the enriched
@@ -646,11 +702,18 @@ def resume_run(run_id: str) -> StreamingResponse:
             workflow_root_run_id=root_workflow_run_id,
             workflow_attempt_number=attempt_number,
         ):
+            if persona_observation is not None:
+                persona_observation.record_event(event)
             yield _sse_format(event)
 
     return StreamingResponse(
         gen(),
         media_type="text/event-stream",
+        background=(
+            BackgroundTask(persona_observation.persist)
+            if persona_observation is not None
+            else None
+        ),
         headers={
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",

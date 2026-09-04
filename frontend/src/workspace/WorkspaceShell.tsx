@@ -29,7 +29,7 @@ import { Settings, type SettingsSection } from "./Settings";
 import { WorkflowRequestTray } from "./WorkflowRequestCard";
 import { useAgentRun } from "./useAgentRun";
 import * as bg from "./backgroundRuns";
-import { bindingFromSession, persistProjectSelection } from "./sessionBinding";
+import { bindingFromSession, persistProjectSelection, startWithServerSession } from "./sessionBinding";
 import { taskHistoryItems } from "./taskHistory";
 
 let _draftSeq = 0;
@@ -61,6 +61,7 @@ export default function WorkspaceShell() {
   // session id exists), or the server id once a saved chat is opened. The manager
   // is rekeyed from draft -> server id when createCodeSession resolves.
   const [activeKey, setActiveKey] = useState<string>(() => newDraftKey());
+  const activeKeyRef = useRef(activeKey);
   // FIX-3: when a session fails to LOAD (network / 5xx, not a genuine 404) we must
   // not seed a blank transcript or arm persist — otherwise the next save overwrites
   // the real turns on the server. Track failed keys to also block sending on them,
@@ -104,8 +105,11 @@ export default function WorkspaceShell() {
         // navigated away in the meantime.
         bg.rekey(runKey, s.id);
         bg.setPersist(s.id, makePersist(s.id, proj, mdl));
-        setActiveKey((cur) => (cur === runKey ? s.id : cur));
-        setSessionId((cur) => (cur === runKey || cur === null ? s.id : cur));
+        if (activeKeyRef.current === runKey) {
+          activeKeyRef.current = s.id;
+          setActiveKey(s.id);
+          setSessionId(s.id);
+        }
         refreshSessions();
         return s.id;
       })
@@ -210,28 +214,48 @@ export default function WorkspaceShell() {
     }
   }
 
-  function onSend(text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) {
+  async function onSend(text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort): Promise<boolean> {
     // No project required: the backend defaults to a scratch workspace, so chat
     // works out of the box. Picking a folder targets a specific project.
     const msg = text.trim();
-    if (!msg) return;
+    if (!msg) return false;
     // FIX-3: refuse to send into a chat whose history failed to load — persisting
     // this run would overwrite the intact server turns with a blank transcript.
     if (loadFailedKeys.current.has(activeKey)) {
       setLoadError("Чат не загрузился — не отправляю, чтобы не потерять историю. Открой чат заново.");
-      return;
+      return false;
     }
-    // Bind persistence to THIS run's key before it starts, so the run saves
-    // itself when it finishes — even if you've switched to another chat by then
-    // (background completion). The closure captures the run's own project/model.
-    bg.setPersist(activeKey, makePersist(activeKey, project, model));
-    run.send(text, mode, resources, permissionMode, reasoningEffort);
-    // Create the session eagerly so it appears in the sidebar as soon as you
-    // send — not only when the run finishes. ensureServerId dedupes against the
-    // persist closure's own lazy create, so the run is saved exactly once.
-    if (!sessionId && !keyToServerId.current.has(activeKey)) {
-      void ensureServerId(activeKey, msg.slice(0, 48) || "Новый чат", project, model)
-        .catch(() => { /* offline; the persist closure retries the create */ });
+    const runKey = activeKey;
+    try {
+      const resolvedSessionId = await startWithServerSession(
+        sessionId,
+        () => ensureServerId(runKey, msg.slice(0, 48) || "Новый чат", project, model),
+        (resolvedSessionId) => {
+          bg.setPersist(resolvedSessionId, makePersist(resolvedSessionId, project, model));
+          bg.send({
+            sessionId: resolvedSessionId,
+            text,
+            mode,
+            projectRoot: project,
+            model,
+            resources,
+            profileName: "Авто",
+            permissionMode,
+            reasoningEffort,
+          });
+        },
+      );
+      // The run may legitimately continue in the background after the user
+      // switches chats. Only the still-owned composer may clear shared input.
+      const stillOwned = activeKeyRef.current === resolvedSessionId;
+      if (stillOwned) setLoadError(null);
+      return stillOwned;
+    } catch {
+      const reboundId = keyToServerId.current.get(runKey);
+      if (activeKeyRef.current === runKey || activeKeyRef.current === reboundId) {
+        setLoadError("Не удалось создать чат на сервере. Сообщение не отправлено.");
+      }
+      return false;
     }
   }
 
@@ -253,6 +277,7 @@ export default function WorkspaceShell() {
     // A new chat gets a fresh draft key. The previous chat's run (if any) keeps
     // streaming in the background under its own key — switching never cancels it.
     const key = newDraftKey();
+    activeKeyRef.current = key;
     setActiveKey(key);
     bg.seed(key, []);
     setSessionId(null);
@@ -268,6 +293,7 @@ export default function WorkspaceShell() {
     keyToServerId.current.set(id, id);
     // Switch the displayed run to this session's key. If it already has a live
     // background run, seed() is a no-op and we re-attach to the running snapshot.
+    activeKeyRef.current = id;
     setActiveKey(id);
     try {
       const s = await getCodeSession(id);
@@ -312,6 +338,7 @@ export default function WorkspaceShell() {
     keyToServerId.current.delete(id);
     if (id === sessionId || id === activeKey) {
       const key = newDraftKey();
+      activeKeyRef.current = key;
       setActiveKey(key);
       bg.seed(key, []);
       setSessionId(null);
