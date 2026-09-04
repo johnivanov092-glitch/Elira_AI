@@ -164,16 +164,23 @@ def start_code_agent_workflow_run(
     workflow_run_id: str,
     code_agent_run_id: str,
     permission_mode: str,
-    context: dict[str, Any] | None = None,
+    workflow_root_run_id: str | None = None,
+    attempt_number: int = 1,
 ) -> dict[str, Any]:
     from app.application.workflows.store import init_db
 
+    if attempt_number < 1:
+        raise ValueError("Workflow attempt_number must be greater than zero")
     init_db(db_path=db_path)
     run = create_runtime_workflow_run_record(
         db_path=db_path,
         run_id=workflow_run_id,
         workflow_id=_CODE_AGENT_WORKFLOW_ID,
-        context={**(context or {}), "code_agent_run_id": code_agent_run_id},
+        context={
+            "workflow_root_run_id": workflow_root_run_id or workflow_run_id,
+            "attempt_number": attempt_number,
+            "code_agent_run_id": code_agent_run_id,
+        },
         trigger_source=_CODE_AGENT_TRIGGER_SOURCE,
         permission_mode=permission_mode,
     )

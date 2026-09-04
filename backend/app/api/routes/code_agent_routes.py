@@ -403,7 +403,8 @@ def _stream_with_workflow_requests(
     code_agent_run_id: str,
     permission_mode: str,
     workflow_run_id: str | None = None,
-    workflow_context: dict[str, Any] | None = None,
+    workflow_root_run_id: str | None = None,
+    workflow_attempt_number: int = 1,
 ):
     """Project direct-stream requests into the durable Workflow control plane."""
     from app.application.workflows.db_path import get_workflow_db_path
@@ -431,18 +432,17 @@ def _stream_with_workflow_requests(
         # attempt already executing under the same code-agent run id.
         yield first_event
         return
-    root_workflow_run_id = _composer_workflow_run_id(code_agent_run_id)
+    root_workflow_run_id = workflow_root_run_id or _composer_workflow_run_id(
+        code_agent_run_id
+    )
     workflow_run_id = workflow_run_id or root_workflow_run_id
     workflow_run = start_code_agent_workflow_run(
         db_path=db_path,
         workflow_run_id=workflow_run_id,
         code_agent_run_id=code_agent_run_id,
         permission_mode=permission_mode,
-        context={
-            "workflow_root_run_id": root_workflow_run_id,
-            "attempt_number": 1,
-            **(workflow_context or {}),
-        },
+        workflow_root_run_id=root_workflow_run_id,
+        attempt_number=workflow_attempt_number,
     )
     terminal_seen = False
     try:
@@ -642,10 +642,8 @@ def resume_run(run_id: str) -> StreamingResponse:
             code_agent_run_id=run_id,
             permission_mode=permission_mode,
             workflow_run_id=workflow_run_id,
-            workflow_context={
-                "workflow_root_run_id": root_workflow_run_id,
-                "attempt_number": attempt_number,
-            },
+            workflow_root_run_id=root_workflow_run_id,
+            workflow_attempt_number=attempt_number,
         ):
             yield _sse_format(event)
 
