@@ -13,6 +13,7 @@ import json
 import hashlib
 import logging
 import uuid
+from itertools import chain
 from typing import Any, Callable, Literal, Optional
 from urllib.parse import urlparse, urlunparse
 
@@ -381,6 +382,14 @@ def _composer_workflow_run_id(code_agent_run_id: str) -> str:
     return f"wfr-code-{digest}"
 
 
+def _composer_workflow_attempt_run_id(
+    code_agent_run_id: str,
+    attempt_number: int,
+) -> str:
+    root_run_id = _composer_workflow_run_id(code_agent_run_id)
+    return f"{root_run_id}-a{attempt_number}-{uuid.uuid4().hex[:8]}"
+
+
 def _cancel_live_run(run_id: str) -> bool:
     """Stop the delivery session and whichever live slice currently owns it."""
     session_found = request_session_cancel(run_id)
@@ -393,6 +402,8 @@ def _stream_with_workflow_requests(
     *,
     code_agent_run_id: str,
     permission_mode: str,
+    workflow_run_id: str | None = None,
+    workflow_context: dict[str, Any] | None = None,
 ):
     """Project direct-stream requests into the durable Workflow control plane."""
     from app.application.workflows.db_path import get_workflow_db_path
@@ -406,16 +417,36 @@ def _stream_with_workflow_requests(
 
     db_path = get_workflow_db_path()
     init_db(db_path=db_path)
-    workflow_run_id = _composer_workflow_run_id(code_agent_run_id)
+    event_iterator = iter(events)
+    try:
+        first_event = next(event_iterator)
+    except StopIteration:
+        return
+    if (
+        str(first_event.get("type") or "") == "done"
+        and str(first_event.get("error") or "")
+        == "delivery_session_already_active"
+    ):
+        # This response belongs to the rejected second reader, not to the
+        # attempt already executing under the same code-agent run id.
+        yield first_event
+        return
+    root_workflow_run_id = _composer_workflow_run_id(code_agent_run_id)
+    workflow_run_id = workflow_run_id or root_workflow_run_id
     workflow_run = start_code_agent_workflow_run(
         db_path=db_path,
         workflow_run_id=workflow_run_id,
         code_agent_run_id=code_agent_run_id,
         permission_mode=permission_mode,
+        context={
+            "workflow_root_run_id": root_workflow_run_id,
+            "attempt_number": 1,
+            **(workflow_context or {}),
+        },
     )
     terminal_seen = False
     try:
-        for event in events:
+        for event in chain((first_event,), event_iterator):
             event_type = str(event.get("type") or "")
             request_spec: WorkflowRequestSpec | None = None
             if event_type == "workflow_request":
@@ -593,6 +624,9 @@ def resume_run(run_id: str) -> StreamingResponse:
     request_data = state.get("request") or {}
     if not isinstance(request_data, dict):
         raise HTTPException(status_code=409, detail=f"run request is invalid: {run_id}")
+    attempt_number = int(state.get("resume_count") or 0) + 2
+    root_workflow_run_id = _composer_workflow_run_id(run_id)
+    workflow_run_id = _composer_workflow_attempt_run_id(run_id, attempt_number)
 
     def gen():
         # Delivery: manual Resume is one user action — it gets the enriched
@@ -607,6 +641,11 @@ def resume_run(run_id: str) -> StreamingResponse:
             events,
             code_agent_run_id=run_id,
             permission_mode=permission_mode,
+            workflow_run_id=workflow_run_id,
+            workflow_context={
+                "workflow_root_run_id": root_workflow_run_id,
+                "attempt_number": attempt_number,
+            },
         ):
             yield _sse_format(event)
 

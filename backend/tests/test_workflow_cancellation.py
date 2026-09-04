@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +17,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes import code_agent_routes  # noqa: E402
+from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
 from app.application.code_agent import agent_loop  # noqa: E402
+from app.application.code_agent.run_journal import RunJournal  # noqa: E402
 from app.application.code_agent.tools import _shell  # noqa: E402
 from app.application.event_bus import runtime as event_bus  # noqa: E402
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
@@ -292,3 +296,175 @@ def test_stream_cleanup_failure_still_commits_cancelled_projection(
     )
     assert projected is not None
     assert projected["status"] == "cancelled"
+
+
+def test_resume_creates_a_new_workflow_attempt_and_keeps_cancelled_attempt_terminal(
+    isolated_workflow_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = "resume-attempt-run"
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    app = FastAPI()
+    app.include_router(code_agent_routes.router)
+    app.include_router(workflow_router)
+
+    initial_events = iter([
+        {"type": "run_started", "run_id": run_id},
+        {
+            "type": "done",
+            "run_id": run_id,
+            "ok": False,
+            "stop_reason": "cancelled",
+            "completion_status": "none",
+            "resumable": True,
+        },
+    ])
+    with (
+        TestClient(app) as client,
+        mock.patch.object(
+            code_agent_routes,
+            "stream_delivery_session",
+            return_value=initial_events,
+        ),
+    ):
+        initial = client.post(
+            "/api/code-agent/stream",
+            json={
+                "run_id": run_id,
+                "message": "start",
+                "project_root": str(tmp_path),
+                "permission_mode": "bypass",
+            },
+        )
+        assert initial.status_code == 200
+
+        journal = RunJournal(run_id)
+        journal.start(
+            {
+                "user_message": "start",
+                "project_root": str(tmp_path),
+                "permission_mode": "bypass",
+            },
+            {},
+        )
+        journal.finish(interrupted=True)
+
+        resumed_events = iter([
+            {"type": "run_resumed", "run_id": run_id, "from_step": 0},
+            {
+                "type": "done",
+                "run_id": run_id,
+                "ok": True,
+                "stop_reason": "answer",
+                "completion_status": "confirmed",
+            },
+        ])
+        with mock.patch.object(
+            code_agent_routes,
+            "stream_resume_session",
+            return_value=resumed_events,
+        ):
+            resumed = client.post(f"/api/code-agent/runs/{run_id}/resume")
+        assert resumed.status_code == 200
+
+        response = client.get(
+            "/api/agent-os/workflow-runs",
+            params={"workflow_id": "builtin-composer-runtime"},
+        )
+
+    assert response.status_code == 200
+    runs = response.json()["runs"]
+    assert len(runs) == 2
+    cancelled = next(run for run in runs if run["status"] == "cancelled")
+    completed = next(run for run in runs if run["status"] == "completed")
+    assert completed["run_id"] != cancelled["run_id"]
+    assert completed["context"]["code_agent_run_id"] == run_id
+    assert completed["context"]["workflow_root_run_id"] == cancelled["run_id"]
+    assert completed["context"]["attempt_number"] == 2
+
+
+def test_duplicate_stream_refusal_does_not_fail_the_active_workflow_attempt(
+    isolated_workflow_db: Path,
+    tmp_path: Path,
+) -> None:
+    run_id = "duplicate-stream-run"
+    owner_started = threading.Event()
+    release_owner = threading.Event()
+    request_lock = threading.Lock()
+    request_count = 0
+    owner_responses: list[int] = []
+
+    def owned_events():
+        yield {"type": "run_started", "run_id": run_id}
+        owner_started.set()
+        if not release_owner.wait(timeout=2.0):
+            raise AssertionError("test did not release the owning stream")
+        yield {
+            "type": "done",
+            "run_id": run_id,
+            "ok": True,
+            "stop_reason": "answer",
+            "completion_status": "confirmed",
+        }
+
+    def stream_events(**kwargs):
+        nonlocal request_count
+        with request_lock:
+            request_count += 1
+            current_request = request_count
+        if current_request == 1:
+            return owned_events()
+        return iter([
+            {
+                "type": "done",
+                "run_id": run_id,
+                "ok": False,
+                "stop_reason": "error",
+                "error": "delivery_session_already_active",
+                "resumable": False,
+            },
+        ])
+
+    app = FastAPI()
+    app.include_router(code_agent_routes.router)
+    app.include_router(workflow_router)
+    request = {
+        "run_id": run_id,
+        "message": "duplicate",
+        "project_root": str(tmp_path),
+        "permission_mode": "bypass",
+    }
+
+    with mock.patch.object(
+        code_agent_routes,
+        "stream_delivery_session",
+        side_effect=stream_events,
+    ), TestClient(app) as owner_client, TestClient(app) as duplicate_client:
+        owner = threading.Thread(
+            target=lambda: owner_responses.append(
+                owner_client.post("/api/code-agent/stream", json=request).status_code
+            )
+        )
+        owner.start()
+        assert owner_started.wait(timeout=1.0)
+        refused = duplicate_client.post("/api/code-agent/stream", json=request)
+        running = duplicate_client.get(
+            "/api/agent-os/workflow-runs",
+            params={"workflow_id": "builtin-composer-runtime"},
+        ).json()["runs"]
+        release_owner.set()
+        owner.join(timeout=2.0)
+        assert not owner.is_alive()
+        finished = duplicate_client.get(
+            "/api/agent-os/workflow-runs",
+            params={"workflow_id": "builtin-composer-runtime"},
+        ).json()["runs"]
+
+    assert refused.status_code == 200
+    assert "delivery_session_already_active" in refused.text
+    assert len(running) == 1
+    assert running[0]["status"] == "running"
+    assert owner_responses == [200]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "completed"

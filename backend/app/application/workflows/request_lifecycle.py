@@ -164,6 +164,7 @@ def start_code_agent_workflow_run(
     workflow_run_id: str,
     code_agent_run_id: str,
     permission_mode: str,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from app.application.workflows.store import init_db
 
@@ -172,7 +173,7 @@ def start_code_agent_workflow_run(
         db_path=db_path,
         run_id=workflow_run_id,
         workflow_id=_CODE_AGENT_WORKFLOW_ID,
-        context={"code_agent_run_id": code_agent_run_id},
+        context={**(context or {}), "code_agent_run_id": code_agent_run_id},
         trigger_source=_CODE_AGENT_TRIGGER_SOURCE,
         permission_mode=permission_mode,
     )
