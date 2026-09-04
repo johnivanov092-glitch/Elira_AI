@@ -299,7 +299,7 @@ class CodeAgentRequest(BaseModel):
     attachments: list[CodeAgentAttachment] | None = None
     session_id: Optional[str] = Field(
         default=None,
-        description="Client session id retained for transcript/resource provenance only.",
+        description="Client session id retained for transcript, resource, and persona-learning provenance.",
     )
     resources: list[ResourceRefIn] | None = Field(
         default=None,
@@ -570,6 +570,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 base_tools=request_base_tools,
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
+                session_id=payload.session_id,
                 # Route Auto from the user's actual request, not from injected
                 # attachment/library text. Terse continuations may use recent
                 # chat history to retain the previous task profile.

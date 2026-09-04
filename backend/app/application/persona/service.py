@@ -77,17 +77,35 @@ def _honesty_boundary(payload: dict) -> str:
     return ""
 
 
-def _top_behavior_rules(payload: dict, limit: int = 3) -> list[str]:
-    """Pick the most actionable behaviour rules.
+def _prompt_rules(payload: dict, limit: int = 3) -> list[str]:
+    """Prefer promoted traits, then fill the bounded block with core rules.
 
-    persona_evolution stores accumulated traits in the payload; favour those if
-    present (they have implicit priority by recency), otherwise fall back to the
-    first N rules from the base payload.
+    Persona evolution appends accepted traits to their semantic layer. Compare
+    each layer with the immutable base payload so promoted ``preferences``,
+    ``voice`` and ``values`` affect the live prompt too, without growing it on
+    every promotion.
     """
-    rules = payload.get("behavior_rules") or []
-    if not rules:
-        rules = ELIRA_PERSONA_BASE_PAYLOAD["behavior_rules"]
-    return rules[:limit]
+    evolved: list[str] = []
+    for layer in ("behavior_rules", "preferences", "voice", "values", "tool_style"):
+        base_items = {
+            str(item).strip()
+            for item in ELIRA_PERSONA_BASE_PAYLOAD.get(layer, [])
+            if str(item).strip()
+        }
+        current_items = payload.get(layer) or []
+        if not isinstance(current_items, list):
+            continue
+        for item in reversed(current_items):
+            text = str(item).strip()
+            if text and text not in base_items and text not in evolved:
+                evolved.append(text)
+
+    core_rules = [
+        str(item).strip()
+        for item in ELIRA_PERSONA_BASE_PAYLOAD["behavior_rules"]
+        if str(item).strip()
+    ]
+    return (evolved + [item for item in core_rules if item not in evolved])[:limit]
 
 
 def build_persona_prompt(
@@ -114,7 +132,7 @@ def build_persona_prompt(
         DEFAULT_MODEL_CALIBRATION
     )
 
-    rules = _top_behavior_rules(payload, limit=3)
+    rules = _prompt_rules(payload, limit=3)
     # Always surface the honesty boundary: it lives in `boundaries` (not
     # behavior_rules), so the limit=3 cut above would otherwise drop it. For an
     # agent that acts on the real filesystem this is the most load-bearing rule.

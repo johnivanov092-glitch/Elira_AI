@@ -117,6 +117,7 @@ def run_agent(
         model=str(model_name or "auto"),
         agent_id=str(agent_id or "code-agent"),
         conversation_history=_normalise_history(history),
+        session_id=session_id,
         num_ctx=num_ctx or None,
         auto_remember=bool(use_memory),
         permission_mode=permission_mode,

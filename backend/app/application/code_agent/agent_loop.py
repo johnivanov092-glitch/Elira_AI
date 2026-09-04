@@ -711,6 +711,7 @@ def _stream_code_agent_core(
     agent_id: str = "code-agent",
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
+    session_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
     auto_remember: bool = True,
@@ -1807,6 +1808,29 @@ def _stream_code_agent_core(
                     nudge_mood(user_message, final_text)
                 except Exception:
                     pass
+                # Living Persona observes the same successful exchange the user
+                # sees. Keep the real workspace session identity so repeated
+                # runs in one chat do not masquerade as independent sessions.
+                if session_id:
+                    try:
+                        from app.application.persona.service import observe_dialogue
+
+                        observe_dialogue(
+                            dialog_id=rid,
+                            session_id=session_id,
+                            profile_name=profile_name,
+                            model_name=model,
+                            user_input=user_message,
+                            answer_text=final_text,
+                            route=profile_name,
+                            outcome_ok=True,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "persona observation failed for code-agent run %s",
+                            rid,
+                            exc_info=True,
+                        )
                 if auto_remember:
                     _try_remember_turn(
                         user_message=user_message,
@@ -2834,6 +2858,7 @@ def stream_code_agent(
     agent_id: str = "code-agent",
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
+    session_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
     auto_remember: bool = True,
@@ -2865,6 +2890,7 @@ def stream_code_agent(
         "model": model,
         "agent_id": agent_id,
         "conversation_history": conversation_history or [],
+        "session_id": session_id,
         "num_ctx": int(num_ctx) if num_ctx else None,
         "base_tools": list(initial_tools),
         "auto_remember": bool(auto_remember),
@@ -2910,6 +2936,7 @@ def stream_code_agent(
             agent_id=agent_id,
             conversation_history=conversation_history,
             run_id=rid,
+            session_id=session_id,
             num_ctx=num_ctx,
             base_tools=base_tools,
             auto_remember=auto_remember,
@@ -3035,6 +3062,7 @@ def run_code_agent(
     agent_id: str = "code-agent",
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
+    session_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
     auto_remember: bool = True,
@@ -3079,6 +3107,7 @@ def run_code_agent(
         agent_id=agent_id,
         conversation_history=conversation_history,
         run_id=run_id,
+        session_id=session_id,
         num_ctx=num_ctx,
         base_tools=base_tools,
         auto_remember=auto_remember,
