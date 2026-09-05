@@ -509,12 +509,7 @@ def _guard_context_request(
 
 
 def _apply_thinking_option(payload: dict[str, Any], opts: dict[str, Any]) -> None:
-    """Pass model-specific reasoning kwargs through to ``--jinja`` llama-server.
-
-    Qwen reads ``enable_thinking``/``reasoning_effort`` and Muse reads
-    ``reasoning_strength``. The agent sends the compatible union explicitly so
-    profile switches do not inherit a model's server-side default.
-    """
+    """Pass Qwen's explicit reasoning controls to ``--jinja`` llama-server."""
     ctk = opts.get("chat_template_kwargs")
     if isinstance(ctk, dict) and ctk:
         payload["chat_template_kwargs"] = ctk

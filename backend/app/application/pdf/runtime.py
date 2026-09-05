@@ -23,6 +23,7 @@ import shutil
 import time
 
 from app.core.config import GENERATED_DIR
+from app.application.pdf.poppler import poppler_options
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ def _try_ocr(data: bytes, max_chars: int) -> str:
 
     try:
         # Конвертируем PDF → изображения
-        images = convert_from_bytes(data, dpi=200, first_page=1, last_page=10)  # Макс 10 страниц
+        images = convert_from_bytes(data, dpi=200, first_page=1, last_page=10, **poppler_options())  # Макс 10 страниц
 
         text_parts = []
         total = 0
@@ -415,7 +416,7 @@ def render_pdf_pages(data: bytes, pages: list = None, dpi: int = 150) -> dict:
 
         results = []
         for page_num in images_to_render:
-            imgs = convert_from_bytes(data, dpi=dpi, first_page=page_num, last_page=page_num)
+            imgs = convert_from_bytes(data, dpi=dpi, first_page=page_num, last_page=page_num, **poppler_options())
             if imgs:
                 import time
                 fname = f"pdf_page_{page_num}_{int(time.time())}.png"

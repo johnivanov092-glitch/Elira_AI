@@ -41,14 +41,14 @@ class InfraModeTest(unittest.TestCase):
         # plain chat stays neutral, not infra
         self.assertEqual(classify_mode("как настроение сегодня"), "Баланс")
 
-    def test_mode_line_reaches_persona_prompt(self):
-        # Only the overlay's FIRST sentence reaches the model — it must carry the
-        # fact-based, cautious infra methodology.
+    def test_legacy_mode_keeps_identity_and_task_guidance(self):
         from app.application.persona.service import build_persona_prompt
+        from app.application.code_agent.task_guidance import task_guidance_blocks
         prompt = build_persona_prompt("Инфраструктура")
-        self.assertIn("Режим работы: инфраструктура", prompt)
-        self.assertIn("ПО ФАКТАМ", prompt)
-        self.assertIn("режимом Workflow", prompt)
+        self.assertEqual(prompt, build_persona_prompt("Баланс"))
+        guidance = task_guidance_blocks({"runtime_control"})
+        self.assertIn("typed health/inventory", guidance["runtime"])
+        self.assertIn("разрешения определяет Workflow", guidance["work"])
 
 
 if __name__ == "__main__":

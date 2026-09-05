@@ -30,9 +30,11 @@ class NicheRulesSelectTest(unittest.TestCase):
 
 class NicheInjectionTest(unittest.TestCase):
     def test_ssh_task_injects_rule(self) -> None:
-        prompt = _build_system_prompt(Path("."), task_text="настрой мне ssh доступ")
+        from app.application.code_agent.prompts import _build_turn_context
+        prompt = _build_turn_context(Path("."), task_text="настрой мне ssh доступ")
         self.assertIn("SSH-ДОСТУПА", prompt)
         self.assertIn("Ниша-правило", prompt)
+        self.assertNotIn("Ниша-правило", _build_system_prompt(Path("."), task_text="настрой мне ssh доступ"))
 
     def test_normal_task_prompt_unchanged(self) -> None:
         # Canary-safety guarantee: a non-SSH task adds NO niche block, so the

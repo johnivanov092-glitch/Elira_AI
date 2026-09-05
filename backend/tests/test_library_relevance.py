@@ -79,3 +79,20 @@ def test_library_context_falls_back_to_recent_files_without_match(tmp_path, monk
 
     assert result["selection"] == "recent_fallback"
     assert result["used_files"] == ["newer.txt"]
+
+
+def test_conversational_words_do_not_select_unrelated_library_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "SQLITE_DB", tmp_path / "library.db")
+    monkeypatch.setattr(runtime, "UPLOADS_DIR", tmp_path / "uploads")
+    runtime.init_library_db()
+    _seed(runtime.SQLITE_DB, [
+        ("server.docx", "CDR скачивается; браузер не умеет просматривать CorelDRAW."),
+        ("gemini.md", "Gemini Flash поддерживает вызовы инструментов."),
+    ])
+
+    result = runtime.build_library_context(
+        query="что реально умеет Gemini 3.8 Flash и хочу узнать планируется ли Qwen 3.8 35B AB3",
+    )
+
+    assert result["used_files"] == ["gemini.md"]
+    assert "CorelDRAW" not in result["context"]

@@ -131,8 +131,8 @@ export type CodeAgentRunArgs = {
   /** Approval policy for this run (composer permission selector). Omitted → the
    *  backend default "ask". See {@link PermissionMode}. */
   permissionMode?: PermissionMode;
-  /** Model-neutral reasoning depth for this run. Qwen can disable reasoning;
-   *  Muse maps none to its lowest native level. Omitted → none. */
+  /** Qwen reasoning depth for this run. The none level disables reasoning.
+   *  Omitted → none. */
   reasoningEffort?: ReasoningEffort;
 };
 
@@ -360,7 +360,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     return;
   }
 
-  await consumeCodeAgentStream(response, { onEvent, onRunId, onError });
+  await consumeCodeAgentStream(response, { onEvent, onRunId, onError, signal });
 }
 
 export async function resumeCodeAgent(
@@ -400,7 +400,7 @@ export async function resumeCodeAgent(
   await consumeCodeAgentStream(response, handlers);
 }
 
-export async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers): Promise<void> {
+export async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers & { signal?: AbortSignal }): Promise<void> {
   const { onEvent, onRunId, onError } = handlers;
   const headerRunId = response.headers.get("X-Run-Id");
   if (headerRunId && onRunId) onRunId(headerRunId);
@@ -413,12 +413,14 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
+  let terminalSeen = false;
 
   function dispatch(data: string) {
     const trimmed = data.trim();
     if (!trimmed) return;
     try {
       const evt = JSON.parse(trimmed) as CodeAgentStreamEvent;
+      if (evt.type === "done") terminalSeen = true;
       onEvent?.(evt);
     } catch {
       // ignore malformed lines
@@ -444,6 +446,7 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
         if (dataLines.length) dispatch(dataLines.join("\n"));
       }
     }
+    buffer += decoder.decode();
     // Flush any tail
     if (buffer.trim()) {
       const dataLines = buffer
@@ -453,11 +456,16 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
         .map((ln) => ln.slice(5).trim());
       if (dataLines.length) dispatch(dataLines.join("\n"));
     }
+    if (!terminalSeen && !handlers.signal?.aborted) {
+      onError?.(new Error("Поток завершился без события done. Ответ может быть неполным; запуск можно продолжить."));
+    }
   } catch (err) {
     if ((err as DOMException)?.name === "AbortError") return;
     // Free the socket on a transport read error before surfacing it.
     try { await reader.cancel(); } catch { /* already closed */ }
-    onError?.(err as Error);
+    if (!terminalSeen) onError?.(err as Error);
+  } finally {
+    reader.releaseLock();
   }
 }
 

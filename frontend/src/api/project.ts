@@ -1,16 +1,8 @@
-import { API_BASE, request, safeRequest, withAuth } from "./client";
+import { API_BASE, request, withAuth } from "./client";
 
 type QueryParam = string | number | boolean | null | undefined;
 
 export type ProjectResponse = Record<string, unknown>;
-
-export type ProjectSnapshot = ProjectResponse & {
-  files: unknown[];
-};
-
-export type ProjectBrainStatus = ProjectResponse & {
-  status?: string;
-};
 
 export type ProjectTreeOptions = {
   maxDepth?: number;
@@ -52,28 +44,6 @@ function withParams(
   });
   const suffix = query.toString();
   return suffix ? `${path}?${suffix}` : path;
-}
-
-export async function getProjectSnapshot(): Promise<ProjectSnapshot> {
-  const payload = await request<ProjectResponse>("/api/project-brain/snapshot");
-  return {
-    ...payload,
-    files: Array.isArray(payload.files) ? payload.files : [],
-  };
-}
-
-export async function getProjectFile(path: string): Promise<ProjectResponse> {
-  return request<ProjectResponse>(
-    `/api/project-brain/file?path=${encodeURIComponent(path)}`,
-  );
-}
-
-export async function getProjectBrainStatus(): Promise<ProjectBrainStatus> {
-  return safeRequest<ProjectBrainStatus>(
-    "/api/project-brain/status",
-    {},
-    { status: "unknown" },
-  );
 }
 
 export async function getAdvancedProjectInfo(): Promise<ProjectResponse> {

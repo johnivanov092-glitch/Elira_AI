@@ -13,6 +13,26 @@ from app.application.web_evidence import corpus, retrieval
 from app.infrastructure.web_corpus import store
 
 
+def test_excerpt_includes_specific_match_after_common_term(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "corpus.sqlite3"))
+    text = "Path describes filesystem objects. " + "Other details. " * 65 + (
+        "Path.read_text(encoding=None) returns the contents as a string. "
+        "The encoding parameter selects the text encoding, such as utf-8."
+    ) + " More notes." * 25
+    monkeypatch.setattr(corpus, "_fetch_raw", lambda url: {
+        "ok": True, "final_url": url, "mime": "text/plain", "charset": "utf-8",
+        "content": text.encode("utf-8"), "last_modified": None,
+    })
+    passport = corpus.ingest("https://example.com/pathlib", "excerpt-run")
+    assert passport["ok"]
+    monkeypatch.setattr(retrieval, "_embed_rerank", lambda *a: None)
+    result = retrieval.web_query("excerpt-run", "Path.read_text encoding", top_k=1)
+    hit = result["results"][0]
+    assert "read_text(encoding=None)" in hit["quote"]
+    assert "selects the text encoding" in hit["quote"]
+    assert retrieval.verify_quote("excerpt-run", hit["doc_id"], hit["quote"], hit["offset"])["quote_verified"]
+
+
 def test_ingest_query_and_quote_verification_round_trip(tmp_path: Path) -> None:
     previous_override = store._DB_PATH_OVERRIDE
     store._DB_PATH_OVERRIDE = str(tmp_path / "web_corpus.sqlite3")

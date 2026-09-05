@@ -123,7 +123,7 @@ def get_mood() -> dict:
 
 
 def mood_overlay_line(mood: dict | None = None) -> str:
-    """The single voice-coloring line appended to the persona prompt."""
+    """Transient tone appended to the current request, after stable context."""
     mood = mood or get_mood()
     return (
         f"Сейчас твоё состояние: {mood['label']}. "

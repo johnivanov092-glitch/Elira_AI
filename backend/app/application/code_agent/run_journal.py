@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.core.redaction import redact_text
+
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _SECRET_KEYS = re.compile(r"(?:api[_-]?key|authorization|password|secret|token|cookie)", re.I)
@@ -40,7 +42,7 @@ def _runtime_root() -> Path:
     return Path(__file__).resolve().parents[4] / ".agent" / "runs"
 
 
-def _clean(value: Any, *, key: str = "") -> Any:
+def _clean(value: Any, *, key: str = "", bound_strings: bool = True) -> Any:
     """Bound event payloads and redact obvious structured secrets."""
     numeric_token_metric = (
         _TOKEN_METRIC_KEYS.fullmatch(key) is not None
@@ -49,14 +51,25 @@ def _clean(value: Any, *, key: str = "") -> Any:
     if _SECRET_KEYS.search(key) and not numeric_token_metric:
         return "[REDACTED]"
     if isinstance(value, dict):
-        return {str(k): _clean(v, key=str(k)) for k, v in value.items()}
+        return {str(k): _clean(v, key=str(k), bound_strings=bound_strings) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_clean(item) for item in value]
-    if isinstance(value, str) and len(value) > _MAX_STRING:
-        return value[:_MAX_STRING] + "\n[... truncated]"
+        return [_clean(item, bound_strings=bound_strings) for item in value]
+    if isinstance(value, str):
+        value = redact_text(value)
+        if bound_strings and len(value) > _MAX_STRING:
+            return value[:_MAX_STRING] + "\n[... truncated]"
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Redact display output; Workflow schemas and opaque refs are control data."""
+    cleaned = dict(event)
+    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output"):
+        if field in cleaned:
+            cleaned[field] = _clean(cleaned[field], bound_strings=False)
+    return cleaned
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:

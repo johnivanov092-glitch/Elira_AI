@@ -172,7 +172,7 @@ def test_promoted_preference_reaches_persona_prompt(
             outcome_ok=True,
         )
 
-    prompt = build_persona_prompt("Баланс", "test-model")
+    prompt = persona_service.build_persona_context("test-model")
 
     assert "Структурированный и ясный ответ." in prompt
     assert len(prompt) <= 1300
@@ -206,9 +206,12 @@ def test_persona_prompt_bounds_long_promotions_across_layers(
 
     assert len(prompt) <= persona_service.PERSONA_PROMPT_CHAR_BUDGET
     assert "Идентичность: ты Elira" in prompt
-    assert "[tone:" in prompt
+    context = persona_service.build_persona_context("test-model")
+    assert len(context) <= 700
+    assert "[tone:" in context
     for marker in markers.values():
-        assert marker in prompt
+        assert marker in context
+        assert marker not in prompt
 
 
 def test_internal_agent_call_does_not_train_persona(

@@ -88,6 +88,13 @@ cd D:\AIWork\Elira_AI\backend
 playwright install chromium
 ```
 
+On Windows, keep the complete Poppler distribution in `.runtime/poppler/`
+(executables at `.runtime/poppler/Library/bin/`). PDF previews, OCR rasterization,
+and document visual checks use this project copy explicitly. Keep the bundled
+DLLs and resource directories together; `.runtime/` is excluded from Git.
+If the project copy is absent, other installations can use Poppler from `PATH`.
+OCR also requires a separate Tesseract installation.
+
 ## Run
 
 ```powershell

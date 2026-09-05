@@ -403,9 +403,9 @@ const REASONING_EFFORTS: {
 }[] = [
   {
     value: "none",
-    label: "Выкл / минимум",
+    label: "Выкл",
     shortLabel: "Выкл",
-    hint: "Qwen: без мышления; Muse: минимальный уровень low",
+    hint: "Ответ без предварительного рассуждения",
   },
   {
     value: "low",
@@ -427,7 +427,7 @@ const REASONING_EFFORTS: {
   },
 ];
 
-/** Compact model-neutral selector; the backend maps it to Qwen or Muse kwargs. */
+/** Compact selector for Qwen's reasoning levels. */
 function ReasoningEffortChip({
   effort,
   onChange,

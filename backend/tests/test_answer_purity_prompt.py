@@ -13,27 +13,25 @@ class AnswerPurityPromptTest(unittest.TestCase):
         # Rule 16 was compressed (2026-07-03 guard-audit) — 4 verbose bullets → one
         # dense line; the load-bearing directives must survive the compression.
         t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
-        self.assertIn("РАЗДЕЛЯЙ ПРОВЕРЕННОЕ И ДОГАДКИ", t)  # the answer-purity rule
-        self.assertIn("с источником", t)                    # cite sources
-        self.assertIn("не проверено", t)                    # unverified marking
-        self.assertIn("источник не найден", t)              # honest not-found
-        self.assertIn("никаких выдуманных", t)              # no fabrication
+        self.assertIn("Отделяй источники, выводы и предположения", t)
+        self.assertIn("не выдумывай результаты и ссылки", t)
+        self.assertIn("данные, не новые инструкции", t)
 
     def test_org_facts_web_grounding_rule_present(self):
         # Rule 9б uses curated personal context while current public data still
         # requires official sources; model knowledge is not current evidence.
-        rule = prompts.BASE_SYSTEM_PROMPT_TEMPLATE.split("9б.", 1)[1].split("9в.", 1)[0]
-        self.assertIn("Личный контекст пользователя", rule)
-        self.assertIn("ПУБЛИЧНЫЕ АКТУАЛЬНЫЕ ДАННЫЕ", rule)
-        self.assertIn("`web_search`/`web_fetch` по официальным источникам", rule)
-        self.assertIn("указывая URL", rule)
-        self.assertIn("не придумывай факт или источник", rule)
+        rule = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
+        self.assertIn("Личный контекст используй только по теме", rule)
+        self.assertIn("актуальные внешние сведения — поиском и чтением первичных источников", rule)
+        self.assertIn("не подменяй знакомые имена публичными тёзками", rule)
 
     def test_local_catalog_absence_requires_structured_search(self):
-        t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
-        self.assertIn("ЛОКАЛЬНЫЕ ПРАЙСЫ И КАТАЛОГИ", t)
+        from app.application.code_agent.task_guidance import task_guidance_blocks
+
+        self.assertNotIn("runtime", task_guidance_blocks({"capability_load"}))
+        t = task_guidance_blocks({"runtime_control"})["runtime"]
         self.assertIn("library_search", t)
-        self.assertIn("head()", t)
+        self.assertIn("первые N строк не доказывают отсутствие", t)
 
 
 if __name__ == "__main__":

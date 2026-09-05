@@ -32,7 +32,7 @@ def test_transcription_attachment_injects_live_ask_user_placement_options(tmp_pa
 
     def fake_chat(**kwargs):
         nonlocal seen_prompt
-        seen_prompt = str(kwargs["messages"][0]["content"])
+        seen_prompt = "\n".join(m.get("content", "") for m in kwargs["messages"][1:])
         return {"message": {"content": "ok", "tool_calls": []}}
 
     catalog = [
@@ -83,7 +83,7 @@ def test_non_media_attachment_does_not_inject_compute_placement(tmp_path) -> Non
 
     def fake_chat(**kwargs):
         nonlocal seen_prompt
-        seen_prompt = str(kwargs["messages"][0]["content"])
+        seen_prompt = "\n".join(m.get("content", "") for m in kwargs["messages"][1:])
         return {"message": {"content": "ok", "tool_calls": []}}
 
     list(stream_code_agent(

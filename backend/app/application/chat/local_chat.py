@@ -229,11 +229,8 @@ def resolve_persona_mode(
     user_input: str | None,
     conversation_history: list[dict[str, object]] | None = None,
 ) -> str:
-    """Resolve the internal domain policy for the single ``Elira / Auto`` UI.
+    """One live persona; legacy names remain valid wire and journal data.
 
-    ``requested`` remains in the wire contract so old clients and durable runs
-    can resume, but it no longer locks tool routing or fragments Elira into a
-    user-selected persona. The current task always selects the internal policy.
+    Task evidence routing is separate and never selects personality/sampling.
     """
-    del requested
-    return classify_mode(user_input, conversation_history)
+    return DEFAULT_PROFILE

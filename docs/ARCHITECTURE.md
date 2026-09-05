@@ -13,7 +13,7 @@ Composer
   -> POST /api/code-agent/stream
   -> delivery_session
   -> agent_loop
-  -> Domain Router + Capability Router + Evidence Router
+  -> capability_load + task guidance + Evidence Router
   -> agent_kernel.executor
   -> runtime_registry
   -> Builtin | SSH | IT Ops | MCP | LSP provider
@@ -27,6 +27,10 @@ Workflow request
 Multi-agent uses `application/workflows` as a coordinator but every agent step
 returns to the same `run_code_agent`, executor and provider registry.
 
+The disconnected `domain/agents` V8 graph runtime and `application/project_brain`
+chat/LLM chain were removed after a caller audit. The UI's `use_orchestrator`
+option still selects a Workflow planning step; it does not refer to V8.
+
 ## Runtime invariants
 
 - One agent core: `application/code_agent/agent_loop.py`.
@@ -34,13 +38,12 @@ returns to the same `run_code_agent`, executor and provider registry.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- The UI exposes one profile: `Elira / Auto`. Former profiles are hidden domain
-  policies for tone, evidence requirements and useful starter schemas; they do
-  not lock or authorize tools. A request may combine multiple domains.
-- The first model turn sees the compact built-in core plus deterministic routing:
-  Domain Router classifies the task, Capability Router reveals relevant schema
-  groups, and Evidence Router reveals Web for current/external facts, unknown
-  technologies/errors, finance, medicine, science and security. An external
+- The UI exposes one personality: `Elira / Auto`, with one sampling temperature.
+  Legacy profiles remain readable but do not switch identity, tone or sampling.
+  Their evidence/calculation requirements survive as relevant task instructions.
+- Every normal first turn sees `capability_load` and `ask_user`. Explicit search,
+  attachments and resumed activations may add schemas. The model loads other
+  groups through the existing registry; routing hints do not preload them. An external
   first failure, repeated local failure, or an uncertain draft (`не знаю`, `нет
   данных`, `не удалось`) triggers one Web evidence pass before the final answer.
   Local state still comes from local tools; external contracts come from primary
@@ -75,10 +78,28 @@ returns to the same `run_code_agent`, executor and provider registry.
   the Evidence Router requires Web search for a sourced compatible alternative
   before allowing the BOM flow to continue.
 - MCP/LSP remain per-run and appear only after a relevant `runtime_control`
-  request. Infrastructure intent preloads typed IT Ops and SSH; no MCP is started
-  merely because a domain policy matched.
-- A new-chat plain greeting has no tool schemas at all; any task, continuation,
-  path, command, MCP/SSH request, or existing history uses the normal agent loop.
+  request. Typed IT Ops and SSH are discovered through that same adapter; domain
+  routing hints neither preload schemas nor start an MCP server.
+- All conversation and work use one compact stable system prompt. There is no
+  greeting/compliment regex or separate conversational path. Current date,
+  persona development, relevant personal memory and mood follow history.
+- Ordinary file/shell, web search/reading, memory and runtime discovery tools
+  are visible from the first turn (`tool_policy.BASE_TOOLS`). Their work and
+  source-verification instructions are loaded before the current user request.
+  Correct task execution takes priority over short-chat TTFT; the discovery-only
+  default was reverted on 2026-09-06 after a live current-events refusal.
+- Task guidance arrives with tools, including Web and external MCP/SSH/LSP
+  providers. Common verification rules and project instructions apply regardless
+  of transport. Generated guidance messages use the existing compactor's pinned
+  IDs; both summarization and its fallback preserve them and count them against
+  the context budget. They never become a second system prefix.
+- DRY sampling uses a bounded 1024-token lookback and permits 12-token repeats.
+  Short replies can still overlap history; the old 2-token allowance caused
+  repeated identity answers to mutate the name. Long prose repetition retains
+  DRY protection without a conversation-specific sampler or phrase exceptions.
+- Transient persona mood is captured once per run and appended to the current
+  user message after history. It is excluded from the stable persona/system
+  prefix so a mood change does not invalidate cached instructions and schemas.
 - No tool/path/asset/LAN authorization scope, internal ApprovalStore,
   feature dispatch gate, max steps, run deadline or no-progress self-stop.
 - Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
@@ -124,6 +145,9 @@ returns to the same `run_code_agent`, executor and provider registry.
   request through `memory.resolve_relevant_facts`, using a separate raw
   `memory_query` before attachments/Library enrichment. Resume preserves this
   field; old journals and internal callers without it disable automatic recall.
+  The capability/download router also uses this raw text when provided: words
+  inside retrieved documents cannot create a download request or activate SSH.
+  Legacy callers without the field keep routing from their explicit task text.
   The compatibility `run_agent` adapter requires this field explicitly; Telegram
   supplies it only after its existing allowlist and memory-setting checks.
   Prompt injection is then gated by user/work context or an exact stored entity
@@ -175,17 +199,17 @@ Built-in schema composition is owned by
 `application/code_agent/capabilities.py`. `capability_load(group)` validates a
 model-selected group, then the existing runtime registry is rebuilt for the
 next model turn. Loaded groups are journalled for Resume/automatic continuation;
-a new run starts with the compact core again. This is prompt composition, not
+a new run starts with `tool_policy.BASE_TOOLS` (ordinary work tools), unless a
+caller explicitly supplies a different `base_tools` set. This is prompt composition, not
 authorization: the Workflow permission selector remains the only product-level
 permission decision. A hidden built-in schema does not remove its canonical
 dispatch owner; if a valid native/inline call reaches the runtime, it still uses
 the same ToolExecutor and handler.
 
-`route_request_capabilities()` is the deterministic preflight. It may combine
-code, network, resources, data and Web in one run. `classify_domain_policies()`
-returns all matching hidden policies while `resolve_persona_mode()` retains one
-dominant prompt overlay for compatibility. Neither function grants permission or
-creates an executor/provider. TCP checks use `itops_network_inventory` with an
+`route_request_capabilities()` supplies task/evidence hints and download contracts.
+`classify_domain_policies()` retains compatibility labels for task requirements;
+`resolve_persona_mode()` always returns the single neutral personality mode.
+Neither function grants permission or creates an executor/provider. TCP checks use `itops_network_inventory` with an
 explicit per-connect timeout and concurrency, not sequential shell
 `Test-NetConnection`.
 
@@ -307,8 +331,8 @@ templates and inherit `ask`, `accept_edits`, or `bypass`.
   tokens per second; Workflow usage events expose the same values to UI/evals.
 - Reasoning modes are `none`, `low`, `medium`, `xhigh`.
 - Qwen reads `enable_thinking` + `reasoning_effort`.
-- Muse reads `reasoning_strength`; public `none` maps to Muse `low`.
-- MTP/DFlash are server-side acceleration mechanisms independent of reasoning.
+- Public `none` fully disables Qwen thinking; the other levels enable it.
+- Qwen MTP is a server-side acceleration mechanism independent of reasoning.
 
 ## Mounted HTTP surface
 

@@ -279,6 +279,7 @@ function wire(
   entry.abort = ctrl;
   entry.activeAgentId = agentId;
   entry.persistedAtDone = false;
+  const ownsRun = () => entry.abort === ctrl;
   const patch = (fn: (a: AgentTurnData) => AgentTurnData) => patchAgent(entry, agentId, fn);
   const pushLedger = (item: TaskLedgerEntry) =>
     update(entry, (s) => ({ ...s, taskLedger: [...s.taskLedger, item].slice(-200) }));
@@ -286,10 +287,12 @@ function wire(
   void invoke({
     signal: ctrl.signal,
     onRunId: (id) => {
+      if (!ownsRun()) return;
       entry.runId = id;
       patch((a) => ({ ...a, runId: id }));
     },
     onEvent: (e: CodeAgentStreamEvent) => {
+      if (!ownsRun()) return;
       if (e.type === "run_started" || e.type === "run_resumed") {
         entry.runId = e.run_id;
         patch((a) => ({ ...a, runId: e.run_id }));
@@ -416,9 +419,16 @@ function wire(
       }
     },
     onError: (err) => {
-      patch((a) => ({ ...a, running: false, activeTool: undefined, brainPhase: undefined, error: err.message }));
+      if (!ownsRun()) return;
+      patch((a) => ({ ...a, running: false, activeTool: undefined, brainPhase: undefined, error: err.message, resumable: Boolean(a.runId) }));
       update(entry, (s) => ({ ...s, running: false }));
+      entry.runId = null;
+      entry.activeAgentId = null;
       entry.abort = null;
+      if (!entry.persistedAtDone) {
+        entry.persistedAtDone = true;
+        entry.persist?.(entry.snapshot);
+      }
     },
   });
 }

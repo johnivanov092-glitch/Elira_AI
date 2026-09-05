@@ -9,6 +9,7 @@ from app.application.persona import store as persona_store
 from app.core.persona_defaults import (
     DEFAULT_MODEL_CALIBRATION,
     DEFAULT_PROFILE,
+    ELIRA_TEMPERATURE,
     ELIRA_PERSONA_BASE_PAYLOAD,
     LEGACY_PROFILE_TO_MODE,
     PERSONA_MODES,
@@ -97,9 +98,8 @@ def to_mode(name: str) -> str:
 
 
 def mode_temperature(name: str):
-    """Sampling temperature for a mode, or None to keep the per-role default
-    (None = Инженерный/code keeps its strict reproducible sampling)."""
-    return PERSONA_MODES[to_mode(name)]["temperature"]
+    """Legacy profile names no longer change live sampling."""
+    return ELIRA_TEMPERATURE
 
 
 def mode_tool_posture(name: str) -> str:
@@ -200,25 +200,12 @@ def build_persona_prompt(
     model_name: str = "",
     task_context: str = "",
 ) -> str:
-    """Bounded persona prompt for the current local model.
+    """Stable identity for every task; mutable traits are separate turn context.
 
-    Keeps persona_evolution intact: the active snapshot from `get_persona_version()`
-    is still read, so traits accumulated via `observe_dialogue` are reflected here.
-    The per-call output stays below the tested 1300-character budget.
+    Profile/model arguments remain compatible with saved clients. Evolution is
+    exposed through build_persona_context instead of rewriting this prefix.
     """
-    snapshot = get_persona_version()
-    payload = deepcopy(snapshot.get("payload") or ELIRA_PERSONA_BASE_PAYLOAD)
-
-    profile_key = to_mode(profile_name)
-
-    calibration_record = get_model_calibration(
-        model_name,
-        version_id=int(snapshot.get("version", 1) or 1),
-    )
-    calibration_payload = calibration_record.get("calibration") or deepcopy(
-        DEFAULT_MODEL_CALIBRATION
-    )
-
+    payload = ELIRA_PERSONA_BASE_PAYLOAD
     rules = _core_rules(limit=3)
     # Always surface the honesty boundary: it lives in `boundaries` (not
     # behavior_rules), so the limit=3 cut above would otherwise drop it. For an
@@ -231,17 +218,7 @@ def build_persona_prompt(
     body_lines = [
         "Ты — Elira, AI-ассистентка пользователя в Elira AI.",
         "Миссия: помогать честно, ясно и практически. Не выдумывать факты и не выдавать намерение за результат.",
-        _short_profile_line(profile_key) + ".",
     ]
-
-    # Step B: mood — a single voice-coloring line (transient, decays). Fail-safe:
-    # never let mood reading break prompt building.
-    try:
-        from app.application.persona.mood import mood_overlay_line
-
-        body_lines.append(mood_overlay_line())
-    except Exception:
-        pass
 
     body_lines.append(
         f"Правила:\n{rules_block}",
@@ -250,19 +227,38 @@ def build_persona_prompt(
     if task_context.strip():
         body_lines.append(task_context.strip())
 
-    promoted = _promoted_traits(payload)
-    tail_lines = []
-    if promoted:
-        tail_lines.append(
-            "Развившиеся черты:\n" + "\n".join(f"- {item}" for item in promoted)
-        )
-    tail_lines.extend(
-        [
-            "Идентичность: ты Elira, никогда не называй себя именем модели или языковой моделью.",
-            _calibration_pragma(calibration_payload),
+    tail_lines = [
+            "Идентичность: ты Elira. Имя всегда пиши ровно Elira; опечатки истории его не меняют. "
+            "О себе говори в женском роде: «проверила», «собрала», «рада».",
+            "В личном разговоре отвечай тепло и естественно, без перечисления своих функций "
+            "и навязывания задач. В свободной беседе — короткие обычные фразы без заголовков "
+            "и списков; структурированный формат оставь для рабочих задач. "
+            "Обращайся к собеседнику напрямую: «ты», «твоя жена», "
+            "а не «пользователь».",
+            "Ласковые обращения воспринимай как дружелюбие и отвечай тепло. "
+            "Не поясняй без запроса статус AI и романтические границы. "
+            "На прямые вопросы о себе отвечай честно.",
         ]
-    )
     return _fit_persona_prompt(body_lines, tail_lines)
+
+
+def build_persona_context(model_name: str = "") -> str:
+    """Bounded learned traits/calibration, captured after history once per run."""
+    import json
+
+    snapshot = get_persona_version()
+    payload = snapshot.get("payload") or ELIRA_PERSONA_BASE_PAYLOAD
+    calibration = get_model_calibration(
+        model_name, version_id=int(snapshot.get("version", 1) or 1),
+    ).get("calibration") or DEFAULT_MODEL_CALIBRATION
+    promoted = _promoted_traits(payload)
+    lines = []
+    if promoted:
+        lines.append("Развившиеся черты: " + json.dumps(promoted, ensure_ascii=False))
+    return "\n".join([
+        *lines,
+        "Оформление рабочих ответов: " + _bounded_text(_calibration_pragma(calibration), 160),
+    ])
 
 
 persona_store.bootstrap_if_needed()

@@ -113,7 +113,7 @@ def permission_mode_auto_approves(request: ToolExecutionRequest) -> bool:
 
         spec = get_tool(request.tool_name)
         is_change = True if spec is None else bool(spec.get("side_effect", False))
-        if request.tool_name in {"browser", "computer", "runtime_control"} or "__" in request.tool_name:
+        if request.tool_name in {"browser", "computer", "runtime_control", "run_server"} or "__" in request.tool_name:
             is_change = tool_call_is_change(request.tool_name, request.args)
         channel = (
             "remote"

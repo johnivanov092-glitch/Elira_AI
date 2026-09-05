@@ -109,10 +109,18 @@ from app.application.code_agent.prompts import (  # noqa: F401
     _CODE_AGENT_BASE_TOOLS,
     _build_base_system_prompt,
     _build_system_prompt,
+    _build_turn_context,
+    _build_project_context,
+    _shell_guidance,
+    _NO_PROJECT_BLOCK,
+    _PROJECT_CONNECTED_BLOCK,
+    _is_scratch_workspace,
     compute_placement_request,
     explicit_compute_target,
 )
 from app.application.persona.service import mode_temperature
+from app.core.persona_defaults import DEFAULT_PROFILE
+from app.application.code_agent.task_guidance import task_guidance_blocks
 from app.core.redaction import redact_secrets
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
@@ -149,19 +157,15 @@ logger = logging.getLogger(__name__)
 # content path had no anti-repeat protection at all). Safe for codegen: DRY's
 # default sequence breakers ("\n" etc.) reset matching at line boundaries, so
 # legitimate repeated code structure isn't penalised the way run-on prose is.
-# DRY must look back only over roughly the CURRENT answer, NOT the whole chat.
-# dry_penalty_last_n=-1 scanned the ENTIRE context (system prompt + every prior
-# turn + tool output); as the conversation grew, DRY penalised ordinary repeated
-# tokens (common words, code idioms, Cyrillic particles) carried over from
-# earlier turns, so the model degenerated after a few turns — the real "breaks
-# after 3-5 answers" bug, a harness fault, not the 35B model. Bound the window so
-# DRY still kills a within-answer runaway loop (the ×20-paragraph case) but never
-# reaches back into conversation history.
+# Bound the lookback; it can still include recent HISTORY on short replies.
+# Allow short repeated facts/names: length=2 made Qwen mutate Elira after three
+# identity questions. In a fixed-history/seed live A/B, length=12 preserved the
+# exact name with thinking both off and low, while keeping DRY for long prose.
 _DRY_WINDOW_TOKENS = 1024
 _ANTI_REPEAT_SAMPLING = {
     "dry_multiplier": 0.8,
     "dry_base": 1.75,
-    "dry_allowed_length": 2,
+    "dry_allowed_length": 12,
     "dry_penalty_last_n": _DRY_WINDOW_TOKENS,
     # Reset DRY matching at these separators so LEGITIMATELY-repeated IPs / MACs /
     # numbers / versions / paths (192.168.88.1, 2C-C8-1B, /24, v1.0) are not seen as
@@ -196,15 +200,7 @@ def _normalize_reasoning_effort(value: Any, *, thinking: bool = False) -> str:
 
 
 def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
-    """Build one request contract for every supported local reasoning model.
-
-    Qwen consumes ``enable_thinking`` + ``reasoning_effort``; Muse consumes
-    ``reasoning_strength`` and cannot fully disable thinking. Unknown template
-    kwargs are ignored by the other family, so this keeps the UI chip
-    deterministic across profile switches without coupling the agent to the
-    server's current model path. Public ``none`` therefore means true off for
-    Qwen and the native minimum (``low``) for Muse.
-    """
+    """Build Qwen's reasoning contract; ``none`` fully disables thinking."""
     normalized = _normalize_reasoning_effort(
         None if isinstance(effort, bool) else effort,
         thinking=bool(effort) if isinstance(effort, bool) else False,
@@ -213,12 +209,10 @@ def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
         return {
             "enable_thinking": True,
             "reasoning_effort": normalized,
-            "reasoning_strength": normalized,
         }
     return {
         "enable_thinking": False,
         "reasoning_effort": "none",
-        "reasoning_strength": "low",
     }
 
 
@@ -226,48 +220,9 @@ def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
 # runtime never forces extra turns, rewrites the answer, or auto-runs verification.
 _LLM_HEARTBEAT_EVERY = 10.0
 _LLM_CANCEL_POLL_SECONDS = 0.1
-# Role-based sampling for a single served model (one large LLM plays every
-# role — see resolve_model_for_route/route_to_role). The role does not switch
-# the model (single-GPU server, one text LLM loaded at a time); it only tunes
-# how deterministic the sampling is. Strict profile: code edits should be as
-# reproducible as possible ("don't break the project"), planning/review may
-# vary a little, casual replies a little more.
-_ROLE_TEMPERATURE = {
-    "code": 0.1,
-    "strong": 0.3,
-    "fast": 0.4,
-}
-_DEFAULT_TEMPERATURE = 0.2
-
-
-def _temperature_for_role(role: str | None) -> float:
-    """Sampling temperature for a routing role (strict profile, default 0.2)."""
-    return _ROLE_TEMPERATURE.get((role or "").strip().lower(), _DEFAULT_TEMPERATURE)
-
-
 def _effective_temperature(profile_name: str, role: str | None) -> float:
-    """Persona-mode temperature wins when set (Личный/Баланс raise warmth);
-    Инженерный (mode temperature=None) keeps the per-role sampling that protects
-    code-edit reproducibility."""
-    mode_temp = mode_temperature(profile_name)
-    if mode_temp is not None:
-        return float(mode_temp)
-    return _temperature_for_role(role)
-
-
-def _is_simple_greeting(
-    user_message: str,
-    conversation_history: list[dict[str, Any]] | None,
-) -> bool:
-    """True only for a new-chat greeting that cannot require a tool."""
-    if conversation_history:
-        return False
-    normalized = " ".join(str(user_message or "").strip().split()).casefold()
-    return bool(re.fullmatch(
-        r"(?:привет|здравствуй|здравствуйте|добрый день|добрый вечер|"
-        r"привет,? ты тут|ты тут|hi|hello|hey|are you there)[!?. ]*",
-        normalized,
-    ))
+    """Compatibility arguments never switch the single personality's sampling."""
+    return float(mode_temperature(profile_name))
 
 
 def _chat_events(
@@ -706,6 +661,7 @@ def _stream_code_agent_core(
     *,
     user_message: str,
     memory_query: str | None = None,
+    task_instructions: str = "",
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
@@ -741,6 +697,7 @@ def _stream_code_agent_core(
       - {"type": "done", "ok": bool, "steps": int, "stop_reason": str,
          "error": str | None}
     """
+    profile_name = DEFAULT_PROFILE
     selected_reasoning_effort = _normalize_reasoning_effort(
         reasoning_effort,
         thinking=thinking,
@@ -803,9 +760,9 @@ def _stream_code_agent_core(
             return
         safe_num_ctx = int(context_profile["ctx_size"])
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
-        simple_greeting = _is_simple_greeting(user_message, conversation_history)
+        raw_user_message = user_message if memory_query is None else memory_query
         # Hidden integrations are activated per run through runtime_control.
-        # A greeting must not serialize every globally running MCP schema.
+        # New requests must not serialize every globally running MCP schema.
         (
             active_mcp_server_ids,
             active_lsp_server_ids,
@@ -814,16 +771,15 @@ def _stream_code_agent_core(
             itops_tools_active,
             active_capability_groups,
         ) = _load_runtime_activation_state(rid)
-        # One visible Elira/Auto profile; hidden domain policies and evidence
-        # signals select starter schemas. This is visibility, not authorization.
+        # Compatibility domain labels supply task/evidence requirements only.
+        # The public entrypoints preserve raw user text in memory_query.
+        # Library/attachment contents are evidence, not download or SSH intent.
         request_route = route_request_capabilities(
-            user_message,
+            user_message if memory_query is None else memory_query,
             domain_policy=profile_name,
             conversation_history=conversation_history,
         )
-        active_capability_groups.update(request_route.capability_groups)
-        itops_tools_active = itops_tools_active or request_route.include_itops
-        ssh_tools_active = ssh_tools_active or request_route.include_ssh
+        # Domain/evidence hints never preload schemas or change the persona.
 
         requested_builtin_tools = {
             str(name).strip()
@@ -839,17 +795,13 @@ def _stream_code_agent_core(
             builtin_names.update(requested_builtin_tools)
             return build_runtime_tool_registry(
                 root,
-                include_builtin=not simple_greeting,
-                builtin_tool_names=(
-                    ()
-                    if simple_greeting
-                    else builtin_names
-                ),
-                mcp_server_ids=() if simple_greeting else active_mcp_server_ids,
+                include_builtin=True,
+                builtin_tool_names=builtin_names,
+                mcp_server_ids=active_mcp_server_ids,
                 mcp_schema_queries=active_mcp_schema_queries,
-                lsp_server_ids=() if simple_greeting else active_lsp_server_ids,
-                include_ssh=not simple_greeting and ssh_tools_active,
-                include_itops=not simple_greeting and itops_tools_active,
+                lsp_server_ids=active_lsp_server_ids,
+                include_ssh=ssh_tools_active,
+                include_itops=itops_tools_active,
             )
 
         def runtime_activation_snapshot() -> dict[str, Any]:
@@ -862,10 +814,9 @@ def _stream_code_agent_core(
                 "capability_groups": sorted(active_capability_groups),
             }
 
-        # Aggregate the compact core into one registry. The agent loop only
+        # Aggregate the default work tools into one registry. The agent loop only
         # talks to the registry from here on.
-        #   - BuiltinToolProvider is on for tasks, but omitted for the narrow
-        #     new-chat greeting fast path.
+        #   - BuiltinToolProvider exposes discovery on every request.
         #   - SSH/IT Ops schemas appear after their runtime_control discovery
         #     request in this run.
         #   - MCP/LSP schemas appear only for servers explicitly started by this
@@ -875,12 +826,11 @@ def _stream_code_agent_core(
         # seeder so ToolExecutor never sees an unregistered built-in spec.
         from app.application.tool_registry.runtime import seed_builtin_tools
 
-        if not simple_greeting:
-            seed_builtin_tools()
+        seed_builtin_tools()
         registry = rebuild_registry()
         all_schemas = registry.collect_schemas()
-        # Only the compact built-in core is visible from the first step.
-        # Optional built-ins and integrations appear after explicit model calls.
+        # Ordinary work tools are visible from the first step. Specialist
+        # built-ins and integrations appear after explicit model calls.
         initial_tools = tuple(dict.fromkeys(
             name for schema in all_schemas
             if (name := _schema_tool_name(schema))
@@ -890,35 +840,12 @@ def _stream_code_agent_core(
         if chat_fn is None and stream_chat is None:
             stream_chat = _local_chat_stream
 
-        if simple_greeting:
-            try:
-                from app.application.persona.service import build_persona_prompt
-
-                system_prompt = build_persona_prompt(profile_name, model).strip()
-            except Exception:
-                system_prompt = "Ты — Elira, локальный AI-ассистент пользователя."
-            system_prompt += (
-                "\nЭто обычное приветствие в новом чате. Ответь естественно и кратко; "
-                "инструменты не требуются."
-            )
-        else:
-            system_prompt = _build_system_prompt(
-                root,
-                working_dir=working_dir,
-                active_tools=initial_tools,
-                model_name=model,
-                profile_name=profile_name,
-                task_text=user_message,
-                memory_query=memory_query or "",
-                resource_refs=resource_refs,
-            )
-            if request_route.evidence_reasons:
-                system_prompt += (
-                    "\n\n[EVIDENCE ROUTER] Для этой задачи автоматически подключён Web. "
-                    "Проверяй актуальные внешние факты сначала по официальной документации "
-                    "или первичному источнику; локальное состояние проверяй локальными tools. "
-                    "Не повторяй неудачную внешнюю команду вслепую."
-                )
+        system_prompt = _build_system_prompt(root, model_name=model, profile_name=profile_name)
+        request_context = _build_turn_context(
+            root, working_dir=working_dir, active_tools=initial_tools,
+            model_name=model, profile_name=profile_name, task_text=raw_user_message,
+            memory_query=memory_query or "", resource_refs=resource_refs,
+        )
         _creative_context = [str(user_message or "")]
         for _turn in list(conversation_history or [])[-8:]:
             if isinstance(_turn, dict) and isinstance(_turn.get("content"), str):
@@ -934,11 +861,14 @@ def _stream_code_agent_core(
                 if _schema_tool_name(schema)
             })
             if _creative_prompt:
-                system_prompt += "\n\n" + _creative_prompt
+                request_context += "\n\n" + _creative_prompt
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
-        # Anti-refusal nudge: if user clearly asks to execute, remind the model.
-        effective_user_message = user_message
+        # Keep the current request last in this mutable turn. Finishing on
+        # persona/context instructions encourages the model to recite them.
+        effective_user_message = ""
+        if request_context:
+            effective_user_message = "[Контекст текущего запроса]\n" + request_context
         # TaskSpec (Phase 6): on a STRUCTURED task, derive goal + success criteria +
         # verifiers and keep them in focus. None for simple/conversational tasks —
         # so nothing is injected there (zero tokens, canaries untouched).
@@ -979,6 +909,17 @@ def _stream_code_agent_core(
                 "task_spec": taskspec_report(task_spec) if task_spec else None,
                 "task_spec_source": task_spec_source,
             }
+        # Capture tone once per run at the tail. Changing it must not rewrite
+        # the system/schema/history prefix cached by the inference server.
+        try:
+            from app.application.persona.mood import mood_overlay_line
+
+            effective_user_message += "\n\n[Текущий тон Elira]\n" + mood_overlay_line()
+        except Exception:
+            logger.debug("transient persona tone unavailable", exc_info=True)
+        effective_user_message = (
+            effective_user_message.strip() + "\n\n[Текущее сообщение пользователя]\n" + user_message
+        ).lstrip()
         messages.append({"role": "user", "content": effective_user_message})
 
         yield {
@@ -1206,6 +1147,8 @@ def _stream_code_agent_core(
             # message ordering before the first execution call.
             messages.append({"role": "user", "content": plan_context_block(plan)})
         step = 0
+        sent_guidance: set[str] = set()
+        guidance_message_ids: set[str] = set()
         refresh_task_state = True
         while True:
             step += 1
@@ -1257,9 +1200,35 @@ def _stream_code_agent_core(
             # step. Previously the UI could report ~11% while MCP schemas filled
             # almost the complete 128K server window.
             step_schemas = list(all_schemas)
-            if not simple_greeting:
-                step_schemas.append(_ASK_USER_SCHEMA)
+            step_schemas.append(_ASK_USER_SCHEMA)
+            if active_capability_groups or requested_builtin_tools or active_mcp_server_ids or active_lsp_server_ids or ssh_tools_active or itops_tools_active:
                 step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
+            guidance = task_guidance_blocks(
+                {_schema_tool_name(schema) for schema in all_schemas},
+                domain_policies=request_route.domain_policies,
+            )
+            if task_instructions:
+                guidance["delivery"] = task_instructions
+            if "work" in guidance and "work" not in sent_guidance:
+                guidance["work"] += "\n" + _build_project_context(root, working_dir)
+            if "project" in guidance and "project" not in sent_guidance:
+                guidance["project"] += "\n" + _shell_guidance()
+                guidance["project"] += (
+                    _NO_PROJECT_BLOCK if _is_scratch_workspace(root) else _PROJECT_CONNECTED_BLOCK
+                )
+            new_guidance = [text for key, text in guidance.items() if key not in sent_guidance]
+            if new_guidance:
+                block = "[Инструкции текущей задачи]\n" + "\n\n".join(new_guidance)
+                message_id = f"{rid}:guidance:{step}"
+                guidance_message = {"role": "user", "content": block, "_msg_id": message_id}
+                if step == 1:
+                    # Put initial work instructions before the current request,
+                    # so the model answers the user rather than the instructions.
+                    messages.insert(len(messages) - 1, guidance_message)
+                else:
+                    messages.append(guidance_message)
+                guidance_message_ids.add(message_id)
+                sent_guidance.update(guidance)
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
                     messages,
@@ -1270,6 +1239,7 @@ def _stream_code_agent_core(
                     tool_schemas=step_schemas,
                     cancel_handle=upstream_cancel_handle,
                     audit_sink=compaction_audit_sink,
+                    pinned_message_ids=guidance_message_ids,
                 )
             except ContextBudgetError as exc:
                 if cancel_event.is_set():
@@ -1289,11 +1259,16 @@ def _stream_code_agent_core(
                         "context": exc.usage,
                     }
                 yield {"type": "final_response", "step": step, "text": str(exc)}
+                # One fresh slice can remove recent output. If that slice still
+                # cannot make its first call, repeating it cannot make progress.
+                terminal_budget = exc.fixed_payload_exceeds_budget or (resume and step == 1)
                 yield {
                     "type": "done",
                     "ok": False,
                     "steps": step - 1,
-                    "stop_reason": "context_limit",
+                    "stop_reason": "error" if terminal_budget else "context_limit",
+                    "resumable": not terminal_budget,
+                    "error_code": "context_budget_exceeded",
                     "error": str(exc),
                     **_completion_fields(criteria, terminated_incomplete=True),
                 }
@@ -1657,10 +1632,13 @@ def _stream_code_agent_core(
                     messages.append({
                         "role": "user",
                         "content": (
-                            "[internal evidence correction] Ответ остался неопределённым. "
-                            "Web tools теперь доступны: сначала проверь официальную "
-                            "документацию или первичный источник, затем дай подтверждённый "
-                            "ответ. Локальное состояние по-прежнему проверяй локальными tools."
+                            "[internal evidence correction] Ответ не проверен инструментами. "
+                            "Web tools доступны: отсутствие актуальных знаний модели не "
+                            "означает отсутствие доступа к источникам. Самостоятельно выполни "
+                            "нужный поиск и прочитай первичные источники, затем ответь на исходный "
+                            "вопрос; не спрашивай, выполнять ли поиск или загружать инструменты. "
+                            "Явные ограничения пользователя сохраняются. Локальное состояние "
+                            "по-прежнему проверяй локальными tools."
                         ),
                     })
                     _evidence_answer_correction_sent = True
@@ -2831,6 +2809,7 @@ def stream_code_agent(
     *,
     user_message: str,
     memory_query: str | None = None,
+    task_instructions: str = "",
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
@@ -2853,7 +2832,7 @@ def stream_code_agent(
     resource_refs: list[dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
-    from app.application.code_agent.run_journal import RunJournal, discover_capabilities
+    from app.application.code_agent.run_journal import RunJournal, discover_capabilities, sanitize_event
 
     rid = run_id or uuid.uuid4().hex
     initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
@@ -2865,6 +2844,7 @@ def stream_code_agent(
     request = {
         "user_message": user_message,
         "memory_query": memory_query,
+        "task_instructions": task_instructions,
         "project_root": str(project_root),
         "working_dir": str(working_dir) if working_dir is not None else None,
         "model": model,
@@ -2911,6 +2891,7 @@ def stream_code_agent(
         for raw_event in _stream_code_agent_core(
             user_message=user_message,
             memory_query=memory_query,
+            task_instructions=task_instructions,
             project_root=project_root,
             working_dir=working_dir,
             model=model,
@@ -2918,7 +2899,7 @@ def stream_code_agent(
             conversation_history=conversation_history,
             run_id=rid,
             num_ctx=num_ctx,
-            base_tools=base_tools,
+            base_tools=initial_tools,
             auto_remember=auto_remember,
             chat_fn=chat_fn,
             chat_stream_fn=chat_stream_fn,
@@ -2932,16 +2913,18 @@ def stream_code_agent(
             workflow_approval=workflow_approval,
             resource_refs=resource_refs,
         ):
-            event = dict(raw_event)
+            # Display/persistence only: keep canonical tool output and approval
+            # digests inside the executor unchanged.
+            event = sanitize_event(raw_event)
             event.setdefault("run_id", rid)
             if resume and event.get("type") == "run_started":
                 continue
             if event.get("type") == "done":
-                event["resumable"] = bool(
+                event.setdefault("resumable", bool(
                     event.get("partial")
                     or event.get("stop_reason")
                     in {"error", "context_limit", "workflow_request"}
-                )
+                ))
                 terminal = True
             if event.get("type") == "tool_call" and event.get("media"):
                 answer_media = merge_answer_media(answer_media, event.get("media"))

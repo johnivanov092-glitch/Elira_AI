@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.application.code_agent.tools import tool_remember
-from app.application.code_agent.prompts import _build_system_prompt
+from app.application.code_agent.prompts import _build_turn_context
 
 
 class RememberToolTest(unittest.TestCase):
@@ -49,7 +49,7 @@ class RememberToolTest(unittest.TestCase):
         self.assertIn("Не удалось", res["text"])
 
 class UserFactsInjectionTest(unittest.TestCase):
-    """Relevant durable user facts are injected into the system prompt."""
+    """Relevant durable user facts are injected into the current turn."""
 
     def test_user_facts_injected(self):
         fake = [
@@ -58,7 +58,7 @@ class UserFactsInjectionTest(unittest.TestCase):
         ]
         with patch("app.application.memory.resolve_relevant_facts", return_value=fake), \
              tempfile.TemporaryDirectory() as tmp:
-            prompt = _build_system_prompt(Path(tmp))
+            prompt = _build_turn_context(Path(tmp), memory_query="Что помнишь о QA и Elira?")
         # The injected SECTION header (rule 8а also mentions the phrase, so match
         # the "--- " section marker, which is unique to the injection).
         self.assertIn("--- Личный контекст пользователя", prompt)
@@ -69,7 +69,7 @@ class UserFactsInjectionTest(unittest.TestCase):
     def test_no_section_when_no_user_facts(self):
         with patch("app.application.memory.resolve_relevant_facts", return_value=[]), \
              tempfile.TemporaryDirectory() as tmp:
-            prompt = _build_system_prompt(Path(tmp))
+            prompt = _build_turn_context(Path(tmp), memory_query="Что помнишь о QA?")
         self.assertNotIn("--- Личный контекст пользователя", prompt)
 
 

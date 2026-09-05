@@ -62,7 +62,6 @@ class CodeAgentThinkingTest(unittest.TestCase):
                     {
                         "enable_thinking": True,
                         "reasoning_effort": effort,
-                        "reasoning_strength": effort,
                     },
                 )
 
@@ -74,7 +73,6 @@ class CodeAgentThinkingTest(unittest.TestCase):
             {
                 "enable_thinking": True,
                 "reasoning_effort": "xhigh",
-                "reasoning_strength": "xhigh",
             },
         )
         # DRY anti-repetition rides along on every run (see below for non-think).
@@ -88,14 +86,13 @@ class CodeAgentThinkingTest(unittest.TestCase):
         self.assertEqual(finals[-1]["text"], "ANSWER")
         self.assertNotIn("Шаг рассуждения.", finals[-1]["text"])
 
-    def test_none_disables_qwen_and_sets_muse_to_native_low(self):
+    def test_none_disables_qwen(self):
         captured, events = _drive(thinking=False, reasoning="", run_id="think-off")
         self.assertEqual(
             captured[0]["options"].get("chat_template_kwargs"),
             {
                 "enable_thinking": False,
                 "reasoning_effort": "none",
-                "reasoning_strength": "low",
             },
         )
         # DRY anti-repetition now applies to EVERY run — a live non-think run

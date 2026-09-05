@@ -433,9 +433,11 @@ def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 class ContextBudgetError(RuntimeError):
     """Protected/recent context cannot fit the active server window."""
 
-    def __init__(self, message: str, *, usage: dict[str, Any] | None = None) -> None:
+    def __init__(self, message: str, *, usage: dict[str, Any] | None = None,
+                 fixed_payload_exceeds_budget: bool = False) -> None:
         super().__init__(message)
         self.usage = dict(usage) if isinstance(usage, dict) else None
+        self.fixed_payload_exceeds_budget = fixed_payload_exceeds_budget
 
 
 def _prepare_messages_for_llm(
@@ -448,6 +450,7 @@ def _prepare_messages_for_llm(
     tool_schemas: list[dict[str, Any]] | None = None,
     cancel_handle: Any | None = None,
     audit_sink: Callable[[dict[str, Any]], None] | None = None,
+    pinned_message_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     """Compact at policy thresholds and enforce the effective request budget."""
     from app.application.context.compaction import maybe_compact
@@ -500,6 +503,7 @@ def _prepare_messages_for_llm(
             prepare_messages=_flatten_for_summary,
             audit_sink=audit_sink,
             trigger_reason="strong_compression" if strong else "auto_compression",
+            pinned_message_ids=pinned_message_ids,
         )
         compacted = compacted or changed
         usage = get_context_usage(messages, **usage_kwargs)
@@ -517,6 +521,7 @@ def _prepare_messages_for_llm(
             prepare_messages=_flatten_for_summary,
             audit_sink=audit_sink,
             trigger_reason="strong_compression",
+            pinned_message_ids=pinned_message_ids,
         )
         compacted = compacted or changed
         usage = get_context_usage(messages, **usage_kwargs)
@@ -525,11 +530,20 @@ def _prepare_messages_for_llm(
     if float(usage["percent"]) >= critical_threshold or (
         safe_input_budget > 0 and int(usage["current_tokens"]) > safe_input_budget
     ):
+        # A fresh slice may discard the recent tool output, but it cannot drop
+        # the system prefix, loaded schemas or mandatory task instructions.
+        fixed_messages = [m for m in messages if m.get("role") == "system"
+                          or m.get("_msg_id") in (pinned_message_ids or set())]
+        fixed_usage = get_context_usage(fixed_messages, **usage_kwargs)
+        fixed_exceeds = float(fixed_usage["percent"]) >= critical_threshold or (
+            safe_input_budget > 0 and int(fixed_usage["current_tokens"]) > safe_input_budget
+        )
         raise ContextBudgetError(
             "Контекст остаётся критически заполненным после сжатия: "
             f"{usage['current_tokens']} входных токенов, окно {usage['ctx_size']}. "
             "Начните новый чат или оставьте только необходимые материалы.",
             usage=usage,
+            fixed_payload_exceeds_budget=fixed_exceeds,
         )
     return messages, compacted, usage
 

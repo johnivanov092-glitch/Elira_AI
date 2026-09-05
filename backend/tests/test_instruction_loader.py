@@ -195,8 +195,7 @@ class TestLoadInstructions(unittest.TestCase):
 
 
 class TestBuildSystemPromptUsesLoader(unittest.TestCase):
-    """_build_system_prompt should delegate to load_instructions, not have
-    its own dead _read_project_prompt path."""
+    """Project context uses the canonical loader outside the stable prefix."""
 
     def test_no_read_project_prompt_function(self):
         """The old _read_project_prompt helper must not exist as a separate function."""
@@ -206,8 +205,8 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
             "_read_project_prompt should have been removed; loader.load_instructions is the canonical path",
         )
 
-    def test_build_system_prompt_includes_project_instructions(self):
-        from app.application.code_agent.agent_loop import _build_system_prompt
+    def test_project_context_includes_project_instructions(self):
+        from app.application.code_agent.prompts import _build_project_context
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -215,12 +214,12 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
             (root / ".elira" / "agent.md").write_text("TEST_INSTRUCTION_MARKER", encoding="utf-8")
             with mock.patch("app.application.instructions.loader.Path.home",
                             return_value=Path(tmp) / "no_home"):
-                prompt = _build_system_prompt(root)
+                prompt = _build_project_context(root)
         self.assertIn("TEST_INSTRUCTION_MARKER", prompt)
         self.assertIn("UNTRUSTED INSTRUCTIONS", prompt)
 
-    def test_build_system_prompt_passes_working_dir(self):
-        from app.application.code_agent.agent_loop import _build_system_prompt
+    def test_project_context_passes_working_dir(self):
+        from app.application.code_agent.prompts import _build_project_context
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -232,7 +231,7 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
             (nested / ".elira" / "agent.md").write_text("NESTED_MARKER", encoding="utf-8")
             with mock.patch("app.application.instructions.loader.Path.home",
                             return_value=Path(tmp) / "no_home"):
-                prompt = _build_system_prompt(root, working_dir=nested)
+                prompt = _build_project_context(root, working_dir=nested)
         self.assertLess(prompt.index("ROOT_MARKER"), prompt.index("NESTED_MARKER"))
 
     def test_build_system_prompt_no_instructions_returns_base(self):
@@ -247,7 +246,8 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
         self.assertNotIn("Instructions", prompt)
 
     def test_connected_project_is_explicit_in_every_model_prompt(self):
-        from app.application.code_agent.agent_loop import _build_system_prompt
+        import json
+        from app.application.code_agent.prompts import _build_turn_context, _build_system_prompt
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -255,12 +255,11 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
                 "app.application.instructions.loader.Path.home",
                 return_value=root / "no_home",
             ):
-                prompt = _build_system_prompt(root)
+                prompt = _build_turn_context(root)
+                stable = _build_system_prompt(root)
 
-        self.assertIn("## Текущая директория проекта", prompt)
-        self.assertIn(str(root), prompt)
-        self.assertIn("## Проект подключён", prompt)
-        self.assertNotIn("## Проект не подключён", prompt)
+        self.assertIn("Рабочая папка: " + json.dumps(str(root), ensure_ascii=False), prompt)
+        self.assertNotIn(str(root), stable)
 
 
 class TestCodeAgentInstructionRoutes(unittest.TestCase):

@@ -73,20 +73,25 @@ def _quote_span_at_offset(
 
 def _snippet(chunk_text: str, chunk_offset: int, query: str,
              width: int = _QUOTE_MAX) -> tuple[str, int]:
-    """(verbatim_quote, absolute_offset): a window of the chunk centered on the
-    earliest query-term hit — a fact buried mid-chunk reaches the model, not the
-    chunk's filler head. NO ellipses: the quote must round-trip verify_quote."""
+    """Select a verbatim window covering the most distinct query terms.
+
+    A common word near the start must not hide the specific API/fact later in
+    the chunk. Offsets still point into the original text for verify_quote.
+    """
     if len(chunk_text) <= width:
         return chunk_text, chunk_offset
     low = normalize(chunk_text)
-    pos = -1
-    for term in tokenize(query, stem=False):
-        p = low.find(term)
-        if p != -1 and (pos == -1 or p < pos):
-            pos = p
-    if pos == -1:
+    terms = set(tokenize(query, stem=False))
+    if not terms:
         return chunk_text[:width], chunk_offset
-    start = max(0, pos - width // 3)
+    starts = {0}
+    for term in terms:
+        for match in re.finditer(re.escape(term), low):
+            starts.add(max(0, match.start() - width // 3))
+    # Prefer the earliest equally informative window for deterministic output.
+    start = max(sorted(starts), key=lambda pos: len(
+        terms & set(tokenize(chunk_text[pos:pos + width], stem=False))
+    ))
     end = min(len(chunk_text), start + width)
     return chunk_text[start:end], chunk_offset + start
 

@@ -139,7 +139,7 @@ def shell_command_is_high_impact(command: str) -> bool:
 
 _LOW_RISK_REVERSIBLE_TOOLS = frozenset({
     "write_file", "edit_file", "file_gen", "converter", "archiver",
-    "sandbox_reset", "run_server", "git_commit",
+    "sandbox_reset", "git_commit",
     "resource_materialize", "resource_publish",
 })
 _REMOTE_WRITE_TOOLS = frozenset({"ssh_write", "ssh_replace"})
@@ -232,6 +232,8 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
         return False
     if name == "computer":
         return str(payload.get("action") or "screenshot").strip().lower() != "screenshot"
+    if name == "run_server":
+        return str(payload.get("action") or "start").strip().lower() not in {"list", "logs"}
     if name == "runtime_control":
         return str(payload.get("operation") or "").strip().lower() not in {
             "status", "mcp_list", "lsp_list", "telegram_status",
@@ -240,7 +242,8 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
             "workflow_list", "workflow_runs", "workflow_trigger_list",
             "workflow_scheduler_status", "memory_stats", "memory_profiles",
             "memory_list", "memory_search", "memory_recall", "library_list",
-            "library_search", "library_context", "project_status",
+            "library_search", "library_context", "project_status", "library_read",
+            "mcp_tools", "telegram_messages", "itops_mikrotik_list",
         }
     parts = _creative_mcp_parts(name)
     if parts is None:
@@ -332,7 +335,14 @@ def evidence_for_tool_call(tool_name: str, args: dict[str, Any] | None) -> Safet
         # Bounded egress to an operator-configured worker: material, not a local
         # filesystem edit. accept_edits asks; local bypass may proceed.
         return SafetyEvidence(impact="material")
-    if name == "run_bash":
+    if name == "run_server":
+        action = str(payload.get("action") or "start").strip().lower()
+        if action in {"list", "logs", "stop"}:
+            # Stop only addresses processes owned by the existing job runtime.
+            return SafetyEvidence(impact="material")
+        if action != "start":
+            return SafetyEvidence()
+    if name in {"run_bash", "run_server"}:
         command = str(payload.get("command") or "")
         return SafetyEvidence(
             impact="high" if shell_command_is_high_impact(command) else (

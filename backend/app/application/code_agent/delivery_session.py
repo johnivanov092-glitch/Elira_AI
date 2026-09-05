@@ -198,6 +198,11 @@ def build_continuation_kwargs(
 
     history = list(req.get("conversation_history") or [])
     original_message = str(req.get("user_message") or "").strip()
+    task_instructions = str(req.get("task_instructions") or "")
+    # Read journals from before the delivery note was separated from user text.
+    if original_message.startswith(DELIVERY_CONTRACT_NOTE):
+        original_message = original_message[len(DELIVERY_CONTRACT_NOTE):].lstrip()
+        task_instructions = task_instructions or DELIVERY_CONTRACT_NOTE
     if original_message:
         history.append({"role": "user", "content": original_message})
     last_response = str(state.get("last_response") or "").strip()
@@ -226,6 +231,7 @@ def build_continuation_kwargs(
         reasoning_effort = "none"
     return {
         "user_message": user_message,
+        "task_instructions": task_instructions,
         # Old journals may contain only enriched/model-generated text. They
         # cannot establish the raw-user boundary for automatic memory recall.
         "memory_query": req.get("memory_query") or "",
@@ -307,7 +313,7 @@ def stream_delivery_session(
         # today's behaviour (no session registry, no extra events).
         yield from stream_code_agent(**first_kwargs)
         return
-    first_kwargs["user_message"] = DELIVERY_CONTRACT_NOTE + user_message
+    first_kwargs["task_instructions"] = DELIVERY_CONTRACT_NOTE
     yield from _run_session(
         rid,
         first_kwargs,

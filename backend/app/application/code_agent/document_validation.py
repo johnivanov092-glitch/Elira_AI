@@ -362,9 +362,10 @@ def _inspect_pages(pdf_path: Path, pages: int) -> tuple[str, list[dict[str, str]
         )]
     try:
         from pdf2image import convert_from_path
+        from app.application.pdf.poppler import poppler_options
         from app.infrastructure.llm.vision_ocr import describe_image
 
-        images = convert_from_path(str(pdf_path), dpi=120, fmt="png")
+        images = convert_from_path(str(pdf_path), dpi=120, fmt="png", **poppler_options())
     except Exception:  # noqa: BLE001 - dependency/provider details stay in logs
         return "unverified", [_issue("page_render_unavailable", "Не удалось растрировать страницы для vision-QA.")]
     if len(images) != pages:

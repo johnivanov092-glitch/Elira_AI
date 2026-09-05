@@ -55,6 +55,34 @@ def test_download_request_preloads_resources_and_marks_delivery_contract() -> No
     assert decision.download_requested is True
 
 
+def test_library_text_cannot_require_unsolicited_download(tmp_path) -> None:
+    calls: list[list[dict]] = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs["messages"])
+        return {"message": {"content": "Ответ по моделям.", "tool_calls": []}}
+
+    events = list(stream_code_agent(
+        user_message=(
+            "Library: server.docx\nCDR скачивается; браузер не умеет просматривать CorelDRAW.\n"
+            "ЗАПРОС: что реально умеет Gemini Flash и планируется ли Qwen 3.8 35B AB3?"
+        ),
+        memory_query="что реально умеет Gemini Flash и планируется ли Qwen 3.8 35B AB3?",
+        project_root=tmp_path,
+        model="test-model",
+        profile_name="Баланс",
+        chat_fn=fake_chat,
+        auto_remember=False,
+    ))
+
+    assert len(calls) == 1
+    assert events[-1]["stop_reason"] == "answer"
+    assert events[-1]["ok"] is True
+    started = next(event for event in events if event["type"] == "run_started")
+    assert started["runtime_activation"]["ssh"] is False
+    assert started["runtime_activation"]["capability_groups"] == []
+
+
 def test_local_code_edit_does_not_load_web_without_external_evidence_need() -> None:
     decision = route_request_capabilities(
         "Исправь опечатку в локальном файле backend/app/main.py",
@@ -429,7 +457,7 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
         ))
 
     assert "internal local-catalog correction" in str(prompts[2][-1]["content"])
-    assert "internal catalog Web fallback" in str(prompts[4][-1]["content"])
+    assert any("internal catalog Web fallback" in str(m.get("content", "")) for m in prompts[4])
     assert any(
         event.get("type") == "runtime_activation_changed"
         and event.get("source") == "catalog_absence_fallback"

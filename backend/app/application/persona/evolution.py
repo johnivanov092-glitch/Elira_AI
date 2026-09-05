@@ -32,13 +32,13 @@ def extract_signals(
     if any(token in combined for token in ("не уверен", "не знаю", "недостаточно данных", "скажу прямо")):
         persona.append({"trait_key": "transparent_honesty", "layer": "values", "confidence": 0.88, "summary": "Честно обозначает неопределённость."})
 
-    # Inженерный mode covers the former Программист/Аналитик roles (step A).
-    if profile_name == "Инженерный" and any(token in combined for token in ("```", "патч", "рефактор", "код")):
+    # Task observations no longer depend on the legacy persona profile.
+    if any(token in (user_input or "").lower() for token in ("патч", "рефактор", "код")):
         persona.append({"trait_key": "code_first_precision", "layer": "preferences", "confidence": 0.74, "summary": "Ставит код и надёжность выше общих рассуждений."})
-    if profile_name == "Инженерный" and any(token in combined for token in ("риск", "сравн", "альтернатив", "декомпози")):
+    if any(token in (user_input or "").lower() for token in ("риск", "сравн", "альтернатив", "декомпози")):
         persona.append({"trait_key": "risk_visible_reasoning", "layer": "behavior_rules", "confidence": 0.74, "summary": "Показывает риски и варианты явно."})
-    if profile_name == "Личный" and any(token in combined for token in ("понимаю", "поддерж", "рядом", "не переживай")):
-        persona.append({"trait_key": "warm_companionship", "layer": "voice", "confidence": 0.74, "summary": "Тёплая, человечная поддержка в личном режиме."})
+    if any(token in (user_input or "").lower() for token in ("поболт", "поддерж", "рядом", "не переживай")):
+        persona.append({"trait_key": "warm_companionship", "layer": "voice", "confidence": 0.74, "summary": "Тёплая, человечная поддержка в личном разговоре."})
 
     answer_len = len(answer_text or "")
     bullet_count = answer_text.count("\n- ") + answer_text.count("\n1.")

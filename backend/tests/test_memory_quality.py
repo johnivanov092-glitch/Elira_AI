@@ -257,7 +257,7 @@ class RecallPresentationTest(unittest.TestCase):
 
 class PromptMemorySelectionTest(unittest.TestCase):
     def test_prompt_uses_relevant_authoritative_selector(self) -> None:
-        from app.application.code_agent.prompts import _build_system_prompt
+        from app.application.code_agent.prompts import _build_turn_context
 
         selected = [{
             "text": "Пользователь предпочитает Python.",
@@ -274,7 +274,7 @@ class PromptMemorySelectionTest(unittest.TestCase):
                 return_value=selected,
             ) as resolver,
         ):
-            prompt = _build_system_prompt(
+            prompt = _build_turn_context(
                 BACKEND_ROOT,
                 active_tools=("read_file",),
                 task_text="Исправь Python parser",

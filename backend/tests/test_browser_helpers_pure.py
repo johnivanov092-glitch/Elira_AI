@@ -1,20 +1,4 @@
-"""Tests for pure helpers across three previously zero-covered modules.
-
-  domain/agents/orchestrator_execution_runtime.py:
-    extract_task_graph_answer
-
-  domain/tools/browser_action_tool.py:
-    browser_runtime_hint
-    sync_playwright_available
-    sanitize_browser_actions
-
-  domain/tools/browser_agent_tool.py:
-    goal_keywords
-    score_link
-    rank_links
-
-All functions are pure (no DB, no HTTP, no FS - no Playwright calls).
-"""
+"""Tests for active browser action and browser agent helpers."""
 from __future__ import annotations
 
 import sys
@@ -27,9 +11,6 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.domain.agents.orchestrator_execution_runtime import (  # noqa: E402
-    extract_task_graph_answer,
-)
 from app.domain.tools.browser_action_tool import (  # noqa: E402
     browser_runtime_hint,
     sync_playwright_available,
@@ -40,70 +21,6 @@ from app.domain.tools.browser_agent_tool import (  # noqa: E402
     score_link,
     rank_links,
 )
-
-
-# extract_task_graph_answer
-
-class ExtractTaskGraphAnswerTest(unittest.TestCase):
-
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(extract_task_graph_answer({}), str)
-
-    def test_non_dict_returns_empty(self) -> None:
-        self.assertEqual(extract_task_graph_answer("string"), "")
-
-    def test_none_returns_empty(self) -> None:
-        self.assertEqual(extract_task_graph_answer(None), "")
-
-    def test_list_returns_empty(self) -> None:
-        self.assertEqual(extract_task_graph_answer([]), "")
-
-    def test_final_key_used(self) -> None:
-        result = extract_task_graph_answer({"final": "Final answer here"})
-        self.assertEqual(result, "Final answer here")
-
-    def test_answer_key_used_when_no_final(self) -> None:
-        result = extract_task_graph_answer({"answer": "Answer text"})
-        self.assertEqual(result, "Answer text")
-
-    def test_summary_key_used_when_no_final_or_answer(self) -> None:
-        result = extract_task_graph_answer({"summary": "Summary text"})
-        self.assertEqual(result, "Summary text")
-
-    def test_final_takes_priority_over_answer(self) -> None:
-        result = extract_task_graph_answer({"final": "FINAL", "answer": "ANSWER"})
-        self.assertEqual(result, "FINAL")
-
-    def test_empty_dict_returns_empty(self) -> None:
-        self.assertEqual(extract_task_graph_answer({}), "")
-
-    def test_execution_log_used_when_no_keys(self) -> None:
-        log = [
-            {"output": "step 1 output"},
-            {"output": "step 2 output"},
-        ]
-        result = extract_task_graph_answer({"execution_log": log})
-        self.assertIn("step 2 output", result)
-
-    def test_steps_key_used_when_no_execution_log(self) -> None:
-        steps = [{"output": "step output"}]
-        result = extract_task_graph_answer({"steps": steps})
-        self.assertIn("step output", result)
-
-    def test_last_two_log_items_used(self) -> None:
-        log = [
-            {"output": "output1"},
-            {"output": "output2"},
-            {"output": "output3"},
-        ]
-        result = extract_task_graph_answer({"execution_log": log})
-        self.assertIn("output2", result)
-        self.assertIn("output3", result)
-        self.assertNotIn("output1", result)
-
-    def test_empty_execution_log_returns_empty(self) -> None:
-        result = extract_task_graph_answer({"execution_log": []})
-        self.assertEqual(result, "")
 
 
 # browser_runtime_hint

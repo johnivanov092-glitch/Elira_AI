@@ -40,9 +40,7 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
     )
 
     names = _tool_names(registry)
-    assert {
-        "capability_load", "runtime_control", "read_file", "run_bash", "run_server",
-    } <= names
+    assert names == {"capability_load"}
     assert {"web_search", "web_fetch", "browser", "computer"}.isdisjoint(names)
 
     hidden_result = registry.dispatch_raw(
@@ -78,6 +76,7 @@ def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
         project_root=tmp_path,
         run_id="capability-load-web-next-turn",
         chat_fn=fake_chat,
+        base_tools=["capability_load"],
         auto_remember=False,
         permission_mode="ask",
     ))
@@ -273,6 +272,9 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
         "text": "Job started in background.",
     }
     with patch(
+        "app.application.code_agent.agent_loop._load_runtime_activation_state",
+        return_value=(set(), set(), {}, True, False, {"project", "runtime"}),
+    ), patch(
         "app.application.code_agent.tools._run.start_background_argv_job",
         return_value=started,
     ), patch(
@@ -391,7 +393,7 @@ def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path) -> None:
             return {"message": {"content": "Проверка завершена.", "tool_calls": []}}
 
         effective_profile = resolve_persona_mode(AUTO_PROFILE, message)
-        assert effective_profile == expected_profile
+        assert effective_profile == "Баланс"
         request_route = route_request_capabilities(
             message,
             domain_policy=effective_profile,
@@ -406,53 +408,40 @@ def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path) -> None:
             permission_mode="ask",
         ))
 
-        assert builtin_tools_for_groups(
-            PROFILE_CAPABILITY_GROUPS[expected_profile]
-        ) <= seen_tool_names[0]
-        assert (
-            "itops_network_inventory" in seen_tool_names[0]
-        ) is (expected_profile == "Инфраструктура")
-        assert (
-            "ssh_run" in seen_tool_names[0]
-        ) is (expected_profile == "Инфраструктура")
-        assert "runtime_control" in seen_tool_names[0]
-        assert "Не запускай все MCP автоматически" in seen_system_prompts[0]
-        assert "не запускай последовательные `Test-NetConnection`" in seen_system_prompts[0]
+        assert {"capability_load", "runtime_control", "read_file", "web_search", "web_fetch"} <= seen_tool_names[0]
+        assert "Режим работы:" not in seen_system_prompts[0]
         run_started = next(event for event in events if event["type"] == "run_started")
-        assert run_started["profile_name"] == expected_profile
+        assert run_started["profile_name"] == "Баланс"
         assert run_started["ui_profile_name"] == "Elira / Auto"
         assert expected_profile in run_started["domain_policies"]
-        assert run_started["runtime_activation"]["capability_groups"] == sorted(
-            request_route.capability_groups
-        )
-        assert run_started["runtime_activation"]["itops"] is (
-            expected_profile == "Инфраструктура"
-        )
+        assert run_started["runtime_activation"]["capability_groups"] == []
+        assert run_started["runtime_activation"]["itops"] is False
+
 
 
 def test_auto_routes_an_explicit_absolute_filesystem_path_to_engineering() -> None:
     assert resolve_persona_mode(
         AUTO_PROFILE,
         r"Проект не подключён. Прочитай D:\Data\sample\README.md по абсолютному пути.",
-    ) == "Инженерный"
+    ) == "Баланс"
 
 
 def test_auto_routes_explicit_ssh_commands_to_infrastructure() -> None:
     assert resolve_persona_mode(
         AUTO_PROFILE,
         "Подключись по SSH к серверу и выполни `uname -s`.",
-    ) == "Инфраструктура"
+    ) == "Баланс"
     assert resolve_persona_mode(
         AUTO_PROFILE,
         "Подключись к Windows SSH-хосту и выполни `Write-Output OK`.",
-    ) == "Инфраструктура"
+    ) == "Баланс"
 
 
 def test_auto_keeps_ssh_client_code_work_in_engineering() -> None:
     assert resolve_persona_mode(
         AUTO_PROFILE,
         "Исправь баг в Python SSH-клиенте и добавь тест.",
-    ) == "Инженерный"
+    ) == "Баланс"
 
 
 def test_auto_routes_developer_integrations_to_engineering() -> None:
@@ -461,37 +450,44 @@ def test_auto_routes_developer_integrations_to_engineering() -> None:
         "Получи статус Blender через интеграцию.",
         "Найди репозиторий через GitHub.",
     ):
-        assert resolve_persona_mode(AUTO_PROFILE, message) == "Инженерный"
+        assert resolve_persona_mode(AUTO_PROFILE, message) == "Баланс"
 
 
 def test_auto_routes_a_user_memory_request_to_personal() -> None:
     assert resolve_persona_mode(
         AUTO_PROFILE,
         "Сохрани важный факт в долговременную память и затем вспомни его.",
-    ) == "Личный"
+    ) == "Баланс"
 
 
 def test_auto_routes_an_explicit_scientific_research_request_to_science() -> None:
     assert resolve_persona_mode(
         AUTO_PROFILE,
         "Проведи научную проверку страницы https://example.com и приведи источник.",
-    ) == "Научный"
+    ) == "Баланс"
 
 
 def test_legacy_explicit_profile_no_longer_locks_auto_route() -> None:
-    assert resolve_persona_mode("Медицина", "Исправь баг в коде") == "Инженерный"
+    assert resolve_persona_mode("Медицина", "Исправь баг в коде") == "Баланс"
     history = [
         {"role": "user", "content": "Просканируй TCP-порты в локальной сети"},
         {"role": "assistant", "content": "Начинаю диагностику."},
     ]
-    assert resolve_persona_mode(AUTO_PROFILE, "Продолжай", history) == "Инфраструктура"
+    assert resolve_persona_mode(AUTO_PROFILE, "Продолжай", history) == "Баланс"
 
 
-def test_profile_preloaded_itops_survives_resume(tmp_path) -> None:
+def test_explicit_runtime_activation_survives_resume(tmp_path) -> None:
     run_id = "itops-profile-resume"
 
-    def first_chat(**_kwargs):
-        return {"message": {"content": "Первый ход завершён.", "tool_calls": []}}
+    replies = iter([
+        {"message": {"content": "", "tool_calls": [{"function": {
+            "name": "runtime_control", "arguments": {"operation": "itops_assets"},
+        }}]}},
+        {"message": {"content": "Готово.", "tool_calls": []}},
+    ])
+
+    def first_chat(**kwargs):
+        return next(replies)
 
     list(stream_code_agent(
         user_message="Проверь порт 22 на 192.168.88.15",

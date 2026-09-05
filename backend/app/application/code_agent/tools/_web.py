@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextvars
+
 from typing import Any
 
 from app.application.agent_kernel.impact_policy import BROWSER_CHANGE_ACTIONS
@@ -343,7 +345,7 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
         import concurrent.futures
         blocks: dict[int, str] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(url_list), _WEB_BATCH_WORKERS)) as ex:
-            futs = {ex.submit(_fetch_one, u, limit): i for i, u in enumerate(url_list)}
+            futs = {ex.submit(contextvars.copy_context().run, _fetch_one, u, limit): i for i, u in enumerate(url_list)}
             for f in concurrent.futures.as_completed(futs):
                 i = futs[f]
                 blocks[i] = f.result() if not f.exception() else f"ERROR: {f.exception()}"
@@ -416,7 +418,7 @@ def tool_web_sitemap(*, url: str, contains: str = "", max_urls: int = 30) -> dic
     return {"text": "\n".join(lines), "ok": True}
 
 
-def _resolve_locator(page, selector: str, *, kind: str):
+async def _resolve_locator(page, selector: str, *, kind: str):
     """Best-effort locator for an interaction step. Accepts a raw CSS selector, or a
     human label / button text / placeholder / input name — trying each strategy so the
     model can say `fill: "CIDR"` (a label) or `click: "Calculate"` (button text) without
@@ -452,14 +454,14 @@ def _resolve_locator(page, selector: str, *, kind: str):
     for make in strategies:
         try:
             loc = make().first
-            if loc.count() > 0:
+            if await loc.count() > 0:
                 return loc
         except Exception:
             continue
     return None
 
 
-def _apply_action(page, act: dict) -> bool:
+async def _apply_action(page, act: dict) -> bool:
     """Apply one interaction step before the DOM is captured:
       {"fill": <label|css>, "value": ...}    type into an input (value "" clears it)
       {"select": <label|css>, "value": ...}  choose a <select> option (by label/value/text)
@@ -475,36 +477,36 @@ def _apply_action(page, act: dict) -> bool:
         return False
     try:
         if "fill" in act:
-            loc = _resolve_locator(page, str(act.get("fill") or ""), kind="fill")
+            loc = await _resolve_locator(page, str(act.get("fill") or ""), kind="fill")
             if loc is not None:
-                loc.fill(str(act.get("value", "") if act.get("value") is not None else ""), timeout=8000)
+                await loc.fill(str(act.get("value", "") if act.get("value") is not None else ""), timeout=8000)
                 return True
         elif "select" in act:
-            loc = _resolve_locator(page, str(act.get("select") or ""), kind="fill")
+            loc = await _resolve_locator(page, str(act.get("select") or ""), kind="fill")
             if loc is not None:
                 opt = str(act.get("value", act.get("option", "")) or "")
                 for kw in ("label", "value", None):
                     try:
                         if kw:
-                            loc.select_option(**{kw: opt}, timeout=8000)
+                            await loc.select_option(**{kw: opt}, timeout=8000)
                         else:
-                            loc.select_option(opt, timeout=8000)
+                            await loc.select_option(opt, timeout=8000)
                         return True
                     except Exception:
                         continue
         elif "check" in act or "uncheck" in act:
             want = "check" in act
-            loc = _resolve_locator(page, str(act.get("check") or act.get("uncheck") or ""), kind="check")
+            loc = await _resolve_locator(page, str(act.get("check") or act.get("uncheck") or ""), kind="check")
             if loc is not None:
-                (loc.check if want else loc.uncheck)(timeout=8000)
+                await (loc.check if want else loc.uncheck)(timeout=8000)
                 return True
         elif "click" in act:
-            loc = _resolve_locator(page, str(act.get("click") or ""), kind="click")
+            loc = await _resolve_locator(page, str(act.get("click") or ""), kind="click")
             if loc is not None:
-                loc.click(timeout=8000)
+                await loc.click(timeout=8000)
                 return True
         elif "wait" in act:
-            page.wait_for_timeout(max(0, min(int(act.get("wait") or 500), 10000)))
+            await page.wait_for_timeout(max(0, min(int(act.get("wait") or 500), 10000)))
     except Exception:
         return False
     return False
@@ -536,7 +538,7 @@ def _coerce_viewport(value: Any) -> dict | None:
     return None
 
 
-def _browser_render(url: str, wait_selector: str | None, limit: int,
+async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
                     actions: list[dict] | None = None,
                     viewport: dict | None = None) -> tuple[str, str, str, int, dict | None]:
     """Render a page with Playwright, optionally performing interaction steps (fill /
@@ -547,24 +549,25 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
     (title, url, body, applied, viewport_signal) where `applied` counts real interactions
     that resolved+ran and `viewport_signal` is {'checked':True,'width':W,'no_hoverflow':bool}
     (or None when no viewport was requested). Runs in a worker thread (see tool_browser):
-    the Playwright sync API must not be called from inside an asyncio loop."""
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    the worker owns its event loop and browser lifecycle."""
+    import asyncio
+    from playwright.async_api import async_playwright
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
         try:
-            page = browser.new_page(viewport=viewport) if viewport else browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            page = await browser.new_page(viewport=viewport) if viewport else await browser.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=30000)
             if wait_selector:
                 try:
-                    page.wait_for_selector(wait_selector, timeout=8000)
+                    await page.wait_for_selector(wait_selector, timeout=8000)
                 except Exception:
                     pass
             applied = 0
             if actions:
                 for act in actions:
-                    if _apply_action(page, act):
+                    if await _apply_action(page, act):
                         applied += 1
-                page.wait_for_timeout(300)  # let the DOM settle after interactions
+                await page.wait_for_timeout(300)  # let the DOM settle after interactions
             vp_signal = None
             if viewport:
                 try:
@@ -574,29 +577,88 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
                     # scrollbar space (window.innerWidth would include it) can't mask a genuine
                     # overflow up to the scrollbar width (Batch D review, finding 2). +1 tolerates
                     # sub-pixel rounding. Report the requested DEVICE width for bucket matching.
-                    m = page.evaluate(
+                    m = await page.evaluate(
                         "() => ({sw: document.documentElement.scrollWidth,"
                         " cw: document.documentElement.clientWidth})")
                     fits = bool(int(m["sw"]) <= int(m["cw"]) + 1)
                     vp_signal = {"checked": True, "width": int(viewport["width"]), "no_hoverflow": fits}
                 except Exception:
                     vp_signal = None   # measurement failed → no viewport verdict (honest)
-            return page.title(), page.url, (page.inner_text("body") or "")[:limit], applied, vp_signal
+            return await page.title(), page.url, (await page.inner_text("body") or "")[:limit], applied, vp_signal
         finally:
-            browser.close()
+            close_task = asyncio.create_task(browser.close())
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                await close_task
+                raise
+
+
+def _browser_render(url: str, wait_selector: str | None, limit: int,
+                    actions: list[dict] | None = None,
+                    viewport: dict | None = None) -> tuple[str, str, str, int, dict | None]:
+    """Own the async browser in this worker; Stop waits for its cleanup."""
+    import asyncio
+    import sys
+    import threading
+    from app.application.code_agent.tools._shell import (
+        register_run_cancel_callback, unregister_run_cancel_callback,
+    )
+
+    loop = asyncio.ProactorEventLoop() if sys.platform == "win32" else asyncio.new_event_loop()
+    task = loop.create_task(_browser_render_async(url, wait_selector, limit, actions, viewport))
+    finished = threading.Event()
+    cancel_lock = threading.Lock()
+    cancel_requested = False
+    worker_id = threading.get_ident()
+
+    def handle_loop_error(owner_loop, context) -> None:
+        from playwright.async_api import Error as PlaywrightError
+        # Playwright's pending protocol future can resolve with TargetClosed
+        # after its awaiting task was cancelled. Cleanup itself remains awaited.
+        if cancel_requested and isinstance(context.get("exception"), PlaywrightError):
+            return
+        owner_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_loop_error)
+
+    def cancel() -> None:
+        nonlocal cancel_requested
+        with cancel_lock:
+            if not cancel_requested and not finished.is_set():
+                cancel_requested = True
+                loop.call_soon_threadsafe(task.cancel)
+        # Registration can invoke us synchronously if Stop preceded setup.
+        if threading.get_ident() != worker_id and not finished.wait(10):
+            raise RuntimeError("browser cancellation cleanup timed out")
+
+    token = register_run_cancel_callback(cancel)
+    try:
+        if cancel_requested:
+            task.cancel()
+        return loop.run_until_complete(task)
+    except asyncio.CancelledError as exc:
+        raise RuntimeError("browser cancelled by user") from exc
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            with cancel_lock:
+                finished.set()
+                loop.close()
+            unregister_run_cancel_callback(token)
 
 
 def _render_fallback(url: str, limit: int) -> str:
     """Best-effort headless-browser render for a thin/empty static fetch (Phase A).
-    Reuses _browser_render in a worker thread (the Playwright sync API must not be
-    called from inside an asyncio loop). Returns '' on any provider failure so
+    Reuses _browser_render in a worker thread with the current run ownership. Returns '' on any provider failure so
     web_fetch falls back to the static body.
     """
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             _title, _final_url, text, _applied, _vp = ex.submit(
-                _browser_render, url, None, limit
+                contextvars.copy_context().run, _browser_render, url, None, limit
             ).result()
         return (text or "").strip()
     except Exception:
@@ -641,7 +703,7 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             title, final_url, text, applied, vp_signal = ex.submit(
-                _browser_render, cleaned_url, wait_selector, limit, steps, vp
+                contextvars.copy_context().run, _browser_render, cleaned_url, wait_selector, limit, steps, vp
             ).result()
     except Exception as exc:
         return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}

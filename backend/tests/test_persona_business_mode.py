@@ -40,14 +40,14 @@ class BusinessModeTest(unittest.TestCase):
         # plain chat stays neutral
         self.assertEqual(classify_mode("расскажи про погоду"), "Баланс")
 
-    def test_mode_line_reaches_persona_prompt(self):
-        # By design only the overlay's FIRST sentence reaches the model (the
-        # persona prompt is kept compact); it must carry the business posture.
+    def test_legacy_mode_keeps_identity_and_task_guidance(self):
         from app.application.persona.service import build_persona_prompt
+        from app.application.code_agent.task_guidance import task_guidance_blocks
         prompt = build_persona_prompt("Деловой")
-        self.assertIn("Режим работы: деловой", prompt)
-        self.assertIn("готового документа", prompt)      # document-first posture
-        self.assertIn("проверяемых источников", prompt)  # grounding cue
+        self.assertEqual(prompt, build_persona_prompt("Баланс"))
+        guidance = task_guidance_blocks(set(), domain_policies=["Деловой"])["Деловой"]
+        self.assertIn("подтверждай источниками", guidance)
+        self.assertIn("формат требуемого документа", guidance)
 
     def test_full_overlay_preview_in_api(self):
         from app.core.persona_defaults import PROFILE_MODE_OVERLAYS

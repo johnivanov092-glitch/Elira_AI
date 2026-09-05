@@ -67,6 +67,7 @@ src-tauri/bundle/
 # ------------------------------
 # Runtime / Generated
 # ------------------------------
+.runtime/
 logs/
 log/
 tmp/
@@ -190,6 +191,9 @@ backend/.env.local
 
 # Local agent runs and launchers
 /.agent/
+# Local issue notes, private chat traces, benchmarks and source snapshots.
+# Already tracked historical notes stay versioned; publish shared status in docs/.
+/.scratch/
 /.tmp_pytest/
 /Task_Agent.txt
 /start-claude-full.ps1

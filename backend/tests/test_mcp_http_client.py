@@ -333,6 +333,86 @@ class RetryTest(_TransportTestBase):
         self.assertIn("transport failed", str(ctx.exception))
 
 
+class ActionTransportTest(_TransportTestBase):
+    def test_action_with_lost_response_is_not_replayed(self):
+        calls = []
+        base = FakeHttpServer()
+
+        def handler(request):
+            payload = json.loads(request.content)
+            if payload.get("method") == "tools/call":
+                calls.append(payload)
+                raise httpx.ReadTimeout("response lost after action", request=request)
+            return base(request)
+
+        client = self._start(handler)
+        with self.assertRaisesRegex(McpError, "outcome.*unknown"):
+            client.call_tool("echo", {"text": "action"})
+        self.assertEqual(len(calls), 1)
+
+    def test_cross_origin_redirect_never_receives_credentials_or_body(self):
+        destinations = []
+        base = FakeHttpServer()
+
+        def handler(request):
+            payload = json.loads(request.content)
+            if payload.get("method") == "tools/call":
+                destinations.append(str(request.url))
+                return httpx.Response(307, headers={"Location": "https://other.test/mcp"})
+            return base(request)
+
+        client = self._start(handler)
+        client._secret_headers = {"Authorization": "Bearer test-only-value"}
+        with self.assertRaises(McpSecurityError):
+            client.call_tool("echo", {})
+        self.assertEqual(destinations, [FAKE_URL])
+
+    def test_same_origin_redirect_preserves_call_and_authentication(self):
+        seen = []
+        base = FakeHttpServer()
+
+        def handler(request):
+            payload = json.loads(request.content)
+            if payload.get("method") == "tools/call":
+                seen.append(request.headers.get("Authorization"))
+                if request.url.path == "/mcp":
+                    return httpx.Response(307, headers={"Location": "/new-mcp"})
+            return base(request)
+
+        client = self._start(handler)
+        client._secret_headers = {"Authorization": "Bearer test-only-value"}
+        self.assertIn("content", client.call_tool("echo", {}))
+        self.assertEqual(seen, ["Bearer test-only-value"] * 2)
+
+    def test_awaited_call_requires_matching_jsonrpc_result(self):
+        invalid_responses = [
+            None,
+            {},
+            {"jsonrpc": "2.0", "id": -1, "result": {}},
+            {"jsonrpc": "2.0", "id": "match"},
+            {"jsonrpc": "2.0", "id": "match", "result": {}, "error": {}},
+            {"jsonrpc": "2.0", "id": "match", "result": None},
+        ]
+        for invalid in invalid_responses:
+            with self.subTest(invalid=invalid):
+                base = FakeHttpServer()
+
+                def handler(request):
+                    payload = json.loads(request.content)
+                    if payload.get("method") == "tools/call":
+                        if invalid is None:
+                            return httpx.Response(202)
+                        result = dict(invalid)
+                        if result.get("id") == "match":
+                            result["id"] = payload["id"]
+                        return httpx.Response(200, json=result)
+                    return base(request)
+
+                client = self._start(handler)
+                with self.assertRaises(McpError):
+                    client.call_tool("echo", {})
+
+
 # ── URL shape validation (real guard, no mocking) ────────────────
 
 

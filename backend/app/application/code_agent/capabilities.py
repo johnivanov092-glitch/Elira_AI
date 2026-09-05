@@ -13,24 +13,17 @@ import re
 
 CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
     "capability_load",
-    "runtime_control",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "path_exists",
-    "project_map",
-    "todo_update",
-    "delegate_task",
-    "run_bash",
-    "run_server",
 )
 
 CORE_BUILTIN_TOOLS = frozenset(CORE_BUILTIN_TOOL_ORDER)
 
 
 CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
+    "project": frozenset({
+        "read_file", "write_file", "edit_file", "glob", "grep", "path_exists",
+        "project_map", "todo_update", "delegate_task", "run_bash", "run_server",
+    }),
+    "runtime": frozenset({"runtime_control"}),
     "web": frozenset({
         "web_search", "web_fetch", "web_query", "web_sitemap", "http_api",
         "browser", "screenshot",
@@ -50,11 +43,13 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
 
 
 CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
+    "project": "local files, code, shell commands, processes, tests and task planning",
+    "runtime": "discover/manage MCP, LSP, SSH, IT Ops, Telegram, Library and user memory",
     "web": "internet search, page reading, HTTP APIs, JS browser and URL screenshots",
     "desktop": "local Windows desktop screenshots, mouse and keyboard control",
     "resources": "attachments, OCR/vision, generated DOCX/XLSX/PDF and downloads",
     "data": "sandboxed code, regex, CSV, conversion, SQLite, encryption and archives",
-    "memory": "project RAG recall and saving durable user facts/corrections",
+    "memory": "project RAG recall; save durable user facts/corrections only on explicit request, never transient chat preferences",
     "operations": "inference-server facts and webhooks",
 }
 
@@ -123,6 +118,14 @@ _MODEL_UNCERTAINTY_RE = re.compile(
     r"(?:\b(?:не\s+знаю|не\s+уверен|нет\s+данных|неизвестно|"
     r"не\s+получилось|не\s+удалось|не\s+могу\s+определить|"
     r"информация\s+не\s+найдена|cannot\s+determine|unknown|no\s+data)\b)",
+    re.IGNORECASE,
+)
+_MODEL_EXTERNAL_ACCESS_DENIAL_RE = re.compile(
+    r"(?:у\s+меня\s+(?:нет|отсутствует)\s+(?:прям\w*\s+)?доступ\w*|"
+    r"я\s+не\s+(?:имею\s+доступ\w*|могу\s+(?:искать|проверить|получать))|"
+    r"\bi\s+(?:do\s+not|don't|cannot|can't)\s+(?:have\s+)?(?:access|browse|search))"
+    r"[^.!?\n]{0,160}(?:интернет\w*|веб\w*|актуальн\w*|новост\w*|"
+    r"реальн\w*\s+времен\w*|\b(?:internet|web|current|news|real.time)\b)",
     re.IGNORECASE,
 )
 _LOCAL_TABULAR_READ_RE = re.compile(
@@ -212,7 +215,7 @@ def route_request_capabilities(
     if _WEB_EVIDENCE_RE.search(text):
         evidence_reasons.append("request_requires_current_or_external_evidence")
     if _EXTERNAL_TECH_RE.search(text) and re.search(
-        r"(?:совместим|верси|ошиб|не\s+работ|не\s+получ|как\s+подключ|настро)",
+        r"(?:совместим|верси|ошиб|не\s+работ|не\s+получ|как\s+подключ|настро|релиз|планируется)",
         text,
         re.IGNORECASE,
     ):
@@ -257,7 +260,11 @@ def should_escalate_web_after_failure(
 
 def should_escalate_web_from_answer(answer: str) -> bool:
     """Detect an unresolved/uncertain draft before it reaches the user."""
-    return bool(_MODEL_UNCERTAINTY_RE.search(str(answer or "")))
+    text = str(answer or "")
+    return bool(
+        _MODEL_UNCERTAINTY_RE.search(text)
+        or _MODEL_EXTERNAL_ACCESS_DENIAL_RE.search(text)
+    )
 
 
 def is_local_tabular_catalog_probe(

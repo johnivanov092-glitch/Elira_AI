@@ -394,7 +394,16 @@ class McpHttpClient:
             "params": params,
         }
         response = self._post_jsonrpc(payload, timeout=timeout, expect_response=True)
-        return response or {}
+        if (
+            not isinstance(response, dict)
+            or response.get("jsonrpc") != JSONRPC_VERSION
+            or type(response.get("id")) is not type(rid)
+            or response.get("id") != rid
+            or ("result" in response) == ("error" in response)
+            or not isinstance(response.get("result") if "result" in response else response.get("error"), dict)
+        ):
+            raise McpError(f"invalid or mismatched JSON-RPC response to {method!r}")
+        return response
 
     def _request_result(
         self,
@@ -439,16 +448,24 @@ class McpHttpClient:
             raise McpError("client not started")
 
         last_exc: Optional[Exception] = None
-        for attempt in range(MAX_TRANSPORT_RETRIES + 1):
+        # A lost tools/call response does not prove that the action failed.
+        # Replaying it can duplicate a write or an external side effect.
+        attempts = 1 if payload.get("method") == "tools/call" else MAX_TRANSPORT_RETRIES + 1
+        for attempt in range(attempts):
             try:
                 return self._post_once(client, payload, timeout=timeout, expect_response=expect_response)
             except McpSecurityError:
                 raise  # never retry a guard failure
             except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if payload.get("method") == "tools/call":
+                    raise McpError(
+                        "tools/call transport failed; execution outcome is unknown. "
+                        "Check the remote state before repeating the action."
+                    ) from exc
                 last_exc = exc
                 logger.debug("mcp http transport error (attempt %d): %s", attempt + 1, exc)
                 continue
-        raise McpError(f"transport failed after {MAX_TRANSPORT_RETRIES + 1} attempts: {last_exc}")
+        raise McpError(f"transport failed after {attempts} attempts: {last_exc}")
 
     def _post_once(
         self,
@@ -472,9 +489,13 @@ class McpHttpClient:
                     location = resp.headers.get("location")
                     if not location:
                         raise McpError(f"redirect with no Location from {url!r}")
-                    # Resolve relative redirects against the current URL,
-                    # then loop to re-guard the new target.
-                    url = urljoin(url, location)
+                    target = urljoin(url, location)
+                    source_parts, target_parts = urlsplit(url), urlsplit(target)
+                    def origin(parts):
+                        return (parts.scheme.lower(), parts.hostname, parts.port or (443 if parts.scheme.lower() == "https" else 80))
+                    if origin(source_parts) != origin(target_parts) or target_parts.username or target_parts.password:
+                        raise McpSecurityError("cross-origin MCP redirect refused: credentials and request body must stay on the configured origin")
+                    url = target
                     continue
                 return self._handle_response(resp, expect_response=expect_response)
             finally:
@@ -494,6 +515,8 @@ class McpHttpClient:
 
         if resp.status_code == 202:
             # Accepted with no body — valid for a notification.
+            if expect_response:
+                raise McpError("server accepted the request without a JSON-RPC result; execution outcome is unknown")
             return None
         if resp.status_code >= 400:
             raise McpError(f"http {resp.status_code} from server")

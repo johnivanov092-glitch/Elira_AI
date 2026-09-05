@@ -329,8 +329,8 @@ class CodeAgentStreamRequest(CodeAgentRequest):
     )
     reasoning_effort: Optional[Literal["none", "low", "medium", "xhigh"]] = Field(
         default=None,
-        description="Model-neutral per-run reasoning depth. Overrides the legacy "
-        "thinking bool. Qwen can disable reasoning; Muse maps none to low. "
+        description="Qwen per-run reasoning depth. Overrides the legacy "
+        "thinking bool. The none level fully disables reasoning. "
         "Reasoning streams as separate reasoning_delta events.",
     )
 
