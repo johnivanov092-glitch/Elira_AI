@@ -18,6 +18,22 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from driver import run_smoke, summarize_events  # noqa: E402
+
+
+def test_source_reporting_excludes_failed_pages_and_does_not_certify_claims():
+    summary = summarize_events([
+        {"type": "tool_call", "tool": "web_fetch", "ok": False, "result": "ERROR https://failed.test/"},
+        {"type": "tool_call", "tool": "web_fetch", "ok": True, "result": "batch", "sources": [
+            {"status": "failed", "url": "https://failed.test/"},
+            {"status": "excerpt", "url": "https://read.test/"},
+        ]},
+        {"type": "final_response", "text": "An unsupported claim", "source_status": "matched", "citations": [
+            {"source_id": "one", "status": "matched", "claim_support": "not_assessed"},
+        ]},
+    ], run_id="sources", duration_s=1)
+    assert summary["tool_source_urls"] == {"web_fetch": ["https://read.test/"]}
+    assert summary["source_status"] == "matched"
+    assert summary["claim_support"] == "not_assessed"
 from routing_eval import (  # noqa: E402
     DEFAULT_CASES_PATH,
     _load_cases,

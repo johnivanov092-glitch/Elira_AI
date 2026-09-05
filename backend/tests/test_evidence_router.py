@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.capabilities import (
     is_local_tabular_catalog_probe,
@@ -145,8 +147,13 @@ def test_one_request_combines_code_network_and_web_without_profile_lock() -> Non
     assert "web" in decision.capability_groups
 
 
-def test_uncertain_model_draft_requires_evidence_pass() -> None:
-    assert should_escalate_web_from_answer("Не уверен, данных недостаточно.") is True
+def test_general_uncertainty_is_not_a_web_requirement() -> None:
+    assert should_escalate_web_from_answer("Не уверен, данных недостаточно.") is False
+    assert should_escalate_web_from_answer("Не знаю, что ты сейчас чувствуешь.") is False
+    assert should_escalate_web_from_answer('Перевод: «I do not have access to the internet».') is False
+    assert should_escalate_web_from_answer('I do not have access to the internet',
+        'Повтори: «I do not have access to the internet»') is False
+    assert should_escalate_web_from_answer("У меня нет доступа к актуальным новостям.") is True
     assert should_escalate_web_from_answer("Локальный файл успешно обновлён.") is False
 
 
@@ -570,7 +577,8 @@ def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) ->
     assert done["answer_status"] == "degraded"
 
 
-def test_unverified_document_qa_claim_is_replaced_by_runtime_backstop(tmp_path) -> None:
+@pytest.mark.parametrize("streaming", [False, True])
+def test_unverified_document_qa_claim_is_replaced_by_runtime_backstop(tmp_path, streaming) -> None:
     responses = iter([
         {
             "message": {
@@ -597,6 +605,11 @@ def test_unverified_document_qa_claim_is_replaced_by_runtime_backstop(tmp_path) 
     def fake_chat(**_kwargs):
         return next(responses)
 
+    def fake_stream(**kwargs):
+        response = fake_chat(**kwargs)
+        yield {"type": "delta", "content": response["message"]["content"]}
+        yield {"type": "message", "response": response}
+
     with patch(
         "app.application.code_agent.tools._dispatch.tool_resource_publish",
         return_value={
@@ -614,6 +627,7 @@ def test_unverified_document_qa_claim_is_replaced_by_runtime_backstop(tmp_path) 
             project_root=tmp_path,
             run_id="document-qa-backstop",
             chat_fn=fake_chat,
+            chat_stream_fn=fake_stream if streaming else None,
             auto_remember=False,
             permission_mode="bypass",
         ))
@@ -624,6 +638,9 @@ def test_unverified_document_qa_claim_is_replaced_by_runtime_backstop(tmp_path) 
     assert "внешняя проверка не подтверждена" in final["text"]
     assert "QA passed" not in final["text"]
     assert done["answer_status"] == "degraded"
+    if streaming:
+        assert all(event["answer_state"] == "draft" for event in events if event["type"] == "delta")
+        assert final["answer_state"] == "accepted"
 
 
 def test_user_page_count_contract_overrides_model_omission(tmp_path) -> None:

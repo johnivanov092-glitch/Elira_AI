@@ -4,10 +4,12 @@ import MarkdownRenderer from "../components/MarkdownRenderer";
 import { DownloadLink } from "../components/DownloadLink";
 import { AnswerMediaGallery } from "./AnswerMediaGallery";
 import { ToolCallGroup } from "./ToolCallGroup";
-import type { AnswerMediaItem, CompletionStatus, CriterionState } from "../api/codeAgent";
+import type { AnswerMediaItem, SourceCitation, CompletionStatus, CriterionState } from "../api/codeAgent";
+import { ExternalBrowserLink } from "../components/ExternalLink";
 import type { AgentTurnData } from "./types";
 import { deriveArtifacts } from "./artifacts";
-import { getAutoSpeak, speak } from "./voice";
+import { getAutoSpeak, speak, stop as stopSpeech } from "./voice";
+import { isAcceptedAnswer } from "./answerLifecycle";
 import { cn } from "../ui/cn";
 
 function splitAnswerIntro(text: string): [string, string] {
@@ -32,13 +34,13 @@ function splitAnswerIntro(text: string): [string, string] {
   return [blocks.slice(0, introBlocks).join("\n\n"), blocks.slice(introBlocks).join("\n\n")];
 }
 
-function AnswerWithMedia({ text, media }: { text: string; media: AnswerMediaItem[] }) {
+function AnswerWithMedia({ text, media, citations }: { text: string; media: AnswerMediaItem[]; citations?: SourceCitation[] }) {
   const [intro, details] = splitAnswerIntro(text);
   return (
     <>
-      <MarkdownRenderer content={intro} />
+      <MarkdownRenderer content={intro} citations={citations} />
       <AnswerMediaGallery media={media} />
-      {details && <MarkdownRenderer content={details} />}
+      {details && <MarkdownRenderer content={details} citations={citations} />}
     </>
   );
 }
@@ -55,13 +57,15 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
   // (a live reply), never for already-finished turns rendered from history.
   const wasRunning = useRef(turn.running);
   useEffect(() => {
-    if (wasRunning.current && !turn.running && turn.text && getAutoSpeak()) {
-      void speak(turn.text);
+    if (wasRunning.current && isAcceptedAnswer(turn) && turn.text && getAutoSpeak()) {
+      void onSpeak();
     }
     wasRunning.current = turn.running;
-  }, [turn.running, turn.text]);
+  }, [turn.running, turn.text, turn.answerState, turn.stopReason, turn.error]);
 
   async function onSpeak() {
+    if (speaking) { stopSpeech(); setSpeaking(false); return; }
+    if (!isAcceptedAnswer(turn)) return;
     if (!turn.text) return;
     setSpeaking(true);
     try {
@@ -97,9 +101,24 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
       {turn.text && (
         <div className="text-[13.8px] leading-relaxed">
           {turn.media?.length
-            ? <AnswerWithMedia text={turn.text} media={turn.media} />
-            : <MarkdownRenderer content={turn.text} />}
+            ? <AnswerWithMedia text={turn.text} media={turn.media} citations={turn.answerState === "draft" ? undefined : turn.citations} />
+            : <MarkdownRenderer content={turn.text} citations={turn.answerState === "draft" ? undefined : turn.citations} />}
         </div>
+      )}
+
+      {turn.text && turn.answerState === "draft" && <div className="text-[11px] text-mut">Черновик · ответ формируется</div>}
+      {turn.text && turn.answerState === "interrupted" && <div className="text-[11px] text-mut">Черновик · ответ прерван</div>}
+      {isAcceptedAnswer(turn) && Boolean(turn.citations?.length) && (
+        <details className="mt-2 text-[12px] text-mut">
+          <summary className="cursor-pointer">Источники ({turn.citations!.length})</summary>
+          <p>Показаны полученные фрагменты. Соответствие вывода источнику автоматически не оценивалось.</p>
+          {turn.citations!.map((citation, index) => <div key={citation.source_id} className="mt-2">
+            {citation.status === "matched" && citation.source ? <>
+              <ExternalBrowserLink href={citation.source.url} className="md-link">[{index + 1}] {citation.source.title || citation.source.url}</ExternalBrowserLink>
+              <blockquote className="whitespace-pre-wrap">{citation.source.quote}</blockquote>
+            </> : <span>[{index + 1}] Источник не сопоставлен с полученными данными</span>}
+          </div>)}
+        </details>
       )}
 
       {!turn.text && turn.media && turn.media.length > 0 && <AnswerMediaGallery media={turn.media} />}
@@ -114,16 +133,15 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
 
       {!turn.running && (turn.text || downloads.length > 0) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {turn.text && (
+          {turn.text && isAcceptedAnswer(turn) && (
             <button
               type="button"
               onClick={() => void onSpeak()}
-              disabled={speaking}
-              title="Озвучить голосом Elira"
-              aria-label="Озвучить"
+              title={speaking ? "Остановить озвучку" : "Озвучить голосом Elira"}
+              aria-label={speaking ? "Остановить озвучку" : "Озвучить"}
               className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] text-mut transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
             >
-              <Volume2 size={12} className={speaking ? "animate-pulse text-ac" : ""} /> Озвучить
+              <Volume2 size={12} className={speaking ? "animate-pulse text-ac" : ""} /> {speaking ? "Остановить озвучку" : "Озвучить"}
             </button>
           )}
           {downloads.length > 0 && <span className="ml-0.5 text-[11px] text-mut">Файлы:</span>}

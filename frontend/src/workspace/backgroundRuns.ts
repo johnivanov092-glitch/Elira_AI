@@ -16,6 +16,7 @@ import type { ResourceAttachment } from "../api/resources";
 import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, FileEntry, Turn } from "./types";
 import { latestUserTaskLabel } from "./taskHistory";
+import { isAcceptedAnswer } from "./answerLifecycle";
 
 /**
  * Background run manager.
@@ -113,24 +114,6 @@ export function doneLedgerEntries(
 }
 
 const _runs = new Map<string, RunEntry>();
-
-/** Collapse consecutive duplicate paragraphs in an assistant answer before it
- *  enters conversation_history. A degenerate ×N-repeated answer that slipped
- *  into a saved turn would otherwise teach the model "my style is to repeat
- *  myself" on every following turn — this breaks that feedback loop. Exact
- *  consecutive matches only, so legitimately repeated short lines survive. */
-function dedupeParagraphs(text: string): string {
-  if (!text.includes("\n")) return text;
-  const out: string[] = [];
-  let prev: string | null = null;
-  for (const para of text.split("\n")) {
-    const key = para.trim();
-    if (key.length > 40 && key === prev) continue;
-    out.push(para);
-    if (key) prev = key;
-  }
-  return out.join("\n");
-}
 
 function contextUsageFromState(state: ContextState | null): ContextUsage | null {
   if (!state) return null;
@@ -309,9 +292,10 @@ function wire(
         // abort paths (LLM error / cancel / stream timeout) no final arrives and
         // the multi-step concat got persisted as the answer — and then fed back
         // into the next turn's history, teaching the model to repeat itself.
-        patch((a) => (a.running ? { ...a, text: "", reasoning: undefined } : a));
+        patch((a) => (a.running ? { ...a, text: "", reasoning: undefined, answerState: "draft", citations: undefined, sourceStatus: "none" } : a));
       }
-      else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
+      else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text, answerState: "draft" }));
+      else if (e.type === "source_evidence") patch((a) => ({ ...a, sources: e.sources }));
       else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text }));
       else if (e.type === "tool_call") {
         patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined }));
@@ -373,7 +357,7 @@ function wire(
             ttftMs: a.ttftMs ?? (ttftMs > 0 ? ttftMs : undefined),
           };
         });
-      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, answerStatus: e.answer_status || a.answerStatus, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput, media: e.media ?? a.media }));
+      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, running: false, stopReason: "answer", answerState: "accepted", citations: e.citations ?? [], sourceStatus: e.source_status ?? "none", sources: e.sources ?? a.sources, answerStatus: e.answer_status || a.answerStatus, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput, media: e.media ?? a.media }));
       else if (e.type === "delivery_continuing") {
         // Informational slice boundary: the run keeps going on the SAME run_id
         // after context-window rollover. The turn
@@ -400,9 +384,10 @@ function wire(
           running: false,
           activeTool: undefined,
           brainPhase: undefined,
-          stopReason: e.stop_reason,
+          stopReason: a.answerState === "accepted" ? "answer" : e.stop_reason,
+          answerState: a.answerState === "accepted" ? "accepted" : "interrupted",
           answerStatus: e.answer_status || a.answerStatus,
-          error: e.error,
+          error: a.answerState === "accepted" ? null : e.error,
           completionStatus: e.completion_status,
           criteria: e.criteria,
           resumable: Boolean(e.resumable),
@@ -420,7 +405,7 @@ function wire(
     },
     onError: (err) => {
       if (!ownsRun()) return;
-      patch((a) => ({ ...a, running: false, activeTool: undefined, brainPhase: undefined, error: err.message, resumable: Boolean(a.runId) }));
+      patch((a) => a.answerState === "accepted" ? a : ({ ...a, running: false, answerState: "interrupted", activeTool: undefined, brainPhase: undefined, error: err.message, resumable: Boolean(a.runId) }));
       update(entry, (s) => ({ ...s, running: false }));
       entry.runId = null;
       entry.activeAgentId = null;
@@ -473,8 +458,8 @@ export function send(args: SendArgs): void {
   }
   for (const t of entry.snapshot.turns) {
     if (t.kind === "user") history.push({ role: "user", content: t.text });
-    else if (t.kind === "agent" && t.text) {
-      history.push({ role: "assistant", content: dedupeParagraphs(t.text) });
+    else if (t.kind === "agent" && t.text && isAcceptedAnswer(t)) {
+      history.push({ role: "assistant", content: t.text });
       // Carry the turn's tool-established facts back as an authoritative grounding
       // block (backend _coerce_history re-tags the [ПРОВЕРЕННЫЕ ФАКТЫ] prefix to a
       // system message). Without this the agent loses what it learned via tools and
@@ -514,7 +499,7 @@ export function send(args: SendArgs): void {
       ...s.turns,
       ...(fileEntries.length ? [{ kind: "files" as const, id: nid(), files: fileEntries }] : []),
       { kind: "user", id: nid(), text: msg },
-      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
+      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true, answerState: "draft" },
     ],
   }));
   // One stream invoker for every mode. Ready resources ride along as ResourceRefs
@@ -522,7 +507,9 @@ export function send(args: SendArgs): void {
   // session id lets the backend bind only resources this session owns.
   const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort, ...handlers }));
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort,
+      sourceRunIds: entry.snapshot.turns.filter((t): t is AgentTurnData => t.kind === "agent" && isAcceptedAnswer(t) && Boolean(t.citations?.length && t.runId)).map(t => t.runId!).slice(-8),
+      ...handlers }));
 }
 
 /** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`
@@ -626,7 +613,7 @@ export function resume(sessionId: string, agentId: string, runId: string): void 
     ...s,
     running: true,
     turns: s.turns.map((t) => (t.kind === "agent" && t.id === agentId
-      ? { ...t, running: true, error: undefined, resumable: false }
+      ? { ...t, running: true, answerState: "draft", error: undefined, resumable: false }
       : t)),
   }));
   wire(entry, agentId, (handlers) => resumeCodeAgent(runId, handlers));
@@ -654,8 +641,9 @@ export function stop(sessionId: string): void {
   update(entry, (s) => ({
     ...s,
     running: false,
-    turns: s.turns.map((t) => (t.kind === "agent" && t.running ? { ...t, running: false } : t)),
+    turns: s.turns.map((t) => (t.kind === "agent" && t.running ? { ...t, running: false, answerState: "interrupted" } : t)),
   }));
+  entry.persist?.(entry.snapshot);
 }
 
 /** Append uploaded-files turn placeholders and return the turn id + a status

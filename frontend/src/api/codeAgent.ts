@@ -84,6 +84,7 @@ export type CodeAgentToolCall = {
   recovered?: boolean;
   /** The RUNTIME made this call itself (auto-verifier closure pass), not the model. */
   auto_verifier?: boolean;
+  sources?: WebSourceEvidence[];
 };
 
 export type CodeAgentResponse = {
@@ -125,6 +126,7 @@ export type CodeAgentRunArgs = {
   /** Session id retained for wire compatibility; durable resources are not
    *  authorized or scoped by a transient chat/run binding. */
   sessionId?: string;
+  sourceRunIds?: string[];
   /** Compatibility field. The UI always sends "Авто"; backend domain and
    *  evidence routers select internal policies per request. */
   profileName?: string;
@@ -147,6 +149,34 @@ export type PlanArtifact = {
   current_step: number;
 };
 
+export type WebSourceEvidence = {
+  id: string;
+  origin_run_id: string;
+  tool: string;
+  url: string;
+  title: string;
+  status: "discovered" | "fetched" | "excerpt" | "failed";
+  fetched_at: number | null;
+  content_hash: string;
+  excerpt_hash: string;
+  doc_id: string;
+  chunk_id: number | null;
+  offset: number | null;
+  quote: string;
+  quote_verified: boolean;
+  presented: boolean;
+  claim_support: "not_assessed";
+  error: string;
+};
+export type SourceCitation = {
+  source_id: string;
+  status: "matched" | "unresolved";
+  claim_support: "not_assessed";
+  source?: WebSourceEvidence;
+};
+export type AnswerState = "draft" | "accepted" | "interrupted";
+export type SourceStatus = "none" | "matched" | "unresolved";
+
 export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
   | { type: "run_resumed"; run_id: string; from_step: number }
@@ -161,7 +191,8 @@ export type CodeAgentStreamEvent =
       phase: "execution" | "verification";
       applied_thinking_mode: string;
     }
-  | { type: "delta"; step: number; text: string }
+  | { type: "delta"; step: number; text: string; answer_state?: "draft" }
+  | { type: "source_evidence"; step: number; sources: WebSourceEvidence[] }
   | { type: "reasoning_delta"; step: number; text: string }
   | {
       type: "tool_started";
@@ -190,6 +221,10 @@ export type CodeAgentStreamEvent =
       type: "final_response";
       step: number;
       text: string;
+      answer_state?: "accepted";
+      sources?: WebSourceEvidence[];
+      citations?: SourceCitation[];
+      source_status?: SourceStatus;
       answer_status?: AnswerStatus;
       established_facts?: string;
       recent_tool_output?: string;
@@ -318,6 +353,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     conversationHistory,
     resources,
     sessionId,
+    sourceRunIds,
     profileName,
     permissionMode,
     reasoningEffort,
@@ -350,6 +386,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         ...(permissionMode ? { permission_mode: permissionMode } : {}),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         ...(sessionId ? { session_id: sessionId } : {}),
+        ...(sourceRunIds?.length ? { source_run_ids: sourceRunIds.slice(-8) } : {}),
         ...(wireResources.length ? { resources: wireResources } : {}),
       }),
       signal,

@@ -1,4 +1,4 @@
-import type { AnswerMediaItem, AnswerStatus, CodeAgentToolCall, CompletionStatus, CriterionState } from "../api/codeAgent";
+import type { AnswerMediaItem, AnswerState, AnswerStatus, SourceCitation, SourceStatus, WebSourceEvidence, CodeAgentToolCall, CompletionStatus, CriterionState } from "../api/codeAgent";
 
 export type UserTurnData = { kind: "user"; id: string; text: string };
 
@@ -7,6 +7,10 @@ export type AgentTurnData = {
   id: string;
   toolCalls: CodeAgentToolCall[];
   text: string;
+  answerState?: AnswerState;
+  citations?: SourceCitation[];
+  sourceStatus?: SourceStatus;
+  sources?: WebSourceEvidence[];
   /** Model reasoning streamed on the separate `reasoning_delta` channel when the
    *  «Рассуждение» toggle is on. Shown in a collapsible block, kept out of the
    *  answer text and out of conversation history. */

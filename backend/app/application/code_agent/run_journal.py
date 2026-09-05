@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.redaction import redact_text
+from app.application.web_evidence.receipts import merge_sources, source_ids
 
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -66,7 +67,7 @@ def _clean(value: Any, *, key: str = "", bound_strings: bool = True) -> Any:
 def sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
     """Redact display output; Workflow schemas and opaque refs are control data."""
     cleaned = dict(event)
-    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output"):
+    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output", "sources", "citations"):
         if field in cleaned:
             cleaned[field] = _clean(cleaned[field], bound_strings=False)
     return cleaned
@@ -87,6 +88,51 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(tmp_name)
         except FileNotFoundError:
             pass
+
+
+def related_sources(
+    session_id: str | None, run_ids: list[str], history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve client references only against completed journals of this chat.
+
+    Clients supply IDs, never trusted excerpts. Retained snapshots keep their
+    original run and document hashes even after the ephemeral Corpus expires.
+    """
+    if not session_id:
+        return []
+    referenced = set(source_ids("\n".join(
+        str(message.get("content") or "") for message in history
+    )))
+    if not referenced:
+        return []
+    sources: list[dict[str, Any]] = []
+    for run_id in list(dict.fromkeys(run_ids))[-8:]:
+        try:
+            state = RunJournal.load(run_id).state
+        except (OSError, ValueError):
+            continue
+        request = state.get("request")
+        if not isinstance(request, dict) or request.get("session_id") != session_id:
+            continue
+        if state.get("answer_state") != "accepted" and not (
+            "answer_state" not in state and state.get("stop_reason") == "answer"
+        ):
+            continue
+        citations = state.get("citations")
+        web_sources = state.get("web_sources")
+        if not isinstance(citations, list) or not isinstance(web_sources, list):
+            continue
+        matched = {
+            citation.get("source_id") for citation in citations
+            if isinstance(citation, dict) and citation.get("status") == "matched"
+            and isinstance(citation.get("source_id"), str)
+        }
+        sources = merge_sources(sources, [
+            source for source in web_sources
+            if isinstance(source, dict) and isinstance(source.get("id"), str)
+            and source["id"] in referenced & matched
+        ])
+    return sources
 
 
 class RunJournal:
@@ -258,12 +304,20 @@ class RunJournal:
         self._state["step"] = max(int(self._state.get("step") or 0), step)
         if event_type == "step_started":
             self._state["current_phase"] = "agent_step"
+            self._state["answer_state"] = "draft"
         if event_type in {"step_started", "tool_call", "final_response", "done"}:
             self._state["last_successful_step"] = max(
                 int(self._state.get("last_successful_step") or 0), step
             )
         if event_type == "final_response":
+            self._state["answer_state"] = "accepted"
             self._state["last_response"] = str(event.get("text") or "")
+            self._state["citations"] = _clean(event.get("citations") or [])
+            self._state["source_status"] = str(event.get("source_status") or "none")
+        if event_type in {"source_evidence", "tool_call", "final_response"} and "sources" in event:
+            self._state["web_sources"] = merge_sources(
+                self._state.get("web_sources") or [], _clean(event.get("sources") or []),
+            )
         if event_type == "tool_call" and event.get("media"):
             from app.application.code_agent.answer_media import merge_answer_media
 

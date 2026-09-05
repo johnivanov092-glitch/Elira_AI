@@ -682,8 +682,12 @@ def _stream_code_agent_core(
     pause_for_workflow_request: bool = False,
     workflow_approval: dict[str, Any] | None = None,
     resource_refs: list[dict[str, Any]] | None = None,
+    initial_sources: list[dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
+
+    Reasoning and draft answer deltas are emitted live. Only final_response
+    accepts an answer; interrupted/retried drafts are not final conversation.
 
     Yields dicts with a `type` discriminator:
       - {"type": "run_started", "run_id": ...}
@@ -964,7 +968,7 @@ def _stream_code_agent_core(
         # One run-local evidence ledger owns mutation, verification, artifact,
         # remote-observation and external-source truth. A mutation advances its
         # project epoch, making older verification receipts stale.
-        run_evidence = RunEvidence()
+        run_evidence = RunEvidence(sources=initial_sources or [])
         _last_failure: dict[str, str] = {}  # for the deterministic stop summary
         _failure_counts: dict[str, int] = {}
         _download_delivery_correction_sent = False
@@ -1229,6 +1233,15 @@ def _stream_code_agent_core(
                     messages.append(guidance_message)
                 guidance_message_ids.add(message_id)
                 sent_guidance.update(guidance)
+            source_context = run_evidence.source_context(messages, max_chars=min(7000, safe_num_ctx))
+            messages = [message for message in messages if message.get("_msg_id") != "web-source-context"]
+            if source_context:
+                source_message = {"role": "assistant", "content": source_context, "_msg_id": "web-source-context"}
+                source_index = len(messages) - 1
+                # Preserve the assistant tool_calls -> tool results protocol.
+                while source_index > 1 and messages[source_index].get("role") == "tool":
+                    source_index -= 1
+                messages.insert(max(1, source_index), source_message)
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
                     messages,
@@ -1239,7 +1252,7 @@ def _stream_code_agent_core(
                     tool_schemas=step_schemas,
                     cancel_handle=upstream_cancel_handle,
                     audit_sink=compaction_audit_sink,
-                    pinned_message_ids=guidance_message_ids,
+                    pinned_message_ids=guidance_message_ids | ({"web-source-context"} if source_context else set()),
                 )
             except ContextBudgetError as exc:
                 if cancel_event.is_set():
@@ -1258,7 +1271,6 @@ def _stream_code_agent_core(
                         "step": step,
                         "context": exc.usage,
                     }
-                yield {"type": "final_response", "step": step, "text": str(exc)}
                 # One fresh slice can remove recent output. If that slice still
                 # cannot make its first call, repeating it cannot make progress.
                 terminal_budget = exc.fixed_payload_exceeds_budget or (resume and step == 1)
@@ -1316,6 +1328,9 @@ def _stream_code_agent_core(
                 else 0
             )
             llm_prompt_chars = _messages_char_count(messages) + schema_chars
+            run_evidence.mark_sources_presented(messages)
+            if run_evidence.sources:
+                yield {"type": "source_evidence", "step": step, "sources": run_evidence.sources}
             llm_start = time.monotonic()
             try:
                 response: dict[str, Any] = {}
@@ -1378,13 +1393,12 @@ def _stream_code_agent_core(
                         pending_delta = ""
                         continue
                     if not suppress_deltas and len(pending_delta) > 32:
-                        visible = pending_delta[:-32]
-                        pending_delta = pending_delta[-32:]
+                        visible, pending_delta = pending_delta[:-32], pending_delta[-32:]
                         if visible:
-                            yield {"type": "delta", "step": step, "text": visible}
+                            yield {"type": "delta", "step": step, "text": visible, "answer_state": "draft"}
                 response_content = str(((response.get("message") or {}).get("content") or ""))
                 if not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
-                    yield {"type": "delta", "step": step, "text": pending_delta}
+                    yield {"type": "delta", "step": step, "text": pending_delta, "answer_state": "draft"}
             except Exception as exc:
                 if cancel_event.is_set():
                     yield {
@@ -1623,7 +1637,7 @@ def _stream_code_agent_core(
                 if (
                     "web" not in active_capability_groups
                     and not _evidence_answer_correction_sent
-                    and should_escalate_web_from_answer(final_text)
+                    and should_escalate_web_from_answer(final_text, raw_user_message)
                 ):
                     active_capability_groups.add("web")
                     registry = rebuild_registry()
@@ -1773,11 +1787,19 @@ def _stream_code_agent_core(
                     pass
                 _facts = _facts_digest(established_facts)
                 _recent_digest = _recent_tools_digest(recent_tool_outputs)
+                citations = run_evidence.citations(final_text)
+                source_status = (
+                    "unresolved" if any(item["status"] != "matched" for item in citations)
+                    else "matched" if citations else "none"
+                )
                 yield {
                     "type": "final_response", "step": step, "text": final_text,
+                    "answer_state": "accepted",
                     "answer_status": answer_status,
                     "established_facts": _facts,
                     "recent_tool_output": _recent_digest,
+                    "sources": run_evidence.sources, "citations": citations,
+                    "source_status": source_status,
                 }
                 # Step B: drift Elira's mood from this exchange (auto, global,
                 # decaying). Fire-and-forget — never breaks the run.
@@ -2698,6 +2720,7 @@ def _stream_code_agent_core(
                     "remote_process_identity_captured", "remote_cleanup_ready",
                     "error", "recovered_from", "recovered_path",
                     "resolved_from_resource", "resource_id", "resource_name",
+                    "sources",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
@@ -2830,9 +2853,10 @@ def stream_code_agent(
     pause_for_workflow_request: bool = False,
     workflow_approval: dict[str, Any] | None = None,
     resource_refs: list[dict[str, Any]] | None = None,
+    source_run_ids: list[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
-    from app.application.code_agent.run_journal import RunJournal, discover_capabilities, sanitize_event
+    from app.application.code_agent.run_journal import RunJournal, discover_capabilities, related_sources, sanitize_event
 
     rid = run_id or uuid.uuid4().hex
     initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
@@ -2860,6 +2884,7 @@ def stream_code_agent(
         "reasoning_effort": selected_reasoning_effort,
         "pause_for_workflow_request": bool(pause_for_workflow_request),
         "resource_refs": list(resource_refs or []),
+        "source_run_ids": list(source_run_ids or [])[-8:],
     }
     terminal = False
     answer_media = merge_answer_media(
@@ -2912,6 +2937,10 @@ def stream_code_agent(
             pause_for_workflow_request=pause_for_workflow_request,
             workflow_approval=workflow_approval,
             resource_refs=resource_refs,
+            initial_sources=(
+                list(journal.state.get("web_sources") or []) if resume
+                else related_sources(session_id, list(source_run_ids or []), list(conversation_history or []))
+            ),
         ):
             # Display/persistence only: keep canonical tool output and approval
             # digests inside the executor unchanged.
@@ -2968,15 +2997,6 @@ def stream_code_agent(
                         "step": event.get("step"),
                         "path": event.get("touched_path"),
                         "action": event.get("diff_action"),
-                    })
-                if event.get("tool") in {"web_search", "web_fetch"}:
-                    journal.append_event({
-                        "type": "web_source",
-                        "step": event.get("step"),
-                        "tool": event.get("tool"),
-                        "query": (event.get("arguments") or {}).get("query"),
-                        "url": (event.get("arguments") or {}).get("url"),
-                        "checked_at": time.time(),
                     })
             elif event.get("type") == "usage":
                 journal.append_event({
@@ -3047,6 +3067,9 @@ def run_code_agent(
     tool_calls_log: list[dict[str, Any]] = []
     response_text = ""
     response_media: list[dict[str, str]] = []
+    response_citations: list[dict[str, Any]] = []
+    response_sources: list[dict[str, Any]] = []
+    source_status = "none"
     ok = False
     stop_reason = "error"
     error: str | None = None
@@ -3097,12 +3120,15 @@ def run_code_agent(
                     "touched_path", "old_content", "new_content", "diff_action",
                     "download_url", "download_name", "project_path", "size", "sha256",
                     "actual_url", "local_url", "actual_port", "port", "pid",
-                    "server_started", "media",
+                    "server_started", "media", "sources",
                 ) if k in event},
             })
         elif et == "final_response":
             response_text = event.get("text", "")
             response_media = list(event.get("media") or [])
+            response_citations = list(event.get("citations") or [])
+            response_sources = list(event.get("sources") or [])
+            source_status = str(event.get("source_status") or "none")
         elif et == "workflow_request":
             request_status = str(event.get("status") or "")
             raw_request = event.get("request")
@@ -3128,6 +3154,9 @@ def run_code_agent(
         "ok": ok,
         "response": response_text,
         "media": response_media,
+        "citations": response_citations,
+        "sources": response_sources,
+        "source_status": source_status,
         "steps": steps,
         "tool_calls": tool_calls_log,
         "stop_reason": stop_reason,

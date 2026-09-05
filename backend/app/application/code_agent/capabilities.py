@@ -114,12 +114,6 @@ _FINANCE_SECURITY_RE = re.compile(
     r"уязвим\w*|безопасност\w*|бирж\w*|котировк\w*)",
     re.IGNORECASE,
 )
-_MODEL_UNCERTAINTY_RE = re.compile(
-    r"(?:\b(?:не\s+знаю|не\s+уверен|нет\s+данных|неизвестно|"
-    r"не\s+получилось|не\s+удалось|не\s+могу\s+определить|"
-    r"информация\s+не\s+найдена|cannot\s+determine|unknown|no\s+data)\b)",
-    re.IGNORECASE,
-)
 _MODEL_EXTERNAL_ACCESS_DENIAL_RE = re.compile(
     r"(?:у\s+меня\s+(?:нет|отсутствует)\s+(?:прям\w*\s+)?доступ\w*|"
     r"я\s+не\s+(?:имею\s+доступ\w*|могу\s+(?:искать|проверить|получать))|"
@@ -186,11 +180,11 @@ def route_request_capabilities(
     domain_policy: str = "Баланс",
     conversation_history: list[dict[str, object]] | None = None,
 ) -> RequestCapabilityRoute:
-    """Select starter schemas from the task, never from a UI profile lock.
+    """Detect task/domain evidence requirements and guidance.
 
-    The model can still load more groups later. Web is activated up-front when
-    the task needs current/external evidence, and after failures through
-    ``should_escalate_web_after_failure``.
+    Core web_search/web_fetch are already available in the default tool set.
+    Returned capability groups are hints, not instructions to preload schemas;
+    specialist capability groups remain model-loaded.
     """
     from app.application.chat.local_chat import classify_domain_policies
 
@@ -258,13 +252,22 @@ def should_escalate_web_after_failure(
     return name in _EXTERNAL_FAILURE_TOOLS or bool(_EXTERNAL_FAILURE_RE.search(message))
 
 
-def should_escalate_web_from_answer(answer: str) -> bool:
-    """Detect an unresolved/uncertain draft before it reaches the user."""
+def should_escalate_web_from_answer(answer: str, user_message: str = "") -> bool:
+    """Recover an explicit false denial of available web access, once per run.
+
+    General uncertainty is not evidence of a web task. Quoted/code examples
+    are data; task-specific evidence requirements remain owned by RunEvidence.
+    """
     text = str(answer or "")
-    return bool(
-        _MODEL_UNCERTAINTY_RE.search(text)
-        or _MODEL_EXTERNAL_ACCESS_DENIAL_RE.search(text)
-    )
+    # A verbatim user-supplied quotation remains data even when the model
+    # omits its enclosing punctuation in the answer.
+    for supplied in re.findall(r'«([^»]+)»|“([^”]+)”|"([^"\n]+)"|`([^`\n]+)`', user_message or ""):
+        fragment = next((part for part in supplied if part), "")
+        if fragment:
+            text = text.replace(fragment, "")
+    text = re.sub(r'```[\s\S]*?(?:```|$)|`[^`\n]*`|«[^»]*»|“[^”]*”|"[^"\n]*"', "", text)
+    text = re.sub(r"(?m)^\s*>.*$", "", text)
+    return bool(_MODEL_EXTERNAL_ACCESS_DENIAL_RE.search(text))
 
 
 def is_local_tabular_catalog_probe(

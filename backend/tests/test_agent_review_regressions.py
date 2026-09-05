@@ -41,6 +41,7 @@ def test_recent_tool_output_can_roll_over_and_finish(tmp_path, monkeypatch):
     assert any(e["type"] == "delivery_continuing" for e in events)
     assert events[-1]["stop_reason"] == "answer"
     assert len(calls) == 2
+    assert len([event for event in events if event["type"] == "final_response"]) == 1
 
 
 def test_unshrinkable_context_finishes_without_delivery_rollover(tmp_path, monkeypatch):
@@ -64,6 +65,7 @@ def test_unshrinkable_context_finishes_without_delivery_rollover(tmp_path, monke
         assert not any(e["type"] == "delivery_continuing" for e in events)
         assert events[-1]["stop_reason"] == "error"
         assert events[-1]["error_code"] == "context_budget_exceeded"
+        assert not any(event["type"] == "final_response" for event in events)
         assert events[-1]["resumable"] is False
         state = RunJournal.load("oversized").state
         assert state["request"]["user_message"] == QUERY

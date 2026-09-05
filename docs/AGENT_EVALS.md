@@ -1,5 +1,10 @@
 # Agent Routing Live Evals
 
+Persona, streaming and structured-source diagnostics are documented separately
+in [ANSWER_CONTRACT.md](ANSWER_CONTRACT.md). URL overlap in routing evals proves
+neither excerpt delivery nor semantic support; the reporter exposes runtime
+citations and `claim_support=not_assessed` on separate fields.
+
 The routing eval suite verifies the real user path, not an isolated model call:
 
 ```text

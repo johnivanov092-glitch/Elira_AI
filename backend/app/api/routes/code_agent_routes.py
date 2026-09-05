@@ -308,6 +308,7 @@ class CodeAgentRequest(BaseModel):
         description="Durable resource refs (by resource_id) available to this run; the "
         "model reads them only via resource_process, never as auto-extracted text.",
     )
+    source_run_ids: list[str] = Field(default_factory=list, max_length=8)
     profile_name: str = Field(
         default="Авто",
         description="Compatibility field. Elira/Auto selects internal domain policies per request; concrete legacy values no longer lock routing.",
@@ -617,6 +618,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
                 session_id=payload.session_id,
+                source_run_ids=payload.source_run_ids,
                 # Route Auto from the user's actual request, not from injected
                 # attachment/library text. Terse continuations may use recent
                 # chat history to retain the previous task profile.

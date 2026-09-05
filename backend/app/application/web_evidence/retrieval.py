@@ -172,6 +172,7 @@ def web_query(run_id: str, query: str, *, doc_id: str | None = None,
             "doc_id": c["doc_id"], "chunk_id": c["chunk_id"], "offset": abs_offset,
             "url": d.get("final_url") or d.get("url"), "title": d.get("title"),
             "quote": quote,
+            "content_hash": d.get("content_hash"), "fetched_at": d.get("fetched_at"),
         })
     return {"ok": True, "results": results,
             "ranker": "bm25+embed" if reranked else "bm25"}

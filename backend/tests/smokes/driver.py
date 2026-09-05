@@ -331,7 +331,14 @@ def summarize_events(
                 **({"server_id": server_id} if server_id else {}),
                 "ok": event.get("ok") is True,
             })
-        source_urls = _extract_urls(event.get("result"))
+        if isinstance(event.get("sources"), list):
+            source_urls = list(dict.fromkeys(
+                source["url"] for source in event["sources"]
+                if isinstance(source, dict) and source.get("status") in {"discovered", "fetched", "excerpt"}
+                and isinstance(source.get("url"), str)
+            ))
+        else:
+            source_urls = _extract_urls(event.get("result")) if event.get("ok") is True else []
         if source_urls:
             tool_source_urls.setdefault(tool_name, [])
             tool_source_urls[tool_name] = list(dict.fromkeys(
@@ -387,6 +394,11 @@ def summarize_events(
         "runtime_calls": runtime_calls,
         "runtime_operations": [call["operation"] for call in runtime_calls],
         "tool_source_urls": tool_source_urls,
+        # URL availability is not entailment. Keep runtime provenance separate
+        # from the semantic rubric; never upgrade a linked answer to true.
+        "citations": list(final.get("citations") or []),
+        "source_status": str(final.get("source_status") or "none"),
+        "claim_support": "not_assessed",
         "network_inventories": network_inventories,
         "auto_verifier_calls": sum(1 for event in tool_calls if event.get("auto_verifier")),
         "steps": sum(1 for event in events if event.get("type") == "step_started"),

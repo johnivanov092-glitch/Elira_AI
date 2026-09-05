@@ -44,8 +44,9 @@ option still selects a Workflow planning step; it does not refer to V8.
 - Every normal first turn sees `capability_load` and `ask_user`. Explicit search,
   attachments and resumed activations may add schemas. The model loads other
   groups through the existing registry; routing hints do not preload them. An external
-  first failure, repeated local failure, or an uncertain draft (`не знаю`, `нет
-  данных`, `не удалось`) triggers one Web evidence pass before the final answer.
+  first failure, repeated local failure, or a false denial of available Web
+  access triggers one evidence pass before acceptance. General uncertainty and
+  quoted/code examples do not trigger this answer-based recovery.
   Local state still comes from local tools; external contracts come from primary
   sources. The model may load further groups with `capability_load`.
 - A requested download cannot finalize until an artifact receipt exists. The

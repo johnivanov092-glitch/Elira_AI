@@ -275,7 +275,8 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc), "store_unavailable": True}
     return {"ok": True, "doc_id": res["doc_id"], "deduped": res["deduped"], "title": title,
             "url": url, "final_url": final_url, "mime": mime, "nbytes": doc["nbytes"],
-            "encoding": encoding or None, "n_chunks": len(chunks), "outline": outline[:12]}
+            "encoding": encoding or None, "n_chunks": len(chunks), "outline": outline[:12],
+            "content_hash": content_hash}
 
 
 def envelope(text: str, *, source: str) -> str:

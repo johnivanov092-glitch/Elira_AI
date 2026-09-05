@@ -26,7 +26,8 @@ def test_local_access_and_conversation_do_not_need_web_discovery(draft):
 
 
 @pytest.mark.parametrize("base_tools", [None, ["capability_load"]])
-def test_current_events_access_denial_recovers_to_search_without_user_confirmation(tmp_path, base_tools):
+@pytest.mark.parametrize("streaming", [False, True])
+def test_current_events_access_denial_recovers_to_search_without_user_confirmation(tmp_path, base_tools, streaming):
     """Replay the actual failed first draft through the real loop/executor."""
     draft = (
         "Честно скажу: у меня нет доступа к актуальным новостям в реальном времени, "
@@ -50,6 +51,13 @@ def test_current_events_access_denial_recovers_to_search_without_user_confirmati
         schemas.append({tool["function"]["name"] for tool in kwargs["tools"]})
         return next(responses)
 
+    def chat_stream(**kwargs):
+        response = chat(**kwargs)
+        text = response["message"]["content"]
+        for start in range(0, len(text), 17):
+            yield {"type": "delta", "content": text[start:start + 17]}
+        yield {"type": "message", "response": response}
+
     with (
         patch("app.application.code_agent.tools._dispatch.tool_web_search", return_value={
             "ok": True, "text": "News: https://example.org/news",
@@ -66,6 +74,7 @@ def test_current_events_access_denial_recovers_to_search_without_user_confirmati
                 {"role": "assistant", "content": "Привет! Рада тебя видеть. Чем могу помочь?"},
             ],
             project_root=tmp_path, model="test-model", chat_fn=chat, base_tools=base_tools,
+            chat_stream_fn=chat_stream if streaming else None,
             thinking=True, reasoning_effort="low", permission_mode="bypass", auto_remember=False,
         ))
 
@@ -81,3 +90,8 @@ def test_current_events_access_denial_recovers_to_search_without_user_confirmati
     final = next(event["text"] for event in events if event["type"] == "final_response")
     assert final != draft
     assert "https://example.org/news" in final
+    visible_deltas = [event for event in events if event["type"] == "delta"]
+    assert all(event["answer_state"] == "draft" for event in visible_deltas)
+    if streaming:
+        accepted = [event for event in events if event.get("answer_state") == "accepted"]
+        assert len(accepted) == 1 and accepted[0]["text"] == final

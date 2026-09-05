@@ -20,6 +20,8 @@ been superseded; they stay only for the decisions/history they record.
 - `BACKLOG.md` - consolidated continuation work after the shipped refactor.
 - `AGENT_EVALS.md` - real Workflow-path evals for profile routing, tools, MCP,
   answers, latency, and token usage.
+- `ANSWER_CONTRACT.md` - draft/accepted answers, web provenance, continuation,
+  speech and reproducible persona/source diagnostics.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
 - `agents/` - skill definitions (domain, issue-tracker, triage-labels).
 

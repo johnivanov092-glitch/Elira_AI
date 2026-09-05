@@ -6,7 +6,8 @@
  *   • Regex-паттерны вынесены на уровень модуля (не создаются каждый рендер)
  *   • CopyButton и CodeBlock мемоизированы
  */
-import React, { useState, useCallback, type ReactNode } from "react";
+import React, { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import type { SourceCitation } from "../api/codeAgent";
 import { buildApiUrl } from "../api/client";
 import { isLocalApiAssetUrl } from "../api/apiUtils";
 import { DownloadLink } from "./DownloadLink";
@@ -28,7 +29,24 @@ type CodeBlockProps = {
 
 type MarkdownRendererProps = {
   content?: unknown;
+  citations?: SourceCitation[];
 };
+
+const CitationContext = createContext<SourceCitation[] | undefined>(undefined);
+
+function SourceReference({ id }: { id: string }) {
+  const citations = useContext(CitationContext);
+  if (!citations) return <span className="text-mut" title="Источник будет сопоставлен после завершения ответа">[источник…]</span>;
+  const index = citations.findIndex(citation => citation.source_id === id);
+  const citation = citations[index];
+  if (citation?.status !== "matched" || !citation.source) {
+    return <span className="text-mut" title="Для этой ссылки нет предъявленного фрагмента">[источник не сопоставлен]</span>;
+  }
+  return <ExternalBrowserLink href={citation.source.url} className="md-link"
+    title={`Полученный фрагмент: ${citation.source.quote}`}>
+    [{index + 1}]
+  </ExternalBrowserLink>;
+}
 
 // ─── Утилиты (создаются один раз) ──────────────────────────────
 const extractFilename = (url: string): string | null => { const p = url.split("/"); const l = p[p.length - 1]; return l && l.includes(".") ? decodeURIComponent(l) : null; };
@@ -47,9 +65,10 @@ function prettyUrl(raw: string): string {
 // ─── Inline regex patterns (создаются один раз на уровне модуля) ───
 const INLINE_PATTERNS: InlinePattern[] = [
   { re: /`([^`]+)`/, render: (m, k) => <code key={k} className="md-inline-code">{m[1]}</code> },
-  { re: /\*\*(.+?)\*\*/, render: (m, k) => <strong key={k}>{m[1]}</strong> },
-  { re: /~~(.+?)~~/, render: (m, k) => <del key={k} className="md-del">{m[1]}</del> },
-  { re: /\*(.+?)\*/, render: (m, k) => <em key={k}>{m[1]}</em> },
+  { re: /\[\[source:([a-zA-Z0-9_-]{1,80})\]\]/, render: (m, k) => <SourceReference key={k} id={m[1]} /> },
+  { re: /\*\*(.+?)\*\*/, render: (m, k) => <strong key={k}>{parseInline(m[1], k)}</strong> },
+  { re: /~~(.+?)~~/, render: (m, k) => <del key={k} className="md-del">{parseInline(m[1], k)}</del> },
+  { re: /\*(.+?)\*/, render: (m, k) => <em key={k}>{parseInline(m[1], k)}</em> },
   { re: /!\[([^\]]*)\]\(([^)]+)\)/, render: (m, k) => {
     const raw = m[2].trim();
     if (raw.startsWith("/") && !raw.startsWith("//") && isLocalApiAssetUrl(raw)) {
@@ -217,6 +236,9 @@ function parseInline(text: string, keyPrefix = "il"): ReactNode[] {
 function stripOuterCodeFence(text: string): string {
   const trimmed = text.trim();
   const match = trimmed.match(OUTER_FENCE_RE);
+  // A whole fenced citation example is still code. The backend likewise
+  // excludes fenced pointers from the final citation set.
+  if (match && /\[\[source:[a-zA-Z0-9_-]{1,80}\]\]/.test(match[1])) return trimmed;
   if (match) return match[1];
   return trimmed.replace(THINK_TAG_RE, "").trim();
 }
@@ -275,7 +297,7 @@ function parseTableAlign(sepLine: string): (("left" | "center" | "right") | null
 }
 
 // ─── Главный компонент (React.memo) ────────────────────────────
-function MarkdownRendererInner({ content }: MarkdownRendererProps) {
+function MarkdownRendererInner({ content, citations }: MarkdownRendererProps) {
   if (!content) return null;
 
   const text = normalizeStructuredMarkdown(stripOuterCodeFence(String(content)));
@@ -408,7 +430,7 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
     }
   }
 
-  return <div className="md-root">{elements}</div>;
+  return <CitationContext.Provider value={citations}><div className="md-root">{elements}</div></CitationContext.Provider>;
 }
 
 export default React.memo(MarkdownRendererInner);
