@@ -121,6 +121,9 @@ from app.application.code_agent.prompts import (  # noqa: F401
 from app.application.persona.service import mode_temperature
 from app.core.persona_defaults import DEFAULT_PROFILE
 from app.application.code_agent.task_guidance import task_guidance_blocks
+from app.application.code_agent.task_skills import (
+    CATALOG_ID, CONTEXT_ID, SkillContext, catalog_context, insert_skill_context,
+)
 from app.core.redaction import redact_secrets
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
@@ -1153,6 +1156,20 @@ def _stream_code_agent_core(
         step = 0
         sent_guidance: set[str] = set()
         guidance_message_ids: set[str] = set()
+        skill_context = SkillContext()
+        if resume:
+            try:
+                skill_context.restore(rid)
+            except (OSError, ValueError) as exc:
+                yield {"type": "done", "ok": False, "steps": 0, "stop_reason": "error",
+                       "error_code": "skill_restore_failed", "error": str(exc), "resumable": False}
+                return
+        skill_catalog = catalog_context()
+        if skill_catalog:
+            messages = insert_skill_context(messages, skill_catalog, CATALOG_ID)
+            guidance_message_ids.add(CATALOG_ID)
+        skill_reminder_pending = False
+        skill_reminder_sent = False
         refresh_task_state = True
         while True:
             step += 1
@@ -1168,6 +1185,21 @@ def _stream_code_agent_core(
                 return
 
             yield {"type": "step_started", "step": step}
+
+            if skill_reminder_pending and not skill_reminder_sent and not skill_context.snapshots():
+                # A bounded reminder after actual project/tool discovery. This
+                # uses the next existing inference turn, never blocks tools and
+                # never assigns a domain/persona from user keywords.
+                messages = insert_skill_context(messages, (
+                    "[Рабочее напоминание Elira] Ты начала работу с проектом или системой. "
+                    "Проверь каталог навыков выше и перед дальнейшей профильной работой "
+                    "загрузи подходящие инструкции через runtime_control(operation='skill_load', "
+                    "name=имя, query=причина). Для кода обычно нужен навык языка и code-change; "
+                    "для поиска причины сбоя — diagnostics. Выбери сама по текущей задаче. "
+                    "Если подходящего навыка нет или задача не требует профильной инструкции, "
+                    "продолжай доступными инструментами."
+                ), "elira-skill-reminder")
+                skill_reminder_sent = True
 
             checklist_items: list[dict] = []
             try:
@@ -1233,6 +1265,10 @@ def _stream_code_agent_core(
                     messages.append(guidance_message)
                 guidance_message_ids.add(message_id)
                 sent_guidance.update(guidance)
+            active_skill_text = skill_context.context()
+            if active_skill_text:
+                messages = insert_skill_context(messages, active_skill_text, CONTEXT_ID)
+                guidance_message_ids.add(CONTEXT_ID)
             source_context = run_evidence.source_context(messages, max_chars=min(7000, safe_num_ctx))
             messages = [message for message in messages if message.get("_msg_id") != "web-source-context"]
             if source_context:
@@ -2360,6 +2396,27 @@ def _stream_code_agent_core(
                             error="workflow_request_declined",
                         )
                 tool_meta = _exec_result.output
+                _skill_snapshot_changed = False
+                _skill_receipt = None
+                if (name == "runtime_control" and str(parsed_args.get("operation") or "").strip().lower() == "skill_load"
+                        and _exec_result.status == "ok" and tool_meta.get("ok")):
+                    try:
+                        skill_result = tool_meta.get("result", {})
+                        _skill_snapshot_changed = skill_context.activate(
+                            skill_result["skill"], skill_result.get("reason", ""),
+                        )
+                        selected = next(item for item in skill_context.snapshots()
+                                        if item["name"] == skill_result["skill"]["name"])
+                        _skill_receipt = {key: selected[key] for key in ("name", "title", "sha256", "reason")}
+                        _skill_receipt["already_loaded"] = not _skill_snapshot_changed
+                        # The full instruction has one pinned owner. Tool history
+                        # and UI receive a receipt, not a duplicate instruction.
+                        tool_meta = {"ok": True, "status": "completed", "text": json.dumps({
+                            "skill": _skill_receipt,
+                            "message": "Skill instructions are active in the current task context.",
+                        }, ensure_ascii=False)}
+                    except (KeyError, TypeError, OSError, ValueError) as exc:
+                        tool_meta = {"ok": False, "error": "skill_activation_failed", "text": str(exc)}
                 _runtime_activation_snapshot: dict[str, Any] | None = None
                 _runtime_request_status = str(
                     tool_meta.get("status") or ""
@@ -2688,6 +2745,12 @@ def _stream_code_agent_core(
                 }
                 if _runtime_activation_snapshot is not None:
                     event["runtime_activation"] = _runtime_activation_snapshot
+                if _skill_receipt is not None:
+                    event["skill"] = _skill_receipt
+                if skill_catalog and (name in {"read_file", "project_map", "glob", "grep", "run_bash", "write_file", "edit_file"}
+                        or name.startswith(("itops_", "ssh_", "lsp_"))
+                        or (name == "runtime_control" and str(parsed_args.get("operation") or "").startswith(("itops_", "ssh_", "lsp_")))):
+                    skill_reminder_pending = True
                 task_state_verification = ""
                 if (
                     name == "run_bash"
@@ -2740,6 +2803,9 @@ def _stream_code_agent_core(
                 if _state_changed:
                     criteria.invalidate_after_mutation()
                     verification_log.clear()
+                if _skill_snapshot_changed:
+                    yield {"type": "skills_changed", "step": step,
+                           "active_skills": skill_context.snapshots()}
                 yield event
                 if _evidence_web_activated:
                     yield {
@@ -3120,7 +3186,7 @@ def run_code_agent(
                     "touched_path", "old_content", "new_content", "diff_action",
                     "download_url", "download_name", "project_path", "size", "sha256",
                     "actual_url", "local_url", "actual_port", "port", "pid",
-                    "server_started", "media", "sources",
+                    "server_started", "media", "sources", "skill",
                 ) if k in event},
             })
         elif et == "final_response":

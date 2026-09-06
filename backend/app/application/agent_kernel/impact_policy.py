@@ -236,6 +236,7 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
         return str(payload.get("action") or "start").strip().lower() not in {"list", "logs"}
     if name == "runtime_control":
         return str(payload.get("operation") or "").strip().lower() not in {
+            "skill_list", "skill_load",
             "status", "mcp_list", "lsp_list", "telegram_status",
             "telegram_test", "telegram_users", "itops_assets", "vault_status",
             "plugin_list", "plugin_info", "ssh_hosts",

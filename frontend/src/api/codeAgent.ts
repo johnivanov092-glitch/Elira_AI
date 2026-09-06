@@ -43,6 +43,8 @@ export type DocumentQa = {
 };
 
 export type CodeAgentToolCall = {
+  /** Runtime receipt; the instruction itself belongs to the run context. */
+  skill?: { name: string; title: string; sha256: string; reason: string; already_loaded: boolean };
   step: number;
   tool: string;
   arguments: Record<string, unknown>;

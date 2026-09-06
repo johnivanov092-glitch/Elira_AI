@@ -539,6 +539,10 @@ def tool_runtime_control(
         settings = config or {}
         if op == "status":
             result = _runtime_status()
+        elif op in {"skill_list", "skill_load"}:
+            from app.application.code_agent.task_skills import skill_control
+
+            result = skill_control(op, name, query)
         elif op.startswith("mcp_"):
             result = _mcp_control(op, server_id, settings)
         elif op.startswith("lsp_"):

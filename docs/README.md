@@ -22,6 +22,7 @@ been superseded; they stay only for the decisions/history they record.
   answers, latency, and token usage.
 - `ANSWER_CONTRACT.md` - draft/accepted answers, web provenance, continuation,
   speech and reproducible persona/source diagnostics.
+- `TASK_SKILLS.md` - model-selected task skills, trusted packages and context lifecycle.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
 - `agents/` - skill definitions (domain, issue-tracker, triage-labels).
 

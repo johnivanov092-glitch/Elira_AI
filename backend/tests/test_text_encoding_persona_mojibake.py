@@ -45,6 +45,8 @@ def _iter_text_files():
             yield path
     for path in sorted((ROOT / "docs").rglob("*.md")):
         yield path
+    for path in sorted((ROOT / "skills").rglob("*.md")):
+        yield path
     for path in sorted(ROOT.glob("*.md")):
         yield path
     for path in sorted(ROOT.glob("*.bat")):

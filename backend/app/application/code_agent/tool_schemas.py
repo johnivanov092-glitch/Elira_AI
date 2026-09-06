@@ -130,7 +130,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "runtime_control",
                 "description": (
-                    "Manage integration runtimes hidden behind Workflow UI. For long-term "
+                    "Load task instructions with skill_load(name, query=reason); skill_list "
+                    "discovers all installed skills. Loading is read-only and does not grant "
+                    "tool permissions. Manage integration runtimes hidden behind Workflow UI. For long-term "
                     "user memory, use memory_search first and memory_list when search has no "
                     "matches; recall is project RAG, not user memory. Project Corpus indexing and "
                     "status use project_index/project_status. Also manages: portable vault "
@@ -150,6 +152,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "string",
                             "enum": [
                                 "status",
+                                "skill_list", "skill_load",
                                 "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
                                 "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
                                 "ssh_hosts", "ssh_set_hosts",

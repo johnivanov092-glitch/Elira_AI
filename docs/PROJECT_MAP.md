@@ -35,6 +35,7 @@ move Elira's backend state or tools into that repository.
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
 | Deterministic local price-list/BOM validation | `backend/app/application/code_agent/tools/_bom.py` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
+| Task skill instructions and run context | `skills/`, `backend/app/application/code_agent/task_skills.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
 | Workflow/data runtime adapters | `backend/app/application/code_agent/tools/_runtime_control_workflows.py`, `_runtime_control_data.py` |
 | Tool executor | `backend/app/application/agent_kernel/executor.py` |

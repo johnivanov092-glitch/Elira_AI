@@ -297,6 +297,8 @@ class RunJournal:
         record = {"timestamp": _utc_now(), "run_id": self.run_id, **_clean(event)}
         self._append_jsonl(self.events_path, record)
         event_type = str(event.get("type") or "")
+        if event_type == "skills_changed":
+            self._state["active_skills"] = _clean(event.get("active_skills") or [])
         step = int(event.get("step") or event.get("steps") or 0)
         runtime_activation = event.get("runtime_activation")
         if isinstance(runtime_activation, dict):

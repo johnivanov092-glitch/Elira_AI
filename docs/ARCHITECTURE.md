@@ -94,6 +94,12 @@ option still selects a Workflow planning step; it does not refer to V8.
   of transport. Generated guidance messages use the existing compactor's pinned
   IDs; both summarization and its fallback preserve them and count them against
   the context budget. They never become a second system prefix.
+- Task skills use the same runtime_control/registry/executor path: skill_list
+  returns all installed metadata; skill_load loads the model-selected package
+  from Elira's trusted skills/ directory. One pinned block preserves exact
+  instructions through compaction; active_skills journal snapshots restore them
+  on Resume, while new requests start fresh. No skill changes persona or grants
+  permissions. See TASK_SKILLS.md for the contract and limits.
 - DRY sampling uses a bounded 1024-token lookback and permits 12-token repeats.
   Short replies can still overlap history; the old 2-token allowance caused
   repeated identity answers to mutate the name. Long prose repetition retains

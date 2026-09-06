@@ -165,6 +165,13 @@ function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }
   const [exp, setExp] = useState(false);
   const Icon = toolIcon(call.tool);
   const err = call.ok === false;
+  const skillLoad = call.tool === "runtime_control" && call.arguments.operation === "skill_load";
+  const label = skillLoad
+    ? err ? "Ошибка загрузки навыка" : call.skill ? "Навык загружен" : "Загрузка навыка"
+    : call.tool === "runtime_control" && call.arguments.operation === "skill_list" ? "Каталог навыков" : call.tool;
+  const detail = skillLoad
+    ? [call.skill?.title ?? String(call.arguments.name ?? ""), call.skill?.reason].filter(Boolean).join(" · ")
+    : shortArg(call.arguments);
   return (
     <div
       className="border-t border-line"
@@ -183,8 +190,8 @@ function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }
           <Icon size={14} />
         </span>
         <span className="min-w-0 flex-1 truncate">
-          <span className={cn("font-medium", err && "text-danger")}>{call.tool}</span>{" "}
-          <span className={cn("font-mono text-[11.5px]", err ? "text-danger" : "text-t2")}>{shortArg(call.arguments)}</span>
+          <span className={cn("font-medium", err && "text-danger")}>{label}</span>{" "}
+          <span title={detail} className={cn("font-mono text-[11.5px]", err ? "text-danger" : "text-t2")}>{detail}</span>
         </span>
         {/* R4: the runtime made this call itself (auto-verifier closure) — make it
             visibly distinct from model-chosen calls. */}
