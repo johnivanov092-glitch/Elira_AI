@@ -23,22 +23,12 @@ class BusinessModeTest(unittest.TestCase):
         for existing in ("Авто", "Личный", "Баланс", "Инженерный"):
             self.assertIn(existing, names)
 
-    def test_auto_classifier_routes_business(self):
-        from app.application.chat.local_chat import classify_mode
-        self.assertEqual(classify_mode("Составь коммерческое предложение для клиента"), "Деловой")
-        self.assertEqual(classify_mode("Проверь контрагента, вот БИН 123456789012"), "Деловой")
-        self.assertEqual(classify_mode("Напиши оффер для лендинга"), "Деловой")
-        self.assertEqual(classify_mode("Посчитай маржу по прайсу"), "Деловой")
-
-    def test_auto_classifier_priorities_hold(self):
-        from app.application.chat.local_chat import classify_mode
-        # personal beats business («письмо маме» has no business marker at all,
-        # but even with one, personal wins by order)
-        self.assertEqual(classify_mode("Устала, поддержи меня"), "Личный")
-        # code beats business
-        self.assertEqual(classify_mode("почини баг в договоре.py"), "Инженерный")
-        # plain chat stays neutral
-        self.assertEqual(classify_mode("расскажи про погоду"), "Баланс")
+    def test_business_tasks_do_not_switch_personality(self):
+        from app.application.chat.local_chat import resolve_persona_mode
+        self.assertEqual(
+            resolve_persona_mode("Авто", "Составь коммерческое предложение для клиента"),
+            "Баланс",
+        )
 
     def test_legacy_mode_keeps_identity_and_task_guidance(self):
         from app.application.persona.service import build_persona_prompt

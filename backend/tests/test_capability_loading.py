@@ -20,6 +20,7 @@ from app.application.code_agent.tools._capability import tool_capability_load
 from app.application.chat.local_chat import resolve_persona_mode
 from app.application.tool_providers.runtime_registry import build_runtime_tool_registry
 from app.core.persona_defaults import AUTO_PROFILE, PERSONA_MODES
+from app.infrastructure.llm.laya import LayaDecision
 
 
 def _tool_names(registry) -> set[str]:
@@ -369,7 +370,7 @@ def test_unknown_capability_group_fails_without_changing_visibility() -> None:
     assert result["error"] == "unknown_capability_group"
 
 
-def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path) -> None:
+def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path, monkeypatch) -> None:
     route_cases = (
         ("Мне тревожно, поговори со мной", "Личный"),
         ("Объясни, почему небо голубое простыми словами", "Баланс"),
@@ -382,6 +383,12 @@ def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path) -> None:
     assert set(PROFILE_CAPABILITY_GROUPS) == set(PERSONA_MODES)
 
     for profile_index, (message, expected_profile) in enumerate(route_cases):
+        monkeypatch.setattr(
+            "app.application.code_agent.capabilities.classify_request",
+            lambda *_args, _domain=expected_profile, **_kwargs: LayaDecision(
+                domains=(_domain,), source="laya",
+            ),
+        )
         seen_tool_names: list[set[str]] = []
         seen_system_prompts: list[str] = []
 

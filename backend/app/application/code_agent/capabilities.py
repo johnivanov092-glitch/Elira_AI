@@ -7,8 +7,10 @@ been requested for the current run.
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
+
+from app.infrastructure.llm.laya import classify_request
 
 
 CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
@@ -73,6 +75,15 @@ DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "Медицина": frozenset({"web"}),
 }
 
+_DOMAIN_DESCRIPTIONS = {
+    "Инженерный": "software development, source code, debugging or tests",
+    "Личный": "personal conversation, emotional support or personal memories",
+    "Деловой": "business documents, clients, commercial proposals or accounting",
+    "Инфраструктура": "administering computers, servers, networks or remote systems",
+    "Медицина": "health, symptoms, medicine or clinical treatment",
+    "Научный": "scientific research, mathematics, physics, chemistry or biology",
+}
+
 # Compatibility alias for older imports/tests. The values now describe hidden
 # domain policies, not selectable user profiles.
 PROFILE_CAPABILITY_GROUPS = DOMAIN_CAPABILITY_GROUPS
@@ -94,37 +105,6 @@ _GENERATED_ARTIFACT_RE = re.compile(
     r"create|creat(?:ed|ing)|generat(?:e|ed|ing)|prepare[ds]?)\s+"
     r"[^.!?\n]{0,80}\b(?:pdf|docx|xlsx|pptx|csv|zip|файл\w*|документ\w*|"
     r"отч[её]т\w*|таблиц\w*|презентац\w*|архив\w*|file|document|report)\b",
-    re.IGNORECASE,
-)
-_RESOURCE_REQUEST_RE = re.compile(
-    r"(?:\b(?:pdf|docx|xlsx|pptx|csv|zip)\b|документ\w*|презентац\w*|"
-    r"таблиц\w*|архив\w*|изображени\w*|картинк\w*|скриншот\w*|ocr|"
-    r"распозна\w*\s+текст|сгенер\w*\s+файл)",
-    re.IGNORECASE,
-)
-_DATA_REQUEST_RE = re.compile(
-    r"(?:\b(?:csv|xlsx|sql|sqlite|regex|jsonl)\b|таблиц\w*|датасет\w*|"
-    r"конверт\w*|зашифр\w*|распак\w*|архив\w*)",
-    re.IGNORECASE,
-)
-_WEB_EVIDENCE_RE = re.compile(
-    r"(?:https?://|\bwww\.|интернет\w*|веб[ -]?поиск|web\s*search|"
-    r"документац\w*|официальн\w*\s+сайт|актуальн\w*|последн\w*\s+верси|"
-    r"сегодня|сейчас\s+(?:стоит|действует|работает)|совместим\w*|"
-    r"\b(?:cve|advisory|release notes|latest)\b|"
-    r"незнаком\w*|не\s+понима\w*|не\s+получа\w*|неизвестн\w*\s+ошиб)",
-    re.IGNORECASE,
-)
-_EXTERNAL_TECH_RE = re.compile(
-    r"(?:\b(?:mcp|routeros|mikromcp|mikrotik|openapi|sdk|api|oauth|tls|"
-    r"windows|linux|qwen|llama\.cpp|fastapi|react|vite|npm|pip)\b|"
-    r"верси\w*|протокол\w*|интеграц\w*)",
-    re.IGNORECASE,
-)
-_FINANCE_SECURITY_RE = re.compile(
-    r"(?:\b(?:cve|cvss|exploit|vulnerabilit|security|advisory|zero[ -]?day|"
-    r"курс|валют|акци|облигац|крипт|биткоин|финанс|инвестиц|процентн\w*\s+ставк)\b|"
-    r"уязвим\w*|безопасност\w*|бирж\w*|котировк\w*)",
     re.IGNORECASE,
 )
 _MODEL_EXTERNAL_ACCESS_DENIAL_RE = re.compile(
@@ -177,7 +157,7 @@ _EXTERNAL_FAILURE_RE = re.compile(
 
 @dataclass(frozen=True)
 class RequestCapabilityRoute:
-    """Deterministic preflight result for one Elira request."""
+    """Advisory classification plus deterministic user delivery contracts."""
 
     domain_policies: tuple[str, ...]
     capability_groups: frozenset[str]
@@ -185,6 +165,7 @@ class RequestCapabilityRoute:
     include_ssh: bool
     download_requested: bool
     evidence_reasons: tuple[str, ...]
+    preflight: dict[str, object] = field(default_factory=dict)
 
 
 def route_request_capabilities(
@@ -193,20 +174,23 @@ def route_request_capabilities(
     domain_policy: str = "Баланс",
     conversation_history: list[dict[str, object]] | None = None,
 ) -> RequestCapabilityRoute:
-    """Detect task/domain evidence requirements and guidance.
+    """Classify raw user intent without authorizing or blocking any action.
 
-    Core web_search/web_fetch are already available in the default tool set.
-    Returned capability groups are hints, not instructions to preload schemas;
-    specialist capability groups remain model-loaded.
+    History/attachments are not sent to the classifier. The main agent retains
+    the complete conversation, including when classification is unavailable.
+    Returned groups are hints; specialist schemas remain model-loaded.
     """
-    from app.application.chat.local_chat import classify_domain_policies
-
     text = str(user_message or "")
-    domains = list(classify_domain_policies(text, conversation_history))
+    decision = classify_request(
+        text, domains=_DOMAIN_DESCRIPTIONS, capabilities=CAPABILITY_GROUP_DESCRIPTIONS,
+    )
+    domains = list(decision.domains)
     if domain_policy and domain_policy not in domains and domain_policy != "Баланс":
         domains.append(domain_policy)
+    if not domains:
+        domains.append("Баланс")
 
-    groups: set[str] = set()
+    groups = set(decision.capability_groups)
     for domain in domains:
         groups.update(DOMAIN_CAPABILITY_GROUPS.get(domain, ()))
 
@@ -218,24 +202,14 @@ def route_request_capabilities(
         or _FILE_LINK_REQUEST_RE.search(text)
         or (_LINK_REQUEST_RE.search(text) and _GENERATED_ARTIFACT_RE.search(text))
     )
-    if download_requested or _RESOURCE_REQUEST_RE.search(text):
+    if download_requested:
         groups.add("resources")
-    if _DATA_REQUEST_RE.search(text):
-        groups.add("data")
     if requires_bom_validation(text):
         groups.add("data")
 
     evidence_reasons: list[str] = []
-    if _WEB_EVIDENCE_RE.search(text):
-        evidence_reasons.append("request_requires_current_or_external_evidence")
-    if _EXTERNAL_TECH_RE.search(text) and re.search(
-        r"(?:совместим|верси|ошиб|не\s+работ|не\s+получ|как\s+подключ|настро|релиз|планируется)",
-        text,
-        re.IGNORECASE,
-    ):
-        evidence_reasons.append("external_technology_contract")
-    if _FINANCE_SECURITY_RE.search(text):
-        evidence_reasons.append("finance_or_security_requires_current_sources")
+    if "web" in decision.capability_groups:
+        evidence_reasons.append("laya_external_evidence_hint")
     if any(domain in {"Инфраструктура", "Медицина", "Научный"} for domain in domains):
         evidence_reasons.append("domain_requires_sources")
     if evidence_reasons:
@@ -249,6 +223,7 @@ def route_request_capabilities(
         include_ssh=include_itops,
         download_requested=download_requested,
         evidence_reasons=tuple(dict.fromkeys(evidence_reasons)),
+        preflight=decision.diagnostics(),
     )
 
 

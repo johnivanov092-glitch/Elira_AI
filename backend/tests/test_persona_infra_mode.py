@@ -26,20 +26,12 @@ class InfraModeTest(unittest.TestCase):
         for existing in ("Авто", "Личный", "Баланс", "Инженерный", "Деловой"):
             self.assertIn(existing, names)
 
-    def test_auto_classifier_routes_infra(self):
-        from app.application.chat.local_chat import classify_mode
-        self.assertEqual(classify_mode("Настрой firewall на роутере MikroTik"), "Инфраструктура")
-        self.assertEqual(classify_mode("Подключись по ssh и проверь systemctl status nginx"), "Инфраструктура")
-        self.assertEqual(classify_mode("Просканируй сеть и найди хосты"), "Инфраструктура")
-        self.assertEqual(classify_mode("Разбери RouterOS конфиг роутера"), "Инфраструктура")
-        self.assertEqual(classify_mode("Настрой DNS и DHCP в подсети"), "Инфраструктура")
-
-    def test_auto_classifier_priorities_hold(self):
-        from app.application.chat.local_chat import classify_mode
-        # code beats infra: a bug-fix that merely mentions ssh stays Инженерный
-        self.assertEqual(classify_mode("почини баг в ssh_config.py"), "Инженерный")
-        # plain chat stays neutral, not infra
-        self.assertEqual(classify_mode("как настроение сегодня"), "Баланс")
+    def test_infrastructure_tasks_do_not_switch_personality(self):
+        from app.application.chat.local_chat import resolve_persona_mode
+        self.assertEqual(
+            resolve_persona_mode("Авто", "Подключись по ssh и проверь systemctl status nginx"),
+            "Баланс",
+        )
 
     def test_legacy_mode_keeps_identity_and_task_guidance(self):
         from app.application.persona.service import build_persona_prompt

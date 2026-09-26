@@ -9,6 +9,7 @@ import pytest
 _LOCAL_PROVIDER_DEFAULTS = {
     "LLAMA_SERVER_ENABLED": "false",
     "LOCAL_EMBED_ENABLED": "false",
+    "LAYA_ENABLED": "false",
 }
 
 _TEST_DATA_DIR = tempfile.TemporaryDirectory(prefix="elira-pytest-data-")

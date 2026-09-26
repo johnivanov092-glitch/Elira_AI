@@ -1,10 +1,4 @@
-"""Two new persona modes: 🧬 «Научный» (biology/physics/math) and 🩺 «Медицина».
-
-Split per the user's choice. Both are precise (temp 0.2) and cite-or-refuse on
-facts. classify_mode («Авто») must route science and health questions to them,
-with the priority code > … > medical > science (a health question wins over a
-biology word; a coding request still wins over both).
-"""
+"""Legacy scientific/medical guidance keeps the one live personality."""
 from __future__ import annotations
 
 import sys
@@ -16,7 +10,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.chat.local_chat import classify_mode  # noqa: E402
+from app.application.chat.local_chat import resolve_persona_mode  # noqa: E402
 from app.core.persona_defaults import PERSONA_MODES  # noqa: E402
 
 
@@ -45,19 +39,9 @@ class ScienceMedicalModeTest(unittest.TestCase):
         first = _first_sentence(PERSONA_MODES["Медицина"]["overlay"])
         self.assertTrue("не заменяет" in first and "врача" in first)
 
-    def test_science_questions_route_to_научный(self):
-        for q in (
-            "докажи теорему Пифагора",
-            "объясни как работает фермент в клетке",
-            "выведи формулу через интеграл",
-            "что такое квантовая запутанность",
-            "как устроена молекула ДНК",
-            # chemistry folded into «Научный» per the user's physics↔chemistry note
-            "какая валентность у углерода",
-            "напиши уравнение реакции окисления",
-            "что такое катализатор",
-        ):
-            self.assertEqual(classify_mode(q), "Научный", q)
+    def test_science_and_medical_tasks_do_not_switch_personality(self):
+        for text in ("докажи теорему Пифагора", "у меня болит голова второй день"):
+            self.assertEqual(resolve_persona_mode("Авто", text), "Баланс")
 
     def test_thin_modes_now_carry_instruction_not_a_bare_label(self):
         # Личный/Баланс/Инженерный used to send only "Режим работы: X" to the model.
@@ -67,23 +51,6 @@ class ScienceMedicalModeTest(unittest.TestCase):
             line = _short_profile_line(mode)
             self.assertGreater(len(line), 120, mode)  # not just a label
             self.assertNotEqual(line.strip().rstrip("."), f"Режим работы: {mode.lower()}")
-
-    def test_health_questions_route_to_медицина(self):
-        for q in (
-            "что делать при высокой температуре и кашле",
-            "какая дозировка парацетамола",
-            "у меня болит голова второй день",
-            "какие симптомы у этой болезни",
-        ):
-            self.assertEqual(classify_mode(q), "Медицина", q)
-
-    def test_priority_code_beats_science(self):
-        # a coding request that mentions a science term stays engineering
-        self.assertEqual(classify_mode("напиши на python код для решения уравнения"), "Инженерный")
-
-    def test_priority_medical_beats_science(self):
-        # health context wins even with a biology word present
-        self.assertEqual(classify_mode("какое лечение снижает воспаление в клетках"), "Медицина")
 
 
 if __name__ == "__main__":

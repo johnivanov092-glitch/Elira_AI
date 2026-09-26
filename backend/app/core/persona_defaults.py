@@ -4,9 +4,7 @@ DEFAULT_PROFILE = "Баланс"
 ELIRA_TEMPERATURE = 0.45
 # Other profile names/overlays remain for old settings, logs and integrations.
 # Live personality and sampling do not switch between these legacy modes.
-# Selection sentinel: not a mode itself. When the picker is on "Авто", the
-# effective mode is decided per-message by a lightweight heuristic
-# (see chat.local_chat.classify_mode). Picking a concrete mode locks it.
+# Selection sentinel retained for old settings and API clients.
 AUTO_PROFILE = "Авто"
 
 ELIRA_PERSONA_BASE_PAYLOAD = {
