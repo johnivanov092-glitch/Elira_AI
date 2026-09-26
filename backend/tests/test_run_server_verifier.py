@@ -23,6 +23,7 @@ from app.application.code_agent.tools import _background_jobs, _run  # noqa: E40
 from app.application.code_agent.tools import _shell  # noqa: E402
 from app.application.code_agent.tools._run import _parse_server_url, active_server_ports  # noqa: E402
 from app.application.web.ssrf_guard import check_ssrf  # noqa: E402
+from app.core import data_files  # noqa: E402
 
 
 class DestructiveActionWorkflowPermissionTest(unittest.TestCase):
@@ -240,6 +241,70 @@ class RunServerHonestyTest(unittest.TestCase):
         out = _run.tool_run_server(Path("."), action="restart")
         self.assertIs(out.get("ok"), False)
         self.assertIn("unknown action", out["text"])
+
+
+class ServerLogStorageTest(unittest.TestCase):
+    def test_new_server_logs_leave_projects_unchanged_and_do_not_collide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            projects = [root / "left" / "project", root / "right" / "project"]
+            for project in projects:
+                project.mkdir(parents=True)
+                (project / "README.md").write_text("Sealed source\n", encoding="utf-8")
+            before = {
+                project: {str(p.relative_to(project)): p.read_bytes()
+                          for p in project.rglob("*") if p.is_file()}
+                for project in projects
+            }
+            data_dir = root / "data"
+            paths: list[Path] = []
+            pids: list[int] = []
+            with mock.patch.object(data_files, "DATA_DIR", data_dir), \
+                 mock.patch.object(_run.time, "time", return_value=1_000.0), \
+                 mock.patch.object(_run, "_auto_verify_gui", return_value=""):
+                try:
+                    for index, project in enumerate([*projects, projects[0]]):
+                        marker = f"SERVER_LOG_{index}"
+                        command = (
+                            f'"{sys.executable}" -u -c "import sys,time; '
+                            f"print('{marker}_OUT'); print('{marker}_ERR', file=sys.stderr); "
+                            'time.sleep(30)"'
+                        )
+                        started = _run.tool_run_server(project, command=command)
+                        self.assertTrue(started["ok"], started["text"])
+                        pid = int(started["pid"])
+                        pids.append(pid)
+                        deadline = time.monotonic() + 5
+                        while True:
+                            logs = _run.tool_run_server(project, action="logs", pid=pid)
+                            if f"{marker}_ERR" in logs["text"] or time.monotonic() >= deadline:
+                                break
+                            time.sleep(0.05)
+                        self.assertIn(f"{marker}_OUT", logs["text"])
+                        self.assertIn(f"{marker}_ERR", logs["text"])
+                        tracked = next(
+                            item for item in _run.tracked_background_processes()
+                            if item["pid"] == pid
+                        )
+                        paths.append(Path(tracked["log_path"]))
+                    for index, path in enumerate(paths):
+                        self.assertTrue(path.is_relative_to(data_dir / "background_jobs" / "logs"))
+                        self.assertEqual(len(path.relative_to(data_dir / "background_jobs" / "logs").parts), 2)
+                        self.assertIn(f"SERVER_LOG_{index}_OUT", path.read_text(encoding="utf-8"))
+                        for other in set(range(3)) - {index}:
+                            self.assertNotIn(f"SERVER_LOG_{other}_", path.read_text(encoding="utf-8"))
+                    self.assertEqual(len(set(paths)), 3)
+                    self.assertNotEqual(paths[0].parent, paths[1].parent)
+                    self.assertEqual(paths[0].parent, paths[2].parent)
+                finally:
+                    for pid in pids:
+                        _run.tool_run_server(projects[0], action="stop", pid=pid)
+            for project in projects:
+                self.assertFalse((project / ".elira").exists())
+                self.assertEqual(before[project], {
+                    str(p.relative_to(project)): p.read_bytes()
+                    for p in project.rglob("*") if p.is_file()
+                })
 
 
 class ServerLifecycleOwnershipTest(unittest.TestCase):

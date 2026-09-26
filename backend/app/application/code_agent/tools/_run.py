@@ -9,6 +9,7 @@ import subprocess
 import textwrap
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from app.application.code_agent.tools._shell import (
 # Canonical subprocess-output decoder (Windows console mojibake fix) lives in one
 # place now; kept as _decode_console here for the existing call sites and tests.
 from app.infrastructure.encoding import decode_console as _decode_console
+from app.core.data_files import data_subdir
 from app.core.redaction import redact_text
 
 
@@ -257,11 +259,10 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
 # after a natural model answer. They stop only through run_server(action='stop')
 # or an explicit Workflow Stop, which kills every process owned by that run.
 # They are not in _LIVE_SHELL_PROCS; their own registry handles lifecycle.
-# Output is
-# captured to log files under the project's .elira/servers/ so the model can
-# inspect startup without blocking.
+# Output stays in runtime data, namespaced by the resolved project path. Starting
+# a process must not mutate a sealed release or a read-only project checkout.
+# Existing handles/journal records retain their original log_path for reads.
 
-_SERVER_LOG_DIRNAME = ".elira/servers"
 _SERVER_STARTUP_GRACE = 1.5  # seconds to let the process crash-or-bind before reporting
 _SERVER_URL_WAIT = 6.0       # extra seconds to wait for a dev server to PRINT its URL
 _SERVER_LOG_TAIL_CHARS = 4000
@@ -1386,13 +1387,16 @@ def _tool_run_server_impl(
     if not cleaned_command:
         return {"text": "ERROR: action 'start' requires a command.", "ok": False}
     display_command = redact_text(cleaned_command)
-    log_dir = (project_root.resolve() / _SERVER_LOG_DIRNAME)
     try:
+        project_key = hashlib.sha256(
+            os.path.normcase(str(project_root.resolve())).encode("utf-8")
+        ).hexdigest()
+        log_dir = data_subdir("background_jobs") / "logs" / project_key
         log_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         return {"text": f"ERROR: cannot create server log dir: {exc}", "ok": False}
     log_prefix = "job" if process_kind == "job" else "server"
-    log_path = log_dir / f"{log_prefix}-{int(time.time() * 1000)}.log"
+    log_path = log_dir / f"{log_prefix}-{uuid.uuid4().hex}.log"
     started_at = time.time()
     run_id = _CURRENT_RUN_ID.get()
 
@@ -1416,7 +1420,7 @@ def _tool_run_server_impl(
             )
         # Binary: the server child writes its raw bytes straight to this fd; we
         # decode on read (_read_log_tail) so Windows OEM output isn't mangled.
-        log_fh = open(log_path, "wb")
+        log_fh = open(log_path, "xb")
     except Exception as exc:
         if prepared_job:
             discard_prepared_job(prepared_job)

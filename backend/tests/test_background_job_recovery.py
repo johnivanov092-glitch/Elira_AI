@@ -712,6 +712,9 @@ def test_job_reconnects_to_logs_and_terminal_state_after_backend_restart(tmp_pat
     assert started["status"] == "running"
     assert started["job_id"]
     assert started["recovered"] is False
+    log_path = Path(str(started["log_path"]))
+    assert log_path.is_relative_to(data_dir / "background_jobs" / "logs")
+    assert not (project / ".elira").exists()
     pid = int(started["pid"])
 
     recovered = _run_python(
@@ -770,6 +773,34 @@ def test_job_reconnects_to_logs_and_terminal_state_after_backend_restart(tmp_pat
     assert terminal["result"]["recovered"] is True
     assert terminal["result"]["exit_code"] == 0
     assert "DURABLE_JOB_DONE" in terminal["result"]["text"]
+    assert Path(str(terminal["result"]["log_path"])) == log_path
+
+    # Simulate a retained pre-upgrade record. Recovery must use the saved path,
+    # not derive a new location and lose access to its historical output.
+    legacy_path = project / ".elira" / "servers" / "job-legacy.log"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_bytes(log_path.read_bytes())
+    journal_path = data_dir / "background_jobs" / "jobs.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["jobs"][str(started["job_id"])]["log_path"] = str(legacy_path)
+    journal_path.write_text(json.dumps(journal), encoding="utf-8", newline="\n")
+    legacy = _run_python(
+        f"""
+        import json
+        from pathlib import Path
+        from app.application.code_agent.tools._run import recover_background_jobs, tool_run_server
+
+        recover_background_jobs()
+        result = tool_run_server(Path({str(project)!r}), action="logs", pid={pid}, kind="job")
+        print(json.dumps(result))
+        """,
+        data_dir=data_dir,
+    )
+    assert legacy["status"] == "completed"
+    assert legacy["recovered"] is True
+    assert Path(str(legacy["log_path"])) == legacy_path
+    assert "DURABLE_JOB_STARTED" in legacy["text"]
+    assert "DURABLE_JOB_DONE" in legacy["text"]
 
 
 def test_failed_job_exit_is_recovered_explicitly(tmp_path: Path) -> None:
