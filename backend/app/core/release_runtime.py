@@ -131,6 +131,7 @@ async def control(request: Request) -> dict:
                 # No admitted producer remains. Freeze new admission before the
                 # background snapshot, so a just-completed agent cannot create
                 # a job between that snapshot and the idle decision.
+                was_draining = _draining
                 _draining = True
                 status = triggers.scheduler_status()
                 try:
@@ -138,6 +139,8 @@ async def control(request: Request) -> dict:
                                 or _workflow_busy())
                 except sqlite3.Error:
                     idle = False
+                if not idle:
+                    _draining = was_draining
         return {"ok": True, "idle": idle, **health_fields()}
     if action in {"activate", "resume"}:
         if action == "activate" and not _admitted and _activate is not None:

@@ -356,6 +356,8 @@ def start_telegram_bot() -> dict[str, Any]:
 
     if _running:
         return {"ok": True, "status": "already_running"}
+    if _bot_thread and _bot_thread.is_alive():
+        return {"ok": False, "status": "stopping", "error": "Previous Telegram receiver is still stopping"}
 
     try:
         token = _telegram_token()
