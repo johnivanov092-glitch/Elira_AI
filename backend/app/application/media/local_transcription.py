@@ -11,9 +11,9 @@ Honesty: the capability probe reports ready ONLY when the runtime prerequisites
 are present (NVIDIA GPU, faster-whisper + CTranslate2, CUDA device, loadable
 cuBLAS/cuDNN, writable model cache) AND the transcribe function is wired. It
 NEVER loads a Whisper model, so first-load/model failures remain execution
-failures and are handled by the existing strict/auto routing contract. Until the pinned deps are provisioned,
-faster-whisper/CTranslate2 are absent, so local_gpu/local_cpu stay UNAVAILABLE
-and ``auto`` falls through to server_cpu.
+failures and are handled by the existing strict/auto routing contract. Missing
+local dependencies report unavailable; ``auto`` considers only local GPU/CPU
+and does not send user workloads to the voice server.
 
 Model loading is lazy, thread-safe, single-flight, and bounded (a small model
 cache keyed by model/device/compute_type — never one instance per call). No

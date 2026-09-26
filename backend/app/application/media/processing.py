@@ -144,7 +144,7 @@ def _transcribe(record: resource_store.ResourceRecord, execution_target: str,
             backend=None,
         )
     # Route to a workload adapter for the requested execution target (fallback
-    # only for auto: local_gpu → server_cpu → local_cpu).
+    # only for auto: local_gpu → local_cpu; the server requires explicit selection).
     sel = execution.select(TRANSCRIBE, execution_target, adapters)
     if sel.error is not None or sel.adapter is None:
         return _selection_error(TRANSCRIBE, record.resource_id, execution_target, sel)

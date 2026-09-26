@@ -132,7 +132,13 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Load task instructions with skill_load(name, query=reason); skill_list "
                     "discovers all installed skills. Loading is read-only and does not grant "
-                    "tool permissions. Manage integration runtimes hidden behind Workflow UI. For long-term "
+                    "tool permissions. Build reusable capabilities with skill_create(name), "
+                    "write SKILL.md/scripts in the returned directory, skill_check(name, "
+                    "config={candidate_id,command}), then skill_publish(name,config={candidate_id}). "
+                    "Publication records local Git history and atomically selects the checked package. "
+                    "skill_load uses it immediately; skill_status/skill_rollback inspect/revert versions. "
+                    "skill_discard(name,config={candidate_id}) removes a selected inactive candidate. "
+                    "Manage integration runtimes hidden behind Workflow UI. For long-term "
                     "user memory, use memory_search first and memory_list when search has no "
                     "matches; recall is project RAG, not user memory. Project Corpus indexing and "
                     "status use project_index/project_status. Also manages: portable vault "
@@ -153,6 +159,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "enum": [
                                 "status",
                                 "skill_list", "skill_load",
+                                "skill_create", "skill_check", "skill_publish", "skill_rollback", "skill_status", "skill_discard",
                                 "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
                                 "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
                                 "ssh_hosts", "ssh_set_hosts",
@@ -209,7 +216,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "config": {
                             "type": "object",
                             "description": (
-                                "Runtime config. MCP secrets use env_secret_refs or "
+                                "Runtime config. "
+                                "Skill development takes candidate_id from skill_create; skill_check "
+                                "also takes command (a real shell verification in the candidate directory). "
+                                "MCP secrets use env_secret_refs or "
                                 "secret_header_refs maps whose values are sref_ references. "
                                 "MikroTik onboarding uses itops_mikrotik_upsert with host, "
                                 "user, optional label/router_id/port/TLS/ros_version fields; the password "
@@ -343,13 +353,15 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "returns metadata; 'extract_text' extracts document text; 'transcribe' "
                     "runs speech-to-text. Takes a resource_id (NOT a path); the file must be "
                     "attached to THIS run. execution_target chooses WHERE compute runs: "
-                    "'auto' (runtime picks: local GPU → server CPU → local CPU), 'local_gpu' "
+                    "'auto' (runtime picks local GPU → local CPU only), 'local_gpu' "
                     "(строго локальная видеокарта — «используй локальное железо/видеокарту / "
                     "обработай локально на GPU»; если недоступна — честная ошибка, файл НЕ "
                     "уходит на сервер), 'local_cpu' (локальный CPU), 'server_cpu' (серверный "
-                    "CPU STT). 'server_gpu' is a deprecated input alias for server_cpu. If "
-                    "several targets are available and the user did not choose one, use the "
-                    "existing ask_user tool before this call; placement is not permission."
+                    "CPU STT, selected explicitly, never an automatic fallback). 'server_gpu' "
+                    "is a deprecated input alias for server_cpu. Inspect client hardware and "
+                    "honor the user's chosen device; choose autonomously when delegated. "
+                    "If a suitable runtime is missing, use resource_materialize and the "
+                    "existing file/shell tools to build, verify and use one."
                 ),
                 "parameters": {
                     "type": "object",
@@ -357,7 +369,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
-                        "execution_target": {"type": "string", "enum": list(accepted_execution_targets()), "description": "Where to run compute. server_gpu is a deprecated alias for server_cpu. When multiple targets are available, do not default to auto unless the user selected automatic placement; ask via ask_user."},
+                        "execution_target": {"type": "string", "enum": list(accepted_execution_targets()), "description": "Where to run compute. Honor an explicit user device with the corresponding strict target. auto uses local GPU then local CPU; it never uses server STT. server_gpu is a deprecated alias for explicitly selected server_cpu."},
                     },
                     "required": ["resource_id", "operation"],
                 },
@@ -1140,8 +1152,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "size before clicking — coordinates are absolute pixels and grounding is "
                     "approximate, so re-screenshot to verify the result of each action. "
                     "This tool controls the GUI only; it does not select or run compute "
-                    "on the local GPU. For attached audio/video processing on local "
-                    "hardware, use resource_process with execution_target='local_gpu'. "
+                    "on the local GPU. For attached audio/video, inspect the local runtime "
+                    "and use resource_process with execution_target='local_gpu' when suitable, "
+                    "or materialize the resource and build the needed processor with code tools. "
                     "Actions: 'screenshot' (returns a description + screen size), 'left_click'/"
                     "'right_click'/'double_click'/'middle_click' (need x,y), 'move' (x,y), "
                     "'type' (text), 'key' (keys, e.g. [\"ctrl\",\"c\"] or [\"enter\"]), 'scroll' "

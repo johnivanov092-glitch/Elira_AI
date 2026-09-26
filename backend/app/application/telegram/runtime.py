@@ -392,6 +392,8 @@ def stop_telegram_bot() -> dict[str, Any]:
     _running = False
     if _bot_thread and _bot_thread.is_alive():
         _bot_thread.join(timeout=5)
+        if _bot_thread.is_alive():
+            return {"ok": True, "status": "stopping"}
     _bot_thread = None
 
     return {"ok": True, "status": "stopped"}
@@ -402,6 +404,7 @@ def telegram_bot_status() -> dict[str, Any]:
     return {
         "ok": True,
         "running": _running,
+        "stopping": not _running and _bot_thread is not None and _bot_thread.is_alive(),
         "has_token": config.get("has_token", False),
         "bot_token_preview": config.get("bot_token", ""),
     }

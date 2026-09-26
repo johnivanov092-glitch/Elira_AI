@@ -199,6 +199,7 @@ backend/.env.local
 /start-claude-full.ps1
 /data/agent_workspace/
 /data/sandbox/
+/data/skill_development/
 /data/ssh_acl.json
 /data/*.db-shm
 /data/*.db-wal

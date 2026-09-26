@@ -5,7 +5,6 @@ from unittest.mock import patch
 import pytest
 
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.infrastructure.llm.laya import LayaDecision
 from app.application.code_agent.capabilities import (
     is_local_tabular_catalog_probe,
     requires_bom_validation,
@@ -161,42 +160,15 @@ def test_repeated_local_tool_failure_escalates_web() -> None:
     ) is True
 
 
-def test_finance_and_security_requests_preload_web_in_any_domain() -> None:
-    with patch(
-        "app.application.code_agent.capabilities.classify_request",
-        return_value=LayaDecision(capability_groups=frozenset({"web"}), source="laya"),
-    ):
-        finance = route_request_capabilities(
-            "Оцени актуальный курс и процентную ставку",
-            domain_policy="Деловой",
-        )
-        security = route_request_capabilities(
-            "Проверь уязвимость CVE в локальном проекте",
-            domain_policy="Инженерный",
-        )
+def test_mixed_request_leaves_semantic_routing_to_main_agent() -> None:
+    decision = route_request_capabilities(
+        "Исправь Python-код диагностики SSH-сети и проверь актуальные CVE",
+    )
 
-    assert "web" in finance.capability_groups
-    assert "web" in security.capability_groups
-
-
-def test_one_request_combines_code_network_and_web_without_profile_lock() -> None:
-    with patch(
-        "app.application.code_agent.capabilities.classify_request",
-        return_value=LayaDecision(
-            domains=("Инженерный", "Инфраструктура"),
-            capability_groups=frozenset({"web"}), source="laya",
-        ),
-    ):
-        decision = route_request_capabilities(
-            "Исправь Python-код диагностики SSH-сети и проверь актуальные CVE",
-            domain_policy="Инженерный",
-        )
-
-    assert "Инженерный" in decision.domain_policies
-    assert "Инфраструктура" in decision.domain_policies
-    assert decision.include_itops is True
-    assert decision.include_ssh is True
-    assert "web" in decision.capability_groups
+    assert decision.domain_policies == ("Баланс",)
+    assert decision.preflight == {"source": "main_agent"}
+    assert decision.include_itops is False
+    assert decision.include_ssh is False
 
 
 def test_general_uncertainty_is_not_a_web_requirement() -> None:

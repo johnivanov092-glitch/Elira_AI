@@ -20,7 +20,6 @@ from app.application.code_agent.tools._capability import tool_capability_load
 from app.application.chat.local_chat import resolve_persona_mode
 from app.application.tool_providers.runtime_registry import build_runtime_tool_registry
 from app.core.persona_defaults import AUTO_PROFILE, PERSONA_MODES
-from app.infrastructure.llm.laya import LayaDecision
 
 
 def _tool_names(registry) -> set[str]:
@@ -370,7 +369,7 @@ def test_unknown_capability_group_fails_without_changing_visibility() -> None:
     assert result["error"] == "unknown_capability_group"
 
 
-def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path, monkeypatch) -> None:
+def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> None:
     route_cases = (
         ("Мне тревожно, поговори со мной", "Личный"),
         ("Объясни, почему небо голубое простыми словами", "Баланс"),
@@ -383,12 +382,6 @@ def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path, monkeypatc
     assert set(PROFILE_CAPABILITY_GROUPS) == set(PERSONA_MODES)
 
     for profile_index, (message, expected_profile) in enumerate(route_cases):
-        monkeypatch.setattr(
-            "app.application.code_agent.capabilities.classify_request",
-            lambda *_args, _domain=expected_profile, **_kwargs: LayaDecision(
-                domains=(_domain,), source="laya",
-            ),
-        )
         seen_tool_names: list[set[str]] = []
         seen_system_prompts: list[str] = []
 
@@ -420,7 +413,8 @@ def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path, monkeypatc
         run_started = next(event for event in events if event["type"] == "run_started")
         assert run_started["profile_name"] == "Баланс"
         assert run_started["ui_profile_name"] == "Elira / Auto"
-        assert expected_profile in run_started["domain_policies"]
+        assert run_started["domain_policies"] == ["Баланс"]
+        assert request_route.preflight == {"source": "main_agent"}
         assert run_started["runtime_activation"]["capability_groups"] == []
         assert run_started["runtime_activation"]["itops"] is False
 

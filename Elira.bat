@@ -48,6 +48,12 @@ if not exist "%BACKEND_PY%" (
     exit /b 1
 )
 
+rem Managed releases inherit the same canonical env configuration as development.
+if exist "%REPO_ROOT%\.runtime\releases\enabled" (
+    "%BACKEND_PY%" "%REPO_ROOT%\scripts\elira_release.py" --platform "%REPO_ROOT%" run
+    exit /b
+)
+
 if not exist "node_modules" (
     echo [0/3] Installing root npm dependencies...
     call npm.cmd install

@@ -30,6 +30,7 @@ _TICK_SECONDS = 30.0
 _lock = threading.RLock()
 _timer: threading.Timer | None = None
 _running = False
+_tick_in_progress = False
 _active_trigger_ids: set[str] = set()
 _TERMINAL_RUN_STATUSES = {"completed", "partial", "failed", "cancelled"}
 
@@ -134,11 +135,18 @@ def run_due_triggers(*, db_path: str | Path | None = None) -> int:
 
 
 def _tick() -> None:
-    global _timer
+    global _timer, _tick_in_progress
+    with _lock:
+        if not _running:
+            return
+        _tick_in_progress = True
     try:
         run_due_triggers()
     except Exception:
         logger.exception("workflow trigger tick failed")
+    finally:
+        with _lock:
+            _tick_in_progress = False
     with _lock:
         if not _running:
             _timer = None
@@ -175,8 +183,10 @@ def scheduler_status(*, db_path: str | Path | None = None) -> dict[str, Any]:
     with _lock:
         running = _running
         active = sorted(_active_trigger_ids)
+        tick_in_progress = _tick_in_progress
     return {
         "running": running,
+        "tick_in_progress": tick_in_progress,
         "tick_seconds": _TICK_SECONDS,
         "trigger_count": total,
         "enabled_count": sum(1 for item in triggers if item.get("enabled")),

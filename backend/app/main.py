@@ -1,10 +1,11 @@
 from pathlib import Path
 import logging
+import os
 
 # Load .env and .env.local from backend/ directory so service config (SEARXNG_URL etc.)
 # are available whether the server is started via Elira.bat or manually.
 # existing_envs are not overridden — OS-level env vars always win.
-_backend_dir = Path(__file__).resolve().parent.parent  # backend/
+_backend_dir = Path(os.getenv("ELIRA_CONFIG_ROOT") or Path(__file__).resolve().parent.parent)
 try:
     from dotenv import load_dotenv
     load_dotenv(_backend_dir / ".env",       override=False)
@@ -20,6 +21,7 @@ from app.api.routes.registry import ALL_ROUTERS
 from app.application.elira_memory.service import init_db
 from app.application.runtime.status import init_runtime_state
 from app.core.auth import make_auth_middleware
+from app.core import release_runtime
 
 # Centralized logging config (FIX-16). basicConfig is a no-op if the host
 # (uvicorn / pytest) already configured the root logger, so it never clobbers
@@ -54,8 +56,31 @@ def _shutdown_integration_runtimes() -> None:
     lsp_runtime.stop_all_servers()
 
 
-app.add_event_handler("startup", _recover_background_job_runtime)
+def _recover_workflow_requests() -> None:
+    try:
+        from app.application.workflows.db_path import get_workflow_db_path
+        from app.application.workflows.request_lifecycle import recover_incomplete_requests
+
+        recovered = recover_incomplete_requests(db_path=get_workflow_db_path())
+        if recovered:
+            logger.warning("recovered %s incomplete workflow request(s)", recovered)
+    except Exception as exc:
+        logger.warning("workflow request startup recovery failed: %s", exc)
+
+
+def _activate_release_runtime() -> None:
+    _recover_workflow_requests()
+    _recover_background_job_runtime()
+    from app.application.drift.runtime import start_drift_scheduler
+    start_drift_scheduler()
+
+
+release_runtime.set_callbacks(activate=_activate_release_runtime)
+if not release_runtime.is_staging():
+    app.add_event_handler("startup", _recover_background_job_runtime)
 app.add_event_handler("shutdown", _shutdown_integration_runtimes)
+app.add_middleware(release_runtime.ReleaseDrainMiddleware)
+app.add_api_route(release_runtime.CONTROL_PATH, release_runtime.control, methods=["POST"])
 
 
 # Global safety net (FIX-16): any UNhandled route exception returns a generic 500
@@ -107,22 +132,8 @@ init_runtime_state()
 from app.application.workflow_engine.runtime import seed_builtin_workflows
 seed_builtin_workflows()
 
-try:
-    from app.application.workflows.db_path import get_workflow_db_path
-    from app.application.workflows.request_lifecycle import (
-        recover_incomplete_requests,
-    )
-
-    recovered_workflow_requests = recover_incomplete_requests(
-        db_path=get_workflow_db_path()
-    )
-    if recovered_workflow_requests:
-        logger.warning(
-            "recovered %s incomplete workflow request(s)",
-            recovered_workflow_requests,
-        )
-except Exception as exc:
-    logger.warning("workflow request startup recovery failed: %s", exc)
+if not release_runtime.is_staging():
+    _recover_workflow_requests()
 
 # Workflow-owned interval triggers replace the old separate Pipelines control
 # plane. Tests never start daemon schedulers; production starts it with the
@@ -130,7 +141,7 @@ except Exception as exc:
 try:
     import sys as _sys
 
-    if "pytest" not in _sys.modules:
+    if "pytest" not in _sys.modules and not release_runtime.is_staging():
         from app.application.workflows.triggers import start_scheduler
 
         start_scheduler()
@@ -156,10 +167,11 @@ except Exception as exc:
 try:
     from app.application.drift.runtime import start_drift_scheduler
 
-    start_drift_scheduler()
+    if not release_runtime.is_staging():
+        start_drift_scheduler()
 except Exception as exc:
     logger.warning("drift detector startup failed: %s", exc)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "elira-ai-api"}
+    return {"status": "ok", "service": "elira-ai-api", **release_runtime.health_fields()}

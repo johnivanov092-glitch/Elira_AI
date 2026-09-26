@@ -120,8 +120,6 @@ from app.application.code_agent.prompts import (  # noqa: F401
     _NO_PROJECT_BLOCK,
     _PROJECT_CONNECTED_BLOCK,
     _is_scratch_workspace,
-    compute_placement_request,
-    explicit_compute_target,
 )
 from app.application.persona.service import mode_temperature
 from app.core.persona_defaults import DEFAULT_PROFILE
@@ -539,6 +537,8 @@ def request_cancel(run_id: str) -> bool:
 
 
 def _register_run(run_id: str) -> threading.Event:
+    from app.core.release_runtime import begin_agent_run
+
     try:
         from app.application.code_agent.tools._shell import clear_run_stop_marker
 
@@ -547,6 +547,9 @@ def _register_run(run_id: str) -> threading.Event:
         logger.warning("failed to clear stale Stop marker for run %s", run_id, exc_info=True)
     ev = threading.Event()
     with _REGISTRY_LOCK:
+        if run_id in _CANCEL_REGISTRY:
+            raise RuntimeError(f"run is already active: {run_id}")
+        begin_agent_run(run_id)
         _CANCEL_REGISTRY[run_id] = ev
         _UPSTREAM_HANDLE_REGISTRY[id(ev)] = LLMStreamCancelHandle()
     return ev
@@ -561,11 +564,15 @@ def _cancel_handle_for(cancel_event: threading.Event) -> LLMStreamCancelHandle:
 
 
 def _unregister_run(run_id: str) -> None:
+    from app.core.release_runtime import end_agent_run
+
     with _REGISTRY_LOCK:
         ev = _CANCEL_REGISTRY.pop(run_id, None)
         upstream_handle = (
             _UPSTREAM_HANDLE_REGISTRY.pop(id(ev), None) if ev is not None else None
         )
+        if ev is not None:
+            end_agent_run(run_id)
     if upstream_handle is not None:
         upstream_handle.close()
 
@@ -941,6 +948,7 @@ def _stream_code_agent_core(
             "ui_profile_name": "Elira / Auto",
             "domain_policies": list(request_route.domain_policies),
             "evidence_reasons": list(request_route.evidence_reasons),
+            "preflight": request_route.preflight,
             "runtime_activation": runtime_activation_snapshot(),
         }
         yield {
@@ -1983,31 +1991,6 @@ def _stream_code_agent_core(
                         parsed_args["_runtime_refuse_reason"] = (
                             "Сначала используй glob, ResourceRef или другой подтверждённый путь."
                         )
-                if name == "resource_process":
-                    _explicit_target = explicit_compute_target(user_message)
-                    if (
-                        str(parsed_args.get("operation") or "").strip().lower()
-                        == "transcribe"
-                        and str(parsed_args.get("execution_target") or "auto").strip().lower()
-                        == "auto"
-                        and _explicit_target is not None
-                    ):
-                        # User/workflow choice outranks an omitted/model-defaulted
-                        # auto target and is passed through the canonical tool.
-                        parsed_args["execution_target"] = _explicit_target
-                    _placement_request = compute_placement_request(
-                        task_text=user_message,
-                        arguments=parsed_args,
-                        resource_refs=resource_refs,
-                    )
-                    if _placement_request is not None:
-                        # Reuse the existing ask_user state machine exactly. The
-                        # assistant message shares this call object, so keep its
-                        # function name/arguments consistent for the continuation.
-                        name = "ask_user"
-                        parsed_args = _placement_request
-                        fn["name"] = name
-                        fn["arguments"] = dict(parsed_args)
                 if name == "ask_user":
                     _question = str(parsed_args.get("question") or "").strip()
                     _raw_opts = parsed_args.get("options")

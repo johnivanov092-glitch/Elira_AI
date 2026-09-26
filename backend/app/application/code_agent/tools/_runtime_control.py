@@ -543,6 +543,10 @@ def tool_runtime_control(
             from app.application.code_agent.task_skills import skill_control
 
             result = skill_control(op, name, query)
+        elif op in {"skill_create", "skill_check", "skill_publish", "skill_rollback", "skill_status", "skill_discard"}:
+            from app.application.code_agent.skill_development import develop
+
+            result = develop(op, name, settings)
         elif op.startswith("mcp_"):
             result = _mcp_control(op, server_id, settings)
         elif op.startswith("lsp_"):

@@ -6,7 +6,7 @@ selected by task_guidance when the existing runtime exposes tools.
 from __future__ import annotations
 
 import json
-import re
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -221,6 +221,17 @@ def _build_turn_context(
         "Рабочая папка: " + json.dumps(str(project_root), ensure_ascii=False),
         "Дата runtime: " + datetime.now().astimezone().strftime("%Y-%m-%d %z"),
     ]
+    from app.core.config import ROOT_DIR
+
+    platform_root = os.getenv("ELIRA_PLATFORM_ROOT") or str(ROOT_DIR)
+    if platform_root:
+        parts.append(
+            "Стабильная платформа Elira: " + json.dumps(platform_root, ensure_ascii=False)
+            + "; релиз приложения: "
+            + json.dumps(os.getenv("ELIRA_RELEASE_ID", "development"), ensure_ascii=False)
+            + ". Самообновление: docs/RELEASE_LIFECYCLE.md и scripts/elira_release.py "
+            "в этой платформе."
+        )
     from app.application.persona.service import build_persona_context
 
     parts.append(build_persona_context(model_name))
@@ -266,13 +277,6 @@ def _build_turn_context(
     for _rule in select_niche_rules(task_text):
         parts.append("--- Ниша-правило (по теме запроса) ---\n" + _rule)
 
-    placement = _compute_placement_prompt(
-        active_tools=active_tools,
-        resource_refs=resource_refs,
-    )
-    if placement:
-        parts.append(placement)
-
     return "\n\n".join(parts)
 
 
@@ -302,103 +306,3 @@ def _build_project_context(project_root: Path, working_dir: Path | str | None = 
         logging.getLogger(__name__).debug("project memory injection failed", exc_info=exc)
 
     return "\n\n".join(parts)
-
-
-def _compute_placement_prompt(
-    *,
-    active_tools: tuple[str, ...] | list[str] | None,
-    resource_refs: list[dict[str, Any]] | None,
-) -> str:
-    """Describe live placement choices for attached transcription workloads.
-
-    This is deliberately prompt context for the existing ``ask_user`` tool, not
-    a permission policy or a second workflow state machine.
-    """
-    if "resource_process" not in set(active_tools or ()):
-        return ""
-    if not any(str(ref.get("kind") or "") in {"audio", "video"} for ref in resource_refs or ()):
-        return ""
-    choices = _compute_placement_choices()
-    if len(choices) < 3:  # auto plus at least two real placements
-        return ""
-    return (
-        "[COMPUTE PLACEMENT]\n"
-        "Для транскрибации доступны несколько мест выполнения. Это размещение работы, "
-        "а не permission/разрешение. Если пользователь в текущем запросе явно не выбрал "
-        "auto, local_gpu, server_cpu или local_cpu, ОБЯЗАТЕЛЬНО сначала вызови "
-        "`ask_user(question=\"Где выполнить расшифровку?\", options=["
-        + ", ".join(f'\"{choice}\"' for choice in choices)
-        + "])`. Используй выбранное значение как execution_target и только затем вызывай "
-        "resource_process. Не выбирай auto за пользователя. Если место выполнения уже "
-        "явно указано, не задавай повторный вопрос. Доступные варианты сейчас:\n- "
-        + "\n- ".join(choices)
-    )
-
-
-_PLACEMENT_LABELS = {
-    "local_gpu": "Локальный GPU (local_gpu)",
-    "server_cpu": "Серверный CPU (server_cpu)",
-    "local_cpu": "Локальный CPU (local_cpu)",
-}
-
-
-def _compute_placement_choices() -> list[str]:
-    try:
-        from app.application.media.execution import available_execution_targets
-
-        available = available_execution_targets("transcribe")
-    except Exception:
-        return []
-    return ["Автоматически (auto)"] + [
-        _PLACEMENT_LABELS[target]
-        for target in available
-        if target in _PLACEMENT_LABELS
-    ]
-
-
-def explicit_compute_target(task_text: str) -> str | None:
-    """Return one unambiguous placement explicitly selected by the user."""
-    text = str(task_text or "").casefold()
-    matches: set[str] = set()
-    patterns = {
-        "local_gpu": (
-            r"\blocal_gpu\b|локальн\w*\s+(?:gpu|гпу|видеокарт\w*)|"
-            r"(?:gpu|гпу|видеокарт\w*)\s+на\s+(?:этой|локальн\w*)",
-        ),
-        "server_cpu": (
-            r"\bserver_(?:cpu|gpu)\b|на\s+сервер\w*|серверн\w*\s+cpu",
-        ),
-        "local_cpu": (r"\blocal_cpu\b|локальн\w*\s+cpu",),
-        "auto": (
-            r"\bauto\b|автоматическ\w*|как\s+лучше|оптимальн\w*|"
-            r"выбер\w*\s+(?:сам|сама)",
-        ),
-    }
-    for target, target_patterns in patterns.items():
-        if any(re.search(pattern, text, re.IGNORECASE) for pattern in target_patterns):
-            matches.add(target)
-    return next(iter(matches)) if len(matches) == 1 else None
-
-
-def compute_placement_request(
-    *,
-    task_text: str,
-    arguments: dict[str, Any],
-    resource_refs: list[dict[str, Any]] | None,
-) -> dict[str, Any] | None:
-    """Build existing ask_user arguments when transcription placement is open."""
-    if str(arguments.get("operation") or "").strip().lower() != "transcribe":
-        return None
-    if explicit_compute_target(task_text) is not None:
-        return None
-    resource_id = str(arguments.get("resource_id") or "").strip()
-    if not any(
-        str(ref.get("resource_id") or "").strip() == resource_id
-        and str(ref.get("kind") or "") in {"audio", "video"}
-        for ref in resource_refs or ()
-    ):
-        return None
-    choices = _compute_placement_choices()
-    if len(choices) < 3:
-        return None
-    return {"question": "Где выполнить расшифровку?", "options": choices}

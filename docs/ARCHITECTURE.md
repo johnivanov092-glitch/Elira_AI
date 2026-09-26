@@ -128,6 +128,16 @@ option still selects a Workflow planning step; it does not refer to V8.
   instructions through compaction; active_skills journal snapshots restore them
   on Resume, while new requests start fresh. No skill changes persona or grants
   permissions. See TASK_SKILLS.md for the contract and limits.
+- Agent-authored skill packages use `skill_create/check/publish/rollback` in that
+  same adapter. Checks execute through the existing cancellable shell runtime;
+  source and dependency receipts bind activation to the verified candidate.
+  `data/skill_development/` owns local Git history and an atomic active pointer.
+  Generated code executes out of process; loading a skill only reads instructions.
+- The primary Qwen agent interprets requests and selects tools from the existing
+  catalog. There is no separate semantic classifier or legacy regex router.
+  Exact download and BOM delivery contracts remain deterministic; they do not
+  grant permissions. The rejected Laya experiment is retained only in Git and
+  `research/LAYA_CPU_EVALUATION_RU.md`. Embeddings retain their existing model.
 - DRY sampling uses a bounded 1024-token lookback and permits 12-token repeats.
   Short replies can still overlap history; the old 2-token allowance caused
   repeated identity answers to mutate the name. Long prose repetition retains
@@ -223,15 +233,19 @@ Windows elevation is executed by the Tauri native bridge in
 `src-tauri/src/main.rs`, which opens UAC and binds the result to the Workflow
 request. The backend does not require permanent administrator rights.
 
-Compute placement is an `input` request, not permission. For attached audio or
-video transcription, the runtime reads currently available canonical targets
-from `application/media/execution.py`. If at least two placements are available
-and the user did not explicitly choose one, a model-defaulted/omitted `auto` call
-is deterministically converted into the existing `ask_user` request. The same
-workflow resumes with that answer and passes the selected target to
-`resource_process`. `auto` is itself an explicit user choice and keeps the order
-`local_gpu -> server_cpu -> local_cpu`. The legacy input `server_gpu` normalizes
-to `server_cpu`; results and telemetry expose only the canonical name.
+Compute placement is chosen by the agent from the task and observed client
+hardware/runtime. An explicit user device is passed as a strict target; delegated
+choice or `bypass` does not trigger a mandatory placement question. The loop no
+longer rewrites `resource_process` into `ask_user` or extracts device intent with
+regular expressions. Ordinary `ask_user` remains available for material ambiguity.
+`resource_process` with `auto` considers only `local_gpu -> local_cpu`; it never
+probes or falls back to the voice server. An explicit `server_cpu` call remains
+supported, and legacy `server_gpu` input normalizes to that canonical target.
+The `/api/voice` STT/TTS conversation path is unchanged. For user workloads the
+agent first inspects local hardware, favors repairing/installing GPU support for
+long audio, and may build and use a missing processor through the existing
+materialize/file/shell/MCP tools. Server infrastructure is a separately considered
+option when suitable alternatives are unavailable.
 
 Local GPU transcription consumes all decoded segments without a character cap.
 It saves the complete UTF-8 TXT as a ResourceRef and downloadable artifact before

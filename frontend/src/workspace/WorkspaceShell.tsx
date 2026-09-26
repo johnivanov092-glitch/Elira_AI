@@ -77,7 +77,9 @@ export default function WorkspaceShell() {
   const refreshSessions = useCallback(() => {
     listCodeSessions().then(setSessions).catch(() => { /* offline */ });
   }, []);
-  useEffect(() => { refreshSessions(); }, [refreshSessions]);
+  useEffect(() => {
+    if (connected) refreshSessions();
+  }, [connected, refreshSessions]);
 
   // Map from a run key (draft id or server id) to its server session id, for
   // sessions whose run finished while off-screen. Lets background persistence

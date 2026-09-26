@@ -10,9 +10,6 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 import re
 
-from app.infrastructure.llm.laya import classify_request
-
-
 CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
     "capability_load",
 )
@@ -73,15 +70,6 @@ DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "Инфраструктура": frozenset({"web"}),
     "Научный": frozenset({"web", "data"}),
     "Медицина": frozenset({"web"}),
-}
-
-_DOMAIN_DESCRIPTIONS = {
-    "Инженерный": "software development, source code, debugging or tests",
-    "Личный": "personal conversation, emotional support or personal memories",
-    "Деловой": "business documents, clients, commercial proposals or accounting",
-    "Инфраструктура": "administering computers, servers, networks or remote systems",
-    "Медицина": "health, symptoms, medicine or clinical treatment",
-    "Научный": "scientific research, mathematics, physics, chemistry or biology",
 }
 
 # Compatibility alias for older imports/tests. The values now describe hidden
@@ -157,7 +145,7 @@ _EXTERNAL_FAILURE_RE = re.compile(
 
 @dataclass(frozen=True)
 class RequestCapabilityRoute:
-    """Advisory classification plus deterministic user delivery contracts."""
+    """Explicit compatibility hints and deterministic user delivery contracts."""
 
     domain_policies: tuple[str, ...]
     capability_groups: frozenset[str]
@@ -174,23 +162,15 @@ def route_request_capabilities(
     domain_policy: str = "Баланс",
     conversation_history: list[dict[str, object]] | None = None,
 ) -> RequestCapabilityRoute:
-    """Classify raw user intent without authorizing or blocking any action.
+    """Preserve explicit delivery contracts; the main agent interprets intent.
 
-    History/attachments are not sent to the classifier. The main agent retains
-    the complete conversation, including when classification is unavailable.
-    Returned groups are hints; specialist schemas remain model-loaded.
+    No separate model call or semantic regex router runs here. Qwen receives
+    the conversation and chooses tools through the existing capability catalog.
+    Legacy domain hints remain accepted for stored callers, never permissions.
     """
     text = str(user_message or "")
-    decision = classify_request(
-        text, domains=_DOMAIN_DESCRIPTIONS, capabilities=CAPABILITY_GROUP_DESCRIPTIONS,
-    )
-    domains = list(decision.domains)
-    if domain_policy and domain_policy not in domains and domain_policy != "Баланс":
-        domains.append(domain_policy)
-    if not domains:
-        domains.append("Баланс")
-
-    groups = set(decision.capability_groups)
+    domains = [domain_policy if domain_policy in DOMAIN_CAPABILITY_GROUPS else "Баланс"]
+    groups: set[str] = set()
     for domain in domains:
         groups.update(DOMAIN_CAPABILITY_GROUPS.get(domain, ()))
 
@@ -208,8 +188,6 @@ def route_request_capabilities(
         groups.add("data")
 
     evidence_reasons: list[str] = []
-    if "web" in decision.capability_groups:
-        evidence_reasons.append("laya_external_evidence_hint")
     if any(domain in {"Инфраструктура", "Медицина", "Научный"} for domain in domains):
         evidence_reasons.append("domain_requires_sources")
     if evidence_reasons:
@@ -223,7 +201,7 @@ def route_request_capabilities(
         include_ssh=include_itops,
         download_requested=download_requested,
         evidence_reasons=tuple(dict.fromkeys(evidence_reasons)),
-        preflight=decision.diagnostics(),
+        preflight={"source": "main_agent"},
     )
 
 

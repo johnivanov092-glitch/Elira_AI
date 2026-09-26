@@ -10,7 +10,10 @@ Execution targets are GENERAL compute homes, not modes:
 - ``local_cpu``  — this host's CPU (always present for pure-Python ops);
 - ``local_gpu``  — this host's GPU via a locally-installed runtime;
 - ``server_cpu`` — the existing CPU STT service (ELIRA_STT_URL);
-- ``auto``       — deterministic pick: local_gpu → server_cpu → local_cpu.
+- ``auto``       — deterministic local pick: local_gpu → local_cpu.
+
+Server STT remains available through an explicitly selected ``server_cpu``;
+ordinary user workloads never fall back to the voice server automatically.
 
 ``server_gpu`` remains an accepted legacy input alias but is normalized before
 selection, results, and telemetry are emitted.
@@ -58,7 +61,7 @@ class ExecutionTarget(str, Enum):
 # Operations that only ever run on the local CPU (pure-Python; no GPU/server).
 _LOCAL_ONLY_OPERATIONS = frozenset({ResourceOperation.INSPECT.value, ResourceOperation.EXTRACT_TEXT.value})
 # Deterministic auto order for a GPU-capable workload (transcribe).
-_AUTO_ORDER = (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_CPU.value, ExecutionTarget.LOCAL_CPU.value)
+_AUTO_ORDER = (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.LOCAL_CPU.value)
 
 _MAX_RESULT_CHARS = 20000
 _TRANSCRIPT_PREVIEW_CHARS = 8000
@@ -353,10 +356,11 @@ ServerGpuTranscribeAdapter = ServerCpuTranscribeAdapter
 
 @dataclass
 class _LocalTranscribeAdapter:
-    """Local (CPU or GPU) transcription. In R2 no local STT runtime is installed,
-    so ``capability().available`` is honestly False and ``run`` returns the strict
-    ``<target>_unavailable`` error. The runtime wiring (faster-whisper) is R3 —
-    ``transcribe_fn`` is injectable so the routing contract is testable now."""
+    """Local transcription with injectable runtime discovery and execution.
+
+    Availability requires both a ready runtime and a wired handler; a missing
+    local runtime remains an explicit capability error.
+    """
 
     target: str
     detect_fn: Callable[[], tuple[bool, str, tuple[str, ...]]]
@@ -366,11 +370,8 @@ class _LocalTranscribeAdapter:
 
     def capability(self) -> Capability:
         # available MUST use the SAME predicate as run(): a target is available
-        # only if its runtime is BOTH detected AND wired. In R2 no local
-        # transcribe_fn is wired (that is R3), so local targets are honestly
-        # unavailable even on a host where the GPU + faster-whisper are installed —
-        # otherwise `auto` would commit to local_gpu and dead-end instead of
-        # falling through to the working server STT.
+        # only if its runtime is BOTH detected AND wired. Merely finding a
+        # package does not establish that this handler can execute the workload.
         try:
             detected, device, runtimes = self.detect_fn()
         except Exception:  # noqa: BLE001 — probes are always fail-closed
@@ -434,11 +435,9 @@ class AdapterSet:
                      if adapter.operation == operation and adapter.target == target), None)
 
 def default_adapters() -> AdapterSet:
-    # R3: wire the REAL local faster-whisper runtime. capability() stays honest
-    # (available == detected AND wired): the strict readiness probes report ready
-    # only when the runtime prerequisites are present, so until the pinned deps are
-    # provisioned the local targets are unavailable and auto falls through to
-    # server_cpu. Imported lazily to avoid a media-package import cycle.
+    # Local faster-whisper readiness requires the actual runtime prerequisites.
+    # Missing local dependencies do not route user workloads to voice STT.
+    # Imported lazily to avoid a media-package import cycle.
     from app.application.media import local_transcription as lt
     return AdapterSet((
         _LocalTranscribeAdapter(ExecutionTarget.LOCAL_GPU.value, lt.gpu_runtime_ready,

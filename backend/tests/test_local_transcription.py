@@ -457,30 +457,37 @@ class RoutingTest(unittest.TestCase):
         server_health.assert_not_called()
         server_tx.assert_not_called()
 
-    def test_auto_local_failure_falls_to_server(self):
+    def test_auto_local_failure_never_falls_to_server(self):
         def boom(*a, **k):
             raise RuntimeError("gpu died")
+        server_health = mock.Mock(return_value=True)
+        server_tx = mock.Mock(return_value="server-text")
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=True, transcribe_fn=boom),
-            server=ex.ServerCpuTranscribeAdapter(health_fn=lambda: True,
-                                                 transcribe_fn=lambda *a, **k: "server-text"))
+            server=ex.ServerCpuTranscribeAdapter(health_fn=server_health,
+                                                 transcribe_fn=server_tx))
         out = processing.process_resource(_rec(), "transcribe", "auto", adapters)
-        self.assertTrue(out["ok"], out)
-        self.assertEqual(out["selected_target"], "server_cpu")
+        self.assertFalse(out["ok"], out)
+        self.assertIsNone(out["selected_target"])
         steps = {step["target"] for step in out.get("fallback_chain", [])}
-        self.assertIn("local_gpu", steps)                  # honest fallback record
+        self.assertEqual(steps, {"local_gpu", "local_cpu"})
+        server_health.assert_not_called()
+        server_tx.assert_not_called()
 
-    def test_auto_server_failure_falls_to_local_cpu(self):
+    def test_auto_uses_local_cpu_without_probing_server(self):
+        server_health = mock.Mock(return_value=True)
+        server_tx = mock.Mock(return_value="server-text")
         adapters = _adapters(
             gpu=_local_adapter("local_gpu", detected=False),
             server=ex.ServerCpuTranscribeAdapter(
-                health_fn=lambda: True,
-                transcribe_fn=mock.Mock(side_effect=RuntimeError("stt down"))),
+                health_fn=server_health, transcribe_fn=server_tx),
             cpu=_local_adapter("local_cpu", detected=True, transcribe_fn=lambda *a, **k: "cpu-text"))
         out = processing.process_resource(_rec(), "transcribe", "auto", adapters)
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["selected_target"], "local_cpu")
         self.assertEqual(out["text"], "cpu-text")
+        server_health.assert_not_called()
+        server_tx.assert_not_called()
 
     def test_legacy_server_gpu_alias_returns_canonical_server_cpu(self):
         adapters = _adapters(

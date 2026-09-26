@@ -46,8 +46,8 @@ export function withAuth(init?: HeadersInit): Headers {
   return headers;
 }
 
-/** Poll /health until the backend answers or we give up.
- *  Returns true if backend is reachable, false on timeout.
+/** Poll /health until the backend admits application requests or we give up.
+ *  Returns true if backend is ready, false on timeout.
  *  Uses manual AbortController instead of AbortSignal.timeout()
  *  for compatibility with older WebView2 versions. */
 export async function waitForBackend(
@@ -60,8 +60,11 @@ export async function waitForBackend(
     const timer = setTimeout(() => controller.abort(), 4000);
     try {
       const r = await fetch(`${API_BASE}/health`, { signal: controller.signal });
-      clearTimeout(timer);
-      if (r.ok) return true;
+      if (r.ok) {
+        const health: unknown = await r.json();
+        if (isRecord(health) && health.status === "ok"
+          && health.admitted !== false && health.draining !== true) return true;
+      }
     } catch {
       // network error or timeout — backend not ready yet
     } finally {
