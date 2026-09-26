@@ -160,9 +160,8 @@ def test_bom_validate_schema_is_qwen_friendly_and_available() -> None:
     ]
 
 
-def test_local_price_bom_cannot_finish_before_deterministic_validation(tmp_path) -> None:
+def test_selected_bom_uses_typed_receipt_without_request_keyword_classification(tmp_path) -> None:
     responses = iter([
-        {"message": {"content": "КП готово, итог 1000 тенге.", "tool_calls": []}},
         {
             "message": {
                 "content": "",
@@ -194,7 +193,7 @@ def test_local_price_bom_cannot_finish_before_deterministic_validation(tmp_path)
         return_value=_valid_bom_result(),
     ):
         events = list(stream_code_agent(
-            user_message="Собери ПК по локальному XLSX-прайсу и сделай коммерческое предложение",
+            user_message="Сверь расчёт выбранных позиций.",
             project_root=tmp_path,
             run_id="bom-completion-guard",
             chat_fn=fake_chat,
@@ -202,7 +201,7 @@ def test_local_price_bom_cannot_finish_before_deterministic_validation(tmp_path)
             permission_mode="bypass",
         ))
 
-    assert "internal BOM correction" in str(prompts[1][-1]["content"])
+    assert len(prompts) == 2
     assert any(
         event.get("type") == "tool_call"
         and event.get("tool") == "bom_validate"
@@ -278,7 +277,6 @@ def test_failed_revalidation_revokes_receipt_and_blocks_publish(tmp_path) -> Non
 
 def test_failed_bom_validation_cannot_be_reported_as_complete(tmp_path) -> None:
     responses = iter([
-        {"message": {"content": "КП готово.", "tool_calls": []}},
         {
             "message": {
                 "content": "",
@@ -297,6 +295,7 @@ def test_failed_bom_validation_cannot_be_reported_as_complete(tmp_path) -> None:
                 }],
             },
         },
+        {"message": {"content": "КП всё равно готово.", "tool_calls": []}},
         {"message": {"content": "КП всё равно готово.", "tool_calls": []}},
     ])
 

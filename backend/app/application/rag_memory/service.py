@@ -76,6 +76,10 @@ def add_to_rag(
     )
 
 
+def prepare_source_chunks(texts: list[str]) -> list[rag_runtime.PreparedSourceChunk]:
+    return rag_runtime.prepare_source_chunks(get_embedding_func=_get_embedding, texts=texts)
+
+
 def search_rag(
     query: str,
     limit: int = 5,

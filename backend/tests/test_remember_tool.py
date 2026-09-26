@@ -10,9 +10,9 @@ from app.application.code_agent.prompts import _build_turn_context
 
 
 class RememberToolTest(unittest.TestCase):
-    """remember() persists a durable user fact/correction as the source of truth."""
+    """A model argument alone cannot confer user provenance."""
 
-    def test_correction_stored_as_authoritative(self):
+    def test_unbound_correction_is_agent_note(self):
         with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 1}) as m, \
              tempfile.TemporaryDirectory() as tmp:
             res = tool_remember(
@@ -23,17 +23,18 @@ class RememberToolTest(unittest.TestCase):
             )
         self.assertTrue(res["ok"])
         kw = m.call_args.kwargs
-        self.assertEqual(kw["source"], "user_correction")
+        self.assertEqual(kw["source"], "agent_note")
+        self.assertNotIn("источник правды", res["text"])
         self.assertEqual(kw["importance"], 10)
         self.assertEqual(kw["category"], "user_fact")
         self.assertEqual(kw["replaces_id"], 41)
 
-    def test_plain_fact_source_user(self):
+    def test_unbound_fact_source_agent(self):
         with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 2}) as m, \
              tempfile.TemporaryDirectory() as tmp:
             tool_remember(Path(tmp), fact="Пользователь предпочитает тёмную тему")
         kw = m.call_args.kwargs
-        self.assertEqual(kw["source"], "user")
+        self.assertEqual(kw["source"], "agent_note")
         self.assertEqual(kw["importance"], 8)
 
     def test_too_short_rejected(self):

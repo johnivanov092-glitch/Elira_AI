@@ -120,6 +120,10 @@ def _chunk_file(file_path: Path, project_root: Path) -> Iterator[tuple[str, int,
     if not lines:
         return
     rel = _posix_relative(file_path, project_root)
+    yield from _chunk_lines(lines, rel)
+
+
+def _chunk_lines(lines: list[str], source_uri: str) -> Iterator[tuple[str, int, int]]:
     step = max(1, INDEX_CHUNK_LINES - INDEX_CHUNK_OVERLAP)
     for start in range(0, len(lines), step):
         end = min(start + INDEX_CHUNK_LINES, len(lines))
@@ -128,7 +132,7 @@ def _chunk_file(file_path: Path, project_root: Path) -> Iterator[tuple[str, int,
         chunk_text = "".join(lines[start:end])
         if not chunk_text.strip():
             continue
-        yield f"[file:{rel}:{start + 1}-{end}]\n{chunk_text}", start + 1, end
+        yield f"[file:{source_uri}:{start + 1}-{end}]\n{chunk_text}", start + 1, end
         if end >= len(lines):
             break
 
@@ -285,12 +289,16 @@ def _iter_project_files(project_root: Path, patterns: list[str]) -> Iterator[Pat
         yield record.path
 
 
-def _content_hash(path: Path) -> str:
-    digest = hashlib.sha256()
+def _source_bytes(path: Path) -> bytes:
     with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(64 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        content = fh.read(INDEX_MAX_FILE_BYTES + 1)
+    if len(content) > INDEX_MAX_FILE_BYTES:
+        raise ValueError("Source grew beyond INDEX_MAX_FILE_BYTES; retry indexing")
+    return content
+
+
+def _content_hash(path: Path) -> str:
+    return hashlib.sha256(_source_bytes(path)).hexdigest()
 
 
 def _load_manifest(conn: Any, scope_id: str) -> dict[str, dict[str, Any]]:
@@ -338,7 +346,6 @@ def _upsert_manifest(
             int(chunk_count), status, error, record.repo, record.commit_sha, record.language,
         ),
     )
-    conn.commit()
 
 
 def _delete_source_chunks(conn: Any, scope_id: str, source_uri: str, *, keep_hash: str | None = None) -> int:
@@ -348,7 +355,6 @@ def _delete_source_chunks(conn: Any, scope_id: str, source_uri: str, *, keep_has
         sql += " AND COALESCE(source_hash, '') != ?"
         params.append(keep_hash)
     cursor = conn.execute(sql, params)
-    conn.commit()
     return int(cursor.rowcount or 0)
 
 
@@ -382,7 +388,8 @@ def _index_project_unlocked(
         return {"ok": False, "error": f"project_root does not exist: {root}"}
 
     try:
-        from app.application.rag_memory.service import _conn, add_to_rag
+        from app.application.rag_memory.runtime import replace_source_chunks
+        from app.application.rag_memory.service import _conn, prepare_source_chunks
     except Exception as exc:
         return {"ok": False, "error": f"RAG service unavailable: {exc}"}
 
@@ -421,8 +428,11 @@ def _index_project_unlocked(
     for record in records:
         prior = manifest.get(record.source_uri) or {}
         try:
-            content_hash = _content_hash(record.path)
-        except OSError as exc:
+            # Hash and chunk the same bytes, even if the file changes while the
+            # embeddings are prepared. Recheck the live hash before publication.
+            source_bytes = _source_bytes(record.path)
+            content_hash = hashlib.sha256(source_bytes).hexdigest()
+        except (OSError, ValueError) as exc:
             files_failed += 1
             errors.append(f"{record.source_uri}: {exc}")
             resume_required = True
@@ -432,7 +442,9 @@ def _index_project_unlocked(
             files_unchanged += 1
             continue
 
-        chunks = list(_chunk_file(record.path, root))
+        chunks = list(_chunk_lines(
+            source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True), record.source_uri,
+        ))
         remaining = INDEX_MAX_TOTAL_CHUNKS - chunks_indexed
         if len(chunks) > remaining:
             resume_required = True
@@ -446,54 +458,68 @@ def _index_project_unlocked(
             "commit": record.commit_sha,
             "language": record.language,
         }
-        indexed_for_file = 0
-        file_errors: list[str] = []
-        for chunk_text, _start, _end in chunks:
-            try:
-                result = add_to_rag(
-                    text=chunk_text,
-                    category="code_index",
-                    importance=4,
-                    project=scope_id,
-                    source_uri=record.source_uri,
-                    source_hash=content_hash,
-                    metadata=metadata,
-                )
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
-            if result.get("ok"):
-                indexed_for_file += 1
-                chunks_indexed += 1
-                if result.get("action") == "deduped":
-                    chunks_reused += 1
-                else:
-                    chunks_created += 1
-            else:
-                failed_chunks += 1
-                file_errors.append(str(result.get("error") or "chunk ingestion failed"))
-
-        conn = _conn()
         try:
-            if file_errors:
-                files_failed += 1
-                message = "; ".join(file_errors[:3])
-                _upsert_manifest(
-                    conn, scope_id=scope_id, record=record, content_hash=content_hash,
-                    chunk_count=indexed_for_file, status="failed", error=message,
-                )
-                errors.append(f"{record.source_uri}: {message}")
-                resume_required = True
-            else:
-                deleted_chunks += _delete_source_chunks(
-                    conn, scope_id, record.source_uri, keep_hash=content_hash,
-                )
-                _upsert_manifest(
-                    conn, scope_id=scope_id, record=record, content_hash=content_hash,
-                    chunk_count=indexed_for_file, status="indexed",
-                )
-                files_indexed += 1
-        finally:
-            conn.close()
+            prepared = prepare_source_chunks([text for text, _start, _end in chunks])
+            conn = _conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if _content_hash(record.path) != content_hash:
+                    raise ValueError("Source changed during preparation; retry indexing")
+                current = conn.execute(
+                    "SELECT content_hash, status FROM project_corpus_files WHERE project = ? AND source_uri = ?",
+                    (scope_id, record.source_uri),
+                ).fetchone()
+                if current and current["status"] == "indexed" and current["content_hash"] == content_hash:
+                    # Another process published this exact version while we
+                    # prepared it. Keep its row identities and access counts.
+                    replaced = 0
+                    reused = len(prepared)
+                else:
+                    replaced = replace_source_chunks(
+                        conn=conn, project=scope_id, source_uri=record.source_uri,
+                        source_hash=content_hash, chunks=prepared, metadata=metadata,
+                    )
+                    _upsert_manifest(
+                        conn, scope_id=scope_id, record=record, content_hash=content_hash,
+                        chunk_count=len(prepared), status="indexed",
+                    )
+                    reused = 0
+                conn.commit()
+            finally:
+                # Closing an uncommitted connection rolls the whole source back.
+                conn.close()
+            files_indexed += 1
+            chunks_indexed += len(prepared)
+            chunks_created += len(prepared) - reused
+            chunks_reused += reused
+            deleted_chunks += replaced
+        except Exception as exc:
+            files_failed += 1
+            failed_chunks += 1
+            message = str(exc)
+            errors.append(f"{record.source_uri}: {message}")
+            resume_required = True
+            logger.warning("Corpus source publication failed for %s: %s", record.source_uri, message)
+            conn = _conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                current = conn.execute(
+                    "SELECT status FROM project_corpus_files WHERE project = ? AND source_uri = ?",
+                    (scope_id, record.source_uri),
+                ).fetchone()
+                # Keep the last published manifest with its complete v1. Its
+                # hash differs from v2, so the next indexing call still retries.
+                # This also preserves a concurrent successful publication.
+                if not current or current["status"] != "indexed":
+                    _upsert_manifest(
+                        conn, scope_id=scope_id, record=record, content_hash=content_hash,
+                        chunk_count=0, status="failed", error=message,
+                    )
+                conn.commit()
+            except Exception as status_exc:
+                logger.warning("Could not record corpus failure for %s: %s", record.source_uri, status_exc)
+            finally:
+                conn.close()
 
     stale_files_removed = 0
     if replace:

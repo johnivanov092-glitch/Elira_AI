@@ -676,10 +676,17 @@ def test_job_reconnects_to_logs_and_terminal_state_after_backend_restart(tmp_pat
     project = tmp_path / "project"
     project.mkdir()
     payload = project / "job_payload.py"
+    release = project / "job-release"
     payload.write_text(
         "import time\n"
+        "from pathlib import Path\n"
         "print('DURABLE_JOB_STARTED', flush=True)\n"
-        "time.sleep(1.0)\n"
+        "release = Path(__file__).with_name('job-release')\n"
+        "deadline = time.monotonic() + 20\n"
+        "while not release.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+        "if not release.exists():\n"
+        "    raise RuntimeError('Test did not release the recovered job')\n"
         "print('DURABLE_JOB_DONE', flush=True)\n",
         encoding="utf-8",
         newline="\n",
@@ -716,7 +723,7 @@ def test_job_reconnects_to_logs_and_terminal_state_after_backend_restart(tmp_pat
 
         recovery = recover_background_jobs()
         first = tool_run_server(Path({str(project)!r}), action="logs", pid={pid}, kind="job")
-        output_deadline = time.monotonic() + 0.6
+        output_deadline = time.monotonic() + 5
         while (
             first.get("status") == "running"
             and "DURABLE_JOB_STARTED" not in first.get("text", "")
@@ -724,7 +731,9 @@ def test_job_reconnects_to_logs_and_terminal_state_after_backend_restart(tmp_pat
         ):
             time.sleep(0.05)
             first = tool_run_server(Path({str(project)!r}), action="logs", pid={pid}, kind="job")
-        deadline = time.monotonic() + 8
+        # Let the real worker finish only after observing its recovered logs.
+        Path({str(release)!r}).touch()
+        deadline = time.monotonic() + 5
         final = first
         while final.get("status") == "running" and time.monotonic() < deadline:
             time.sleep(0.1)

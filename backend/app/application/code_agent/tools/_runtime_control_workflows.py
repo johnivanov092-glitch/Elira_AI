@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.application.code_agent.tools._runtime_control_contract import (
-    input_request,
     require_id,
 )
 
@@ -133,11 +132,7 @@ def workflow_control(
             candidate["workflow_id"] = workflow_id
         candidate["permission_mode"] = permission_mode
         if not candidate.get("workflow_id"):
-            raise input_request(
-                "Выберите Workflow для расписания.",
-                "workflow_id",
-                "ID Workflow",
-            )
+            raise ValueError("Provide workflow_id from workflow_list for the trigger")
         return {
             "ok": True,
             "trigger": store.upsert_workflow_trigger(

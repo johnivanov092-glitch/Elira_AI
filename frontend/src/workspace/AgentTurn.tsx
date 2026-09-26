@@ -1,11 +1,10 @@
 import { Brain, CheckCircle2, ChevronDown, Download, Loader2, RotateCcw, Volume2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
-import MarkdownRenderer from "../components/MarkdownRenderer";
+import MarkdownRenderer, { SourceCitationLink } from "../components/MarkdownRenderer";
 import { DownloadLink } from "../components/DownloadLink";
 import { AnswerMediaGallery } from "./AnswerMediaGallery";
 import { ToolCallGroup } from "./ToolCallGroup";
 import type { AnswerMediaItem, SourceCitation, CompletionStatus, CriterionState } from "../api/codeAgent";
-import { ExternalBrowserLink } from "../components/ExternalLink";
 import type { AgentTurnData } from "./types";
 import { deriveArtifacts } from "./artifacts";
 import { getAutoSpeak, speak, stop as stopSpeech } from "./voice";
@@ -112,11 +111,10 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
         <details className="mt-2 text-[12px] text-mut">
           <summary className="cursor-pointer">Источники ({turn.citations!.length})</summary>
           <p>Показаны полученные фрагменты. Соответствие вывода источнику автоматически не оценивалось.</p>
-          {turn.citations!.map((citation, index) => <div key={citation.source_id} className="mt-2">
-            {citation.status === "matched" && citation.source ? <>
-              <ExternalBrowserLink href={citation.source.url} className="md-link">[{index + 1}] {citation.source.title || citation.source.url}</ExternalBrowserLink>
-              <blockquote className="whitespace-pre-wrap">{citation.source.quote}</blockquote>
-            </> : <span>[{index + 1}] Источник не сопоставлен с полученными данными</span>}
+          {turn.citations!.map(citation => <div key={citation.source_id} className="mt-2">
+            <SourceCitationLink citation={citation} />
+            {citation.status === "matched" && citation.source &&
+              <blockquote className="whitespace-pre-wrap break-words">{citation.source.quote}</blockquote>}
           </div>)}
         </details>
       )}

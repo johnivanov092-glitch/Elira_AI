@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
+import pytest
+
 from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence
 from app.application.code_agent.taskspec import CriteriaTracker, TaskSpec
 
@@ -24,8 +29,19 @@ def _record(
     )
 
 
-def test_crm_verification_is_bound_to_latest_project_epoch() -> None:
+def _verification(target: Path, status: str = "passed") -> dict:
+    return {
+        "kind": "command_check", "status": status, "command": "python check.py",
+        "targets": [{"path": str(target), "sha256": hashlib.sha256(target.read_bytes()).hexdigest()}],
+        "checks": [{"name": "expected rows", "passed": status == "passed"}],
+        "report_path": str(target.with_suffix(".report.json")), "report_sha256": "a" * 64,
+    }
+
+
+def test_crm_verification_is_bound_to_latest_project_epoch(tmp_path: Path) -> None:
     evidence = RunEvidence()
+    target = tmp_path / "result.csv"
+    target.write_bytes(b"expected\n")
 
     _record(
         evidence,
@@ -40,9 +56,9 @@ def test_crm_verification_is_bound_to_latest_project_epoch() -> None:
 
     _record(
         evidence,
-        "run_bash",
-        args={"command": "npm test"},
-        output={"exit_code": 0},
+        "runtime_control",
+        args={"operation": "result_verify"},
+        output={"ok": True, "verification": _verification(target)},
         text="exit=0",
     )
     assert evidence.has_current_verification
@@ -61,9 +77,9 @@ def test_crm_verification_is_bound_to_latest_project_epoch() -> None:
 
     _record(
         evidence,
-        "run_bash",
-        args={"command": "npm test"},
-        output={"exit_code": 1},
+        "runtime_control",
+        args={"operation": "result_verify"},
+        output={"ok": False, "verification": _verification(target, "failed")},
         text="exit=1",
     )
     assert evidence.has_current_verification
@@ -80,6 +96,96 @@ def test_non_verifier_shell_command_does_not_create_verification_receipt() -> No
         text="exit=0",
     )
     assert not evidence.has_current_verification
+    assert not evidence.has_current_passing_verification
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("run_bash", {"command": "python check.py"}),
+    ("run_bash", {"command": "npm test"}),
+    ("run_server", {"action": "start", "command": "python app.py"}),
+    ("run_server", {"action": "logs", "pid": 1234}),
+    ("sandbox_run", {"code": "print(False)"}),
+    ("ssh_run", {"command": "echo ok"}),
+])
+def test_process_success_is_not_semantic_verification(tool: str, args: dict) -> None:
+    evidence = RunEvidence()
+    _record(evidence, tool, args=args,
+            output={"ok": True, "exit_code": 0, "verifier": True}, text="False\nERROR is a label")
+    assert not evidence.has_current_verification
+
+
+@pytest.mark.parametrize("status", ["failed", "unverified"])
+def test_later_check_revokes_prior_pass_even_at_same_epoch(tmp_path: Path, status: str) -> None:
+    target = tmp_path / "output.csv"
+    target.write_bytes(b"a,b\n")
+    evidence = RunEvidence()
+    _record(evidence, "runtime_control", args={"operation": "result_verify"},
+            output={"ok": True, "result": {"verification": _verification(target)}})
+    assert evidence.has_current_passing_verification
+    _record(evidence, "runtime_control", args={"operation": "result_verify"}, status="error",
+            output={"ok": False, "result": {"verification": _verification(target, status)}})
+    assert not evidence.has_current_passing_verification
+    assert evidence.receipts_of_kind(EvidenceKind.VERIFICATION)[-1].status == status
+
+
+def test_check_receipt_cannot_survive_out_of_band_target_edit(tmp_path: Path) -> None:
+    target = tmp_path / "output.csv"
+    target.write_bytes(b"a,b\n")
+    evidence = RunEvidence()
+    _record(evidence, "runtime_control", args={"operation": "result_verify"},
+            output={"ok": True, "verification": _verification(target)})
+    assert evidence.has_current_passing_verification
+    target.write_bytes(b"incorrect\n")
+    assert not evidence.has_current_passing_verification
+
+
+def test_typed_browser_verdict_survives_and_failed_verdict_revokes_it() -> None:
+    evidence = RunEvidence()
+    _record(evidence, "browser", args={"url": "http://localhost:8080"},
+            output={"ok": True, "verifier": True, "evidence": "Observed page title"})
+    assert evidence.has_current_passing_verification
+    _record(evidence, "browser", args={"url": "http://localhost:8080"}, status="error",
+            output={"ok": False, "verifier": True, "evidence": "Interaction did not complete"})
+    assert evidence.has_current_verification
+    assert not evidence.has_current_passing_verification
+
+
+def test_result_completion_requires_all_exact_current_targets(tmp_path: Path) -> None:
+    first, second = tmp_path / "normalized.csv", tmp_path / "summary.csv"
+    first.write_bytes(b"a,b\n")
+    second.write_bytes(b"b,a\n")
+    evidence = RunEvidence()
+    _record(evidence, "runtime_control", args={"operation": "result_verify"},
+            output={"ok": True, "result": {"verification": _verification(first)}})
+    _record(evidence, "path_exists", args={"path": str(second)},
+            output={"ok": True, "verifier": True})
+    assert evidence.has_passing_result_verification([str(first)])
+    assert not evidence.has_passing_result_verification([str(first), str(second)])
+    assert not evidence.has_passing_result_verification([])
+    assert not evidence.has_passing_result_verification([first.name])
+    _record(evidence, "runtime_control", args={"operation": "result_verify"},
+            output={"ok": True, "result": {"verification": _verification(second)}})
+    assert evidence.has_passing_result_verification([str(first), str(second)])
+    # Normalization is lexical, and doesn't allow a similarly named target.
+    alias = str(tmp_path / "nested" / ".." / first.name)
+    assert evidence.has_passing_result_verification([alias, str(second)])
+    _record(evidence, "runtime_control", args={"operation": "result_verify"}, status="error",
+            output={"ok": False, "result": {"verification": _verification(first, "unverified")}})
+    assert not evidence.has_passing_result_verification([str(first), str(second)])
+    assert evidence.has_passing_result_verification([str(second)])
+    second.write_bytes(b"new content\n")
+    assert not evidence.has_passing_result_verification([str(second)])
+
+
+@pytest.mark.parametrize("patch", [{"checks": []}, {"targets": []}, {"kind": "process_exit"},
+                                   {"report_sha256": ""},
+                                   {"checks": [{"name": "printed check", "passed": "True"}]}])
+def test_incomplete_or_stringified_verification_is_not_a_pass(tmp_path: Path, patch: dict) -> None:
+    target = tmp_path / "output.csv"
+    target.write_bytes(b"a,b\n")
+    evidence = RunEvidence()
+    _record(evidence, "runtime_control", args={"operation": "result_verify"},
+            output={"ok": True, "verification": {**_verification(target), **patch}})
     assert not evidence.has_current_passing_verification
 
 

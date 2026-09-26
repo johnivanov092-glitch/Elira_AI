@@ -50,8 +50,15 @@ if not exist "%BACKEND_PY%" (
 
 rem Managed releases inherit the same canonical env configuration as development.
 if exist "%REPO_ROOT%\.runtime\releases\enabled" (
+    echo [INFO] Starting the installed release: verifying files, then backend and desktop.
+    echo [INFO] This mode uses one launcher window. The first check can take a few seconds.
     "%BACKEND_PY%" "%REPO_ROOT%\scripts\elira_release.py" --platform "%REPO_ROOT%" run
-    exit /b
+    if errorlevel 1 (
+        echo [ERROR] Release startup failed. See the message above and .runtime\releases\logs.
+        pause
+        exit /b 1
+    )
+    exit /b 0
 )
 
 if not exist "node_modules" (

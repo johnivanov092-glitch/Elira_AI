@@ -7,10 +7,13 @@ creation) but verify real behavior end-to-end.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -141,6 +144,39 @@ class SandboxRuntimeTest(unittest.TestCase):
         )
         self.assertTrue(r2["ok"])
         self.assertIn("first run", r2["stdout"])
+        self.assertNotEqual(r1["source_path"], r2["source_path"])
+        self.assertEqual(Path(r1["source_path"]).read_text(encoding="utf-8"),
+                         "open('state.txt', 'w').write('first run')")
+
+    def test_concurrent_sources_and_receipts_preserve_run_ownership(self) -> None:
+        self.sandbox._ensure_sandbox(self.project_root)
+
+        def execute(marker: str) -> dict:
+            token = self.sandbox._CURRENT_RUN_ID.set(f"test-run-{marker}")
+            try:
+                return self.sandbox.run_in_sandbox(
+                    self.project_root,
+                    code=f"import time; time.sleep(0.05); print('{marker}')",
+                )
+            finally:
+                self.sandbox._CURRENT_RUN_ID.reset(token)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = list(pool.map(execute, ("first", "second")))
+        repeated = execute("first")
+        self.assertNotEqual(first["source_path"], second["source_path"])
+        self.assertEqual(first["source_path"], repeated["source_path"])
+        self.assertNotEqual(first["execution_id"], repeated["execution_id"])
+        for result, marker in ((first, "first"), (second, "second"), (repeated, "first")):
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["stdout"].strip(), marker)
+            self.assertEqual(result["run_id"], f"test-run-{marker}")
+            self.assertEqual(result["semantic_status"], "unverified")
+            self.assertEqual(result["execution_status"], "completed")
+            self.assertTrue(result["source_unchanged"])
+            self.assertEqual(hashlib.sha256(Path(result["source_path"]).read_bytes()).hexdigest(),
+                             result["source_sha256"])
+            self.assertEqual(json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8")), result)
 
     # ── reset ──────────────────────────────────────────────────
 
@@ -217,3 +253,20 @@ class SlugTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_sandbox_tool_preserves_execution_metadata_and_false_stdout(tmp_path, monkeypatch):
+    from app.application.code_agent import sandbox
+    from app.application.code_agent.tools._sandbox_tools import tool_sandbox_run
+
+    directory = tmp_path / "sandbox"
+    (directory / "work").mkdir(parents=True)
+    monkeypatch.setattr(sandbox, "_ensure_sandbox", lambda root: directory)
+    monkeypatch.setattr(sandbox, "_venv_python", lambda root: Path(sys.executable))
+    result = tool_sandbox_run(tmp_path, code="print(False)")
+    assert result["ok"] is True  # Truthful exit status, not a business verdict.
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == "False"
+    assert result["semantic_status"] == "unverified"
+    assert Path(result["source_path"]).is_file()
+    assert result["source_sha256"] in result["text"]

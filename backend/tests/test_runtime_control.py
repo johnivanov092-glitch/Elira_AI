@@ -42,13 +42,14 @@ class RuntimeControlContractTest(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "ValueError")
         self.assertFalse(result["error"]["retryable"])
 
-    def test_missing_scalar_returns_needs_input(self) -> None:
+    def test_missing_scalar_returns_model_error_without_workflow_request(self) -> None:
         result = tool_runtime_control(ROOT, operation="plugin_info")
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "needs_input")
-        self.assertEqual(result["request"]["kind"], "input")
-        self.assertIn("name", result["request"]["schema"]["required"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["code"], "ValueError")
+        self.assertIn("name", result["error"]["message"])
+        self.assertNotIn("request", result)
 
     def test_plaintext_credential_returns_needs_secret(self) -> None:
         result = tool_runtime_control(
@@ -61,6 +62,75 @@ class RuntimeControlContractTest(unittest.TestCase):
         self.assertEqual(result["status"], "needs_secret")
         self.assertTrue(result["request"]["sensitive"])
         self.assertNotIn("must-not-be-persisted", result["text"])
+
+    def test_missing_saved_object_ids_are_correctable_without_side_effects(self) -> None:
+        with (
+            patch("app.application.memory.facade.delete_fact") as delete,
+            patch("app.application.library.runtime.read_library_file") as read,
+            patch("app.application.workflows.store.init_db"),
+            patch("app.application.workflows.store.upsert_workflow_trigger") as upsert,
+        ):
+            for operation, field in (
+                ("memory_delete", "memory_id"),
+                ("library_read", "file_id"),
+                ("workflow_trigger_upsert", "workflow_id"),
+            ):
+                with self.subTest(operation=operation):
+                    result = tool_runtime_control(ROOT, operation=operation)
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["status"], "failed")
+                    self.assertEqual(result["error"]["code"], "ValueError")
+                    self.assertIn(field, result["error"]["message"])
+                    self.assertNotIn("request", result)
+            delete.assert_not_called()
+            read.assert_not_called()
+            upsert.assert_not_called()
+
+    def test_missing_mcp_id_returns_model_error_without_workflow_request(self) -> None:
+        with patch("app.application.tool_providers.mcp_runtime.save_servers") as save:
+            result = tool_runtime_control(
+                ROOT, operation="mcp_upsert", name="stock",
+                config={"command": "python", "args": ["stock_server.py"]},
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("server_id or config.id", result["error"]["message"])
+        self.assertNotIn("request", result)
+        save.assert_not_called()
+
+    def test_mcp_upsert_keeps_nonsecret_environment_settings(self) -> None:
+        settings = {"STOCK_BASE_URL": "http://127.0.0.1:54522", "MAX_TOKENS": "8192",
+                    "TOKENIZERS_PARALLELISM": "false", "OMP_NUM_THREADS": "6"}
+        with (
+            patch("app.application.tool_providers.mcp_runtime.list_servers", return_value=[]),
+            patch("app.application.tool_providers.mcp_runtime.save_servers",
+                  side_effect=lambda servers: servers) as save,
+        ):
+            result = tool_runtime_control(ROOT, operation="mcp_upsert", server_id="stock",
+                                          config={"command": "python", "env": settings})
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("request", result)
+        self.assertEqual(save.call_args.args[0][0]["env"], settings)
+
+    def test_mcp_upsert_credential_environment_still_requests_secret(self) -> None:
+        with patch("app.application.tool_providers.mcp_runtime.save_servers") as save:
+            result = tool_runtime_control(ROOT, operation="mcp_upsert", server_id="stock",
+                                          config={"command": "python", "env": {"STOCK_API_KEY": "canary-credential"}})
+        self.assertEqual(result["status"], "needs_secret")
+        self.assertNotIn("canary-credential", result["text"])
+        save.assert_not_called()
+
+    def test_invalid_mcp_replacement_does_not_drop_existing_server(self) -> None:
+        with (
+            patch("app.application.tool_providers.mcp_runtime.list_servers",
+                  return_value=[{"id": "stock", "command": "python", "args": ["existing.py"]}]),
+            patch("app.application.tool_providers.mcp_runtime.save_servers") as save,
+        ):
+            result = tool_runtime_control(ROOT, operation="mcp_upsert", server_id="stock",
+                                          config={"command": "python", "env": ["malformed"]})
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("request", result)
+        save.assert_not_called()
 
     def test_telegram_send_uses_the_typed_runtime(self) -> None:
         with (
@@ -191,7 +261,8 @@ class RuntimeControlContractTest(unittest.TestCase):
         add_fact.assert_called_once_with(
             "Моё имя Пётр.",
             category="fact",
-            source="user_correction",
+            source="agent_note",
+            source_ref="",
             importance=5,
             profile=None,
             replaces_id=42,
@@ -212,7 +283,8 @@ class RuntimeControlContractTest(unittest.TestCase):
         add_fact.assert_called_once_with(
             "Пользователь предпочитает берёзовый чай.",
             category="fact",
-            source="user_command",
+            source="agent_note",
+            source_ref="",
             importance=5,
             profile=None,
             replaces_id=None,
@@ -233,7 +305,7 @@ class RuntimeControlContractTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(add_fact.call_args.kwargs["source"], "user_command")
+        self.assertEqual(add_fact.call_args.kwargs["source"], "agent_note")
 
     def test_lsp_upsert_accepts_model_friendly_name_and_kind_aliases(self) -> None:
         with (

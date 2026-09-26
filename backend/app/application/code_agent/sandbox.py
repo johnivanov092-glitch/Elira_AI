@@ -29,11 +29,16 @@ API:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+import uuid
 import venv
 from pathlib import Path
 from typing import Any
@@ -54,7 +59,7 @@ from app.infrastructure.text import truncate_head as _truncate
 
 
 _SANDBOX_ROOT = DATA_DIR / "sandbox"
-_SCRIPT_NAME = "_agent_script.py"
+_SETUP_LOCK = threading.RLock()
 # Hard caps to keep tool output sane for the LLM context (lower limit
 # than the LLM-context cap because the agent already gets tool output
 # in raw form on its next turn — bigger means slower iterations).
@@ -93,13 +98,59 @@ def _ensure_sandbox(project_root: Path) -> Path:
     work_dir = sandbox / "work"
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    py = _venv_python(sandbox)
-    if not py.exists():
-        # `with_pip=True` is the default but spell it out so the failure
-        # mode is obvious if a system lacks ensurepip.
-        venv.create(sandbox / "venv", with_pip=True, clear=False, symlinks=False)
+    with _SETUP_LOCK:
+        py = _venv_python(sandbox)
+        if not py.exists():
+            # Parallel first executions must not build the same environment twice.
+            venv.create(sandbox / "venv", with_pip=True, clear=False, symlinks=False)
 
     return sandbox
+
+
+def _persist_source(sandbox: Path, code: str) -> tuple[Path, str]:
+    """Publish one complete content-addressed source; never replace an older one.
+
+    Executions reference these deduplicated files from the sandbox journal. Their
+    lifetime is the existing per-project sandbox lifetime, including sandbox_reset.
+    """
+    data = code.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    directory = sandbox / "sources"
+    directory.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError("Sandbox source directory must not be a symbolic link")
+    path = directory / f"{digest}.py"
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=".source-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            # A hard link publishes the complete file atomically without replacing
+            # another execution's source, even in a different backend process.
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+        if path.is_symlink() or path.read_bytes() != data:
+            raise ValueError(f"Sandbox source integrity mismatch: {path}")
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return path, digest
+
+
+def _write_execution_receipt(path: Path, result: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+            json.dump(result, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def run_in_sandbox(
@@ -132,6 +183,41 @@ def run_in_sandbox(
     started = time.monotonic()
     sandbox = _ensure_sandbox(root)
     work = sandbox / "work"
+    script_path, source_sha256 = _persist_source(sandbox, code or "")
+    execution_id = uuid.uuid4().hex
+    receipt_path = sandbox / "executions" / f"{execution_id}.json"
+    metadata = {
+        "source_path": str(script_path),
+        "source_sha256": source_sha256,
+        "execution_id": execution_id,
+        "run_id": _CURRENT_RUN_ID.get() or "",
+        "receipt_path": str(receipt_path),
+        "sandbox_path": str(sandbox),
+        "project_path": str(root),
+        "semantic_status": "unverified",
+    }
+    _write_execution_receipt(receipt_path, {**metadata, "execution_status": "preparing"})
+
+    def finish(result: dict[str, Any], execution_status: str) -> dict[str, Any]:
+        result.update(metadata)
+        result["execution_status"] = execution_status
+        try:
+            result["source_unchanged"] = (
+                not script_path.is_symlink()
+                and hashlib.sha256(script_path.read_bytes()).hexdigest() == source_sha256
+            )
+        except OSError:
+            result["source_unchanged"] = False
+        _write_execution_receipt(receipt_path, result)
+        return result
+
+    def start_failed(exc: OSError, stage: str) -> dict[str, Any]:
+        return finish({
+            "ok": False, "stdout": "", "stderr": str(exc), "exit_code": -1,
+            "took_seconds": round(time.monotonic() - started, 3),
+            "install_log": _truncate(install_log, _STDERR_LIMIT),
+            "error": f"{stage} could not start: {exc}",
+        }, "setup_failed" if stage == "pip install" else "not_started")
 
     install_log = ""
     if install:
@@ -140,13 +226,16 @@ def run_in_sandbox(
         # authorizes the operation.
         clean = [p.strip() for p in install if isinstance(p, str) and p.strip()]
         if clean:
-            proc, stdout, stderr, cancelled = _run_cancellable(
-                [str(_venv_pip(sandbox)), "install", "--disable-pip-version-check", "--quiet", *clean],
-                env=_agent_child_env(),
-            )
+            try:
+                proc, stdout, stderr, cancelled = _run_cancellable(
+                    [str(_venv_pip(sandbox)), "install", "--disable-pip-version-check", "--quiet", *clean],
+                    env=_agent_child_env(),
+                )
+            except OSError as exc:
+                return start_failed(exc, "pip install")
             install_log = decode_console(stdout) + decode_console(stderr)
             if cancelled:
-                return {
+                return finish({
                     "ok": False,
                     "stdout": "",
                     "stderr": "",
@@ -155,9 +244,9 @@ def run_in_sandbox(
                     "sandbox_path": str(sandbox),
                     "install_log": "",
                     "error": "pip install stopped by user",
-                }
+                }, "cancelled")
             if proc.returncode != 0:
-                return {
+                return finish({
                     "ok": False,
                     "stdout": "",
                     "stderr": "",
@@ -166,22 +255,22 @@ def run_in_sandbox(
                     "sandbox_path": str(sandbox),
                     "install_log": _truncate(install_log, _STDERR_LIMIT),
                     "error": f"pip install failed (exit {proc.returncode})",
-                }
-
-    script_path = sandbox / _SCRIPT_NAME
-    script_path.write_text(code or "", encoding="utf-8")
+                }, "setup_failed")
 
     # Use the same full current-token environment as run_bash, then layer the
     # UTF-8 knobs that keep print()/repr predictable cross-platform.
     env = {**_agent_child_env(), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
-    proc, stdout, stderr, cancelled = _run_cancellable(
-        [str(_venv_python(sandbox)), str(script_path)],
-        cwd=str(work),
-        env=env,
-    )
+    try:
+        proc, stdout, stderr, cancelled = _run_cancellable(
+            [str(_venv_python(sandbox)), str(script_path)],
+            cwd=str(work),
+            env=env,
+        )
+    except OSError as exc:
+        return start_failed(exc, "sandbox script")
     if cancelled:
-        return {
+        return finish({
             "ok": False,
             "stdout": _truncate(decode_console(stdout), _STDOUT_LIMIT),
             "stderr": _truncate(decode_console(stderr), _STDERR_LIMIT),
@@ -190,9 +279,9 @@ def run_in_sandbox(
             "sandbox_path": str(sandbox),
             "install_log": _truncate(install_log, _STDERR_LIMIT),
             "error": "sandbox run stopped by user",
-        }
+        }, "cancelled")
 
-    return {
+    return finish({
         "ok": proc.returncode == 0,
         "stdout": _truncate(decode_console(stdout), _STDOUT_LIMIT),
         "stderr": _truncate(decode_console(stderr), _STDERR_LIMIT),
@@ -200,7 +289,7 @@ def run_in_sandbox(
         "took_seconds": round(time.monotonic() - started, 3),
         "sandbox_path": str(sandbox),
         "install_log": _truncate(install_log, _STDERR_LIMIT),
-    }
+    }, "completed" if proc.returncode == 0 else "failed")
 
 
 def _run_cancellable(

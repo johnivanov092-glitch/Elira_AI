@@ -112,9 +112,7 @@ def secret_request(
 def require_id(value: str, name: str, title: str | None = None) -> str:
     normalized = str(value or "").strip()
     if not normalized:
-        raise input_request(
-            f"Укажите {title or name} для продолжения.",
-            name,
-            title or name,
-        )
+        # Missing tool arguments are model-correctable errors. A genuine need
+        # for user input is requested explicitly through the Workflow plane.
+        raise ValueError(f"Missing required argument: {name} ({title or name})")
     return normalized

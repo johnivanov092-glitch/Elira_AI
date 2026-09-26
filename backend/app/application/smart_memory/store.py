@@ -32,6 +32,7 @@ def init_memory_db() -> None:
                 text TEXT NOT NULL,
                 category TEXT NOT NULL DEFAULT 'fact',
                 source TEXT NOT NULL DEFAULT 'auto',
+                source_ref TEXT NOT NULL DEFAULT '',
                 importance INTEGER NOT NULL DEFAULT 5,
                 access_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -52,6 +53,9 @@ def init_memory_db() -> None:
                 "UPDATE memories SET profile_name = ? WHERE profile_name IS NULL OR TRIM(profile_name) = ''",
                 (DEFAULT_PROFILE,),
             )
+
+        if "source_ref" not in columns:
+            conn.execute("ALTER TABLE memories ADD COLUMN source_ref TEXT NOT NULL DEFAULT ''")
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_profile_cat ON memories(profile_name, category)"
@@ -74,8 +78,10 @@ def add_memory(
     importance: int = 5,
     profile_name: str | None = None,
     replaces_id: int | str | None = None,
+    source_ref: str = "",
 ) -> dict[str, Any]:
     from app.application.smart_memory.search import search_memory, similarity, tokenize
+    from app.application.memory.policy import is_user_memory_source
 
     normalized_profile = normalize_profile(profile_name)
     normalized_text = (text or "").strip()
@@ -85,7 +91,7 @@ def add_memory(
 
     existing = search_memory(normalized_text, limit=50, profile_name=normalized_profile)
     is_correction = source == "user_correction" or replaces_id is not None
-    correction_source = "user_correction" if replaces_id is not None else source
+    correction_source = "user_correction" if replaces_id is not None and is_user_memory_source(source) else source
     if is_correction:
         target: dict[str, Any] | None = None
         if replaces_id is not None:
@@ -128,28 +134,55 @@ def add_memory(
                     key=lambda pair: (pair[0], int(pair[1].get("importance") or 0)),
                 )
         if target is not None:
+            protected_origin = is_user_memory_source(
+                target.get("source"), allow_legacy_runtime_control=True,
+            )
+            if protected_origin and not is_user_memory_source(correction_source):
+                return {
+                    "ok": False,
+                    "error": (
+                        "An agent note cannot replace a stored user statement. Save your observation "
+                        "as a separate note without replaces_id; retain the original user fact."
+                    ),
+                    "profile_name": normalized_profile,
+                }
             previous_text = str(target.get("text") or "")
             conn = connect_memory_db()
             try:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     UPDATE memories
-                    SET text = ?, category = ?, source = ?, importance = ?,
+                    SET text = ?, category = ?, source = ?, source_ref = ?, importance = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND profile_name = ?
+                      AND text = ? AND category = ? AND source = ? AND source_ref = ?
                     """,
                     (
                         normalized_text,
                         category,
                         correction_source,
+                        source_ref,
                         max(1, min(int(importance), 10)),
                         target["id"],
                         normalized_profile,
+                        target["text"],
+                        target["category"],
+                        target["source"],
+                        target.get("source_ref", ""),
                     ),
                 )
                 conn.commit()
             finally:
                 conn.close()
+            if cursor.rowcount != 1:
+                return {
+                    "ok": False,
+                    "error": (
+                        "Memory changed or was deleted while saving. Read its current state with "
+                        "memory_search or memory_list, then retry using the current memory id."
+                    ),
+                    "profile_name": normalized_profile,
+                }
             return {
                 "ok": True,
                 "action": "corrected",
@@ -157,31 +190,50 @@ def add_memory(
                 "text": normalized_text,
                 "previous_text": previous_text,
                 "category": category,
+                "source": correction_source,
+                "source_ref": source_ref,
                 "profile_name": normalized_profile,
             }
 
     for item in existing.get("items", []):
+        stored_user_origin = is_user_memory_source(item.get("source"), allow_legacy_runtime_control=True)
+        new_user_origin = is_user_memory_source(source, allow_legacy_runtime_control=True)
+        if stored_user_origin != new_user_origin:
+            continue  # An agent repetition cannot reinforce or masquerade as a user fact.
         if similarity(normalized_text.lower(), item["text"].lower()) > 0.85:
             conn = connect_memory_db()
             try:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     UPDATE memories
                     SET importance = MIN(importance + 1, 10),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND profile_name = ?
+                      AND text = ? AND category = ? AND source = ? AND source_ref = ?
                     """,
-                    (item["id"], normalized_profile),
+                    (item["id"], normalized_profile, item["text"], item["category"],
+                     item["source"], item.get("source_ref", "")),
                 )
                 conn.commit()
             finally:
                 conn.close()
+            if cursor.rowcount != 1:
+                return {
+                    "ok": False,
+                    "error": (
+                        "Memory changed or was deleted while saving. Read its current state with "
+                        "memory_search or memory_list, then retry using the current memory id."
+                    ),
+                    "profile_name": normalized_profile,
+                }
             return {
                 "ok": True,
                 "action": "updated",
                 "id": item["id"],
-                "text": normalized_text,
+                "text": item["text"],
                 "category": item["category"],
+                "source": item["source"],
+                "source_ref": item.get("source_ref", ""),
                 "profile_name": normalized_profile,
             }
 
@@ -189,10 +241,10 @@ def add_memory(
     try:
         cur = conn.execute(
             """
-            INSERT INTO memories (profile_name, text, category, source, importance)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO memories (profile_name, text, category, source, source_ref, importance)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (normalized_profile, normalized_text, category, source, int(importance)),
+            (normalized_profile, normalized_text, category, source, source_ref, int(importance)),
         )
         mem_id = cur.lastrowid
         conn.commit()
@@ -205,6 +257,8 @@ def add_memory(
         "id": mem_id,
         "text": normalized_text,
         "category": category,
+        "source": source,
+        "source_ref": source_ref,
         "profile_name": normalized_profile,
     }
 

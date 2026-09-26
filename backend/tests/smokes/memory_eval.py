@@ -236,6 +236,7 @@ def run_memory_contracts(data_dir: Path) -> dict[str, Any]:
         smart_marker = "BACKUP_USER_MEMORY_MARKER"
         rag_marker = "BACKUP_PROJECT_CORPUS_MARKER"
         project_scope = project_scope_id(data_dir / "backup-project")
+        source_hash = "backup-content-hash"
         memory.add_fact(smart_marker, category="user_fact", source="user", importance=8)
         rag.add_to_rag(
             f"[file:src/main.py:1-1]\n{rag_marker}",
@@ -243,7 +244,7 @@ def run_memory_contracts(data_dir: Path) -> dict[str, Any]:
             importance=6,
             project=project_scope,
             source_uri="src/main.py",
-            source_hash="backup-source-hash",
+            source_hash=source_hash,
             metadata={"repo": "backup-project", "commit": "abc123", "language": "python"},
         )
         conn = rag._conn()
@@ -258,7 +259,7 @@ def run_memory_contracts(data_dir: Path) -> dict[str, Any]:
                 (
                     project_scope,
                     "src/main.py",
-                    "backup-content-hash",
+                    source_hash,
                     128,
                     123456,
                     1,
@@ -321,7 +322,7 @@ def run_memory_contracts(data_dir: Path) -> dict[str, Any]:
         _require(manifest is not None, "Project Corpus manifest was not restored")
         _require(
             tuple(manifest)
-            == ("backup-content-hash", 1, "indexed", "backup-project", "abc123", "python"),
+            == (source_hash, 1, "indexed", "backup-project", "abc123", "python"),
             f"Project Corpus manifest changed: {tuple(manifest) if manifest else None}",
         )
         vault.lock()

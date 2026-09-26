@@ -71,10 +71,12 @@ def memory_control(
             "текст факта",
         )
         replacement = memory_id if memory_id not in (None, "") else config.get("replaces_id")
+        from app.application.memory.tool_provenance import tool_memory_provenance
+
         return facade.add_fact(
             value,
             category=str(config.get("category") or "fact"),
-            source=("user_correction" if replacement is not None else "user_command"),
+            **tool_memory_provenance(value, correction=replacement is not None),
             importance=int(config.get("importance") or 5),
             profile=profile,
             replaces_id=replacement,
@@ -82,11 +84,7 @@ def memory_control(
     if operation == "memory_delete":
         mid = memory_id if memory_id not in (None, "") else config.get("memory_id")
         if mid in (None, ""):
-            raise input_request(
-                "Укажите запись памяти для удаления.",
-                "memory_id",
-                "ID записи памяти",
-            )
+            raise ValueError("Provide memory_id; discover saved entries with memory_list or memory_search")
         return facade.delete_fact(mid, profile=profile)
     if operation == "memory_prune":
         max_age_days = max(1, int(config.get("max_age_days") or 30))
@@ -169,11 +167,7 @@ def library_control(
     if operation == "library_read":
         file_id = config.get("file_id")
         if file_id in (None, ""):
-            raise input_request(
-                "Укажите файл Library для чтения.",
-                "file_id",
-                "ID файла Library",
-            )
+            raise ValueError("Provide config.file_id from library_list or library_search")
         return runtime.read_library_file(
             int(file_id),
             offset=max(0, int(config.get("offset") or 0)),

@@ -34,6 +34,14 @@ reference if the screenshot is moved.
   spacing density and icon style.
 - Existing responsive panel behavior and preview/settings overlays.
 
+User-approved activity slice, 2026-09-26: one neutral inline “Действия” disclosure
+shows the current action label and subtle animation during real execution.
+Tool-call counts, individual failures and diagnostic results appear only inside
+the expanded history. No separate tool-error card or red collapsed header is
+shown. Full arguments/results remain available on expansion. Reduced-motion
+preferences disable animation. The surrounding workspace geometry and theme
+stay intact.
+
 ## Allowed without separate visual approval
 
 - Backend-only changes.

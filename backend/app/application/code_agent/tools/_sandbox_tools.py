@@ -30,6 +30,8 @@ def tool_sandbox_run(
 
     parts: list[str] = []
     parts.append(f"[sandbox: {result['sandbox_path']}]")
+    parts.append(f"source={result['source_path']} sha256={result['source_sha256']}")
+    parts.append(f"execution={result['execution_id']} semantic_status=unverified")
     parts.append(f"exit={result['exit_code']}  took={result['took_seconds']}s")
     if result.get("error"):
         parts.append(f"ERROR: {result['error']}")
@@ -39,8 +41,9 @@ def tool_sandbox_run(
         parts.append(f"STDOUT:\n{result['stdout']}")
     if result.get("stderr"):
         parts.append(f"STDERR:\n{result['stderr']}")
-    ok = not result.get("error") and int(result.get("exit_code") or 0) == 0
+    ok = result.get("ok") is True and result.get("exit_code") == 0
     return {
+        **result,
         "ok": ok,
         "error": None if ok else "sandbox_failed",
         "text": "\n".join(parts),

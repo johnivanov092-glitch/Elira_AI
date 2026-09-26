@@ -981,6 +981,32 @@ def servers_list(run_id: Optional[str] = None) -> dict[str, Any]:
 # -- Sessions --------------------------------------------------------------
 
 
+class ChatFolderInitRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    state: session_store.ChatFolderState
+
+
+@router.get("/chat-folders")
+def read_chat_folders() -> dict[str, Any]:
+    return {"ok": True, "state": session_store.get_chat_folders()}
+
+
+@router.put("/chat-folders")
+def initialize_chat_folders(payload: ChatFolderInitRequest) -> dict[str, Any]:
+    return {"ok": True, "state": session_store.init_chat_folders(payload.state.model_dump())}
+
+
+@router.patch("/chat-folders")
+def update_chat_folders(payload: session_store.ChatFolderPatch) -> dict[str, Any]:
+    try:
+        state = session_store.patch_chat_folders(payload.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"folder not found: {exc.args[0]}") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return {"ok": True, "state": state}
+
+
 class SessionCreateRequest(BaseModel):
     title: Optional[str] = None
     project_root: Optional[str] = None

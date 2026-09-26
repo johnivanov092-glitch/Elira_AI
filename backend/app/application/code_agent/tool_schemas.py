@@ -137,7 +137,16 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "config={candidate_id,command}), then skill_publish(name,config={candidate_id}). "
                     "Publication records local Git history and atomically selects the checked package. "
                     "skill_load uses it immediately; skill_status/skill_rollback inspect/revert versions. "
+                    "skill_advisor_status inspects the learned recommendation model; "
+                    "skill_advisor_rollback(config={version}) restores a saved model version. "
                     "skill_discard(name,config={candidate_id}) removes a selected inactive candidate. "
+                    "For work that creates code, record task_decide(config={disposition:'one_off'|'reuse'|'develop', "
+                    "reason,skill_name,inputs:[paths],targets:[result paths]}). Qwen chooses whether "
+                    "a useful recurring capability should be saved; this decision is not a permission. "
+                    "Verify actual files with result_verify(config={command,targets:[paths],report_path}). "
+                    "The checker must freshly write JSON {checks:[{name,passed:boolean}]} to report_path "
+                    "and exit nonzero on a failed assertion. Printing False or process exit0 alone "
+                    "does not verify results. Reuse/update skills for recurring tasks, then verify their output. "
                     "Manage integration runtimes hidden behind Workflow UI. For long-term "
                     "user memory, use memory_search first and memory_list when search has no "
                     "matches; recall is project RAG, not user memory. Project Corpus indexing and "
@@ -160,6 +169,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                                 "status",
                                 "skill_list", "skill_load",
                                 "skill_create", "skill_check", "skill_publish", "skill_rollback", "skill_status", "skill_discard",
+                                "task_decide", "result_verify",
+                                "skill_advisor_status", "skill_advisor_rollback",
                                 "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
                                 "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
                                 "ssh_hosts", "ssh_set_hosts",
@@ -217,6 +228,17 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "object",
                             "description": (
                                 "Runtime config. "
+                                "task_decide: disposition one_off|reuse|develop, reason, skill_name "
+                                "(for reuse/develop), inputs and targets local file paths, not URLs. "
+                                "Optional delivery={mode:'none'|'chat_download',targets:[local paths]} "
+                                "declares files to deliver in this chat, not a download feature to implement. "
+                                "chat_download needs nonempty paths; none needs empty targets and an explained reason. "
+                                "Omitting delivery preserves the previous contract. Actual resource_publish attempts "
+                                "also require factual delivery evidence; none cannot turn their failure into success. "
+                                "Keep URLs in source evidence/SOURCES.md; save a response/document "
+                                "locally to bind its content as an input. report_path is also a local file path. "
+                                "result_verify: command, nonempty targets, report_path; checker writes "
+                                "fresh JSON {checks:[{name,passed:boolean}]} separately from targets. "
                                 "Skill development takes candidate_id from skill_create; skill_check "
                                 "also takes command (a real shell verification in the candidate directory). "
                                 "MCP secrets use env_secret_refs or "
@@ -229,7 +251,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                                 "patterns: string[] and replace: boolean. memory_recall defaults "
                                 "to the connected Project Corpus; config.project accepts a project "
                                 "path or an existing scope: ID. memory_add accepts its fact in the "
-                                "top-level query or config.fact. Library search returns file_id; "
+                                "top-level query or config.fact. Memory source/source_ref are server-owned: "
+                                "literal current user statements retain user provenance; paraphrases and "
+                                "agent conclusions are searchable agent_note entries, not user truth. "
+                                "Library search returns file_id; "
                                 "library_read uses config.file_id, offset and limit to read the full "
                                 "document page by page. library_import saves an attached durable "
                                 "resource using config.resource_id. Telegram send uses chat_id and "
@@ -525,17 +550,16 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "remember",
                 "description": (
-                    "Save a durable USER fact / correction into curated memory "
-                    "(the source of truth). Use when the user states a lasting fact "
-                    "to remember or CORRECTS you (e.g. 'на самом деле…', 'это "
-                    "неверно, правильно…', 'запомни, что…'). Such facts are "
-                    "auto-injected into future prompts and trusted above web/memory."
+                    "Save a durable note or correction. The server binds provenance to the "
+                    "current user request: preserve its exact wording for a user statement. "
+                    "Paraphrases and your own conclusions are stored as searchable agent notes. "
+                    "Saving a note is not verification of its contents or current system state."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "fact": {"type": "string", "description": "The fact/correction to remember, as a clear standalone statement."},
-                        "correction": {"type": "boolean", "description": "True if this fixes something you got wrong (highest trust). Default false."},
+                        "fact": {"type": "string", "description": "The note/correction. Preserve the user's literal statement when remembering their words."},
+                        "correction": {"type": "boolean", "description": "True to correct a saved note. This does not elevate its provenance or trust. Default false."},
                         "replaces_id": {
                             "oneOf": [{"type": "integer"}, {"type": "string"}],
                             "description": (

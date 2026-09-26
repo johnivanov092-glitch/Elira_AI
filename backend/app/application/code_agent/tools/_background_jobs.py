@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.application.code_agent.command_progress import command_digest
 from app.core.data_files import data_subdir
 from app.core.redaction import redact_text
 
@@ -244,6 +245,7 @@ def prepare_job(
         "pid": 0,
         "process_identity": None,
         "command": redact_text(command),
+        "command_sha256": command_digest(command, argv=command_argv),
         "cwd": str(cwd.resolve()),
         "log_path": str(log_path.resolve()),
         "spec_path": str(spec_path.resolve()),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import patch
 
 import pytest
@@ -7,12 +8,24 @@ import pytest
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.capabilities import (
     is_local_tabular_catalog_probe,
-    requires_bom_validation,
     route_request_capabilities,
     should_require_local_catalog_search,
     should_escalate_web_after_failure,
     should_escalate_web_from_answer,
 )
+
+
+def _publication_fixture(project, name):
+    """Real bound bytes for tests that stub document rendering/provider results."""
+    from app.core.config import GENERATED_DIR
+
+    data = f"fixture for {name}\n".encode()
+    (project / name).write_bytes(data)
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    (GENERATED_DIR / name).write_bytes(data)
+    return {"ok": True, "text": f"Published {name}", "project_path": name,
+            "download_url": f"/api/skills/download/{name}", "download_name": name,
+            "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def _valid_bom_result() -> dict:
@@ -48,7 +61,7 @@ def test_infrastructure_route_preloads_typed_ssh_itops_and_web_evidence() -> Non
     assert decision.evidence_reasons
 
 
-def test_download_request_preloads_resources_and_marks_delivery_contract() -> None:
+def test_download_request_suggests_resources_without_declaring_delivery() -> None:
     decision = route_request_capabilities(
         "Создай PDF и дай мне файл для скачивания",
         domain_policy="Деловой",
@@ -78,23 +91,56 @@ def test_external_link_does_not_require_artifact_publication(message: str) -> No
     "Create a PDF and give me a link",
     "Give me a link to the generated PDF",
 ])
-def test_generated_file_link_keeps_artifact_delivery_contract(message: str) -> None:
+def test_generated_file_link_keeps_resource_hint(message: str) -> None:
     decision = route_request_capabilities(message)
 
     assert decision.download_requested is True
     assert "resources" in decision.capability_groups
 
 
-@pytest.mark.parametrize(("message", "expected"), [
-    ("Сделай КП по прайсу", True),
-    ("Сделай кп по catalog.csv", True),
-    ("Сделай КП по скриншотам", False),
-    ("Проверь прайс КПП", False),
+@pytest.mark.parametrize("message", [
+    "Сделай КП по прайсу",
+    "Сделай кп по catalog.csv",
+    "Создай CSV в UTF-8 без BOM",
+    "Обработай CSV в UTF-16 с BOM",
 ])
-def test_abbreviated_quote_requires_bom_only_with_catalog(
-    message: str, expected: bool,
-) -> None:
-    assert requires_bom_validation(message) is expected
+def test_request_words_do_not_select_commercial_bom_validation(message: str) -> None:
+    decision = route_request_capabilities(message)
+
+    assert "data" not in decision.capability_groups
+    assert decision.preflight == {"source": "main_agent"}
+
+
+@pytest.mark.parametrize("encoding", ["UTF-8 без BOM", "UTF-16 с BOM"])
+def test_csv_encoding_bom_does_not_block_publication_or_replace_answer(tmp_path, encoding) -> None:
+    responses = iter([
+        {"message": {"content": "", "tool_calls": [{"function": {
+            "name": "resource_publish",
+            "arguments": {"project_path": "transactions.csv"},
+        }}]}},
+        {"message": {"content": "CSV доступен для скачивания.", "tool_calls": []}},
+    ])
+    with patch(
+        "app.application.code_agent.tools._dispatch.tool_resource_publish",
+        return_value=_publication_fixture(tmp_path, "transactions.csv"),
+    ):
+        events = list(stream_code_agent(
+            user_message=f"Обработай банковский CSV и дай файл для скачивания: {encoding}.",
+            project_root=tmp_path,
+            run_id="csv-encoding-bom",
+            chat_fn=lambda **_kwargs: next(responses),
+            auto_remember=False,
+            permission_mode="bypass",
+        ))
+
+    published = next(
+        event for event in events
+        if event.get("type") == "tool_call" and event.get("tool") == "resource_publish"
+    )
+    final = next(event for event in events if event.get("type") == "final_response")
+    assert published["ok"] is True
+    assert final["text"] == "CSV доступен для скачивания."
+    assert final["answer_status"] == "complete"
 
 
 def test_library_text_cannot_require_unsolicited_download(tmp_path) -> None:
@@ -252,30 +298,6 @@ def test_local_catalog_absence_requires_library_search_before_finalizing(tmp_pat
                 "tool_calls": [],
             },
         },
-        {
-            "message": {
-                "content": "",
-                "tool_calls": [{
-                    "function": {
-                        "name": "bom_validate",
-                        "arguments": {
-                            "catalog_path": "azerti_price.xlsx",
-                            "code_column": "code",
-                            "name_column": "name",
-                            "price_column": "price",
-                            "stock_column": "stock",
-                            "items": [{"code": "NX400", "quantity": 1}],
-                        },
-                    },
-                }],
-            },
-        },
-        {
-            "message": {
-                "content": "Нашёл локально Montech NX400 и добавил его в BOM.",
-                "tool_calls": [],
-            },
-        },
     ])
     prompts: list[list[dict[str, object]]] = []
 
@@ -291,8 +313,8 @@ def test_local_catalog_absence_requires_library_search_before_finalizing(tmp_pat
                 "text": "===== CPU coolers (0) =====",
             },
         ),
-            patch(
-                "app.application.code_agent.tools._dispatch.tool_runtime_control",
+        patch(
+            "app.application.code_agent.tools._dispatch.tool_runtime_control",
             return_value={
                 "ok": True,
                 "status": "completed",
@@ -304,13 +326,9 @@ def test_local_catalog_absence_requires_library_search_before_finalizing(tmp_pat
                         "excerpt": "Вентилятор для процессора Montech NX400",
                     }],
                 },
-                },
-            ),
-            patch(
-                "app.application.code_agent.tools._dispatch.tool_bom_validate",
-                return_value=_valid_bom_result(),
-            ),
-        ):
+            },
+        ),
+    ):
         events = list(stream_code_agent(
             user_message="Собери компьютер по локальному XLSX-прайсу",
             project_root=tmp_path,
@@ -320,9 +338,8 @@ def test_local_catalog_absence_requires_library_search_before_finalizing(tmp_pat
             permission_mode="bypass",
         ))
 
-    assert len(prompts) == 6
+    assert len(prompts) == 4
     assert "internal local-catalog correction" in str(prompts[2][-1]["content"])
-    assert "internal BOM correction" in str(prompts[4][-1]["content"])
     assert any(
         event.get("type") == "tool_call"
         and event.get("tool") == "runtime_control"
@@ -330,8 +347,7 @@ def test_local_catalog_absence_requires_library_search_before_finalizing(tmp_pat
         for event in events
     )
     final = next(event for event in events if event.get("type") == "final_response")
-    assert "Канонический итог: 1000.00" in final["text"]
-    assert "Montech NX400" not in final["text"]
+    assert final["text"] == "Нашёл локально Montech NX400 и добавил его в BOM."
 
 
 def test_local_catalog_correction_is_sent_only_once(tmp_path) -> None:
@@ -389,6 +405,17 @@ def test_local_catalog_correction_is_sent_only_once(tmp_path) -> None:
 
 def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
     responses = iter([
+        {"message": {"content": "", "tool_calls": [{"function": {
+            "name": "bom_validate",
+            "arguments": {
+                "catalog_path": "price.xlsx",
+                "code_column": "code",
+                "name_column": "name",
+                "price_column": "price",
+                "stock_column": "stock",
+                "items": [{"code": "CPU-1", "quantity": 1}],
+            },
+        }}]}},
         {
             "message": {
                 "content": "",
@@ -433,14 +460,9 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
                 "content": "",
                 "tool_calls": [{
                     "function": {
-                        "name": "bom_validate",
+                        "name": "web_fetch",
                         "arguments": {
-                            "catalog_path": "price.xlsx",
-                            "code_column": "code",
-                            "name_column": "name",
-                            "price_column": "price",
-                            "stock_column": "stock",
-                            "items": [{"code": "CPU-1", "quantity": 1}],
+                            "url": "https://vendor.example/cooler",
                         },
                     },
                 }],
@@ -474,6 +496,14 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
             return_value={"ok": True, "text": "https://vendor.example/cooler — in stock"},
         ),
         patch(
+            "app.application.code_agent.tools._dispatch.tool_web_fetch",
+            return_value={
+                "ok": True,
+                "url": "https://vendor.example/cooler",
+                "text": "CPU cooler for LGA1700 — in stock, price 5000 KZT",
+            },
+        ),
+        patch(
             "app.application.code_agent.tools._dispatch.tool_bom_validate",
             return_value=_valid_bom_result(),
         ),
@@ -487,8 +517,8 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
             permission_mode="bypass",
         ))
 
-    assert "internal local-catalog correction" in str(prompts[2][-1]["content"])
-    assert any("internal catalog Web fallback" in str(m.get("content", "")) for m in prompts[4])
+    assert "internal local-catalog correction" in str(prompts[3][-1]["content"])
+    assert any("internal catalog Web fallback" in str(m.get("content", "")) for m in prompts[5])
     assert any(
         event.get("type") == "runtime_activation_changed"
         and event.get("source") == "catalog_absence_fallback"
@@ -502,6 +532,12 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
 
 def test_download_request_cannot_finish_before_resource_publish(tmp_path) -> None:
     responses = iter([
+        {"message": {"content": "", "tool_calls": [{"function": {
+            "name": "runtime_control", "arguments": {"operation": "task_decide", "config": {
+                "disposition": "one_off", "reason": "Выдать пользователю готовый PDF",
+                "delivery": {"mode": "chat_download", "targets": ["report.pdf"]},
+            }},
+        }}]}},
         {"message": {"content": "Файл готов.", "tool_calls": []}},
         {
             "message": {
@@ -526,15 +562,7 @@ def test_download_request_cannot_finish_before_resource_publish(tmp_path) -> Non
         return next(responses)
 
     def fake_publish(_project_root, **_kwargs):
-        return {
-            "ok": True,
-            "text": "Published report.pdf",
-            "project_path": "report.pdf",
-            "download_url": "/api/skills/download/report.pdf",
-            "download_name": "report.pdf",
-            "size": 12,
-            "sha256": "a" * 64,
-        }
+        return _publication_fixture(tmp_path, "report.pdf")
 
     with patch(
         "app.application.code_agent.tools._dispatch.tool_resource_publish",
@@ -549,8 +577,8 @@ def test_download_request_cannot_finish_before_resource_publish(tmp_path) -> Non
             permission_mode="bypass",
         ))
 
-    assert len(prompts) == 3
-    assert "internal delivery correction" in str(prompts[1][-1]["content"])
+    assert len(prompts) == 4
+    assert "internal delivery correction" in str(prompts[2][-1]["content"])
     published = next(
         event for event in events
         if event.get("type") == "tool_call" and event.get("tool") == "resource_publish"
@@ -562,7 +590,6 @@ def test_download_request_cannot_finish_before_resource_publish(tmp_path) -> Non
 
 def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) -> None:
     responses = iter([
-        {"message": {"content": "Файл готов.", "tool_calls": []}},
         {
             "message": {
                 "content": "",
@@ -575,6 +602,7 @@ def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) ->
             },
         },
         {"message": {"content": "Скачайте готовый файл.", "tool_calls": []}},
+        {"message": {"content": "Остальная работа сохранена. Скачайте готовый файл.", "tool_calls": []}},
     ])
 
     def fake_chat(**_kwargs):
@@ -596,8 +624,10 @@ def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) ->
     final = next(event for event in events if event.get("type") == "final_response")
     done = next(event for event in events if event.get("type") == "done")
     assert final["answer_status"] == "degraded"
-    assert "кнопка скачивания не создана" in final["text"]
-    assert "Скачайте готовый файл" not in final["text"]
+    assert "Публикация для скачивания не подтверждена" in final["text"]
+    assert "missing.pdf" in final["text"]
+    assert "Остальная работа сохранена" in final["text"]
+    assert not final["task_outcome"]["decision"]  # No prior declaration/keyword gate.
     assert done["answer_status"] == "degraded"
 
 
@@ -636,15 +666,7 @@ def test_unverified_document_qa_claim_is_replaced_by_runtime_backstop(tmp_path, 
 
     with patch(
         "app.application.code_agent.tools._dispatch.tool_resource_publish",
-        return_value={
-            "ok": True,
-            "text": "Published proposal.docx",
-            "project_path": "proposal.docx",
-            "download_url": "/api/skills/download/proposal.docx",
-            "download_name": "proposal.docx",
-            "size": 123,
-            "sha256": "a" * 64,
-        },
+        return_value=_publication_fixture(tmp_path, "proposal.docx"),
     ):
         events = list(stream_code_agent(
             user_message="Создай DOCX и дай файл для скачивания",
@@ -689,15 +711,10 @@ def test_user_page_count_contract_overrides_model_omission(tmp_path) -> None:
 
     def fake_publish(_project_root, **kwargs):
         captured.update(kwargs)
-        sha256 = "f" * 64
+        result = _publication_fixture(tmp_path, "proposal.docx")
+        sha256 = result["sha256"]
         return {
-            "ok": True,
-            "text": "Published proposal.docx",
-            "project_path": "proposal.docx",
-            "download_url": "/api/skills/download/proposal.docx",
-            "download_name": "proposal.docx",
-            "size": 123,
-            "sha256": sha256,
+            **result,
             "document_qa": {
                 "status": "passed",
                 "sha256": sha256,

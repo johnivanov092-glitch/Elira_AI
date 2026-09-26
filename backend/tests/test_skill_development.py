@@ -14,6 +14,39 @@ from app.application.code_agent.tools import _shell
 from app.application.code_agent.tools._runtime_control import tool_runtime_control
 
 
+def test_failed_skill_check_preserves_actionable_checker_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
+    name = "checker-feedback"
+    created = tool_runtime_control(tmp_path, operation="skill_create", name=name)["result"]
+    directory = Path(created["directory"])
+    (directory / "SKILL.md").write_text(
+        "---\nname: checker-feedback\ndescription: Проверка результата обработки.\n---\n"
+        "Выполни check.py и исправь обнаруженные несовпадения.\n",
+        encoding="utf-8", newline="\n",
+    )
+    (directory / "check.py").write_text(
+        "import sys\n"
+        "print('row 7: expected signed quantity -2.000; got +2.000')\n"
+        "print('AssertionError: return sign mismatch', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    result = tool_runtime_control(tmp_path, operation="skill_check", name=name, config={
+        "candidate_id": created["candidate_id"], "command": f'"{sys.executable}" check.py',
+    })
+
+    assert result["ok"] is False and result["status"] == "failed"
+    assert result["error"]["message"] == "nonzero_exit"
+    assert result["result"]["verification"]["exit_code"] == 1
+    assert result["result"]["candidate_id"] == created["candidate_id"]
+    # The serialized model-visible result must include both diagnostic streams.
+    assert "expected signed quantity -2.000; got +2.000" in result["text"]
+    assert "AssertionError: return sign mismatch" in result["text"]
+    assert "STDOUT:" in result["text"] and "STDERR:" in result["text"]
+
+
 def test_real_skill_lifecycle_keeps_active_version_until_verified_replacement(tmp_path, monkeypatch):
     monkeypatch.setattr(development, "ROOT", tmp_path / "development")
     monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
@@ -178,3 +211,186 @@ def test_real_skill_lifecycle_keeps_active_version_until_verified_replacement(tm
     assert tool_runtime_control(tmp_path, operation="skill_check", name=other_name, config=config)["ok"]
     assert not tool_runtime_control(tmp_path, operation="skill_publish", name=other_name, config=config)["ok"]
     assert list(outside.iterdir()) == []
+
+
+def _recovery_fixture(tmp_path, monkeypatch, *, dependency=False):
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
+    name = "source-recovery"
+
+    def call(operation, **config):
+        return tool_runtime_control(tmp_path, operation=operation, name=name, config=config)
+
+    created = call("skill_create")["result"]
+    directory = Path(created["directory"])
+    (directory / "SKILL.md").write_text(
+        "---\nname: source-recovery\ndescription: Compute a checked signed quantity.\n---\n"
+        "Run engine.py and verify its result with check.py.\n", encoding="utf-8", newline="\n")
+    (directory / "engine.py").write_text(
+        "def net(shipped, returned):\n    return shipped - returned\n", encoding="utf-8", newline="\n")
+    (directory / "obsolete.txt").write_text("old reference\n", encoding="utf-8", newline="\n")
+    (directory / ".gitattributes").write_text("*.bin filter=unused text\n", encoding="utf-8", newline="\n")
+    check = "from engine import net\nassert net(7, 2) == 5\nassert net(2, 7) == -5\n"
+    if dependency:
+        (directory / ".venv").mkdir()
+        (directory / ".venv/dependency.dat").write_bytes(b"verified dependency\0")
+        check += "from pathlib import Path\nassert Path('.venv/dependency.dat').read_bytes() == b'verified dependency\\0'\n"
+    (directory / "check.py").write_text(check, encoding="utf-8", newline="\n")
+    command = f'"{sys.executable}" check.py'
+    assert call("skill_check", candidate_id=created["candidate_id"], command=command)["ok"]
+    publication = call("skill_publish", candidate_id=created["candidate_id"])
+    assert publication["ok"], publication
+    return name, call, directory, publication["result"], command
+
+
+def test_changed_publication_reports_exact_saved_revision_and_recovers_unverified_copy(tmp_path, monkeypatch):
+    name, call, directory, published, command = _recovery_fixture(tmp_path, monkeypatch)
+    active_path = development.ROOT / "active.json"
+    active_before = active_path.read_bytes()
+    receipt_path = development.ROOT / "receipts" / f"{published['candidate_id']}.json"
+    receipt_before = receipt_path.read_bytes()
+    (directory / "engine.py").write_text(
+        "def net(shipped, returned):\n    return sum((shipped, -returned))\n", encoding="utf-8", newline="\n")
+    (directory / "obsolete.txt").unlink()
+    (directory / "verify_csv.py").write_text("assert 2 + 2 == 4\n", encoding="utf-8", newline="\n")
+    added = {"verify_csv.py"}
+    for index in range(12):
+        filename = f"данные-{index:02}.bin"
+        added.add(filename)
+        (directory / filename).write_bytes(bytes([index, 0, 255, 13, 10]))
+    # An interrupted later publication may have advanced HEAD; compare against
+    # the receipt's revision, including binary source and literal attributes.
+    repository = development.ROOT / "history" / name
+    (repository / "package/engine.py").write_bytes((directory / "engine.py").read_bytes())
+    development._git(repository, "add", "--force", "--", "package/engine.py")
+    development._git(repository, "commit", "-m", "Unactivated history head")
+    assert development._git(repository, "rev-parse", "HEAD") != published["revision"]
+
+    with pytest.raises(development.PackageChanged) as failure:
+        development.active_package(name)
+    message = str(failure.value)
+    assert "skill_create" in message and str(repository) in message and published["revision"] in message
+    assert "данные-11.bin" not in message  # Bounded error; status holds all paths.
+    assert len(message) < 2500
+    status = call("skill_status")["result"]["integrity"]
+    assert status["ok"] is False and status["source_diff"]["status"] == "available"
+    assert set(status["source_diff"]["added"]) == added
+    assert status["source_diff"]["changed"] == ["engine.py"]
+    assert status["source_diff"]["deleted"] == ["obsolete.txt"]
+    old_digest = development._digest(directory)
+    recovered = call("skill_create")["result"]
+    candidate = Path(recovered["directory"])
+    assert recovered["source"]["candidate_id"] == published["candidate_id"]
+    assert recovered["source"]["revision"] == published["revision"]
+    assert recovered["source"]["integrity"] == "modified" and "UNVERIFIED" in recovered["warning"]
+    receipt = json.loads((development.ROOT / "receipts" / f"{recovered['candidate_id']}.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "candidate" and not {"sha256", "revision", "check"} & receipt.keys()
+    assert development._digest(candidate, include_dependencies=False) == recovered["source"]["observed_source_sha256"]
+    assert development._digest(directory) == old_digest
+    assert receipt_path.read_bytes() == receipt_before and active_path.read_bytes() == active_before
+    assert not task_skills.skill_control("skill_load", name)["ok"]
+    assert not call("skill_publish", candidate_id=recovered["candidate_id"])["ok"]
+    assert call("skill_check", candidate_id=recovered["candidate_id"], command=command)["ok"]
+    assert call("skill_publish", candidate_id=recovered["candidate_id"])["ok"]
+    assert task_skills.skill_control("skill_load", name)["skill"]["directory"] == str(candidate)
+    assert development._digest(directory) == old_digest
+    assert "previous" not in json.loads(active_path.read_text(encoding="utf-8"))[name]
+
+
+def test_dependency_only_drift_is_distinct_and_does_not_copy_a_verified_environment(tmp_path, monkeypatch):
+    name, call, first_directory, first_publication, command = _recovery_fixture(tmp_path, monkeypatch, dependency=True)
+    second = call("skill_create")["result"]
+    directory = Path(second["directory"])
+    (directory / ".venv").mkdir()
+    (directory / ".venv/dependency.dat").write_bytes(b"verified dependency\0")
+    (directory / "improvement.txt").write_text("second revision\n", encoding="utf-8", newline="\n")
+    assert call("skill_check", candidate_id=second["candidate_id"], command=command)["ok"]
+    published = call("skill_publish", candidate_id=second["candidate_id"])["result"]
+    second_receipt = development.ROOT / "receipts" / f"{second['candidate_id']}.json"
+    receipt_before = second_receipt.read_bytes()
+    dependency = directory / ".venv/dependency.dat"
+    dependency.write_bytes(b"modified dependency\0")
+    status = call("skill_status")["result"]["integrity"]
+    diff = status["source_diff"]
+    assert diff["status"] == "available" and all(not diff[kind] for kind in ("added", "changed", "deleted"))
+    with pytest.raises(development.PackageChanged, match="Git source is unchanged; installed dependencies or file metadata differ"):
+        development.active_package(name)
+    recovered = call("skill_create")["result"]
+    candidate = Path(recovered["directory"])
+    assert not (candidate / ".venv").exists()
+    assert recovered["source"]["verified_package_sha256"] == published["sha256"]
+    assert recovered["source"]["observed_package_sha256"] != published["sha256"]
+    assert not call("skill_check", candidate_id=recovered["candidate_id"], command=command)["ok"]
+    assert not call("skill_publish", candidate_id=recovered["candidate_id"])["ok"]
+    (candidate / ".venv").mkdir()
+    (candidate / ".venv/dependency.dat").write_bytes(b"verified dependency\0")
+    assert call("skill_check", candidate_id=recovered["candidate_id"], command=command)["ok"]
+    assert call("skill_publish", candidate_id=recovered["candidate_id"])["ok"]
+    assert task_skills.skill_control("skill_load", name)["skill"]["directory"] == str(candidate)
+    assert dependency.read_bytes() == b"modified dependency\0"
+    assert second_receipt.read_bytes() == receipt_before
+    state = json.loads((development.ROOT / "active.json").read_text(encoding="utf-8"))[name]
+    assert state["previous"]["candidate_id"] == first_publication["candidate_id"]
+    assert "previous" not in state["previous"]
+    assert call("skill_rollback")["ok"]
+    assert task_skills.skill_control("skill_load", name)["skill"]["directory"] == str(first_directory)
+    assert dependency.read_bytes() == b"modified dependency\0"
+    assert second_receipt.read_bytes() == receipt_before
+
+
+def test_recovery_rejects_invalid_identity_redirect_and_copy_race_and_reports_missing_history(tmp_path, monkeypatch):
+    name, call, directory, published, _command = _recovery_fixture(tmp_path, monkeypatch)
+    active_path = development.ROOT / "active.json"
+    active_before = active_path.read_bytes()
+    active = json.loads(active_before)
+    active[name]["sha256"] = "0" * 64
+    active_path.write_text(json.dumps(active), encoding="utf-8", newline="\n")
+    before_directories = sorted(directory.parent.iterdir())
+    assert not call("skill_create")["ok"]
+    assert sorted(directory.parent.iterdir()) == before_directories
+    active_path.write_bytes(active_before)
+
+    outside = tmp_path / "external.py"
+    outside.write_text("external = True\n", encoding="utf-8", newline="\n")
+    redirect = directory / "redirect.py"
+    try:
+        redirect.symlink_to(outside)
+    except OSError:
+        pass  # Windows without symlink privilege still tests identity and race.
+    else:
+        assert not call("skill_create")["ok"]
+        assert sorted(directory.parent.iterdir()) == before_directories
+        assert outside.read_text(encoding="utf-8") == "external = True\n"
+        redirect.unlink()
+
+    (directory / "added.py").write_text("value = 1\n", encoding="utf-8", newline="\n")
+    repository = development.ROOT / "history" / name
+    saved_history = repository.with_name(name + "-saved")
+    repository.rename(saved_history)
+    try:
+        missing = call("skill_status")["result"]["integrity"]["source_diff"]
+        assert missing["status"] == "unavailable" and "added" not in missing
+        assert str(repository) == missing["repository"]
+    finally:
+        saved_history.rename(repository)
+    original_copy = development.shutil.copy2
+    changed = False
+
+    def race(source, destination):
+        nonlocal changed
+        result = original_copy(source, destination)
+        if not changed:
+            changed = True
+            with (directory / "engine.py").open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write("# concurrently modified\n")
+        return result
+
+    receipts_before = sorted((development.ROOT / "receipts").iterdir())
+    with monkeypatch.context() as scope:
+        scope.setattr(development.shutil, "copy2", race)
+        failed = call("skill_create")
+    assert failed["ok"] is False and "Source changed while copying" in failed["error"]["message"]
+    assert sorted(directory.parent.iterdir()) == before_directories
+    assert sorted((development.ROOT / "receipts").iterdir()) == receipts_before
+    assert active_path.read_bytes() == active_before
+    assert not task_skills.skill_control("skill_load", name)["ok"]

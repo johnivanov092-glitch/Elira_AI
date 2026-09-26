@@ -119,16 +119,6 @@ _LOCAL_CATALOG_ABSENCE_RE = re.compile(
     r"\b(?:price\s*list|catalog|spreadsheet)\b)",
     re.IGNORECASE | re.UNICODE,
 )
-_BOM_SOURCE_RE = re.compile(
-    r"(?:\b(?:xlsx|xlsm|csv|price\s*list|catalog)\b|прайс\w*|каталог\w*)",
-    re.IGNORECASE,
-)
-_BOM_DELIVERABLE_RE = re.compile(
-    r"(?:\b(?:BOM|КП)\b|спецификац\w*|коммерческ\w*\s+предлож\w*|"
-    r"(?:собер|сборк)\w*[^\n.!?]{0,100}(?:компьютер|пк)|"
-    r"(?:компьютер|пк)[^\n.!?]{0,100}(?:собер|сборк)\w*)",
-    re.IGNORECASE,
-)
 _EXTERNAL_FAILURE_TOOLS = frozenset({
     "web_fetch", "http_api", "browser", "ssh_run",
     "ssh_run_ps", "itops_mikrotik_inventory", "itops_network_inventory",
@@ -145,13 +135,13 @@ _EXTERNAL_FAILURE_RE = re.compile(
 
 @dataclass(frozen=True)
 class RequestCapabilityRoute:
-    """Explicit compatibility hints and deterministic user delivery contracts."""
+    """Compatibility hints; only the main agent can declare task delivery."""
 
     domain_policies: tuple[str, ...]
     capability_groups: frozenset[str]
     include_itops: bool
     include_ssh: bool
-    download_requested: bool
+    download_requested: bool  # Legacy name: a hint, never a completion gate.
     evidence_reasons: tuple[str, ...]
     preflight: dict[str, object] = field(default_factory=dict)
 
@@ -162,7 +152,7 @@ def route_request_capabilities(
     domain_policy: str = "Баланс",
     conversation_history: list[dict[str, object]] | None = None,
 ) -> RequestCapabilityRoute:
-    """Preserve explicit delivery contracts; the main agent interprets intent.
+    """Offer compatibility hints; the main agent interprets intent.
 
     No separate model call or semantic regex router runs here. Qwen receives
     the conversation and chooses tools through the existing capability catalog.
@@ -175,8 +165,8 @@ def route_request_capabilities(
         groups.update(DOMAIN_CAPABILITY_GROUPS.get(domain, ()))
 
     # A product/source link needs web evidence, not a locally published file.
-    # Require artifact delivery only for explicit files/downloads or a link tied
-    # to a generated artifact in this request; unrelated history is not proof.
+    # These words can also describe software to build. They may suggest resources,
+    # but cannot establish that this chat must receive a downloadable artifact.
     download_requested = bool(
         _DOWNLOAD_REQUEST_RE.search(text)
         or _FILE_LINK_REQUEST_RE.search(text)
@@ -184,8 +174,6 @@ def route_request_capabilities(
     )
     if download_requested:
         groups.add("resources")
-    if requires_bom_validation(text):
-        groups.add("data")
 
     evidence_reasons: list[str] = []
     if any(domain in {"Инфраструктура", "Медицина", "Научный"} for domain in domains):
@@ -274,21 +262,19 @@ def should_require_local_catalog_search(
     return bool(_LOCAL_CATALOG_ABSENCE_RE.search(str(answer or "")))
 
 
-def requires_bom_validation(user_message: str) -> bool:
-    """Whether a local-catalog request must use deterministic BOM arithmetic."""
-    text = str(user_message or "")
-    return bool(_BOM_SOURCE_RE.search(text) and _BOM_DELIVERABLE_RE.search(text))
-
-
 def should_require_web_catalog_fallback(
-    user_message: str,
     answer: str,
     *,
+    bom_validation_selected: bool,
     library_search_seen: bool,
     external_source_seen: bool,
 ) -> bool:
-    """Require Web evidence when a mandatory BOM item remains absent locally."""
-    if not requires_bom_validation(user_message):
+    """Recover missing catalog items only for an explicitly selected BOM tool.
+
+    The caller records selection from the actual typed operation, never from
+    request keywords: BOM also denotes a text encoding marker in CSV tasks.
+    """
+    if not bom_validation_selected:
         return False
     if not library_search_seen or external_source_seen:
         return False

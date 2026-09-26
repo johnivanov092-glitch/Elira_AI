@@ -7,6 +7,7 @@
  *   • CopyButton и CodeBlock мемоизированы
  */
 import React, { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { Globe } from "lucide-react";
 import type { SourceCitation } from "../api/codeAgent";
 import { buildApiUrl } from "../api/client";
 import { isLocalApiAssetUrl } from "../api/apiUtils";
@@ -37,14 +38,31 @@ const CitationContext = createContext<SourceCitation[] | undefined>(undefined);
 function SourceReference({ id }: { id: string }) {
   const citations = useContext(CitationContext);
   if (!citations) return <span className="text-mut" title="Источник будет сопоставлен после завершения ответа">[источник…]</span>;
-  const index = citations.findIndex(citation => citation.source_id === id);
-  const citation = citations[index];
-  if (citation?.status !== "matched" || !citation.source) {
+  const citation = citations.find(item => item.source_id === id);
+  if (!citation) {
     return <span className="text-mut" title="Для этой ссылки нет предъявленного фрагмента">[источник не сопоставлен]</span>;
   }
-  return <ExternalBrowserLink href={citation.source.url} className="md-link"
-    title={`Полученный фрагмент: ${citation.source.quote}`}>
-    [{index + 1}]
+  return <SourceCitationLink citation={citation} />;
+}
+
+export function SourceCitationLink({ citation }: { citation: SourceCitation }) {
+  if (citation.status !== "matched" || !citation.source) {
+    return <span className="text-mut" data-source-id={citation.source_id}>Источник не сопоставлен с полученными данными</span>;
+  }
+  const source = citation.source;
+  let hostname = "";
+  try {
+    const url = new URL(source.url);
+    if (url.protocol === "https:" || url.protocol === "http:") hostname = url.hostname.replace(/^www\./, "");
+  } catch { /* Invalid persisted URLs remain non-clickable. */ }
+  if (!hostname) return <span className="text-mut" data-source-id={citation.source_id}>Ссылка на источник недоступна</span>;
+  const description = source.title ? `${source.title} — ${hostname}` : hostname;
+  return <ExternalBrowserLink href={source.url} data-source-id={citation.source_id}
+    className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 align-middle text-[11.5px] font-medium leading-4 text-t2 no-underline transition-colors hover:border-acl hover:bg-acs hover:text-ac focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ac"
+    aria-label={`Источник: ${description}`}
+    title={`${description}\n${source.url}\nПолученный фрагмент: ${source.quote}`}>
+    <Globe size={12} className="shrink-0" aria-hidden="true" />
+    <span className="min-w-0 max-w-[24ch] truncate">{hostname}</span>
   </ExternalBrowserLink>;
 }
 

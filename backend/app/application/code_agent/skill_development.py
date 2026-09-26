@@ -38,6 +38,34 @@ class _Cancelled(Exception):
     pass
 
 
+class PackageChanged(ValueError):
+    """A well-formed publication receipt whose current files no longer match."""
+
+    def __init__(self, details: dict[str, Any]) -> None:
+        self.details = details
+        changes = details["source_diff"]
+        messages = ["Skill package files or dependencies changed since verification"]
+        if changes["status"] == "unavailable":
+            messages.append("Source comparison unavailable: " + changes["error"])
+        elif any(changes[kind] for kind in ("added", "changed", "deleted")):
+            remaining = 8
+            for kind in ("added", "changed", "deleted"):
+                paths = changes[kind]
+                shown = paths[:remaining]
+                remaining -= len(shown)
+                if paths:
+                    messages.append(f"{kind} ({len(paths)}): " + json.dumps(
+                        [path[:240] for path in shown], ensure_ascii=False)
+                        + ("; more paths in skill_status" if len(paths) > len(shown) else ""))
+        else:
+            messages.append("Git source is unchanged; installed dependencies or file metadata differ")
+        messages.append(f"History: {changes['repository']}; revision: {details['revision']}")
+        messages.append(f"Use skill_status(name='{details['name']}') for the full diff, or "
+                        f"skill_create(name='{details['name']}') to copy current source into a new UNVERIFIED "
+                        "candidate; recreate its dependencies, skill_check, skill_publish, then skill_load")
+        super().__init__(". ".join(messages))
+
+
 def _check_cancelled() -> None:
     from app.application.code_agent.tools._shell import run_was_stopped
 
@@ -258,6 +286,47 @@ def active_package(name: str) -> dict[str, str] | None:
     return validated_package(name, entry.get("candidate_id", ""), expected=entry)
 
 
+def _source_diff(directory: Path, repository: Path, revision: str) -> dict[str, Any]:
+    """Compare literal source bytes to the saved commit, never mutable HEAD."""
+    result: dict[str, Any] = {"repository": str(repository), "revision": revision}
+    try:
+        records = _git(repository, "ls-tree", "-r", "-z", revision, "--", "package")
+        expected = {}
+        for record in records.split("\0"):
+            if not record:
+                continue
+            attributes, path = record.split("\t", 1)
+            mode, kind, object_id = attributes.split(" ")
+            if not path.startswith("package/") or kind != "blob" or mode not in {"100644", "100755"}:
+                raise ValueError("Published source tree contains an unsupported entry")
+            expected[path[len("package/"):]] = (mode, object_id)
+        if not expected:
+            raise ValueError("Saved revision has no published package source")
+        sources = _files(directory, include_dependencies=False)
+        actual = {}
+        # Batch below Windows command-line limits. hash-object without -w only
+        # reads files; --no-filters keeps binary data and .gitattributes literal.
+        while sources:
+            batch, size = [], 0
+            while sources and (not batch or size + len(str(sources[0])) + 3 < 12000):
+                path = sources.pop(0)
+                batch.append(path)
+                size += len(str(path)) + 3
+            hashes = _git(repository, "hash-object", "--no-filters", "--", *map(str, batch)).splitlines()
+            if len(hashes) != len(batch) or any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in hashes):
+                raise ValueError("Git did not return one source hash per file")
+            for path, object_id in zip(batch, hashes):
+                actual[path.relative_to(directory).as_posix()] = (path.stat().st_mode & 0o111, object_id)
+        changed = [path for path in actual.keys() & expected.keys() if actual[path][1] != expected[path][1]
+                   or (os.name != "nt" and bool(actual[path][0]) != (expected[path][0] == "100755"))]
+        return {**result, "status": "available", "added": sorted(actual.keys() - expected.keys()),
+                "changed": sorted(changed), "deleted": sorted(expected.keys() - actual.keys()),
+                "dependencies": "not versioned in Git; only the complete publication digest covers them"}
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Missing/corrupt history is not evidence that the source is unchanged.
+        return {**result, "status": "unavailable", "error": f"{type(exc).__name__}: {str(exc)[:400]}"}
+
+
 def validated_package(
     name: str, candidate_id: str, *, expected: dict[str, Any] | None = None,
 ) -> dict[str, str]:
@@ -275,8 +344,11 @@ def validated_package(
             raise ValueError("Saved skill package integrity check failed")
         if "directory" in expected and expected["directory"] != str(directory):
             raise ValueError("Saved skill package directory does not match its receipt")
-    if _digest(directory) != digest:
-        raise ValueError("Skill package files or dependencies changed since verification")
+    observed = _digest(directory)
+    if observed != digest:
+        raise PackageChanged({"name": name, "candidate_id": candidate_id, "directory": str(directory),
+            "revision": revision, "verified_package_sha256": digest, "observed_package_sha256": observed,
+            "source_diff": _source_diff(directory, ROOT / "history" / name, revision)})
     return {
         "candidate_id": candidate_id, "package_sha256": digest,
         "revision": revision, "directory": str(directory),
@@ -312,33 +384,73 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
     candidate_id = str(config.get("candidate_id") or "")
     with _locked():
         if operation == "skill_status":
+            integrity: dict[str, Any] = {"status": "not_installed"}
+            try:
+                active = active_package(name)
+                if active:
+                    integrity = {"status": "verified", "ok": True, **active}
+            except PackageChanged as exc:
+                integrity = {"status": "modified", "ok": False, **exc.details}
             return {"ok": True, "name": name,
                     "active": _read_json(ROOT / "active.json").get(name),
-                    "repository": str(_managed(ROOT / "history" / name))}
+                    "repository": str(_managed(ROOT / "history" / name)), "integrity": integrity}
         if operation == "skill_create":
             candidate_id = uuid.uuid4().hex
             directory = _directory(name, candidate_id)
-            active = active_package(name)
-            current = Path(active["directory"]) if active else None
+            recovery = None
+            try:
+                active = active_package(name)
+                current = Path(active["directory"]) if active else None
+            except PackageChanged as exc:
+                # Creation is not activation. Recover only a well-formed owned
+                # publication; invalid receipts or source redirects still fail.
+                recovery = exc.details
+                current = _directory(name, recovery["candidate_id"])
             if current is None:
                 from app.application.code_agent.task_skills import SKILLS_ROOT
                 installed = SKILLS_ROOT / name
                 current = installed if installed.is_dir() else None
+            before = _digest(current, include_dependencies=False) if current is not None else None
+            source = ({"candidate_id": recovery["candidate_id"], "revision": recovery["revision"],
+                       "verified_package_sha256": recovery["verified_package_sha256"],
+                       "observed_package_sha256": recovery["observed_package_sha256"],
+                       "observed_source_sha256": before, "integrity": "modified"} if recovery else None)
             directory.mkdir(parents=True)
-            if current is not None:
-                for source in _files(current, include_dependencies=False):
-                    # Python environments are path-bound: recreate in the new
-                    # candidate, instead of copying a previous candidate's venv.
-                    relative = source.relative_to(current)
-                    _check_cancelled()
-                    destination = directory / relative
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, destination)
-            _write_json(ROOT / "receipts" / f"{candidate_id}.json",
-                        {"name": name, "candidate_id": candidate_id, "status": "candidate"})
+            completed = False
+            try:
+                if current is not None:
+                    for item in _files(current, include_dependencies=False):
+                        # Environments are path-bound; recreate in the candidate.
+                        relative = item.relative_to(current)
+                        _check_cancelled()
+                        destination = directory / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, destination)
+                    if (_digest(current, include_dependencies=False) != before
+                            or _digest(directory, include_dependencies=False) != before):
+                        raise ValueError("Source changed while copying the candidate; retry skill_create")
+                _write_json(ROOT / "receipts" / f"{candidate_id}.json",
+                            {"name": name, "candidate_id": candidate_id, "status": "candidate",
+                             **({"source": source} if source else {})})
+                completed = True
+            finally:
+                if not completed:
+                    # Only this newly created, unpublished directory is removed.
+                    shutil.rmtree(_managed(directory))
             logger.info("skill_candidate_created name=%s candidate=%s", name, candidate_id)
             return {"ok": True, "name": name, "candidate_id": candidate_id,
                     "directory": str(directory), "status": "candidate",
+                    **({"source": source, "source_diff": recovery["source_diff"],
+                        "warning": "Copied modified source into an UNVERIFIED candidate. The previous package "
+                                   "was not repaired or activated; recreate dependencies and verify this candidate."}
+                       if recovery else {}),
+                    "skill_format": {
+                        "encoding": "UTF-8 without BOM, LF",
+                        "frontmatter": {"name": name, "description": "1-320 characters; when to use this skill",
+                                        "metadata": {"title": "optional, 1-80 characters"}},
+                        "layout": "Start SKILL.md with --- followed by YAML, then --- and Markdown body. Quote YAML strings containing colon-space, or use a YAML block scalar.",
+                        "body": "Applicability, execution instructions, result checks, known limitations. Use the candidate directory returned here for reusable scripts.",
+                    },
                     "next": "Write SKILL.md and scripts with file tools; create candidate-local dependencies; skill_check with config.command."}
         if operation == "skill_rollback":
             state = _read_json(ROOT / "active.json")
@@ -429,7 +541,20 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
             metadata["revision"] = revision
             _write_json(receipt_path, metadata)
             state = _read_json(ROOT / "active.json")
-            previous = {key: value for key, value in (state.get(name) or {}).items() if key != "previous"}
+            current = state.get(name)
+            previous = {}
+            for prior in (current, current.get("previous") if isinstance(current, dict) else None):
+                if not isinstance(prior, dict):
+                    continue
+                reference = {key: value for key, value in prior.items() if key != "previous"}
+                try:
+                    validated_package(name, reference.get("candidate_id", ""), expected=reference)
+                except (OSError, ValueError, TypeError, RuntimeError) as exc:
+                    logger.warning("skill_rollback_reference_skipped name=%s candidate=%s reason=%s",
+                                   name, reference.get("candidate_id"), type(exc).__name__)
+                    continue
+                previous = reference
+                break
             state[name] = {"candidate_id": candidate_id, "revision": revision, "sha256": metadata["sha256"],
                            **({"previous": previous} if previous else {})}
             # This single rename is the publication point. Old in-flight skill

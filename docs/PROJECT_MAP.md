@@ -25,6 +25,7 @@ move Elira's backend state or tools into that repository.
 | FastAPI app/lifecycle | `backend/app/main.py` |
 | Mounted routers | `backend/app/api/routes/registry.py` |
 | Code-agent HTTP/SSE | `backend/app/api/routes/code_agent_routes.py` |
+| Chat sessions and shared folder layout | `backend/app/application/code_agent/sessions.py` |
 | Workflow HTTP/API | `backend/app/api/routes/workflow_routes.py` |
 | Durable event SSE | `backend/app/api/routes/event_bus_routes.py` |
 | Multi-agent HTTP/SSE | `backend/app/api/routes/advanced_routes.py` |
@@ -37,6 +38,7 @@ move Elira's backend state or tools into that repository.
 | Deterministic local price-list/BOM validation | `backend/app/application/code_agent/tools/_bom.py` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
 | Task skill instructions and run context | `skills/`, `backend/app/application/code_agent/task_skills.py` |
+| Learned skill hints from verified run outcomes | `backend/app/application/code_agent/skill_advisor.py`, `task_outcomes.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
 | Workflow/data runtime adapters | `backend/app/application/code_agent/tools/_runtime_control_workflows.py`, `_runtime_control_data.py` |
 | Tool executor | `backend/app/application/agent_kernel/executor.py` |
@@ -71,12 +73,14 @@ frontend/src
 ├─ App.tsx
 ├─ api/
 │  ├─ codeAgent.ts       code-agent SSE/client types
+│  ├─ chatFolders.ts     shared chat-folder state and atomic operations
 │  ├─ workflows.ts       Workflow requests/events/UAC bridge
 │  └─ project.ts         projects + multi-agent API
 └─ workspace/
    ├─ WorkspaceShell.tsx application workspace
    ├─ Composer.tsx       permission/reasoning/multi-agent controls
    ├─ backgroundRuns.ts  one owner for live run state
+   ├─ chatFolders.ts     server-confirmed folder store and legacy-cache migration
    ├─ AgentTurn.tsx      agent result rendering
    ├─ WorkflowRequestCard.tsx
    ├─ useWorkflowRequestEvents.ts

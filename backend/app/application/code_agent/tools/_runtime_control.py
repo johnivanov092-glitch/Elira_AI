@@ -7,6 +7,7 @@ Every operation returns JSON-safe status. Secrets enter only as opaque
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from app.application.agent_kernel.tool_result import ensure_tool_result
@@ -125,11 +126,11 @@ def _mcp_control(operation: str, server_id: str, config: dict[str, Any]) -> dict
 
     if operation == "mcp_list":
         return {"ok": True, "servers": mcp_runtime.public_server_view(mcp_runtime.list_servers())}
-    sid = _require_id(
-        server_id or str(config.get("id", "")),
-        "server_id",
-        "ID MCP server",
-    )
+    sid = str(server_id or config.get("id") or "").strip()
+    if not sid:
+        # A malformed tool call is repairable by the model. Turning it into a
+        # Workflow input request suspends the loop before it can correct itself.
+        raise ValueError("MCP operations require server_id or config.id; use mcp_list to find an existing ID")
     if operation in {"mcp_start", "mcp_restart"}:
         server = next(
             (item for item in mcp_runtime.list_servers() if str(item.get("id")) == sid),
@@ -168,8 +169,20 @@ def _mcp_control(operation: str, server_id: str, config: dict[str, Any]) -> dict
     if operation == "mcp_upsert":
         if not isinstance(config, dict):
             raise ValueError("config must be an object")
-        candidate = {**config, "id": sid}
-        if candidate.get("env") or candidate.get("secret_headers"):
+        candidate = mcp_runtime._validate_server({**config, "id": sid})
+        if candidate is None:
+            raise ValueError("MCP server config is invalid; existing configuration was not changed")
+        # Environment also carries ordinary settings (URLs, paths, CPU counts).
+        # Match credential names, not substrings such as TOKENIZERS_PARALLELISM
+        # or MAX_TOKENS. Explicit credential values still use the vault flow.
+        credential_env = any(
+            value and re.search(
+                r"(?:^|[_-])(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|"
+                r"authorization|credentials?|private[_-]?key)$", key, re.IGNORECASE,
+            )
+            for key, value in candidate.get("env", {}).items()
+        )
+        if credential_env or candidate.get("secret_headers"):
             raise _secret_request(
                 "MCP credential нужно сохранить через write-only карточку, затем "
                 "передать secret_ref в env_secret_refs или secret_header_refs."
@@ -539,6 +552,15 @@ def tool_runtime_control(
         settings = config or {}
         if op == "status":
             result = _runtime_status()
+        elif op in {"task_decide", "result_verify"}:
+            from app.application.code_agent.task_outcomes import result_verify, task_decide
+
+            result = (task_decide if op == "task_decide" else result_verify)(project_root, settings)
+        elif op in {"skill_advisor_status", "skill_advisor_rollback"}:
+            from app.application.code_agent import skill_advisor
+
+            result = (skill_advisor.status() if op == "skill_advisor_status"
+                      else skill_advisor.rollback(str(settings.get("version") or "")))
         elif op in {"skill_list", "skill_load"}:
             from app.application.code_agent.task_skills import skill_control
 
@@ -657,7 +679,12 @@ def tool_runtime_control(
                 message = str(raw_error)
                 retryable = False
                 code = "runtime_operation_failed"
-            return _failed(op, message, code=code, retryable=retryable)
+            failure = _failed(op, message, code=code, retryable=retryable)
+            if op in {"result_verify", "skill_check"}:
+                # Check failures must retain their concrete diagnostics so the
+                # agent can repair the result or package before trying again.
+                return _text({**failure, "result": result})
+            return failure
         return _completed(op, result)
     except _RuntimeRequest as exc:
         return _requested(op, exc)

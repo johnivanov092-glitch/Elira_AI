@@ -1,0 +1,39 @@
+.tool-activity-disclosure > summary {
+  list-style: none;
+}
+
+.tool-activity-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-activity-disclosure > summary:focus-visible {
+  outline: 2px solid var(--color-ac);
+  outline-offset: -2px;
+}
+
+.tool-activity-disclosure[open] > summary > .tool-activity-chevron {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tool-activity-spinner {
+    animation: tool-activity-spin 2.4s linear infinite;
+    opacity: 0.55;
+  }
+
+  .tool-activity-live {
+    animation: tool-activity-breathe 2.4s ease-in-out infinite;
+  }
+
+  .tool-activity-chevron {
+    transition: transform 150ms ease;
+  }
+}
+
+@keyframes tool-activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes tool-activity-breathe {
+  50% { opacity: 0.65; }
+}

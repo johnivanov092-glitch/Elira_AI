@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.application.code_agent.command_progress import command_digest
 from app.application.code_agent.tools._background_jobs import (
     RecoveredJobProcess,
     activate_job,
@@ -237,6 +239,13 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
         "error": None if ok else "nonzero_exit",
         "text": "\n".join(parts),
         "exit_code": proc.returncode,
+        "command": redact_text(cleaned_command),
+        "command_sha256": command_digest(cleaned_command),
+        "cwd": str(project_root.resolve()),
+        "output_sha256": hashlib.sha256(json.dumps(
+            {"stdout": stdout, "stderr": stderr}, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest(),
     }
 
 
@@ -314,6 +323,7 @@ class _ServerHandle:
         "pid", "command", "proc", "log_path", "port", "url", "started_at",
         "run_id", "kind", "job_id", "job_record", "status", "exit_code",
         "finished_at", "recovered",
+        "cwd", "command_sha256", "log_fingerprint",
     )
 
     def __init__(self, pid: int, command: str, proc: Any,
@@ -321,7 +331,8 @@ class _ServerHandle:
                  run_id: str | None = None, kind: str = "server",
                  job_record: dict[str, Any] | None = None,
                  started_at: float | None = None,
-                 recovered: bool = False) -> None:
+                 recovered: bool = False, cwd: str = "",
+                 command_sha256: str | None = None) -> None:
         self.pid = pid
         self.command = command
         self.proc = proc
@@ -339,6 +350,11 @@ class _ServerHandle:
         self.exit_code = (job_record or {}).get("exit_code")
         self.finished_at = (job_record or {}).get("finished_at")
         self.recovered = bool(recovered)
+        self.cwd = str((job_record or {}).get("cwd") or cwd)
+        self.command_sha256 = str(
+            (job_record or {}).get("command_sha256") or command_sha256 or command_digest(command)
+        )
+        self.log_fingerprint: tuple[int, int, str] | None = None
 
 
 _LIVE_SERVERS: dict[int, _ServerHandle] = {}
@@ -991,6 +1007,44 @@ def stop_all_servers() -> int:
     return killed
 
 
+def _process_observation(
+    handle: _ServerHandle, *, action: str, status: str, exit_code: int | None,
+) -> dict[str, Any]:
+    """Machine-readable execution facts, excluding PID/time from output identity."""
+    fields: dict[str, Any] = {
+        "action": action,
+        "kind": handle.kind,
+        "status": status,
+        "exit_code": exit_code,
+        "command": handle.command,
+        "command_sha256": handle.command_sha256,
+        "cwd": handle.cwd,
+        "attempt_id": handle.job_id or f"{handle.pid}:{handle.started_at!r}",
+    }
+    if status not in {"completed", "failed"}:
+        return fields
+    # A complete log, not its formatted tail, identifies the observed outcome.
+    # Cache by stat so polling an already-completed large job does not rehash it.
+    try:
+        stat = handle.log_path.stat()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        cached = handle.log_fingerprint
+        if cached is None or cached[:2] != signature:
+            digest = hashlib.sha256()
+            with handle.log_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            after = handle.log_path.stat()
+            if (after.st_size, after.st_mtime_ns) != signature:
+                return fields  # The writer is still flushing; do not seal a partial log.
+            cached = (*signature, digest.hexdigest())
+            handle.log_fingerprint = cached
+        fields["output_sha256"] = cached[2]
+    except OSError:
+        pass  # Missing evidence is not an identical empty result.
+    return fields
+
+
 def _server_verdict(text: str, handle: "_ServerHandle | None", action: str) -> dict[str, Any]:
     """Wrap a run_server result as a server_started VERIFIER verdict when a live server
     with a real URL is known (list/logs of a running server). No live server → a plain
@@ -1115,7 +1169,10 @@ def _tool_run_server_impl(
             + f"\n$ {h.command}\n\n{body}"
         )
         if h.kind == "server":
-            return _server_verdict(text, h if (running and h.port) else None, "logs")
+            return {
+                **_server_verdict(text, h if (running and h.port) else None, "logs"),
+                **_process_observation(h, action="logs", status=status, exit_code=exit_code),
+            }
         remote_fields = _remote_job_fields(h)
         if remote_fields:
             feedback: dict[str, Any] = {
@@ -1163,6 +1220,7 @@ def _tool_run_server_impl(
             "log_path": str(h.log_path),
             "recovered": h.recovered,
             **remote_fields,
+            **_process_observation(h, action="logs", status=status, exit_code=exit_code),
         }
 
     if act == "stop":
@@ -1458,6 +1516,8 @@ def _tool_run_server_impl(
         kind=process_kind,
         job_record=job_record,
         started_at=started_at,
+        cwd=str(project_root.resolve()),
+        command_sha256=command_digest(cleaned_command, argv=command_argv),
     )
     with _SERVERS_LOCK:
         _LIVE_SERVERS[proc.pid] = handle
@@ -1504,6 +1564,7 @@ def _tool_run_server_impl(
                 "log_path": str(log_path),
                 "recovered": handle.recovered,
                 **_remote_job_fields(handle),
+                **_process_observation(handle, action="start", status=status, exit_code=exit_code),
             }
         # A server start that died (incl. "Port … is already in use") is NOT ok — otherwise
         # the loop reads a missing `ok` as True and a failed start looks like success,
@@ -1511,7 +1572,11 @@ def _tool_run_server_impl(
         return {"text": (
             f"ERROR: server exited immediately (code={proc.returncode}).\n"
             f"$ {display_command}{body}"
-        ), "ok": False}
+        ), "ok": False,
+            **_process_observation(
+                handle, action="start", status="failed", exit_code=proc.returncode,
+            ),
+        }
 
     # Learn the URL the server ACTUALLY bound (Vite may have auto-incremented off a
     # taken port). This becomes the canonical URL, so the verifier reaches THIS
@@ -1553,6 +1618,7 @@ def _tool_run_server_impl(
             "log_path": str(log_path),
             "recovered": handle.recovered,
             **_remote_job_fields(handle),
+            **_process_observation(handle, action="start", status="running", exit_code=None),
         }
 
     if actual_url:
@@ -1610,6 +1676,7 @@ def _tool_run_server_impl(
             f"dev server started via run_server: {actual_url or '(no url)'} "
             f"(pid={proc.pid}, port={actual_port or '?'})"
         ),
+        **_process_observation(handle, action="start", status="running", exit_code=None),
     }
 
 

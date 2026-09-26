@@ -307,6 +307,13 @@ class RunJournal:
             self._state["preflight"] = _clean(event["preflight"])
         if event_type == "skills_changed":
             self._state["active_skills"] = _clean(event.get("active_skills") or [])
+        for field in ("task_outcome", "command_progress", "skill_advisor", "skill_advisor_learning"):
+            if isinstance(event.get(field), dict):
+                self._state[field] = _clean(event[field])
+        if type(event.get("code_input_epoch")) is int:
+            self._state["code_input_epoch"] = event["code_input_epoch"]
+        if type(event.get("bom_validation_selected")) is bool:
+            self._state["bom_validation_selected"] = event["bom_validation_selected"]
         if event_type == "answer_format_correction" and event.get("contract") == "quote_word_limit":
             self._state["quote_word_limit_correction_sent"] = True
         if event_type == "answer_format_correction" and event.get("contract") == "web_cadence_citation":

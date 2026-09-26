@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import re
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -236,6 +237,69 @@ def cosine_sim(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+@dataclass(frozen=True)
+class PreparedSourceChunk:
+    text: str
+    text_hash: str
+    embedding_blob: bytes | None
+
+
+def prepare_source_chunks(
+    *,
+    get_embedding_func: Callable[[str], list[float] | None],
+    texts: list[str],
+) -> list[PreparedSourceChunk]:
+    """Prepare a bounded file in memory; no partial version reaches SQLite."""
+    prepared = []
+    for text in texts:
+        text = text.strip()
+        if len(text) < 3:
+            raise ValueError("Source chunk text is too short")
+        embedding = get_embedding_func(text)
+        prepared.append(PreparedSourceChunk(text, _text_hash(text), _embedding_to_blob(embedding)))
+    return prepared
+
+
+def replace_source_chunks(
+    *,
+    conn: Any,
+    project: str,
+    source_uri: str,
+    source_hash: str,
+    chunks: list[PreparedSourceChunk],
+    metadata: dict[str, Any],
+) -> int:
+    """Replace one corpus source within the caller's manifest transaction.
+
+    Embeddings must already be prepared. The caller commits chunks and manifest
+    together, or rolls both back on any exception (including process shutdown).
+    """
+    if not conn.in_transaction:
+        raise ValueError("Source replacement requires an explicit transaction")
+    if not project or not source_uri or not source_hash:
+        raise ValueError("Source replacement requires project, source_uri and source_hash")
+    metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+    cursor = conn.execute(
+        "DELETE FROM rag_items WHERE category = 'code_index' AND project = ? AND source_uri = ?",
+        (project, source_uri),
+    )
+    deleted = int(cursor.rowcount or 0)
+    conn.executemany(
+        """
+        INSERT INTO rag_items (
+            text, text_hash, category, embedding, embedding_blob, importance,
+            project, source_uri, source_hash, metadata_json
+        ) VALUES (?, ?, 'code_index', '', ?, 4, ?, ?, ?, ?)
+        """,
+        [
+            (chunk.text, chunk.text_hash, chunk.embedding_blob,
+             project, source_uri, source_hash, metadata_json)
+            for chunk in chunks
+        ],
+    )
+    return deleted
+
+
 def add_to_rag(
     *,
     conn_factory: Callable[[], Any],
@@ -396,6 +460,26 @@ def search_rag(
     )
     conn = conn_factory()
     try:
+        # Both shortlists must see one committed source version. Without a read
+        # transaction an atomic publication between the SELECTs could mix them.
+        conn.execute("BEGIN")
+        source_visibility = "1"
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_corpus_files'",
+        ).fetchone():
+            # Older ingestion could leave partially committed rows. Do not
+            # infer a complete previous version from a failed manifest. Preserve
+            # standalone/legacy rows with no manifest; retry repairs managed
+            # sources without deleting data during reads or schema migration.
+            source_visibility = """
+                (COALESCE(category, '') != 'code_index' OR NOT EXISTS (
+                    SELECT 1 FROM project_corpus_files AS manifest
+                    WHERE manifest.project = rag_items.project
+                      AND manifest.source_uri = rag_items.source_uri
+                      AND (manifest.status != 'indexed'
+                           OR manifest.content_hash != COALESCE(rag_items.source_hash, ''))
+                ))
+            """
         # Candidate cap (FIX-24): rank by importance and take the top N as
         # similarity candidates instead of scanning the whole table on every
         # search. Bounds cost as the store grows (an ANN index is the long-term
@@ -406,7 +490,8 @@ def search_rag(
             rows = conn.execute(
                 f"""
                 SELECT {base_cols} FROM rag_items
-                WHERE project = ? OR project = '' OR project IS NULL
+                WHERE (project = ? OR project = '' OR project IS NULL)
+                  AND {source_visibility}
                 ORDER BY importance DESC
                 LIMIT ?
                 """,
@@ -414,7 +499,7 @@ def search_rag(
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT {base_cols} FROM rag_items ORDER BY importance DESC LIMIT ?",
+                f"SELECT {base_cols} FROM rag_items WHERE {source_visibility} ORDER BY importance DESC LIMIT ?",
                 (int(candidate_limit),),
             ).fetchall()
 
@@ -434,7 +519,7 @@ def search_rag(
                     f"""
                     SELECT {base_cols} FROM rag_items
                     WHERE (project = ? OR project = '' OR project IS NULL)
-                      AND ({lexical_where})
+                      AND {source_visibility} AND ({lexical_where})
                     ORDER BY importance DESC
                     LIMIT ?
                     """,
@@ -444,7 +529,7 @@ def search_rag(
                 lexical_rows = conn.execute(
                     f"""
                     SELECT {base_cols} FROM rag_items
-                    WHERE {lexical_where}
+                    WHERE {source_visibility} AND ({lexical_where})
                     ORDER BY importance DESC
                     LIMIT ?
                     """,

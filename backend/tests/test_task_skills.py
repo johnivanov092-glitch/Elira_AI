@@ -1,6 +1,8 @@
 """Skill boundaries through the real runtime adapter, compactor and agent loop."""
 from copy import deepcopy
 import json
+from pathlib import Path
+import sys
 
 import pytest
 
@@ -156,6 +158,76 @@ def test_saved_version_is_preserved_and_corrupted_snapshot_stops_resume(tmp_path
         chat_fn=lambda **kw: pytest.fail("Corrupted instructions reached the model")))
     assert events[-1]["error_code"] == "skill_restore_failed"
     assert events[-1]["resumable"] is False
+
+
+def test_explicit_reload_replaces_published_code_and_resume_stays_pinned(tmp_path, monkeypatch):
+    from app.application.code_agent import skill_development as development
+
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(skills, "SKILLS_ROOT", tmp_path / "installed")
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    name = "normalize-records"
+
+    def publish(version):
+        created = tool_runtime_control(tmp_path, operation="skill_create", name=name)["result"]
+        directory = Path(created["directory"])
+        (directory / "SKILL.md").write_text(
+            "---\nname: normalize-records\ndescription: Нормализация записей.\n---\n"
+            "Примени normalize.py и проверь полученные записи.\n", encoding="utf-8", newline="\n",
+        )
+        (directory / "normalize.py").write_text(
+            f"VERSION = {version}\n", encoding="utf-8", newline="\n",
+        )
+        (directory / "check.py").write_text(
+            f"from normalize import VERSION\nassert VERSION == {version}\n", encoding="utf-8", newline="\n",
+        )
+        config = {"candidate_id": created["candidate_id"], "command": f'"{sys.executable}" check.py'}
+        checked = tool_runtime_control(tmp_path, operation="skill_check", name=name, config=config)
+        assert checked["ok"], checked
+        published = tool_runtime_control(tmp_path, operation="skill_publish", name=name, config=config)
+        assert published["ok"], published
+        return skills.skill_control("skill_load", name)["skill"]
+
+    first = publish(1)
+    context = skills.SkillContext()
+    assert context.activate(first, refresh=True)
+    journal = RunJournal("reload-skill")
+    journal.start({"user_message": "Normalize records"}, {})
+    try:
+        journal.append_event({"type": "skills_changed", "active_skills": context.snapshots()})
+    finally:
+        journal.release()
+
+    second = publish(2)
+    assert second["sha256"] == first["sha256"]  # Same instructions, different executable code.
+    assert second["candidate_id"] != first["candidate_id"]
+    assert second["revision"] != first["revision"]
+    assert context.activate(second) is False
+    assert context.snapshots()[0]["candidate_id"] == first["candidate_id"]
+    restored = skills.SkillContext()
+    restored.restore("reload-skill")
+    assert restored.snapshots()[0]["candidate_id"] == first["candidate_id"]
+
+    # A bad replacement must leave the current task's working snapshot intact.
+    source = Path(second["directory"]) / "normalize.py"
+    original = source.read_bytes()
+    source.write_bytes(b"VERSION = 999\n")
+    with pytest.raises(ValueError, match="changed since verification"):
+        restored.activate(second, refresh=True)
+    assert restored.snapshots()[0]["candidate_id"] == first["candidate_id"]
+    source.write_bytes(original)
+
+    # Replacing a same-name skill does not count both versions against the budget.
+    monkeypatch.setattr(skills, "MAX_ACTIVE_CHARS", len(first["content"]))
+    assert restored.activate(second, "Использовать исправленную версию", refresh=True)
+    assert restored.snapshots()[0]["candidate_id"] == second["candidate_id"]
+    assert restored.snapshots()[0]["package_sha256"] == second["package_sha256"]
+    assert restored.activate(second, refresh=True) is False
+    assert len(restored.snapshots()) == 1
+    # Reloading one task is not an implicit rewrite of another task's saved pin.
+    still_pinned = skills.SkillContext()
+    still_pinned.restore("reload-skill")
+    assert still_pinned.snapshots()[0]["candidate_id"] == first["candidate_id"]
 
 
 def test_budget_overflow_keeps_existing_instruction(monkeypatch):

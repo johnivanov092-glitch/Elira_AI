@@ -114,7 +114,7 @@ TOOL_PROMPT_LINES: dict[str, str] = {
         "последовательный Test-NetConnection через run_bash"
     ),
     "recall":        "- recall(query) — только семантический поиск по индексированному проекту и прошлым прогонам; это не долговременная память пользователя",
-    "remember":      "- remember(fact, correction=False, replaces_id=None) — сохранить долгоживущий факт/поправку пользователя как источник правды; для замены существующего факта возьми его id через runtime_control(memory_search) и передай replaces_id",
+    "remember":      "- remember(fact, correction=False, replaces_id=None) — сохранить заметку/поправку; сервер отличает точные слова текущего сообщения пользователя от собственных выводов агента. Для замены записи возьми её id через runtime_control(memory_search) и передай replaces_id; сохранение не доказывает истинность результата",
     "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
     "delegate_task": "- delegate_task(role, task) — запустить дочернего агента с тем же workflow permission mode",
     "runtime_control": (

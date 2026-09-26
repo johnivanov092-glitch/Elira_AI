@@ -14,7 +14,9 @@ import json
 import sqlite3
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.data_files import sqlite_data_file
 from app.infrastructure.db.connection import connect_sqlite
@@ -65,12 +67,154 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {ddl}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned DESC, updated_at DESC)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workspace_state (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)"
+        )
         conn.commit()
     finally:
         conn.close()
 
 
 init_db()
+
+
+class ChatFolder(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+    @field_validator("id", "name")
+    @classmethod
+    def nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Folder id and name must not be blank")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class ChatFolderState(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    folders: list[ChatFolder] = Field(default_factory=list)
+    assign: dict[str, str] = Field(default_factory=dict)
+    collapsed: dict[str, bool] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def valid_references(self) -> "ChatFolderState":
+        ids = {folder.id for folder in self.folders}
+        if len(ids) != len(self.folders):
+            raise ValueError("Folder ids must be unique")
+        if any(not session_id.strip() or folder_id not in ids for session_id, folder_id in self.assign.items()):
+            raise ValueError("Assignments need a nonblank session id and an existing folder")
+        if any(folder_id not in ids for folder_id in self.collapsed):
+            raise ValueError("Collapsed state must refer to an existing folder")
+        return self
+
+
+class ChatFolderPatch(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    operation: Literal["create", "rename", "delete", "assign", "collapse"]
+    folder_id: str | None = None
+    name: str | None = None
+    session_id: str | None = None
+    collapsed: bool | None = None
+
+    @field_validator("folder_id", "name", "session_id")
+    @classmethod
+    def nonblank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Identifiers and names must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def operation_fields(self) -> "ChatFolderPatch":
+        required = {
+            "create": {"folder_id", "name"}, "rename": {"folder_id", "name"},
+            "delete": {"folder_id"}, "assign": {"session_id", "folder_id"},
+            "collapse": {"folder_id", "collapsed"},
+        }[self.operation]
+        if self.model_fields_set != {"operation", *required}:
+            raise ValueError(f"{self.operation} requires exactly: {', '.join(sorted(required))}")
+        if any(getattr(self, field) is None for field in required
+               if not (self.operation == "assign" and field == "folder_id")):
+            raise ValueError("Only assign.folder_id may be null")
+        return self
+
+
+def _read_chat_folders(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    row = conn.execute("SELECT value_json FROM workspace_state WHERE key = 'chat_folders'").fetchone()
+    return ChatFolderState.model_validate_json(row["value_json"]).model_dump() if row else None
+
+
+def get_chat_folders() -> dict[str, Any] | None:
+    conn = _conn()
+    try:
+        return _read_chat_folders(conn)
+    finally:
+        conn.close()
+
+
+def init_chat_folders(state: ChatFolderState | dict[str, Any]) -> dict[str, Any]:
+    """Import the first origin's cache once; concurrent/later imports cannot overwrite it."""
+    value = ChatFolderState.model_validate(state).model_dump()
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = _read_chat_folders(conn)
+        if existing is not None:
+            return existing
+        conn.execute("INSERT INTO workspace_state (key, value_json) VALUES ('chat_folders', ?)",
+                     (json.dumps(value, ensure_ascii=False),))
+        conn.commit()
+        return value
+    finally:
+        conn.close()
+
+
+def patch_chat_folders(patch: ChatFolderPatch | dict[str, Any]) -> dict[str, Any]:
+    """Apply one operation to the latest shared state, without replacing other clients' edits."""
+    patch = ChatFolderPatch.model_validate(patch)
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        state = _read_chat_folders(conn) or ChatFolderState().model_dump()
+        folder = next((item for item in state["folders"] if item["id"] == patch.folder_id), None)
+        if patch.operation == "create":
+            # A client may retry after the commit succeeded but its response
+            # was lost. Never duplicate or rename the already-created folder.
+            if folder is None:
+                state["folders"].append({"id": patch.folder_id, "name": patch.name.strip()})
+        elif patch.operation == "assign":
+            if patch.folder_id is None:
+                state["assign"].pop(patch.session_id, None)
+            elif folder is None:
+                raise KeyError(patch.folder_id)
+            else:
+                state["assign"][patch.session_id] = patch.folder_id
+        else:
+            if folder is None and patch.operation != "delete":
+                raise KeyError(patch.folder_id)
+            if patch.operation == "rename":
+                folder["name"] = patch.name.strip()
+            elif patch.operation == "delete":
+                state["folders"] = [item for item in state["folders"] if item["id"] != patch.folder_id]
+                state["assign"] = {sid: fid for sid, fid in state["assign"].items() if fid != patch.folder_id}
+                state["collapsed"].pop(patch.folder_id, None)
+            elif patch.operation == "collapse":
+                state["collapsed"][patch.folder_id] = patch.collapsed
+        state = ChatFolderState.model_validate(state).model_dump()
+        conn.execute(
+            "INSERT INTO workspace_state (key, value_json) VALUES ('chat_folders', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            (json.dumps(state, ensure_ascii=False),),
+        )
+        conn.commit()
+        return state
+    finally:
+        conn.close()
 
 
 def _new_id() -> str:

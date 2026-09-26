@@ -317,23 +317,25 @@ def tool_remember(
     correction: bool = False,
     replaces_id: int | str | None = None,
 ) -> dict[str, Any]:
-    """Persist a user fact/correction into curated memory.
+    """Persist a note with server-bound origin in the existing memory store.
 
     The server classifies live operational state as volatile: it remains
     searchable, but is never injected as durable source truth without a fresh
     check.
     """
     from app.application import memory as mem
+    from app.application.memory.policy import is_user_memory_source
+    from app.application.memory.tool_provenance import tool_memory_provenance
 
     text = (fact or "").strip()
     if len(text) < 3:
         return {"ok": False, "text": "Нечего запоминать: факт слишком короткий."}
-    src = "user_correction" if correction else "user"
+    provenance = tool_memory_provenance(text, correction=correction)
     try:
         res = mem.add_fact(
             text,
             category="user_fact",
-            source=src,
+            **provenance,
             importance=10 if correction else 8,
             replaces_id=replaces_id if correction else None,
         )
@@ -341,17 +343,23 @@ def tool_remember(
         return {"ok": False, "text": f"Не удалось сохранить факт: {exc}"}
     if not res.get("ok"):
         return {"ok": False, "text": f"Не удалось сохранить факт: {res.get('error', 'ошибка памяти')}"}
+    source = res.get("source", provenance["source"])
+    source_ref = res.get("source_ref", provenance["source_ref"])
+    metadata = {"id": res.get("id"), "action": res.get("action"),
+                "source": source, "source_ref": source_ref}
     if res.get("category") == "volatile_fact":
         return {
             "ok": True,
+            **metadata,
             "text": (
                 "Запомнил как временное состояние. Перед использованием "
                 "потребуется live-проверка: "
                 + text
             ),
         }
-    label = "поправка сохранена" if correction else "факт сохранён"
-    return {"ok": True, "text": f"Запомнил ({label}, источник правды): {text}"}
+    origin = "точная запись слов пользователя" if is_user_memory_source(source) else "заметка агента; требует проверки перед использованием"
+    return {"ok": True, **metadata,
+            "text": f"Запомнил ({origin}): {res.get('text', text)}"}
 
 
 def tool_recall(
@@ -381,7 +389,7 @@ def tool_recall(
     except Exception:
         fact_items = []
     if fact_items:
-        from app.application.memory.policy import is_volatile_fact
+        from app.application.memory.policy import is_authoritative_fact, is_volatile_fact
 
         flines = [f"Known facts ({len(fact_items)}):"]
         for item in fact_items:
@@ -390,8 +398,12 @@ def tool_recall(
                 text = text[:300] + " [...]"
             category = str(item.get("category") or "fact")
             volatile = category == "volatile_fact" or is_volatile_fact(text)
+            source = str(item.get("source") or "unknown")
             suffix = "; требуется live-проверка" if volatile else ""
-            flines.append(f"- [{category}{suffix}] {text}")
+            if not is_authoritative_fact(item):
+                suffix += "; сохранённая заметка, не подтверждённый факт пользователя"
+            reference = f"; {item['source_ref']}" if item.get("source_ref") else ""
+            flines.append(f"- [{category}; source={source}{reference}{suffix}] {text}")
         sections.append("\n".join(flines))
 
     # 2) Semantic / episodic (vector, rag_memory) — project-scoped + global.

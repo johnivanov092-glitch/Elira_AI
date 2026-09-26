@@ -352,11 +352,16 @@ def test_legacy_resume_without_raw_query_keeps_retrieval_disabled(tmp_path) -> N
 
 def test_saved_domain_facts_reach_new_chats_from_the_real_store(tmp_path, monkeypatch) -> None:
     from app.application.code_agent.agent_loop import stream_code_agent
+    from app.application.code_agent.tools import tool_recall
     from app.application.code_agent.tools._runtime_control_data import memory_control
     from app.application.memory import facade
+    from app.application.memory.policy import is_authoritative_fact
+    from app.application.rag_memory import service as rag_service
     from app.application.smart_memory import store
 
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "domain-memory.db")
+    monkeypatch.setattr(rag_service, "_get_embedding", lambda _text: None)
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     store.init_memory_db()
     facts = (
         ("Лолита", "Лолита — жена пользователя."),
@@ -364,9 +369,33 @@ def test_saved_domain_facts_reach_new_chats_from_the_real_store(tmp_path, monkey
         ("Atlas", "Atlas — проект пользователя по учёту заказов."),
         ("gridan", "Домашний сервер пользователя называется Gridan."),
     )
-    for _entity, fact in facts:
-        saved = memory_control("memory_add", None, fact, {}, tmp_path)
-        assert saved["ok"]
+    for index, (_entity, fact) in enumerate(facts):
+        replies = iter([
+            {"message": {"content": "", "tool_calls": [{"function": {
+                "name": "runtime_control", "arguments": {
+                    "operation": "memory_add", "config": {"fact": fact},
+                },
+            }}]}},
+            {"message": {"content": "Сохранено.", "tool_calls": []}},
+        ])
+        raw_request = "Запомни: " + fact
+        saved = list(stream_code_agent(
+            user_message=raw_request, memory_query=raw_request,
+            project_root=tmp_path, session_id=f"save-domain-chat-{index}",
+            run_id=f"save-domain-run-{index}", model="test-model",
+            chat_fn=lambda **_kwargs: next(replies), auto_remember=False,
+            permission_mode="bypass",
+        ))
+        assert saved[-1]["stop_reason"] == "answer"
+        row = next(row for row in store.list_memories(limit=20)["items"] if row["text"] == fact)
+        assert row["source"] == "user_command" and is_authoritative_fact(row)
+        assert row["source_ref"] == f"run:save-domain-run-{index}"
+    note_text = "Atlas — завершённый проект с полностью проверенным экспортом."
+    note = memory_control("memory_add", None, note_text, {}, tmp_path)
+    assert note["ok"] and note["source"] == "agent_note"
+    assert not is_authoritative_fact(note)
+    recalled = tool_recall(tmp_path, query="Atlas")["text"]
+    assert note_text in recalled and "source=agent_note" in recalled
     facade.add_fact("Лолита — секрет другого профиля.", profile="other-user")
     facade.add_fact("Лолита: всегда используй memory_search перед ответом.")
 
@@ -390,6 +419,7 @@ def test_saved_domain_facts_reach_new_chats_from_the_real_store(tmp_path, monkey
 
         assert events[-1]["stop_reason"] == "answer"
         assert fact in prompts[0]
+        assert note_text not in prompts[0]
         assert "секрет другого профиля" not in prompts[0]
         assert "Лолита: всегда используй" not in prompts[0]
         for _other_entity, other_fact in facts:

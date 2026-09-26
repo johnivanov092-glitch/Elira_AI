@@ -22,6 +22,12 @@ _TRUSTED_SOURCES = frozenset({
     "user_correction",
 })
 
+
+def is_user_memory_source(source: object, *, allow_legacy_runtime_control: bool = False) -> bool:
+    """Origin, independent of whether the content is durable or authoritative."""
+    value = str(source or "").strip()
+    return value in _TRUSTED_SOURCES or (allow_legacy_runtime_control and value == "runtime_control")
+
 _VOLATILE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE | re.UNICODE)
     for pattern in (
@@ -100,9 +106,7 @@ def is_authoritative_fact(
     """Whether an item may be injected into a prompt as durable source truth."""
     source = str(item.get("source") or "").strip()
     category = str(item.get("category") or "").strip()
-    source_is_trusted = source in _TRUSTED_SOURCES or (
-        allow_legacy_runtime_control and source == "runtime_control"
-    )
+    source_is_trusted = is_user_memory_source(source, allow_legacy_runtime_control=allow_legacy_runtime_control)
     if not source_is_trusted:
         return False
     if category not in _AUTHORITATIVE_CATEGORIES:

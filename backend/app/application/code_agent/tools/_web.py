@@ -963,13 +963,27 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     if vp_signal:
         fit = "нет горизонтального переполнения" if vp_signal["no_hoverflow"] else "ЕСТЬ горизонтальный скролл"
         vp_note = f"[viewport {vp_signal['width']}px: {fit}]\n"
+    from app.application.web_evidence.corpus import envelope
+    from app.core.redaction import redact_text
+
+    sources = excerpt_sources(
+        run_id=_current_run_id(), tool="browser", url=final_url,
+        text=text, fetched_at=time.time(),
+    ) if actions_complete else []
+    for source in sources:
+        source["title"] = redact_text(str(title or ""))[:300]
+    # The cited excerpts contain observed DOM only. Input/action echoes remain
+    # outside both the source records and the raw verifier evidence below.
+    page_body = "\n\n".join(format_source(source) for source in sources) if sources else text
+    presented = envelope(f"TITLE: {title}\n\n{page_body}", source=final_url)
     result = {
-        "text": f"[browser: {final_url}]\n{vp_note}{act_note}TITLE: {title}\n\n{text}",
+        "text": f"[browser: {final_url}]\n{vp_note}{act_note}{presented}",
         "ok": actions_complete,
         "verifier": True,
         "evidence": (f"TITLE: {title}\n{text}")[:8000],   # DOM only — no action echo
         "interacted": interacted,
         "viewport": vp_signal,   # {checked,width,no_hoverflow} or None — drives layout verdict
+        "sources": sources,
     }
     if not actions_complete:
         result["error"] = "browser_actions_incomplete"

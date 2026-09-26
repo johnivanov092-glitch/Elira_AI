@@ -48,6 +48,10 @@ PLANNING_SYSTEM_PROMPT = (
     '  "capability_groups": ["нужные группы из web, desktop, resources, data, memory, operations"],\n'
     '  "current_step": 1\n'
     "}\n\n"
+    "Если текущих данных недостаточно для выбора API, библиотеки, модели или способа "
+    "исправления, включи web в capability_groups и чтение первичной документации в ordered_steps. "
+    "Сохрани неизвестное как неизвестное; после исследования предусмотрены уточнение подхода, "
+    "выполнение и проверка результата. Поиск нужен по необходимости. "
     "ordered_steps и acceptance_checks непустые. current_step — 1-базовый индекс "
     "первого шага. Верни только JSON."
 )

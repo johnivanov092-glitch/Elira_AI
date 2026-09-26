@@ -8,8 +8,8 @@ import * as bg from "./backgroundRuns";
 import * as folders from "./chatFolders";
 
 /** Left rail: "New chat" + the real conversation list (per v4 layout).
- *  Sessions come from /api/code-agent/sessions. Folders are client-side
- *  (localStorage via chatFolders). Render order: folders → pinned → plain. */
+ *  Sessions and folder layout share the backend store.
+ *  Render order: folders → pinned → plain. */
 export function Sidebar({
   connected, sessions, activeId, onNew, onSelect, onDelete, onRename, onTogglePin,
 }: {
@@ -26,8 +26,12 @@ export function Sidebar({
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Папки + раскладка из localStorage-стора (вне React, как backgroundRuns).
+  // Общая база папок; localStorage используется только как начальный кэш.
   const fState = useSyncExternalStore(folders.subscribe, folders.getSnapshot);
+  const folderSync = useSyncExternalStore(folders.subscribe, folders.getSyncSnapshot);
+  useEffect(() => {
+    if (connected) void folders.synchronize();
+  }, [connected]);
 
   // Создание новой папки: показываем inline-поле ввода имени.
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -167,7 +171,13 @@ export function Sidebar({
 
       <div className="flex items-center gap-2 border-t border-line px-3.5 py-2.5 text-[11.5px] text-t2">
         <span className={cnDot(connected)} />
-        {connected ? "подключено" : "подключение…"}
+        {folderSync.error ? (
+          <button type="button" onClick={() => void folders.synchronize()}
+            title={`Папки: ${folderSync.error}. Нажмите для повторной синхронизации.`}
+            className="truncate text-left text-t2 hover:text-tx" aria-label="Повторить синхронизацию папок">
+            Папки: повторить
+          </button>
+        ) : folderSync.loading ? "синхронизация папок…" : connected ? "подключено" : "подключение…"}
       </div>
     </aside>
   );

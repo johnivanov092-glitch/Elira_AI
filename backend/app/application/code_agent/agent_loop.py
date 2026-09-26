@@ -36,7 +36,6 @@ from app.application.code_agent.capabilities import (
     normalize_capability_groups,
     route_request_capabilities,
     is_local_tabular_catalog_probe,
-    requires_bom_validation,
     should_require_local_catalog_search,
     should_require_web_catalog_fallback,
     should_escalate_web_after_failure,
@@ -123,9 +122,10 @@ from app.application.code_agent.prompts import (  # noqa: F401
 )
 from app.application.persona.service import mode_temperature
 from app.core.persona_defaults import DEFAULT_PROFILE
-from app.application.code_agent.task_guidance import task_guidance_blocks
+from app.application.code_agent.task_guidance import DELIVERY_GUIDANCE, task_guidance_blocks
 from app.application.code_agent.task_skills import (
-    CATALOG_ID, CONTEXT_ID, SkillContext, catalog_context, insert_skill_context,
+    ADVISOR_CONTEXT_ID, CATALOG_ID, CONTEXT_ID, SkillContext, advisor_context,
+    catalog_context, insert_skill_context, learn_from_run,
 )
 from app.core.redaction import redact_secrets
 # History coercion + rolling summarization extracted to .history; it imports
@@ -389,6 +389,9 @@ def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
         return criteria.record(tool_name=name, args=args, ok=tool_ok,
                                evidence=str(tool_meta.get("evidence") or ""),
                                meta=tool_meta, auto=auto)
+    if name == "runtime_control" and args.get("operation") == "result_verify":
+        return criteria.record(tool_name=name, args=args, ok=tool_ok,
+                               evidence=text_result, meta=tool_meta, auto=auto)
     if name == "run_bash":
         return criteria.record(tool_name=name, args=args, ok=tool_ok,
                                evidence=text_result, meta=tool_meta, auto=auto)
@@ -997,6 +1000,7 @@ def _stream_code_agent_core(
         _catalog_web_fetch_seen = False
         _catalog_web_fetch_correction_sent = False
         _bom_snapshot: dict[str, Any] | None = None
+        _bom_validation_selected = False
         _bom_validation_correction_sent = False
         _last_glob_matches: tuple[str, ...] = ()
         _read_file_failures: dict[str, int] = {}
@@ -1017,6 +1021,20 @@ def _stream_code_agent_core(
             durable_state = RunJournal.load(rid).state
         except Exception:
             durable_state = {}
+        from app.application.code_agent.command_progress import CommandProgress
+        from app.application.code_agent.task_outcomes import TaskOutcome
+
+        task_outcome = TaskOutcome(durable_state.get("task_outcome"))
+        command_progress = CommandProgress.from_snapshot(durable_state.get("command_progress"))
+        code_input_epoch = int(durable_state.get("code_input_epoch") or 0)
+        _bom_validation_selected = bool(durable_state.get("bom_validation_selected"))
+        for verification in task_outcome.current_verifications(code_input_epoch):
+            run_evidence.record_tool_result(
+                tool_name="runtime_control", arguments={"operation": "result_verify"},
+                execution_status="ok", output={"ok": verification.get("status") == "passed",
+                    "operation": "result_verify", "result": {"verification": verification}},
+                text_result="", state_changed=False,
+            )
         mutated_files: list[str] = list(durable_state.get("mutated_files") or [])
         verification_log: list[str] = list(durable_state.get("verifications") or [])
         durable_failures: list[str] = list(durable_state.get("failed_attempts") or [])
@@ -1187,6 +1205,11 @@ def _stream_code_agent_core(
         if skill_catalog:
             messages = insert_skill_context(messages, skill_catalog, CATALOG_ID)
             guidance_message_ids.add(CATALOG_ID)
+        advisor_text, advisor_state = advisor_context(raw_user_message)
+        if advisor_text:
+            messages = insert_skill_context(messages, advisor_text, ADVISOR_CONTEXT_ID)
+            guidance_message_ids.add(ADVISOR_CONTEXT_ID)
+        yield {"type": "skill_advisor_consulted", "skill_advisor": advisor_state}
         skill_reminder_pending = False
         skill_reminder_sent = False
         refresh_task_state = True
@@ -1262,6 +1285,8 @@ def _stream_code_agent_core(
                 {_schema_tool_name(schema) for schema in all_schemas},
                 domain_policies=request_route.domain_policies,
             )
+            if request_route.download_requested or "resources" in guidance:
+                guidance["file_delivery"] = DELIVERY_GUIDANCE
             if task_instructions:
                 guidance["delivery"] = task_instructions
             if "work" in guidance and "work" not in sent_guidance:
@@ -1288,6 +1313,18 @@ def _stream_code_agent_core(
             if active_skill_text:
                 messages = insert_skill_context(messages, active_skill_text, CONTEXT_ID)
                 guidance_message_ids.add(CONTEXT_ID)
+            if task_outcome.refresh_deliveries():
+                yield {"type": "task_outcome_changed", "step": step,
+                       "task_outcome": task_outcome.snapshot()}
+            outcome_context = task_outcome.context(code_input_epoch)
+            if outcome_context:
+                outcome_context_id = f"{rid}:task-outcome"
+                messages = insert_skill_context(messages, outcome_context, outcome_context_id)
+                guidance_message_ids.add(outcome_context_id)
+            command_progress.observe("", {}, {}, epoch=task_outcome.version(code_input_epoch))
+            recovery_context_id = f"{rid}:command-recovery"
+            messages = insert_skill_context(messages, command_progress.context(), recovery_context_id)
+            guidance_message_ids.add(recovery_context_id)
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
                     messages,
@@ -1630,8 +1667,8 @@ def _stream_code_agent_core(
                 if (
                     not _web_catalog_fallback_correction_sent
                     and should_require_web_catalog_fallback(
-                        user_message,
                         final_text,
+                        bom_validation_selected=_bom_validation_selected,
                         library_search_seen=_library_search_seen,
                         external_source_seen=run_evidence.has_external_source,
                     )
@@ -1713,8 +1750,42 @@ def _stream_code_agent_core(
                         "runtime_activation": runtime_activation_snapshot(),
                     }
                     continue
+                outcome_pending = task_outcome.pending()
+                outcome_targets = task_outcome.decision.get("targets") or []
+                if not outcome_pending and outcome_targets:
+                    unverified_targets = set(task_outcome.unverified_targets(outcome_targets, code_input_epoch))
+                    pending_targets = [target for target in outcome_targets if target in unverified_targets
+                                       or not run_evidence.has_passing_result_verification([target])]
+                    if pending_targets:
+                        outcome_pending = (
+                            "Не имеют актуальной проверки следующие заявленные результаты задачи: "
+                            + json.dumps(pending_targets, ensure_ascii=False)
+                            + ". task_decide.config.targets задаёт результаты всей задачи; "
+                            "result_verify.config.targets задаёт только файлы отдельной проверки "
+                            "и не изменяет решение task_decide. Если служебный отчёт проверки ошибочно "
+                            "включён в результаты задачи, явно обнови task_decide по исходному запросу "
+                            "пользователя. Если это действительно нужный дополнительный результат, "
+                            "проверь его отдельно. Затем выполни result_verify для текущих результатов: "
+                            "config.command читает их и записывает свежий JSON "
+                            "{checks:[{name,passed:true/false}]} в report_path, отдельный от проверяемых "
+                            "targets. При несовпадении исправь решение и проверь снова."
+                        )
+                if outcome_pending and task_outcome.correction != outcome_pending:
+                    task_outcome.correction = outcome_pending
+                    if "runtime" not in active_capability_groups:
+                        active_capability_groups.add("runtime")
+                        registry = rebuild_registry()
+                        all_schemas = registry.collect_schemas()
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({"role": "user", "content": outcome_pending})
+                    yield {"type": "task_outcome_changed", "step": step,
+                           "task_outcome": task_outcome.snapshot(),
+                           "runtime_activation": runtime_activation_snapshot()}
+                    continue
+                if outcome_pending:
+                    final_text += "\n\nНе подтверждено: " + outcome_pending
                 if (
-                    requires_bom_validation(user_message)
+                    _bom_validation_selected
                     and _bom_snapshot is None
                     and not _bom_validation_correction_sent
                 ):
@@ -1733,48 +1804,42 @@ def _stream_code_agent_core(
                     _bom_validation_correction_sent = True
                     call_log.append("completion blocked by missing deterministic BOM validation")
                     continue
-                if (
-                    request_route.download_requested
-                    and not run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
-                    and not _download_delivery_correction_sent
-                ):
-                    candidate = mutated_files[-1] if mutated_files else ""
+                missing_downloads = task_outcome.missing_deliveries()
+                unbacked_downloads = task_outcome.unbacked_download_links(final_text)
+                delivery_problems = {"targets": missing_downloads, "links": unbacked_downloads}
+                if (missing_downloads or unbacked_downloads) and not _download_delivery_correction_sent:
                     messages.append({"role": "assistant", "content": final_text})
                     messages.append({
                         "role": "user",
                         "content": (
-                            "[internal delivery correction] Пользователь запросил файл для "
-                            "скачивания, но download artifact ещё не создан. "
-                            + (
-                                f"Опубликуй последний созданный файл `{candidate}` через "
-                                "resource_publish и только затем дай итоговый ответ."
-                                if candidate
-                                else "Сначала создай требуемый файл, затем обязательно вызови "
-                                "resource_publish и только после этого отвечай."
-                            )
+                            "[internal delivery correction] Для объявленных или фактически "
+                            "запрошенных через resource_publish файлов либо выданных ссылок нет подтверждённой "
+                            "публикации текущих байтов: "
+                            + json.dumps(delivery_problems, ensure_ascii=False)
+                            + ". Проверь файлы и опубликуй через resource_publish; используй только "
+                            "ссылку из успешного результата. Удали выдуманную ссылку, если файл не создан. "
+                            "Если объявленный delivery contract неверно отражает задачу, "
+                            "исправь его явно через task_decide с reason; пропуск поля "
+                            "delivery сохраняет прежний контракт. Не объявляй неудачную "
+                            "попытку публикации успешной: при невозможности восстановить "
+                            "файл объясни конкретную проблему, сохранив остальной результат."
                         ),
                     })
                     _download_delivery_correction_sent = True
-                    call_log.append("delivery router requested resource_publish")
+                    call_log.append("declared/attempted file delivery lacks current publication")
+                    yield {"type": "task_outcome_changed", "step": step,
+                           "task_outcome": task_outcome.snapshot()}
                     continue
-                download_delivery_failed = bool(
-                    request_route.download_requested
-                    and not run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
-                )
+                download_delivery_failed = bool(missing_downloads or unbacked_downloads)
                 bom_validation_failed = bool(
-                    requires_bom_validation(user_message)
+                    _bom_validation_selected
                     and _bom_snapshot is None
                 )
                 catalog_web_failed = bool(
                     _catalog_web_fallback_required
                     and not _catalog_web_fetch_seen
                 )
-                if download_delivery_failed:
-                    final_text = (
-                        "Файл не был опубликован: Workflow не получил подтверждённый "
-                        "download artifact, поэтому кнопка скачивания не создана."
-                    )
-                elif bom_validation_failed:
+                if bom_validation_failed:
                     final_text = (
                         "BOM не завершён: детерминированная проверка кодов, остатков, "
                         "цен, НДС и итогов не получила статус ok=true. Непроверенные "
@@ -1786,10 +1851,10 @@ def _stream_code_agent_core(
                         "источника. Результат Web-поиска без web_fetch не считается "
                         "проверкой модели, совместимости и наличия."
                     )
-                elif requires_bom_validation(user_message) and _bom_snapshot is not None:
+                elif _bom_validation_selected and _bom_snapshot is not None:
                     artifact_note = (
                         " Финальный файл опубликован."
-                        if run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
+                        if not download_delivery_failed and run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
                         else ""
                     )
                     final_text = (
@@ -1797,6 +1862,13 @@ def _stream_code_agent_core(
                         f"Канонический итог: {_bom_snapshot['total']}."
                         f"{artifact_note} Receipt: "
                         f"{_bom_snapshot['receipt_sha256']}."
+                    )
+                if download_delivery_failed:
+                    final_text = task_outcome.mark_unbacked_download_links(final_text, unbacked_downloads)
+                    final_text = final_text.rstrip() + (
+                        "\n\nПубликация для скачивания не подтверждена для текущих файлов или ссылок: "
+                        + json.dumps(delivery_problems, ensure_ascii=False)
+                        + ". Успешного подтверждения доставки этих байтов нет."
                     )
                 unverified_document_qa_claim = (
                     run_evidence.has_unverified_document_qa_claim(final_text)
@@ -1852,6 +1924,7 @@ def _stream_code_agent_core(
                     "degraded"
                     if (
                         download_delivery_failed
+                        or bool(outcome_pending)
                         or bom_validation_failed
                         or catalog_web_failed
                         or unverified_document_qa_claim
@@ -1896,6 +1969,7 @@ def _stream_code_agent_core(
                     "recent_tool_output": _recent_digest,
                     "sources": run_evidence.sources, "citations": citations,
                     "source_status": source_status,
+                    "task_outcome": task_outcome.snapshot(),
                 }
                 # Step B: drift Elira's mood from this exchange (auto, global,
                 # decaying). Fire-and-forget — never breaks the run.
@@ -2263,7 +2337,7 @@ def _stream_code_agent_core(
                     # Bind document-QA retry accounting to this run. The schema does
                     # not expose run_id, so the model cannot choose or reuse it.
                     parsed_args["run_id"] = rid
-                    if requires_bom_validation(user_message):
+                    if _bom_validation_selected:
                         if _bom_snapshot is None:
                             parsed_args["_runtime_refuse_reason"] = (
                                 "Сначала вызови bom_validate и получи ok=true; затем "
@@ -2325,6 +2399,11 @@ def _stream_code_agent_core(
                         "arguments": redact_secrets(parsed_args),
                     }
                 _exec_result = None
+                _verification_before = (
+                    task_outcome.verification_context(code_input_epoch)
+                    if name == "runtime_control" and parsed_args.get("operation") == "result_verify"
+                    else None
+                )
                 for _hb in _exec_with_heartbeat(
                     lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw),
                     step,
@@ -2428,6 +2507,8 @@ def _stream_code_agent_core(
                                 "tool": name,
                                 "arguments": redact_secrets(parsed_args),
                             }
+                        if _verification_before is not None:
+                            _verification_before = task_outcome.verification_context(code_input_epoch)
                         for _hb in _exec_with_heartbeat(
                             lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw),
                             step,
@@ -2451,6 +2532,10 @@ def _stream_code_agent_core(
                             error="workflow_request_declined",
                         )
                 tool_meta = _exec_result.output
+                if _verification_before is not None:
+                    tool_meta = task_outcome.bind_verification(
+                        tool_meta, _verification_before, code_input_epoch,
+                    )
                 _skill_snapshot_changed = False
                 _skill_receipt = None
                 if (name == "runtime_control" and str(parsed_args.get("operation") or "").strip().lower() == "skill_load"
@@ -2459,14 +2544,18 @@ def _stream_code_agent_core(
                         skill_result = tool_meta.get("result", {})
                         _skill_snapshot_changed = skill_context.activate(
                             skill_result["skill"], skill_result.get("reason", ""),
+                            refresh=True,
                         )
                         selected = next(item for item in skill_context.snapshots()
                                         if item["name"] == skill_result["skill"]["name"])
                         _skill_receipt = {key: selected[key] for key in ("name", "title", "sha256", "reason")}
+                        _skill_receipt.update({key: selected[key] for key in
+                            ("candidate_id", "revision", "package_sha256", "directory") if key in selected})
                         _skill_receipt["already_loaded"] = not _skill_snapshot_changed
                         # The full instruction has one pinned owner. Tool history
                         # and UI receive a receipt, not a duplicate instruction.
-                        tool_meta = {"ok": True, "status": "completed", "text": json.dumps({
+                        tool_meta = {"ok": True, "status": "completed",
+                            "result": {"skill": _skill_receipt}, "text": json.dumps({
                             "skill": _skill_receipt,
                             "message": "Skill instructions are active in the current task context.",
                         }, ensure_ascii=False)}
@@ -2710,6 +2799,7 @@ def _stream_code_agent_core(
                             _read_file_failures.get(_read_requested_path, 0) + 1
                         )
                 if name == "bom_validate":
+                    _bom_validation_selected = True
                     _bom_snapshot = None
                     if _tool_ok:
                         from app.application.code_agent.tools._bom import make_bom_snapshot
@@ -2832,6 +2922,9 @@ def _stream_code_agent_core(
                     "actual_url", "local_url", "actual_port", "port", "pid",
                     "server_started", "media", "action", "kind", "status",
                     "job_id", "log_path", "recovered",
+                    "command", "cwd", "command_sha256", "output_sha256", "attempt_id",
+                    "source_path", "source_sha256", "execution_id", "receipt_path",
+                    "execution_status", "semantic_status",
                     "backgrounded", "redirected_from", "redirect_reason",
                     "remote_pid", "remote_pid_pending",
                     "remote_cleanup_supported", "remote_cleanup_status",
@@ -2856,6 +2949,20 @@ def _stream_code_agent_core(
                     text_result=text_result,
                     state_changed=_state_changed,
                 )
+                if _state_changed:
+                    code_input_epoch += 1
+                task_outcome.observe(name, parsed_args, tool_meta, project_root=root,
+                                     input_epoch=code_input_epoch, execution_status=_exec_result.status)
+                recovery_context = command_progress.observe(
+                    name, parsed_args, tool_meta, execution_status=_exec_result.status,
+                    epoch=task_outcome.version(code_input_epoch), cwd=str(root),
+                )
+                event["task_outcome"] = task_outcome.snapshot()
+                event["command_progress"] = command_progress.snapshot()
+                event["code_input_epoch"] = code_input_epoch
+                event["bom_validation_selected"] = _bom_validation_selected
+                if recovery_context:
+                    event["recovery_context"] = recovery_context
                 if _state_changed:
                     criteria.invalidate_after_mutation()
                     verification_log.clear()
@@ -2891,6 +2998,8 @@ def _stream_code_agent_core(
                 # could blow out `num_ctx` and start eating the system
                 # prompt off the front of the context.
                 _tool_content = _truncate_for_llm(text_result)
+                if recovery_context:
+                    _tool_content += "\n\n" + recovery_context
                 if _evidence_web_activated:
                     _tool_content += (
                         "\n\n[EVIDENCE ROUTER] Web tools are now available. Before retrying "
@@ -2922,7 +3031,13 @@ def _stream_code_agent_core(
                 # must not hard-fail a criterion (a
                 # tool's own red result, e.g. assert-miss or exit!=0, still ships with
                 # status ok and records honestly).
-                if _exec_result.status == "ok":
+                _executed_result_check = (
+                    name == "runtime_control" and parsed_args.get("operation") == "result_verify"
+                    and _exec_result.status in {"error", "cancelled"}
+                    and isinstance(tool_meta.get("result"), dict)
+                    and isinstance(tool_meta["result"].get("verification"), dict)
+                )
+                if _exec_result.status == "ok" or _executed_result_check:
                     _record_criterion_verdict(
                         criteria, name, parsed_args, tool_meta, text_result, _tool_ok)
                 messages.append({
@@ -3136,6 +3251,8 @@ def stream_code_agent(
                     "stop_reason": event.get("stop_reason"),
                     "resumable": event.get("resumable"),
                 })
+                learning = learn_from_run(rid, journal.state)
+                journal.append_event({"type": "skill_advisor_learning", "skill_advisor_learning": learning})
             yield event
     except Exception as exc:
         logger.exception("code-agent run journal failed for %s", rid)

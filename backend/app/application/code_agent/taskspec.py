@@ -1186,6 +1186,32 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
     — NEVER from a shared path/text alone or the model's words."""
     a = args or {}
     m = meta or {}
+    if tool_name == "runtime_control" and a.get("operation") == "result_verify":
+        from app.application.code_agent.run_evidence import _result_verification
+
+        receipt = _result_verification(a, m)
+        if receipt is None:
+            return None
+        checks = receipt.get("checks")
+        if not isinstance(checks, list):
+            return None
+        named: dict[str, bool] = {}
+        for check in checks:
+            if not (isinstance(check, dict) and isinstance(check.get("name"), str)
+                    and type(check.get("passed")) is bool):
+                return None
+            name = " ".join(check["name"].split()).casefold()
+            if not name or name in named:
+                return None
+            named[name] = check["passed"]
+        if not named:
+            return None
+        return {
+            "intents": {"result_check"}, "checks": named,
+            "status": receipt["status"], "exit_code": receipt.get("exit_code"),
+            "targets": [item["path"].replace("\\", "/").casefold()
+                        for item in receipt["targets"]],
+        }
     if tool_name == "ssh_assert_contains":
         return {"intents": {"content_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
     if tool_name == "ssh_assert_not_contains":
@@ -1340,6 +1366,33 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
     an existence check only ever confirms the matching state; a mismatch is neutral
     (stays unconfirmed → honest partial), never a hard failure. Every other intent
     takes the tool's ok as the criterion's pass/fail."""
+    if "result_check" in v.get("intents", set()):
+        # Explicit check names map to exact user criteria, never a keyword or
+        # generic exit=0. File-bearing criteria also need every named target.
+        name = " ".join(item["text"].split()).casefold()
+        if name not in v["checks"]:
+            return None
+        targets = v["targets"]
+        for token in item.get("files") or ():
+            token = token.replace("\\", "/").casefold()
+            if re.fullmatch(r"\d+\.\d+", token):
+                continue  # A decimal quantity is not a path.
+            # The legacy file tokenizer captures a forward-slash Windows path
+            # without its drive. Recover that explicit prefix for exact matching.
+            if token.startswith("/"):
+                drive_path = re.search(r"[a-z]:" + re.escape(token), item["text"].casefold())
+                if drive_path:
+                    token = drive_path.group(0)
+            absolute = token.startswith("/") or bool(re.match(r"^[a-z]:/", token))
+            if not any(path == token or (not absolute and path.endswith("/" + token)) for path in targets):
+                return None
+        if v["status"] == "unverified":
+            return "unverified"
+        if v["checks"][name] is False:
+            return "fail"
+        if ok and v["status"] == "passed" and type(v.get("exit_code")) is int and v["exit_code"] == 0:
+            return "confirm"
+        return "unverified"
     it = item["intent"]
     if it in ("file_exists", "file_not_exists"):
         if not _verdict_target_matches(item, v):
@@ -1482,11 +1535,18 @@ class CriteriaTracker:
                 it.update(status="confirmed", verifier=tool_name, evidence=evidence or None,
                           auto_verified=auto)
                 transitioned = True
-            elif outcome == "fail" and it["status"] == "unconfirmed" and not it.get("conditional"):
+            elif (outcome == "fail" and it["status"] != "failed" and not it.get("conditional")
+                    and (it["status"] == "unconfirmed" or "result_check" in v["intents"])):
                 # A conditional criterion never hard-FAILS — e.g. `npm run typecheck`
                 # exiting non-zero because the script is absent must not fail the task;
                 # it stays unconfirmed and finalize_conditionals() marks it skipped.
                 it.update(status="failed", verifier=tool_name, evidence=evidence or None,
+                          auto_verified=auto)
+                transitioned = True
+            elif outcome == "unverified" and it["status"] in {"confirmed", "failed"}:
+                # A later inconclusive run of this exact check revokes its old
+                # verdict; it is not another business failure.
+                it.update(status="unconfirmed", verifier=tool_name, evidence=evidence or None,
                           auto_verified=auto)
                 transitioned = True
         return transitioned

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import type { CodeAgentToolCall } from "../api/codeAgent";
 import { toolIcon } from "./toolIcon";
 import { cn } from "../ui/cn";
+import "./ToolCallGroup.css";
 
 // The single meaningful bit of an args object, flattened + capped — the "gist"
 // shown on a collapsed row instead of the raw command wall.
@@ -31,7 +32,7 @@ function errPlural(n: number): string {
   return "ошибок";
 }
 
-// Runtime/physical terminal conditions shown instead of a green success count.
+// Terminal conditions remain available inside the action history.
 const FAILED_STOP_LABELS: Record<string, string> = {
   timeout: "таймаут",
   context_limit: "переполнен контекст",
@@ -39,13 +40,42 @@ const FAILED_STOP_LABELS: Record<string, string> = {
   cancelled: "остановлено",
 };
 
-// `ok === false` is a real failure (red). A non-zero shell exit that isn't an
-// explicit ok is "ran, but not clean" (grey) — a bare exit=0 no longer reads as
-// verified success by omission. Everything else stays green.
+// Presentation of actual tool_started events, not a timer or inferred progress.
+const ACTIVE_LABELS: Record<string, string> = {
+  read_file: "Читаю файл",
+  write_file: "Записываю файл",
+  edit_file: "Изменяю файл",
+  glob: "Ищу файлы в проекте",
+  grep: "Ищу в проекте",
+  run_bash: "Выполняю команду",
+  sandbox_run: "Выполняю код",
+  web_search: "Ищу в интернете",
+  web_fetch: "Читаю страницу",
+  browser: "Работаю в браузере",
+  computer: "Работаю с приложением",
+  recall: "Ищу в памяти",
+  todo_update: "Обновляю план",
+  delegate_task: "Передаю задачу агенту",
+  capability_load: "Подключаю инструменты",
+  runtime_control: "Настраиваю рабочие инструменты",
+  ssh_read: "Читаю файл на сервере",
+  ssh_write: "Записываю файл на сервере",
+  ssh_run: "Выполняю команду на сервере",
+  ssh_list_hosts: "Проверяю доступные серверы",
+  resource_publish: "Подготавливаю файл для скачивания",
+};
+
+function activeLabel(tool: string): string {
+  // Workflow step events already carry their own human-readable label.
+  if (tool.startsWith("Шаг ")) return tool;
+  return ACTIVE_LABELS[tool] ?? "Вызываю инструмент";
+}
+
+// Only an explicit receipt confirms success; legacy/unknown results stay neutral.
 function StatusDot({ ok, exitCode }: { ok?: boolean; exitCode?: number }) {
   const cls =
-    ok === false ? "bg-danger" : exitCode != null && exitCode !== 0 && ok !== true ? "bg-mut" : "bg-success";
-  return <span className={cn("h-[7px] w-[7px] shrink-0 rounded-full", cls)} aria-hidden />;
+    ok === false ? "bg-danger" : ok === true ? "bg-success" : "bg-mut";
+  return <span className={cn("h-[7px] w-[7px] shrink-0 rounded-full", cls)} title={exitCode != null ? `Код выхода: ${exitCode}` : undefined} aria-hidden />;
 }
 
 type Run = { tool: string; items: { call: CodeAgentToolCall; idx: number }[] };
@@ -61,108 +91,67 @@ function groupRuns(calls: CodeAgentToolCall[]): Run[] {
 }
 
 export function ToolCallGroup({ calls, activeTool, stopReason }: { calls: CodeAgentToolCall[]; activeTool?: string; stopReason?: string }) {
-  // Collapse big groups by default so they don't sprawl. A live run that starts
-  // small stays expanded (you watch it grow); a large/historical group mounts
-  // collapsed.
-  const [open, setOpen] = useState(() => calls.length <= 5);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (open && activeTool && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [calls.length, activeTool, open]);
-
-  const counts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const c of calls) m.set(c.tool, (m.get(c.tool) ?? 0) + 1);
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [calls]);
-  const errors = useMemo(() => calls.filter((c) => c.ok === false).length, [calls]);
-  const oks = calls.length - errors;
+  const errors = useMemo(() => calls.filter((c) => c.ok === false), [calls]);
   const runs = useMemo(() => groupRuns(calls), [calls]);
-  // A terminal non-answer stop = the run ended without finishing. Surface it in
-  // the header (over the "N ok" summary) so a stopped run reads as stopped.
+  // Stop live animation at a terminal event. Diagnostics belong to the history,
+  // not the collapsed action label; the turn owns the overall answer status.
   const failedLabel = stopReason ? FAILED_STOP_LABELS[stopReason] : undefined;
+  const liveTool = failedLabel ? undefined : activeTool;
 
   if (calls.length === 0 && !activeTool) return null;
 
   return (
-    <div className="my-2.5 overflow-hidden rounded-xl border border-line bg-surface">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[12.5px]"
-      >
-        {open ? <ChevronDown size={13} className="shrink-0 text-mut" /> : <ChevronRight size={13} className="shrink-0 text-mut" />}
-        <span className="shrink-0 font-medium">{calls.length} {plural(calls.length)}</span>
-        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-          {counts.slice(0, 4).map(([tool, n]) => (
-            <span key={tool} className="rounded-md border border-line bg-card px-1.5 py-px font-mono text-[10.5px] text-t2">
-              {n}× {tool}
+    <details className="tool-activity tool-activity-disclosure my-2.5 min-w-0">
+      <summary className="flex cursor-pointer items-center gap-2 rounded-lg py-1.5 text-[12.5px] text-mut hover:text-t2">
+        <ChevronRight size={13} className="tool-activity-chevron shrink-0" aria-hidden />
+        <span className="shrink-0 font-medium">Действия</span>
+        {liveTool && (
+          <span role="status" aria-live="polite" aria-atomic="true" className="flex min-w-0 items-center gap-2 text-t2">
+            <Loader2 size={13} className="tool-activity-spinner shrink-0" aria-hidden />
+            <span className="tool-activity-live break-words">{activeLabel(liveTool)}</span>
+          </span>
+        )}
+      </summary>
+      <div className="mt-1 max-h-[46vh] overflow-y-auto rounded-lg border border-line bg-surface">
+        <div className="flex flex-wrap gap-x-2 gap-y-1 px-3.5 py-2 text-[11.5px] text-mut">
+          <span>{calls.length} {plural(calls.length)}</span>
+          {(failedLabel || errors.length > 0) && (
+            <span className="text-danger">
+              {failedLabel ? `${failedLabel} · задача не завершена` : `${errors.length} ${errPlural(errors.length)}`}
             </span>
-          ))}
-          {counts.length > 4 && <span className="text-[10.5px] text-mut">+{counts.length - 4}</span>}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-[11.5px]">
-          {failedLabel ? (
-            <span className="font-medium text-danger">⛔ {failedLabel} · задача не завершена</span>
-          ) : (
-            <>
-              {oks > 0 && <span className="text-success">{oks} ok</span>}
-              {errors > 0 && <span className="text-danger">{errors} {errPlural(errors)}</span>}
-            </>
-          )}
-        </span>
-      </button>
-      {open && (
-        <div>
-          <div ref={scrollRef} className="max-h-[46vh] overflow-y-auto">
-            {runs.map((run, ri) =>
-              run.items.length >= 3
-                ? <RunGroup key={ri} run={run} />
-                : run.items.map(({ call, idx }) => <ToolRow key={idx} call={call} />),
-            )}
-          </div>
-          {activeTool && (
-            <div className="flex items-center gap-2.5 border-t border-line px-3.5 py-2.5 text-[12.5px] text-t2">
-              <Loader2 size={14} className="animate-spin text-ac" /> выполняется {activeTool}…
-            </div>
           )}
         </div>
-      )}
-    </div>
+        {runs.map((run, ri) =>
+          run.items.length >= 3
+            ? <RunGroup key={ri} run={run} />
+            : run.items.map(({ call, idx }) => <ToolRow key={idx} call={call} />),
+        )}
+        {liveTool && <div className="border-t border-line px-3.5 py-2 text-[11.5px] text-t2">{liveTool} · результат ещё не получен</div>}
+      </div>
+    </details>
   );
 }
 
-// A run of 3+ consecutive calls of the same tool, collapsed to one line by
-// default so a storm of run_bash/ssh_read doesn't sprawl. Expands to the rows.
+// Consecutive calls remain grouped inside the optional history.
 function RunGroup({ run }: { run: Run }) {
-  const [open, setOpen] = useState(false);
   const Icon = toolIcon(run.tool);
   const errs = run.items.filter((x) => x.call.ok === false).length;
   return (
-    <div className="border-t border-line">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] hover:bg-hover"
-      >
-        {open ? <ChevronDown size={13} className="shrink-0 text-mut" /> : <ChevronRight size={13} className="shrink-0 text-mut" />}
-        <span className="grid h-[23px] w-[23px] shrink-0 place-items-center rounded-md border border-line bg-surface text-t2">
-          <Icon size={14} />
-        </span>
-        <span className="font-medium">{run.tool}</span>
+    <details className="tool-activity-disclosure border-t border-line">
+      <summary className="flex cursor-pointer items-center gap-2.5 px-3.5 py-2 text-[12.5px] hover:bg-hover">
+        <ChevronRight size={13} className="tool-activity-chevron shrink-0 text-mut" aria-hidden />
+        <Icon size={14} className="shrink-0 text-t2" aria-hidden />
+        <span className="min-w-0 truncate font-medium">{run.tool}</span>
         <span className="rounded border border-line bg-card px-1 text-[10.5px] text-mut">×{run.items.length}</span>
-        {errs > 0 ? <span className="text-[11.5px] text-danger">{errs} {errPlural(errs)}</span> : <StatusDot ok />}
-        <span className="ml-auto shrink-0 text-[11px] text-mut">{open ? "свернуть" : "развернуть"}</span>
-      </button>
-      {open && run.items.map(({ call, idx }) => <ToolRow key={idx} call={call} nested />)}
-    </div>
+        {errs > 0 && <span className="text-[11.5px] text-danger">{errs} {errPlural(errs)}</span>}
+      </summary>
+      {run.items.map(({ call, idx }) => <ToolRow key={idx} call={call} nested />)}
+    </details>
   );
 }
 
 function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }) {
-  const [exp, setExp] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const Icon = toolIcon(call.tool);
   const err = call.ok === false;
   const skillLoad = call.tool === "runtime_control" && call.arguments.operation === "skill_load";
@@ -173,43 +162,43 @@ function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }
     ? [call.skill?.title ?? String(call.arguments.name ?? ""), call.skill?.reason].filter(Boolean).join(" · ")
     : shortArg(call.arguments);
   return (
-    <div
-      className="border-t border-line"
+    <details
+      className="tool-activity-disclosure border-t border-line"
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
       style={err ? { background: "color-mix(in srgb, var(--color-danger) 9%, transparent)" } : undefined}
     >
-      <button
-        type="button"
-        onClick={() => setExp((e) => !e)}
+      <summary
         className={cn(
-          "flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] hover:bg-hover",
-          nested && "pl-9",
+          "flex cursor-pointer items-center gap-2.5 px-3.5 py-2 text-[12.5px] hover:bg-hover",
+          nested && "pl-7",
         )}
       >
         <StatusDot ok={call.ok} exitCode={call.exit_code} />
-        <span className="grid h-[23px] w-[23px] shrink-0 place-items-center rounded-md border border-line bg-surface text-t2">
-          <Icon size={14} />
-        </span>
+        <Icon size={14} className="shrink-0 text-t2" aria-hidden />
         <span className="min-w-0 flex-1 truncate">
           <span className={cn("font-medium", err && "text-danger")}>{label}</span>{" "}
           <span title={detail} className={cn("font-mono text-[11.5px]", err ? "text-danger" : "text-t2")}>{detail}</span>
         </span>
-        {/* R4: the runtime made this call itself (auto-verifier closure) — make it
-            visibly distinct from model-chosen calls. */}
         {call.auto_verifier && (
-          <span
-            className="ml-2 shrink-0 rounded-md border border-line bg-surface px-1.5 py-px text-[10px] text-t2"
-            title="Вызов выполнен runtime'ом (auto-verifier pass), не моделью"
-          >
-            ⚙ runtime
-          </span>
+          <span className="shrink-0 rounded border border-line px-1 text-[10px] text-t2" title="Проверка выполнена средой исполнения">runtime</span>
         )}
-        <ChevronRight size={13} className="ml-auto shrink-0 text-mut" />
-      </button>
-      {exp && call.result && (
-        <pre className="mx-3.5 mb-3 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-[#121216] p-3 font-mono text-[11.5px] text-t2">
-          {call.result.slice(0, 4000)}
-        </pre>
-      )}
-    </div>
+        <ChevronRight size={13} className="tool-activity-chevron shrink-0 text-mut" aria-hidden />
+      </summary>
+      {expanded && <div className="mx-3.5 mb-3 min-w-0 space-y-2 text-[11.5px]">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-mut">
+          <span>Инструмент: {call.tool}</span>
+          <span>Шаг {call.step}</span>
+          {call.exit_code != null && <span>Код выхода: {call.exit_code}</span>}
+        </div>
+        <div>
+          <div className="mb-1 text-t2">Аргументы</div>
+          <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-card p-3 font-mono text-t2">{JSON.stringify(call.arguments, null, 2)}</pre>
+        </div>
+        <div>
+          <div className="mb-1 text-t2">Результат</div>
+          <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-card p-3 font-mono text-t2">{call.result || "Пустой результат"}</pre>
+        </div>
+      </div>}
+    </details>
   );
 }

@@ -4,6 +4,34 @@ import { AgentTurnView } from "./AgentTurn";
 import type { AgentTurnData } from "./types";
 
 describe("AgentTurn structured analysis status", () => {
+  it.each([false, true])("uses site citation chips in the answer and source details (media=%s)", (withMedia) => {
+    const turn: AgentTurnData = {
+      kind: "agent", id: "agent-source", toolCalls: [], running: false,
+      text: "Документация Python [[source:w_writer]].\n\nПример работы с CSV.",
+      answerState: "accepted", stopReason: "answer",
+      citations: [{
+        source_id: "w_writer", status: "matched", claim_support: "not_assessed",
+        source: {
+          id: "w_writer", origin_run_id: "thinking-web", tool: "web_fetch",
+          url: "https://docs.python.org/3.10/library/csv.html", title: "", status: "excerpt",
+          quote: "The file should be opened with newline=''.", fetched_at: 1,
+          content_hash: "abc", excerpt_hash: "def", doc_id: "", chunk_id: null, offset: 3000,
+          quote_verified: true, presented: true, claim_support: "not_assessed", error: "",
+        },
+      }],
+      media: withMedia ? [{
+        type: "image", url: "https://images.example/diagram.jpg", source_url: "https://source.example/diagram",
+        title: "Пример", source: "source.example",
+      }] : undefined,
+    };
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+    expect(html.match(/data-source-id="w_writer"/g)).toHaveLength(2);
+    expect(html.match(/>docs\.python\.org<\/span>/g)).toHaveLength(2);
+    expect(html).toContain("<blockquote");
+    expect(html).not.toContain("[1]");
+    expect(html).not.toContain("[[source:w_writer]]");
+  });
+
   it("shows the live planning phase instead of a generic spinner", () => {
     const turn: AgentTurnData = {
       kind: "agent",

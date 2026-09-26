@@ -27,6 +27,8 @@ been superseded; they stay only for the decisions/history they record.
 - `research/AUTONOMOUS_CORE_PROPOSAL_RU.md` - agreed self-development boundaries.
 - `research/AUTONOMOUS_DELIVERY_2026-09-26_RU.md` - implementation, checks and active release.
 - `research/AUTONOMOUS_LIVE_PROOF_RU.md` - real Qwen skill creation and reuse evidence.
+- `research/AUTONOMOUS_RECOVERY_ACCEPTANCE_RU.md` - create, repair and reuse acceptance; thinking/web and source links.
+- `research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md` - UI/backend and MCP acceptance, learned skill hints and current evidence.
 - `research/LAYA_CPU_EVALUATION_RU.md` - rejected Laya CPU experiment and removal evidence.
 - `research/MODEL_INVENTORY_2026-09-26_RU.md` - installed and live model inventory.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.

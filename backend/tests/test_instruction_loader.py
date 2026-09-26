@@ -107,15 +107,22 @@ class TestLoadInstructions(unittest.TestCase):
     def test_total_limit_stops_loading_extra_files(self):
         """With a tight total cap, later files are skipped when budget is full."""
         fake_home = Path(self._tmp.name) / "home3"
-        # Use a small total cap (300) equal to 2 × file cap (150) so that
-        # global + project exactly fill the budget and local is skipped.
-        _write(fake_home / ".elira" / "agent.md",        "G" * 150)
+        global_path = fake_home / ".elira" / "agent.md"
+        # Fit exactly the first body and its provenance, regardless of the
+        # temporary directory's length. Later sources have no budget left.
+        expected = (
+            f"[UNTRUSTED INSTRUCTIONS: global; source={global_path}]\n"
+            + "G" * 150
+            + "\n[/UNTRUSTED INSTRUCTIONS]"
+        )
+        total_limit = len(expected)
+        _write(global_path,                              "G" * 150)
         _write(self.root / ".elira" / "agent.md",         "P" * 150)
         _write(self.root / ".elira" / "agent.local.md",   "LOCAL_MARKER")
 
         import app.application.instructions.loader as _loader
         with mock.patch.object(_loader, "_FILE_CHAR_LIMIT", 150), \
-             mock.patch.object(_loader, "_TOTAL_CHAR_LIMIT", 300), \
+             mock.patch.object(_loader, "_TOTAL_CHAR_LIMIT", total_limit), \
              mock.patch("app.application.instructions.loader.Path.home",
                         return_value=fake_home):
             result = load_instructions(self.root)
@@ -124,7 +131,8 @@ class TestLoadInstructions(unittest.TestCase):
         self.assertNotIn("LOCAL_MARKER", result)
         self.assertIn("G" * 150, result)
         self.assertNotIn("P" * 150, result)
-        self.assertLessEqual(len(result), 300)
+        self.assertLessEqual(len(result), total_limit)
+        self.assertEqual(result, expected)
 
     # ── Deduplication ────────────────────────────────────────────────────────
 
