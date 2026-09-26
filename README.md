@@ -4,8 +4,8 @@ Self-hosted AI workspace with a Tauri desktop shell, FastAPI backend,
 React/TypeScript frontend, local project tools, memory, approvals, and local
 inference through OpenAI-compatible endpoints.
 
-Core state stays on the main PC. The AI server is used as an inference backend
-only.
+Agent state, orchestration and local tools stay on the main PC. The AI server
+provides model inference and auxiliary APIs; see [the service map](docs/SERVER.md).
 
 ## Current Runtime
 
