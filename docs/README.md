@@ -25,6 +25,7 @@ been superseded; they stay only for the decisions/history they record.
 - `TASK_SKILLS.md` - model-selected task skills, trusted packages and context lifecycle.
 - `RELEASE_LIFECYCLE.md` - separate launch/recovery supervisor and atomic app releases.
 - `research/AUTONOMOUS_CORE_PROPOSAL_RU.md` - agreed self-development boundaries.
+- `research/AUTONOMOUS_LIVE_PROOF_RU.md` - real Qwen skill creation and reuse evidence.
 - `research/LAYA_CPU_EVALUATION_RU.md` - rejected Laya CPU experiment and removal evidence.
 - `research/MODEL_INVENTORY_2026-09-26_RU.md` - installed and live model inventory.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.

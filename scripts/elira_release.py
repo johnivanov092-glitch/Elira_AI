@@ -177,8 +177,8 @@ def _snapshot_databases(data: Path, destination: Path) -> None:
         relative = source.relative_to(data)
         target = _contained(destination / relative, destination)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as original:
-            with sqlite3.connect(target) as backup:
+        with contextlib.closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as original:
+            with contextlib.closing(sqlite3.connect(target)) as backup:
                 original.backup(backup)
         names.append(relative.as_posix())
     _write_json(destination / "snapshot.json", {"databases": names})

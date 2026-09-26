@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+from contextlib import closing
 import os
 import sqlite3
 import threading
@@ -104,7 +105,7 @@ def _workflow_busy() -> bool:
     if not Path(path).exists():
         return False
     # Read-only observation: never rewrite an abandoned run to make drain pass.
-    with sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
         return bool(db.execute(
             "SELECT 1 FROM workflow_runs WHERE status NOT IN "
             "('completed','partial','failed','cancelled') LIMIT 1"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -17,12 +18,13 @@ SPEC.loader.exec_module(release)
 
 BACKEND = '''
 import json, os, sqlite3, sys, threading
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 data = Path(os.environ["ELIRA_DATA_DIR"])
 data.mkdir(parents=True, exist_ok=True)
 rid = os.environ["ELIRA_RELEASE_ID"]
-with sqlite3.connect(data / "state.db") as db:
+with closing(sqlite3.connect(data / "state.db")) as db, db:
     db.execute("CREATE TABLE IF NOT EXISTS state(value TEXT)")
     db.execute("DELETE FROM state")
     db.execute("INSERT INTO state VALUES(?)", (rid,))
@@ -87,7 +89,7 @@ def _candidate(manager, name):
 
 
 def _db_value(data):
-    with sqlite3.connect(data / "state.db") as db:
+    with closing(sqlite3.connect(data / "state.db")) as db:
         return db.execute("SELECT value FROM state").fetchone()[0]
 
 
@@ -146,7 +148,7 @@ def test_release_real_process_lifecycle_verification_drain_and_recovery(tmp_path
         state = manager.state()
         state["transition"] = {"from": "a", "to": "b", "phase": "switching", "backup": str(backup)}
         manager._save(state)
-        with sqlite3.connect(data / "state.db") as db:
+        with closing(sqlite3.connect(data / "state.db")) as db, db:
             db.execute("UPDATE state SET value='partial migration'")
         assert manager.recover()["active"] == "a"
         assert _db_value(data) == "a"

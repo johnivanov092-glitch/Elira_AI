@@ -78,7 +78,7 @@ def test_real_skill_lifecycle_keeps_active_version_until_verified_replacement(tm
     (changed / "normalize.py").write_text("def normalize(text):\n    return ''\n", encoding="utf-8", newline="\n")
     failed = call("skill_check", candidate_id=next_id, command=f'"{sys.executable}" check.py')
     assert not failed["ok"]
-    assert "verification_failed" in failed["error"]["message"]
+    assert failed["error"]["message"] == "nonzero_exit"
     assert task_skills.skill_control("skill_load", name)["skill"]["directory"] == str(directory)
     (changed / "normalize.py").write_text(
         "def normalize(text):\n    return ' '.join(text.strip().split())\n", encoding="utf-8", newline="\n",
