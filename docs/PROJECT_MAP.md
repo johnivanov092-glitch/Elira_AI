@@ -7,6 +7,7 @@ D:\AIWork\Elira_AI
 ├─ backend/       FastAPI + Python agent/runtime
 ├─ frontend/      React + Vite + TypeScript UI
 ├─ src-tauri/     Windows desktop shell and native UAC bridge
+├─ integrations/  isolated portal utilities
 ├─ docs/          current architecture and operating docs
 ├─ data/          machine-local runtime data (mostly ignored)
 ├─ .agent/runs/   durable code-agent journals
@@ -46,6 +47,8 @@ move Elira's backend state or tools into that repository.
 | Workflow step execution | `backend/app/domain/workflows/step_executor.py` |
 | Runtime provider registry | `backend/app/application/tool_providers/runtime_registry.py` |
 | SSH/MCP/LSP/IT Ops providers | `backend/app/application/tool_providers/` |
+| Settings MCP lifecycle API | `backend/app/api/routes/mcp_routes.py` |
+| Reprocenter operator pagination | `integrations/reprocenter/operator_pagination.py` |
 | Tool inventory | `backend/app/application/tool_registry/` |
 | LLM client | `backend/app/infrastructure/llm/openai_compatible.py` |
 | Portable vault | `backend/app/infrastructure/secrets/vault.py` |

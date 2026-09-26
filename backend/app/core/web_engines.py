@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import os
 from typing import Dict, Iterable, List
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
 try:
     from ddgs import DDGS
+    DDGS_LABEL = "DDGS metasearch"
+    # DDGS auto prioritizes encyclopedia engines and stops once its result
+    # count is met. Query web engines explicitly; Wikipedia has its own adapter.
+    DDGS_WEB_BACKENDS = ("google", "brave", "duckduckgo", "yahoo", "mojeek", "yandex")
 except ImportError:  # pragma: no cover - compatibility fallback
     from duckduckgo_search import DDGS
+    DDGS_LABEL = "DuckDuckGo"
+    DDGS_WEB_BACKENDS = ()  # Legacy package has a different backend vocabulary.
 
 from .files import truncate_text
 
@@ -24,9 +30,9 @@ ENGINE_PRIORITY = {
 }
 ENGINE_LABELS = {
     "searxng": "SearXNG",
-    "duckduckgo": "DuckDuckGo",
+    "duckduckgo": DDGS_LABEL,
     "wikipedia": "Wikipedia",
-    "ddg-news": "DDG News",
+    "ddg-news": f"{DDGS_LABEL} News",
 }
 
 KZ_LOCAL_NEWS_DOMAINS = (
@@ -71,7 +77,9 @@ def clean_url(url: str) -> str:
             url = query.get("q", [url])[0]
         except Exception:
             pass
-    return unquote(url)
+    # parse_qs unwraps the redirect once. Decoding the destination again would
+    # turn escaped delimiters into path/query separators and change its meaning.
+    return url
 
 
 def extract_domain(url: str) -> str:
@@ -128,7 +136,7 @@ def get_web_engine_status() -> dict:
     warnings: list[str] = []
 
     if not searxng_enabled:
-        warnings.append("SEARXNG_URL not configured; web search is running on DuckDuckGo only (no SearXNG metasearch).")
+        warnings.append(f"SEARXNG_URL not configured; web search uses {DDGS_LABEL} and Wikipedia.")
 
     return {
         "supported_engines": list(SUPPORTED_SEARCH_ENGINES),
@@ -151,10 +159,11 @@ def search_duckduckgo(
 ) -> List[Dict[str, str]]:
     results: list[Dict[str, str]] = []
     with DDGS() as ddgs:
+        text_options = {"backend": ",".join(DDGS_WEB_BACKENDS)} if DDGS_WEB_BACKENDS else {}
         raw_results = (
             ddgs.images(query, max_results=max_results)
             if categories == "images"
-            else ddgs.text(query, max_results=max_results)
+            else ddgs.text(query, max_results=max_results, **text_options)
         )
         for item in raw_results:
             href = clean_url(item.get("url") or item.get("href", ""))
@@ -166,6 +175,8 @@ def search_duckduckgo(
                     "href": href,
                     "body": (item.get("body") or item.get("source") or "").strip(),
                     "engine": "duckduckgo",
+                    **({"date": str(item.get("date") or item.get("publishedDate"))}
+                       if item.get("date") or item.get("publishedDate") else {}),
                     **(
                         {
                             "img_src": clean_url(item.get("image", "")),
@@ -237,6 +248,10 @@ def search_searxng(
                 "href": href,
                 "body": truncate_text(str(body).strip(), 300),
                 "engine": "searxng",
+                **({"date": str(item.get("publishedDate") or item.get("date"))}
+                   if item.get("publishedDate") or item.get("date") else {}),
+                **({"filter_time_range": time_range} if "time_range" in params else {}),
+                **({"filter_categories": categories} if categories else {}),
                 **(
                     {"img_src": clean_url(item.get("img_src", ""))}
                     if item.get("img_src")

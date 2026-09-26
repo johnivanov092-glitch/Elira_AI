@@ -131,14 +131,22 @@ def store_document(*, run_id: str, doc: dict[str, Any], chunks: list[dict]) -> d
     def op(conn):
         _expire(conn)
         dup = conn.execute(
-            "SELECT doc_id FROM documents WHERE run_id=? AND content_hash=?",
+            "SELECT doc_id, final_url, url, dates, tier FROM documents WHERE run_id=? AND content_hash=?",
             (run_id, doc["content_hash"])).fetchone()
         if dup:
             # contract §7: a re-fetch refreshes BOTH timestamps (the page was seen
             # again NOW — TTL restarts; v1 only touched last_access).
+            dates = json.loads(dup[3] or "{}")
+            tier = dup[4]
+            # Identical text from another URL does not change the stored source's
+            # publication dates or publisher classification.
+            if (doc.get("final_url") or doc.get("url")) == (dup[1] or dup[2]):
+                dates.update({key: value for key, value in (doc.get("dates") or {}).items() if value})
+                if doc.get("tier") and doc["tier"] != "unknown":
+                    tier = doc["tier"]
             conn.execute(
-                "UPDATE documents SET last_access=?, fetched_at=? WHERE run_id=? AND doc_id=?",
-                (_now(), _now(), run_id, dup[0]))
+                "UPDATE documents SET last_access=?, fetched_at=?, dates=?, tier=? WHERE run_id=? AND doc_id=?",
+                (_now(), _now(), json.dumps(dates, ensure_ascii=False), tier, run_id, dup[0]))
             conn.commit()
             return {"doc_id": dup[0], "deduped": True}
 

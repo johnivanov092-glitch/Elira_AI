@@ -67,7 +67,7 @@ def _clean(value: Any, *, key: str = "", bound_strings: bool = True) -> Any:
 def sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
     """Redact display output; Workflow schemas and opaque refs are control data."""
     cleaned = dict(event)
-    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output", "sources", "citations"):
+    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output", "sources", "citations", "workflow_input"):
         if field in cleaned:
             cleaned[field] = _clean(cleaned[field], bound_strings=False)
     return cleaned
@@ -227,6 +227,8 @@ class RunJournal:
         raise RuntimeError("failed to acquire agent lock")
 
     def start(self, request: dict[str, Any], capabilities: dict[str, Any]) -> None:
+        from app.application.code_agent.answer_contracts import infer_quote_word_limit
+
         self.acquire()
         now = _utc_now()
         self._state = {
@@ -258,6 +260,10 @@ class RunJournal:
                 or (Path(__file__).resolve().parents[4].parent / "Elira_AI_Server")
             ),
             "request": _clean(request),
+            "quote_word_limit": infer_quote_word_limit(
+                request["memory_query"] if isinstance(request.get("memory_query"), str)
+                else str(request.get("user_message") or "")
+            ),
             "capabilities": _clean(capabilities),
             "active_capabilities": [
                 name for name, value in capabilities.items()
@@ -299,6 +305,10 @@ class RunJournal:
         event_type = str(event.get("type") or "")
         if event_type == "skills_changed":
             self._state["active_skills"] = _clean(event.get("active_skills") or [])
+        if event_type == "answer_format_correction" and event.get("contract") == "quote_word_limit":
+            self._state["quote_word_limit_correction_sent"] = True
+        if event_type == "answer_format_correction" and event.get("contract") == "web_cadence_citation":
+            self._state["web_cadence_correction_sent"] = True
         step = int(event.get("step") or event.get("steps") or 0)
         runtime_activation = event.get("runtime_activation")
         if isinstance(runtime_activation, dict):
@@ -313,9 +323,21 @@ class RunJournal:
             )
         if event_type == "final_response":
             self._state["answer_state"] = "accepted"
+            self._state["answer_status"] = str(event.get("answer_status") or "complete")
             self._state["last_response"] = str(event.get("text") or "")
             self._state["citations"] = _clean(event.get("citations") or [])
             self._state["source_status"] = str(event.get("source_status") or "none")
+        if event_type == "tool_call" and event.get("tool") == "ask_user" and event.get("ok") is True:
+            workflow_input = event.get("workflow_input")
+            if isinstance(workflow_input, dict) and all(
+                isinstance(workflow_input.get(key), str) and workflow_input[key].strip()
+                for key in ("request_id", "question", "answer")
+            ):
+                inputs = self._state.setdefault("workflow_inputs", [])
+                if not any(item.get("request_id") == workflow_input["request_id"] for item in inputs):
+                    inputs.append(_clean({
+                        key: workflow_input[key] for key in ("request_id", "question", "answer")
+                    }))
         if event_type in {"source_evidence", "tool_call", "final_response"} and "sources" in event:
             self._state["web_sources"] = merge_sources(
                 self._state.get("web_sources") or [], _clean(event.get("sources") or []),
@@ -399,14 +421,18 @@ class RunJournal:
             # are no criteria and it reached a clean answer. failed / unverified /
             # partial and every runtime failure are NOT "completed".
             completion = str(event.get("completion_status") or "none")
+            answer_status = str(event.get("answer_status") or self._state.get("answer_status") or "complete")
             reached_answer = bool(event.get("ok")) and stop_reason == "answer"
-            if completion == "confirmed" or (completion == "none" and reached_answer):
+            if answer_status == "complete" and (
+                completion == "confirmed" or (completion == "none" and reached_answer)
+            ):
                 status = "completed"
             else:
                 status = stop_reason
             self._state.update({
                 "status": status,
                 "stop_reason": stop_reason,
+                "answer_status": answer_status,
                 "completion_status": completion,
                 "criteria": list(event.get("criteria") or []),
                 "criteria_epoch": int(self._state.get("project_epoch") or 0),

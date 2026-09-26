@@ -8,6 +8,7 @@ from app.api.routes.elira_state import router as elira_state_router
 from app.api.routes.event_bus_routes import router as event_bus_router
 from app.api.routes.library_sqlite import router as library_sqlite_router
 from app.api.routes.media_routes import router as media_router
+from app.api.routes.mcp_routes import router as mcp_router
 from app.api.routes.models import router as models_router
 from app.api.routes.persona import router as persona_router
 from app.api.routes.profiles import router as profiles_router
@@ -23,6 +24,7 @@ ALL_ROUTERS = (
     persona_router,
     library_sqlite_router,
     media_router,
+    mcp_router,
     advanced_router,
     skills_router,
     event_bus_router,

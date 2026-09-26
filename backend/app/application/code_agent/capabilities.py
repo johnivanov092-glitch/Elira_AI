@@ -79,8 +79,21 @@ PROFILE_CAPABILITY_GROUPS = DOMAIN_CAPABILITY_GROUPS
 
 
 _DOWNLOAD_REQUEST_RE = re.compile(
-    r"(?:скач\w*|download|дай\s+(?:мне\s+)?(?:ссылк\w*|файл)|"
+    r"(?:скач\w*|download|дай\s+(?:мне\s+)?файл|"
     r"отдай\s+(?:мне\s+)?файл|файл\w*\s+для\s+скач\w*)",
+    re.IGNORECASE,
+)
+_LINK_REQUEST_RE = re.compile(r"(?:ссылк\w*|\blink\b)", re.IGNORECASE)
+_FILE_LINK_REQUEST_RE = re.compile(
+    r"(?:ссылк\w*\s+на\s+(?:этот\s+)?файл\b|"
+    r"\blink\s+to\s+(?:the\s+)?file\b)",
+    re.IGNORECASE,
+)
+_GENERATED_ARTIFACT_RE = re.compile(
+    r"\b(?:создай|создан\w*|сгенер\w*|сформир\w*|подготов\w*|готов\w*|"
+    r"create|creat(?:ed|ing)|generat(?:e|ed|ing)|prepare[ds]?)\s+"
+    r"[^.!?\n]{0,80}\b(?:pdf|docx|xlsx|pptx|csv|zip|файл\w*|документ\w*|"
+    r"отч[её]т\w*|таблиц\w*|презентац\w*|архив\w*|file|document|report)\b",
     re.IGNORECASE,
 )
 _RESOURCE_REQUEST_RE = re.compile(
@@ -143,7 +156,7 @@ _BOM_SOURCE_RE = re.compile(
     re.IGNORECASE,
 )
 _BOM_DELIVERABLE_RE = re.compile(
-    r"(?:\bBOM\b|спецификац\w*|коммерческ\w*\s+предлож\w*|"
+    r"(?:\b(?:BOM|КП)\b|спецификац\w*|коммерческ\w*\s+предлож\w*|"
     r"(?:собер|сборк)\w*[^\n.!?]{0,100}(?:компьютер|пк)|"
     r"(?:компьютер|пк)[^\n.!?]{0,100}(?:собер|сборк)\w*)",
     re.IGNORECASE,
@@ -197,7 +210,14 @@ def route_request_capabilities(
     for domain in domains:
         groups.update(DOMAIN_CAPABILITY_GROUPS.get(domain, ()))
 
-    download_requested = bool(_DOWNLOAD_REQUEST_RE.search(text))
+    # A product/source link needs web evidence, not a locally published file.
+    # Require artifact delivery only for explicit files/downloads or a link tied
+    # to a generated artifact in this request; unrelated history is not proof.
+    download_requested = bool(
+        _DOWNLOAD_REQUEST_RE.search(text)
+        or _FILE_LINK_REQUEST_RE.search(text)
+        or (_LINK_REQUEST_RE.search(text) and _GENERATED_ARTIFACT_RE.search(text))
+    )
     if download_requested or _RESOURCE_REQUEST_RE.search(text):
         groups.add("resources")
     if _DATA_REQUEST_RE.search(text):

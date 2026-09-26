@@ -114,7 +114,8 @@ def _extract_document(content: bytes, mime: str, url: str) -> tuple[str, str]:
     return text, title
 
 
-def _canonicalize(html_or_text: str, mime: str) -> tuple[str, str, list[str]]:
+def _canonicalize(html_or_text: str, mime: str, *, final_url: str = "",
+                  link_metadata: dict[str, Any] | None = None) -> tuple[str, str, list[str]]:
     """(canonical_text, title, outline). Strips scripts/style and dangerous
     invisible chars — the anti-injection hygiene layer."""
     title, outline = "", []
@@ -130,6 +131,16 @@ def _canonicalize(html_or_text: str, mime: str) -> tuple[str, str, list[str]]:
             text = soup.get_text("\n", strip=True)
         except Exception:
             text = html_or_text
+        else:
+            if link_metadata is not None:
+                from app.infrastructure.search.web_runtime import _extract_page_links, _extract_readable_text
+
+                # Preserve canonical offsets; only clean the DOM for the separate
+                # transient navigation manifest after extracting canonical text.
+                _extract_readable_text(soup, 0)
+                links, truncated = _extract_page_links(soup, final_url)
+                link_metadata.update(links=[{"label": label, "url": target} for label, target in links],
+                                     links_truncated=truncated)
     else:
         text = html_or_text
     text = _ZERO_WIDTH.sub("", text)
@@ -227,6 +238,7 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     outline: list[str] = []
     decoded = ""
     encoding = ""
+    link_metadata: dict[str, Any] = {"links": [], "links_truncated": False}
     if "html" in mime or "text/plain" in mime:
         try:
             decoded, encoding = _decode_text_content(
@@ -235,7 +247,8 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"decode failed: {exc}"}
-        canonical, title, outline = _canonicalize(decoded, mime)
+        canonical, title, outline = _canonicalize(decoded, mime, final_url=raw["final_url"],
+                                                  link_metadata=link_metadata)
     elif mime in (_MIME_PDF, _MIME_DOCX):
         try:
             canonical, title = _extract_document(raw["content"], mime, raw["final_url"])
@@ -276,7 +289,7 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     return {"ok": True, "doc_id": res["doc_id"], "deduped": res["deduped"], "title": title,
             "url": url, "final_url": final_url, "mime": mime, "nbytes": doc["nbytes"],
             "encoding": encoding or None, "n_chunks": len(chunks), "outline": outline[:12],
-            "content_hash": content_hash}
+            "content_hash": content_hash, "dates": dates, "tier": doc["tier"], **link_metadata}
 
 
 def envelope(text: str, *, source: str) -> str:

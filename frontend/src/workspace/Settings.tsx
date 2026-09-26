@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookMarked, Brain, Cpu, MessageSquare, Palette, Sparkles, Volume2, X, type LucideIcon } from "lucide-react";
+import { BookMarked, Brain, Cpu, MessageSquare, Palette, Plug, Sparkles, Volume2, X, type LucideIcon } from "lucide-react";
 import { cn } from "../ui/cn";
 import { ModelSection } from "./settings/ModelSection";
 import { PersonaSection } from "./settings/PersonaSection";
@@ -8,10 +8,11 @@ import { LibrarySection } from "./settings/LibrarySection";
 import { ChatMemorySection } from "./settings/ChatMemorySection";
 import { VoiceSection } from "./settings/VoiceSection";
 import { ThemeSection } from "./settings/ThemeSection";
+import { McpSection } from "./settings/McpSection";
 
 export type SettingsSection =
   | "model" | "persona" | "memory" | "library" | "chatmemory"
-  | "voice" | "theme";
+  | "voice" | "theme" | "mcp";
 
 const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
@@ -19,6 +20,7 @@ const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "memory", label: "Память", icon: Brain },
   { id: "library", label: "Библиотека", icon: BookMarked },
   { id: "chatmemory", label: "Память чата", icon: MessageSquare },
+  { id: "mcp", label: "MCP", icon: Plug },
   { id: "voice", label: "Голос", icon: Volume2 },
   { id: "theme", label: "Тема", icon: Palette },
 ];
@@ -55,6 +57,7 @@ export function Settings({ model, onModel, onClose, project, initialSection }: {
           {section === "memory" && <MemorySection project={project} />}
           {section === "library" && <LibrarySection />}
           {section === "chatmemory" && <ChatMemorySection />}
+          {section === "mcp" && <McpSection />}
           {section === "voice" && <VoiceSection />}
           {section === "theme" && <ThemeSection />}
         </div>

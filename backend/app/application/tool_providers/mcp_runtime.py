@@ -165,7 +165,7 @@ def list_servers() -> list[dict[str, Any]]:
             sid = normalized["id"]
             client = _LIVE_CLIENTS.get(sid)
             if client is None:
-                status = "stopped"
+                status = "error" if _LAST_ERROR.get(sid) else "stopped"
             elif client.is_alive():
                 status = "running"
             else:
@@ -432,6 +432,7 @@ def stop_server(server_id: str) -> dict[str, Any]:
     with _LOCK:
         was_running = server_id in _LIVE_CLIENTS
         _stop_locked(server_id)
+        _LAST_ERROR.pop(server_id, None)
         return {"ok": True, "was_running": was_running, "server_id": server_id}
 
 

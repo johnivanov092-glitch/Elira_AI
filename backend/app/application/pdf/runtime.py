@@ -61,61 +61,176 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # ═══════════════════════════════════════════════════════════════
 
 def extract_pdf_smart(data: bytes, max_chars: int = 50000) -> dict:
-    """
-    Умное извлечение: пробует 3 метода по порядку.
-    1. pypdf (быстро)
-    2. pdfplumber (лучше с таблицами)
-    3. OCR через pytesseract (для сканов)
-    """
-    results = {"text": "", "tables": [], "pages": 0, "method": "", "ocr_used": False}
+    """Extract each page independently; native text must not hide scanned pages."""
+    max_chars = max(1, int(max_chars))
+    pages, tables, page_count, errors = _native_pdf_pages(data, max_chars)
+    if not pages:
+        server_pages, server_errors = _server_ocr_pages(data, [])
+        errors.extend(server_errors)
+        pages = [{**page, "method": "ocr-server"} for _, page in sorted(server_pages.items())]
+        page_count = max((page["page"] for page in pages), default=page_count)
+        if not pages:
+            text = _try_ocr(data, max_chars)
+            return {"text": text, "tables": [], "pages": page_count,
+                    "method": "ocr" if text else "", "ocr_used": bool(text),
+                    "page_results": [], "errors": errors, "truncated": len(text) >= max_chars}
+    by_number = {page["page"]: page for page in pages}
+    pending = [page["page"] for page in pages
+               if page["method"] != "ocr-server" and len(page["text"].strip()) < 100]
+    if pending:
+        server_pages, server_errors = _server_ocr_pages(data, pending)
+        errors.extend(server_errors)
+        unresolved = []
+        for number in pending:
+            page = by_number[number]
+            candidate = server_pages.get(number)
+            if candidate:
+                page["errors"].extend(candidate.get("errors", []))
+            if candidate and candidate.get("text", "").strip():
+                if len(candidate["text"].strip()) > len(page["text"].strip()):
+                    page.update(candidate, method="ocr-server", errors=page["errors"])
+            else:
+                unresolved.append(number)
+        local_pages = _try_ocr_pages(data, unresolved, max_chars) if unresolved else {}
+        for number in unresolved:
+            page = by_number[number]
+            local_text = local_pages.get(number, "")
+            if len(local_text.strip()) > len(page["text"].strip()):
+                page.update(text=local_text, method="ocr")
+            else:
+                error = {"page": number, "code": "ocr_no_text", "message": "OCR did not recover additional text"}
+                page["errors"].append(error)
+                errors.append(error)
 
-    # Метод 1: pypdf (быстрый)
-    text_pypdf = _try_pypdf(data, max_chars)
-    if text_pypdf and len(text_pypdf.strip()) > 50:
-        results["text"] = text_pypdf
-        results["method"] = "pypdf"
-
-    # Метод 2: pdfplumber (таблицы + лучший текст)
-    text_plumber, tables, pages = _try_pdfplumber(data, max_chars)
-    if text_plumber and len(text_plumber.strip()) > len(results["text"].strip()):
-        results["text"] = text_plumber
-        results["method"] = "pdfplumber"
-    if tables:
-        results["tables"] = tables
-    results["pages"] = pages or _count_pages(data)
-
-    # Метод 3: OCR (если текста мало — вероятно скан).
-    # Сначала серверный OCR (:8002, PaddleOCR), затем локальный pytesseract.
-    if len(results["text"].strip()) < 100:
-        server_text = _try_server_ocr(data, max_chars)
-        if server_text and len(server_text.strip()) > 50:
-            results["text"] = server_text
-            results["method"] = "ocr-server"
-            results["ocr_used"] = True
-        else:
-            ocr_text = _try_ocr(data, max_chars)
-            if ocr_text and len(ocr_text.strip()) > 50:
-                results["text"] = ocr_text
-                results["method"] = "ocr"
-                results["ocr_used"] = True
-
-    return results
+    parts, page_results, total = [], [], 0
+    truncated = len(pages) < page_count
+    for page in pages:
+        text = page["text"].strip()
+        prefix = f"--- Страница {page['page']} ---\n" if text else ""
+        separator = "\n\n" if parts and text else ""
+        remaining = max_chars - total
+        rendered = (separator + prefix + text)[:remaining]
+        if text:
+            parts.append(rendered)
+            total += len(rendered)
+        text_budget = max(0, len(rendered) - len(separator) - len(prefix))
+        metadata = {key: value for key, value in page.items() if key != "text"}
+        metadata["chars"] = min(len(text), text_budget)
+        metadata["blocks"] = _bounded_blocks(page.get("blocks", []), text_budget)
+        page_results.append(metadata)
+        if total >= max_chars:
+            truncated = text_budget < len(text) or page["page"] < page_count
+            break
+    methods = list(dict.fromkeys(page["method"] for page in page_results if page["chars"]))
+    return {
+        "text": "".join(parts), "tables": tables, "pages": page_count,
+        "method": "+".join(methods),
+        "ocr_used": any(method.startswith("ocr") for method in methods),
+        "page_results": page_results, "errors": errors, "truncated": truncated,
+    }
 
 
-def _try_server_ocr(data: bytes, max_chars: int) -> str:
-    """OCR через серверный сервис (:8002, PaddleOCR). Возвращает текст или ""
-    при отключённом/недоступном сервисе — тогда вызывающий падает на
-    локальный pytesseract."""
+def _bounded_blocks(blocks: list, max_chars: int) -> list[dict]:
+    bounded = []
+    for block in blocks:
+        text = block.get("text")
+        if not isinstance(text, str) or not text or max_chars <= 0:
+            continue
+        bounded.append({**block, "text": text[:max_chars]})
+        max_chars -= len(bounded[-1]["text"])
+    return bounded
+
+
+def _native_pdf_pages(data: bytes, max_chars: int) -> tuple[list, list, int, list]:
+    pages, tables, errors = [], [], []
+    count = 0
     try:
-        from app.infrastructure.llm.vision_ocr import ocr_document
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        count = len(reader.pages)
+        total = 0
+        for index, source in enumerate(reader.pages, 1):
+            page = {"page": index, "text": "", "method": "pypdf", "errors": [], "blocks": []}
+            try:
+                page["text"] = (source.extract_text() or "")[:max_chars - total]
+            except Exception as exc:
+                logger.warning("pypdf page %s failed: %s", index, exc)
+                error = {"page": index, "code": "native_text_failed", "message": str(exc)}
+                page["errors"].append(error)
+                errors.append(error)
+            pages.append(page)
+            total += len(page["text"])
+            if total >= max_chars:
+                break
+    except Exception as exc:
+        logger.warning("pypdf failed: %s", exc)
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            count = max(count, len(pdf.pages))
+            total = 0
+            for index, source in enumerate(pdf.pages, 1):
+                if index > len(pages):
+                    pages.append({"page": index, "text": "", "method": "pdfplumber", "errors": [], "blocks": []})
+                page = pages[index - 1]
+                try:
+                    text = (source.extract_text() or "")[:max_chars - total]
+                    if len(text.strip()) > len(page["text"].strip()):
+                        page.update(text=text, method="pdfplumber")
+                    for table_index, table in enumerate(source.extract_tables()):
+                        if table:
+                            tables.append({"page": index, "index": table_index,
+                                           "headers": table[0] or [], "rows": table[1:],
+                                           "row_count": len(table) - 1})
+                except Exception as exc:
+                    logger.warning("pdfplumber page %s failed: %s", index, exc)
+                total += len(page["text"])
+                if total >= max_chars:
+                    pages = pages[:index]
+                    break
+    except Exception as exc:
+        logger.warning("pdfplumber failed: %s", exc)
+    return pages, tables, count, errors
 
-        text = ocr_document("document.pdf", data)
+
+def _server_ocr_pages(data: bytes, numbers: list[int]) -> tuple[dict, list]:
+    """Send only sparse pages; translate subset page numbers back to the PDF."""
+    try:
+        from app.infrastructure.llm.vision_ocr import ocr_document_result
+
+        if numbers:
+            from pypdf import PdfReader, PdfWriter
+            reader, writer = PdfReader(io.BytesIO(data)), PdfWriter()
+            for number in numbers:
+                writer.add_page(reader.pages[number - 1])
+            output = io.BytesIO()
+            writer.write(output)
+            data = output.getvalue()
+        result = ocr_document_result("document.pdf", data)
     except Exception as exc:
         logger.warning("server OCR failed: %s", exc)
-        return ""
-    if text and text.strip():
-        return text[:max_chars]
-    return ""
+        result = None
+    if result is None:
+        return {}, [{"code": "server_ocr_unavailable", "message": "Server OCR failed; local fallback attempted"}]
+
+    def remap(error: dict) -> dict:
+        number = error.get("page")
+        if type(number) is int and 1 <= number <= len(numbers):
+            return {**error, "page": numbers[number - 1]}
+        return dict(error)
+
+    errors = [remap(error) for error in result.get("errors", [])]
+    output_pages = {}
+    for page in result.get("pages", []):
+        number = page["page"]
+        if not numbers or 1 <= number <= len(numbers):
+            original = numbers[number - 1] if numbers else number
+            output_pages[original] = {**page, "page": original,
+                                      "errors": [remap(error) for error in page.get("errors", [])]}
+    if not output_pages and len(numbers) <= 1 and result.get("text"):
+        number = numbers[0] if numbers else 1
+        output_pages[number] = {"page": number, "text": result["text"], "blocks": [], "errors": []}
+    return output_pages, errors
 
 
 def _count_pages(data: bytes) -> int:
@@ -126,99 +241,49 @@ def _count_pages(data: bytes) -> int:
         return 0
 
 
-def _try_pypdf(data: bytes, max_chars: int) -> str:
-    try:
-        from pypdf import PdfReader
-        reader = PdfReader(io.BytesIO(data))
-        parts, total = [], 0
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            if total + len(text) > max_chars:
-                parts.append(text[:max_chars - total])
-                break
-            parts.append(text)
-            total += len(text)
-        return "\n\n".join(parts)
-    except Exception:
-        return ""
-
-
-def _try_pdfplumber(data: bytes, max_chars: int) -> tuple:
-    """Возвращает (text, tables, page_count)."""
-    try:
-        import pdfplumber
-    except ImportError:
-        return "", [], 0
-
-    try:
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
-            text_parts = []
-            all_tables = []
-            total = 0
-
-            for i, page in enumerate(pdf.pages):
-                # Текст
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    if total + len(page_text) > max_chars:
-                        break
-                    text_parts.append(f"--- Страница {i+1} ---\n{page_text}")
-                    total += len(page_text)
-
-                # Таблицы
-                tables = page.extract_tables()
-                for t_idx, table in enumerate(tables):
-                    if table and len(table) > 0:
-                        all_tables.append({
-                            "page": i + 1,
-                            "index": t_idx,
-                            "headers": table[0] if table[0] else [],
-                            "rows": table[1:] if len(table) > 1 else [],
-                            "row_count": len(table) - 1,
-                        })
-
-            page_count = len(pdf.pages)
-            return "\n\n".join(text_parts), all_tables, page_count
-    except Exception as e:
-        logger.warning(f"pdfplumber failed: {e}")
-        return "", [], 0
-
-
-def _try_ocr(data: bytes, max_chars: int) -> str:
-    """OCR через pdf2image + pytesseract."""
+def _try_ocr_pages(data: bytes, numbers: list[int], max_chars: int) -> dict[int, str]:
+    """Local fallback renders only requested pages, at most ten as before."""
     try:
         from pdf2image import convert_from_bytes
         import pytesseract
     except ImportError:
-        return ""
-
+        return {}
     if not _ensure_tesseract(pytesseract):
-        logger.warning("OCR skipped: Tesseract binary not found (install it or add to PATH)")
-        return ""
-
-    try:
-        # Конвертируем PDF → изображения
-        images = convert_from_bytes(data, dpi=200, first_page=1, last_page=10, **poppler_options())  # Макс 10 страниц
-
-        text_parts = []
-        total = 0
-        for i, img in enumerate(images):
-            # OCR: пробуем русский + английский
+        logger.warning("OCR skipped: Tesseract binary not found")
+        return {}
+    output, total = {}, 0
+    for number in numbers[:10]:
+        images = []
+        try:
+            images = convert_from_bytes(
+                data, dpi=200, first_page=number, last_page=number,
+                timeout=60, **poppler_options(),
+            )
+            if not images:
+                continue
             try:
-                page_text = pytesseract.image_to_string(img, lang="rus+eng")
+                text = pytesseract.image_to_string(images[0], lang="rus+eng", timeout=30)
             except Exception:
-                page_text = pytesseract.image_to_string(img, lang="eng")
+                text = pytesseract.image_to_string(images[0], lang="eng", timeout=30)
+            output[number] = text[:max_chars - total]
+            total += len(output[number])
+        except Exception as exc:
+            logger.warning("OCR page %s failed: %s", number, exc)
+        finally:
+            for image in images:
+                image.close()
+        if total >= max_chars:
+            break
+    return output
 
-            if page_text.strip():
-                if total + len(page_text) > max_chars:
-                    break
-                text_parts.append(f"--- OCR страница {i+1} ---\n{page_text}")
-                total += len(page_text)
 
-        return "\n\n".join(text_parts)
-    except Exception as e:
-        logger.warning(f"OCR failed: {e}")
-        return ""
+def _try_ocr(data: bytes, max_chars: int) -> str:
+    """Compatibility text wrapper for local OCR preview callers."""
+    count = _count_pages(data) or 10
+    pages = _try_ocr_pages(data, list(range(1, min(count, 10) + 1)), max_chars)
+    return "\n\n".join(
+        f"--- OCR страница {number} ---\n{text}" for number, text in pages.items() if text.strip()
+    )[:max_chars]
 
 
 # ═══════════════════════════════════════════════════════════════

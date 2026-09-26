@@ -113,6 +113,31 @@ def test_delivery_goal_and_contract_survive_resume_without_polluting_user_text(t
     source = next(m["content"] for m in kwargs["conversation_history"] if m["role"] == "user")
     assert source == QUERY
     assert derive_task_spec(source, tmp_path).goal == "Исправь код проекта."
+    assert "todo_update" in kwargs["user_message"]
+
+
+def test_web_resume_does_not_inherit_delivery_checklist_or_file_actions(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    query = (
+        "Какие версии Firefox сейчас актуальны в обычном стабильном канале и ESR? "
+        "Проверь Mozilla и кратко поясни, почему номера могут различаться."
+    )
+    journal = RunJournal("web-resume")
+    journal.start({"user_message": query, "memory_query": query, "project_root": str(tmp_path)}, {})
+    journal.finish(interrupted=True)
+    monkeypatch.setattr(
+        delivery_session, "_checklist_items",
+        lambda _: pytest.fail("Ordinary web Resume must not require a delivery checklist"),
+    )
+
+    kwargs = delivery_session.build_continuation_kwargs("web-resume")
+    instructions = kwargs["user_message"] + json.dumps(kwargs["conversation_history"], ensure_ascii=False)
+    assert all(text not in instructions.lower() for text in ("todo_update", "чеклист", "updates", "файлы"))
+    assert query in instructions
+    assert kwargs["memory_query"] == query
+    assert kwargs["task_instructions"] == ""
+    assert kwargs["run_id"] == "web-resume"
+    assert kwargs["resume"] is True
 
 
 def test_read_file_secrets_are_redacted_in_sse_and_both_logs(tmp_path, monkeypatch):

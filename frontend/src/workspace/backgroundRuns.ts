@@ -4,6 +4,7 @@ import {
   streamCodeAgent,
   type CodeAgentMode,
   type CodeAgentStreamEvent,
+  type CodeAgentToolCall,
   type ContextState,
   type ContextUsage,
   type ConversationMessage,
@@ -11,8 +12,9 @@ import {
   type ReasoningEffort,
   type StreamHandlers,
   type TaskLedgerEntry,
+  type WorkflowInput,
 } from "../api/codeAgent";
-import type { ResourceAttachment } from "../api/resources";
+import { toWireResource, type ResourceAttachment } from "../api/resources";
 import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, FileEntry, Turn } from "./types";
 import { latestUserTaskLabel } from "./taskHistory";
@@ -72,6 +74,15 @@ type RunEntry = {
 };
 
 type CodeAgentDoneEvent = Extract<CodeAgentStreamEvent, { type: "done" }>;
+
+function acceptedWorkflowInput(call: CodeAgentToolCall): WorkflowInput | undefined {
+  const input = call.workflow_input;
+  if (call.tool !== "ask_user" || call.ok !== true || !input
+    || typeof input.request_id !== "string" || !input.request_id.trim()
+    || typeof input.question !== "string" || !input.question.trim()
+    || typeof input.answer !== "string" || !input.answer.trim()) return undefined;
+  return { request_id: input.request_id, question: input.question, answer: input.answer };
+}
 
 /** Ledger lines for a terminal `done`. Pure (exported for unit tests): the
  * task-outcome line as before, plus — ONLY on a non-solved terminal that
@@ -275,7 +286,22 @@ function wire(
       patch((a) => ({ ...a, runId: id }));
     },
     onEvent: (e: CodeAgentStreamEvent) => {
-      if (!ownsRun()) return;
+      if (!ownsRun()) {
+        // Stop can race the server's accepted answer receipt. Retain only that
+        // user input on this reader's stopped turn, never its other late output
+        // or any state of the currently active run.
+        if (e.type !== "tool_call") return;
+        const input = acceptedWorkflowInput(e);
+        const turn = entry.snapshot.turns.find((t) => t.kind === "agent" && t.id === agentId);
+        if (!input || !turn || turn.kind !== "agent" || turn.running
+          || turn.answerState !== "interrupted"
+          || turn.toolCalls?.some(call => call.workflow_input?.request_id === input.request_id)) return;
+        patch((a) => ({ ...a, toolCalls: [...(a.toolCalls ?? []), {
+          step: e.step, tool: "ask_user", arguments: {}, result: "", ok: true, workflow_input: input,
+        }] }));
+        entry.persist?.(entry.snapshot);
+        return;
+      }
       if (e.type === "run_started" || e.type === "run_resumed") {
         entry.runId = e.run_id;
         patch((a) => ({ ...a, runId: e.run_id }));
@@ -449,6 +475,7 @@ export function send(args: SendArgs): void {
   if (!msg || entry.snapshot.running) return;
 
   const history: ConversationMessage[] = [];
+  const seenWorkflowInputs = new Set<string>();
   let latestRecentOutput: string | undefined;  // most-recent agent turn's raw tool output
   const rollingSummary = typeof entry.snapshot.contextState?.rolling_summary_text === "string"
     ? entry.snapshot.contextState.rolling_summary_text.trim()
@@ -457,8 +484,25 @@ export function send(args: SendArgs): void {
     history.push({ role: "assistant", content: `[CONTEXT SUMMARY]\n${rollingSummary}` });
   }
   for (const t of entry.snapshot.turns) {
-    if (t.kind === "user") history.push({ role: "user", content: t.text });
-    else if (t.kind === "agent" && t.text && isAcceptedAnswer(t)) {
+    if (t.kind === "user") history.push({
+      role: "user", content: t.text,
+      ...(t.resources?.length ? { resources: t.resources.map(toWireResource) } : {}),
+    });
+    else if (t.kind === "agent") {
+      // Accepted Workflow input remains user context even if this run was later
+      // interrupted. Never infer it from arbitrary or legacy tool-result text.
+      for (const call of t.toolCalls ?? []) {
+        const input = acceptedWorkflowInput(call);
+        if (!input || seenWorkflowInputs.has(input.request_id)) continue;
+        seenWorkflowInputs.add(input.request_id);
+        history.push({
+          role: "user",
+          content: `Ответ пользователя на уточнение Workflow:\n${JSON.stringify({
+            request_id: input.request_id, question: input.question, answer: input.answer,
+          })}`,
+        });
+      }
+      if (!t.text || !isAcceptedAnswer(t)) continue;
       history.push({ role: "assistant", content: t.text });
       // Carry the turn's tool-established facts back as an authoritative grounding
       // block (backend _coerce_history re-tags the [ПРОВЕРЕННЫЕ ФАКТЫ] prefix to a
@@ -482,6 +526,7 @@ export function send(args: SendArgs): void {
   const agentId = nid();
   entry.runId = null;
   entry.lastMode = mode;
+  const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
   // Per-message resources: surface a file chip in the transcript so the user
   // sees the message carried a file. The file is NOT processed here — the agent
   // reads it on demand via resource_process. "attached" renders neutrally.
@@ -498,14 +543,15 @@ export function send(args: SendArgs): void {
     turns: [
       ...s.turns,
       ...(fileEntries.length ? [{ kind: "files" as const, id: nid(), files: fileEntries }] : []),
-      { kind: "user", id: nid(), text: msg },
+      { kind: "user", id: nid(), text: msg,
+        ...(readyResources.length ? { resources: readyResources.map(toWireResource) } : {}),
+      },
       { kind: "agent", id: agentId, toolCalls: [], text: "", running: true, answerState: "draft" },
     ],
   }));
   // One stream invoker for every mode. Ready resources ride along as ResourceRefs
   // (resource_id only); the agent reads their content via resource_process. The
-  // session id lets the backend bind only resources this session owns.
-  const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
+  // session id retains provenance; historical IDs stay on their original turns.
   wire(entry, agentId, (handlers) =>
     streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort,
       sourceRunIds: entry.snapshot.turns.filter((t): t is AgentTurnData => t.kind === "agent" && isAcceptedAnswer(t) && Boolean(t.citations?.length && t.runId)).map(t => t.runId!).slice(-8),

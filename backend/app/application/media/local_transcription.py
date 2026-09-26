@@ -62,7 +62,7 @@ _DEFAULT_GPU_COMPUTE = "int8_float16"
 _DEFAULT_CPU_COMPUTE = "int8"
 
 _BEAM_SIZE = 5                        # server-owned; never model-supplied
-_MAX_TEXT_CHARS = 20000              # bounded output (the adapter clips again)
+_MAX_TEXT_CHARS = 20000              # CPU output cap; local GPU consumes all segments
 _MAX_MODELS = 2                      # bounded model cache
 _RUNTIME_WAIT_SECONDS = 1.0           # fail fast if another local STT is stuck
 
@@ -319,17 +319,18 @@ def _get_model(model: str, device: str, compute_type: str, cache_dir: str) -> An
         return _get_model_unlocked(model, device, compute_type, cache_dir)
 
 
-def _extract_text(segments: Any) -> str:
+def _extract_text(segments: Any, *, max_chars: int | None = _MAX_TEXT_CHARS) -> str:
     parts: list[str] = []
-    remaining = _MAX_TEXT_CHARS
+    remaining = max_chars
     for segment in segments:
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             break
         piece = str(getattr(segment, "text", "") or "")[:remaining]
         parts.append(piece)
-        remaining -= len(piece)
-        if remaining <= 0:
-            break
+        if remaining is not None:
+            remaining -= len(piece)
+            if remaining <= 0:
+                break
     return "".join(parts).strip()
 
 
@@ -364,7 +365,9 @@ def transcribe_local(path: str, *, target: str) -> str:
             raise LocalTranscriptionError("model_load_failed") from None
         try:
             segments, _info = model.transcribe(path, beam_size=_BEAM_SIZE, vad_filter=True)
-            return _extract_text(segments)
+            return _extract_text(
+                segments, max_chars=None if target == "local_gpu" else _MAX_TEXT_CHARS,
+            )
         except Exception as exc:  # noqa: BLE001 — decode / inference failure
             logger.warning(
                 "local_transcription_failed target=%s exception_class=%s",

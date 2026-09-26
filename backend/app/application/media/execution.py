@@ -31,7 +31,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Protocol
+from urllib.parse import quote
 
 from app.application.media import resource_store
 
@@ -59,6 +61,7 @@ _LOCAL_ONLY_OPERATIONS = frozenset({ResourceOperation.INSPECT.value, ResourceOpe
 _AUTO_ORDER = (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_CPU.value, ExecutionTarget.LOCAL_CPU.value)
 
 _MAX_RESULT_CHARS = 20000
+_TRANSCRIPT_PREVIEW_CHARS = 8000
 _STT_TIMEOUT_SECONDS = 3600
 _PROBE_TIMEOUT_SECONDS = 4.0
 _CACHE_TTL_SECONDS = 60.0
@@ -208,10 +211,78 @@ def _fail(operation: str, resource_id: str, code: str, message: str,
 
 
 def _transcript_result(record: "resource_store.ResourceRecord", text: str, target: str) -> dict[str, Any]:
-    clipped = str(text or "").strip()[:_MAX_RESULT_CHARS]
+    transcript = str(text or "").strip()
+    if target == ExecutionTarget.LOCAL_GPU.value:
+        return _local_gpu_transcript_result(record, transcript)
+    transcript = transcript[:_MAX_RESULT_CHARS]
     return {"ok": True, "operation": ResourceOperation.TRANSCRIBE.value,
             "resource_id": record.resource_id, "kind": record.kind,
-            "execution_target": target, "chars": len(clipped), "text": clipped}
+            "execution_target": target, "chars": len(transcript), "text": transcript}
+
+
+def _local_gpu_transcript_result(
+    record: "resource_store.ResourceRecord", transcript: str,
+) -> dict[str, Any]:
+    """Persist every character before returning a bounded model/UI preview."""
+    from app.core.config import DATA_DIR, GENERATED_DIR
+
+    derived = None
+    try:
+        derived = resource_store.register_resource(
+            original_name=f"{Path(record.original_name).stem}.transcript.txt",
+            content_type="text/plain; charset=utf-8",
+            owner_session=record.owner_session,
+            data=transcript.encode("utf-8"),
+        )
+        name = f"transcript-{derived.resource_id}.txt"
+        source = Path(derived.storage_path)
+        size, sha256 = resource_store.publish_copy(
+            workspace_root=source.parent,
+            source=source,
+            destination_root=DATA_DIR,
+            dest_dir=GENERATED_DIR,
+            final_name=name,
+            expected_sha256=derived.sha256,
+        )
+    except Exception as exc:  # noqa: BLE001 — no raw path or provider exception
+        if derived is not None:
+            resource_store.discard(derived)
+        logger.warning(
+            "local_gpu_transcript_storage_failed resource_id=%s exception_class=%s",
+            record.resource_id, type(exc).__name__,
+        )
+        return _fail(ResourceOperation.TRANSCRIBE.value, record.resource_id,
+                     "transcript_storage_failed", "could not save the full transcript",
+                     ExecutionTarget.LOCAL_GPU.value)
+
+    preview = transcript[:_TRANSCRIPT_PREVIEW_CHARS]
+    truncated_preview = len(preview) < len(transcript)
+    download_url = f"/api/skills/download/{quote(name, safe='')}"
+    return {
+        "ok": True,
+        "operation": ResourceOperation.TRANSCRIBE.value,
+        "resource_id": record.resource_id,
+        "kind": record.kind,
+        "execution_target": ExecutionTarget.LOCAL_GPU.value,
+        "resource": resource_store.resource_ref(derived),
+        "chars": len(transcript),
+        "preview_chars": len(preview),
+        "truncated_preview": truncated_preview,
+        "download_url": download_url,
+        "download_name": name,
+        "size": size,
+        "sha256": sha256,
+        "text": (
+            f"Полная расшифровка сохранена: {len(transcript)} символов. "
+            f"resource_id={derived.resource_id}; download_url={download_url}. "
+            f"Ниже предпросмотр: {len(preview)} символов; "
+            f"truncated_preview={str(truncated_preview).lower()}. "
+            "Для обработки полного текста вызови resource_materialize с этим resource_id "
+            "и работай с полученным файлом; не собирай полный документ из предпросмотра "
+            "и не запускай распознавание повторно.\n\n"
+            + preview
+        ),
+    }
 
 
 # ── workload adapters ─────────────────────────────────────────────────────────

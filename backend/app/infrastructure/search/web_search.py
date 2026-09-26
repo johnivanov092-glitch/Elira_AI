@@ -76,6 +76,10 @@ def fetch_page_text(url: str, max_chars: int = 4000) -> str:
     return web_runtime.fetch_page_text(url, max_chars=max_chars)
 
 
+def fetch_page(url: str, max_chars: int = 4000) -> web_runtime.PageFetchResult:
+    return web_runtime.fetch_page(url, max_chars=max_chars)
+
+
 def count_hits_for_domains(items: list[dict], preferred_domains: tuple[str, ...]) -> int:
     return web_runtime.count_hits_for_domains(items, preferred_domains)
 

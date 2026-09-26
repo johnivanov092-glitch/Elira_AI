@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import contextvars
 import time
+from dataclasses import replace
+from urllib.parse import quote, unquote, urlsplit
 
 from typing import Any
 
 from app.application.agent_kernel.impact_policy import BROWSER_CHANGE_ACTIONS
 from app.application.web_evidence.receipts import excerpt_sources, format_source, make_source
+from app.infrastructure.search.web_runtime import PageFetchResult
 
 # Phase A — JS auto-render: static (BeautifulSoup) extraction returns little/no
 # text for SPA / JS-rendered pages (currency tickers, dashboards). Below this many
@@ -43,7 +46,10 @@ def _run_search(query: str, limit: int, cat: str, tr: str) -> list[dict]:
     return result.get("sources") or []
 
 
-def _format_search_results(sources: list[dict], header: str, limit: int) -> str:
+def _format_search_results(sources: list[dict], header: str, limit: int, *,
+                           category: str = "", time_range: str = "") -> str:
+    from app.core.web_engines import ENGINE_LABELS
+
     # W6 (flag-gated): annotate each result with its deterministic source tier
     # (official/primary/secondary/ugc) so the model can weigh sources; flag off →
     # output is byte-identical to pre-W6.
@@ -68,6 +74,20 @@ def _format_search_results(sources: list[dict], header: str, limit: int) -> str:
             tier = classify_tier(url)
             mark = f" [{tier}]" if tier != "unknown" else ""
         head = f"\n[{i}] {title}{mark}\n    {url}"
+        metadata = []
+        engine = str(item.get("engine") or "")
+        if engine:
+            metadata.append(ENGINE_LABELS.get(engine, engine))
+        if item.get("date"):
+            metadata.append(f"дата из поиска: {str(item['date'])[:80]}")
+        if time_range:
+            applied = item.get("filter_time_range")
+            metadata.append(f"период: {applied}" if applied else "фильтр периода не применён")
+        if category and category != "general":
+            applied = item.get("filter_categories")
+            metadata.append(f"категория: {applied}" if applied else "фильтр категории не применён")
+        if metadata:
+            head += "\n    " + "; ".join(metadata)
         lines.append(f"{head}\n    {snippet}" if snippet else head)
     return "\n".join(lines)
 
@@ -98,7 +118,7 @@ def tool_web_search(
     time_range: str = "",
     page: int = 1,
 ) -> dict[str, Any]:
-    """Search the web (SearXNG / DuckDuckGo / Wikipedia). Returns ranked results
+    """Search the web (SearXNG / DDGS metasearch / Wikipedia). Returns ranked results
     with title + URL + snippet. Use `web_fetch` after to read a result in full.
 
     Pass `queries` (a list of strings) to run SEVERAL searches in PARALLEL in one
@@ -114,7 +134,7 @@ def tool_web_search(
     tr = (time_range or "").strip().lower()
     tr = tr if tr in _WEB_SEARCH_TIME_RANGES else ""
     limit = max(1, min(int(top_k), 10))
-    focus = "".join(f" · {x}" for x in (cat, tr) if x)
+    focus = " · запрошены: " + ", ".join(x for x in (cat, tr) if x) if cat or tr else ""
 
     # ── W6: SearXNG result pagination (page 2+) ─────────────────────────────
     # Strict, execution-level gating (John's W6 review): the flag check lives in
@@ -147,6 +167,8 @@ def tool_web_search(
             sources = search_searxng(cleaned, max_results=limit,
                                      time_range=tr or None, categories=cat or None,
                                      pageno=page_n)
+            from app.core.web_runtime import filter_site_results
+            sources = filter_site_results(cleaned, sources)
         except Exception as exc:  # noqa: BLE001 — pagination is SearXNG-only
             return {"text": f"ERROR: страница {page_n} недоступна — пагинация работает только "
                             f"через SearXNG ({exc}). Fallback-движки отдают только первую страницу.",
@@ -161,6 +183,7 @@ def tool_web_search(
                 sources,
                 f"Результаты, страница {page_n} (SearXNG){focus}:",
                 limit,
+                category=cat, time_range=tr,
             ),
             "ok": True,
             **_image_media_payload(cat, sources, limit),
@@ -202,7 +225,8 @@ def tool_web_search(
             }
         header = f"Found {len(merged)} results across {len(query_list)} parallel queries{focus}:"
         return {
-            "text": _format_search_results(merged, header, _WEB_BATCH_MAX * limit),
+            "text": _format_search_results(merged, header, _WEB_BATCH_MAX * limit,
+                                           category=cat, time_range=tr),
             "ok": True,
             **_image_media_payload(cat, merged, _WEB_BATCH_MAX * limit),
             "sources": _search_sources(merged, _WEB_BATCH_MAX * limit),
@@ -237,6 +261,7 @@ def tool_web_search(
             sources,
             f"Found {len(sources)} results via {engines}{focus}:",
             limit,
+            category=cat, time_range=tr,
         ),
         "ok": True,
         **_image_media_payload(cat, sources, limit),
@@ -244,42 +269,54 @@ def tool_web_search(
     }
 
 
-def _fetch_one(url: str, limit: int) -> str:
+def _fetch_one(url: str, limit: int) -> PageFetchResult:
     """Fetch + extract one page (static, with the Phase A JS-render fallback).
-    Returns a formatted text block or an ERROR string. Never raises."""
+    Status and extraction metadata never come from parsing the page body."""
     cleaned_url = (url or "").strip()
     if not cleaned_url:
-        return "ERROR: url is empty"
+        return PageFetchResult(error="url is empty")
     if not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
-        return f"ERROR: url must start with http:// or https:// — got '{cleaned_url[:80]}'"
+        return PageFetchResult(final_url=cleaned_url,
+                               error=f"url must start with http:// or https:// — got '{cleaned_url[:80]}'")
 
     from app.application.web.ssrf_guard import check_ssrf
     ssrf_reason = check_ssrf(cleaned_url)
     if ssrf_reason:
-        return f"ERROR: invalid URL — {ssrf_reason}"
+        return PageFetchResult(final_url=cleaned_url, error=f"invalid URL — {ssrf_reason}")
 
     try:
-        from app.infrastructure.search.web_search import fetch_page_text
+        from app.infrastructure.search.web_search import fetch_page
     except Exception as exc:  # pragma: no cover
-        return f"ERROR: web fetch unavailable: {exc}"
+        return PageFetchResult(final_url=cleaned_url, error=f"web fetch unavailable: {exc}")
 
     try:
-        body = fetch_page_text(cleaned_url, max_chars=limit)
+        result = fetch_page(cleaned_url, max_chars=limit)
     except Exception as exc:
-        return f"ERROR: {exc}"
+        return PageFetchResult(final_url=cleaned_url, error=str(exc))
 
-    body = (body or "").strip()
+    # HTTP errors are definitive failures, not invitations to render an error
+    # page. A healthy thin page or a missing JS-created anchor may use fallback.
+    if result.error and result.fragment_found is not False:
+        return result
+    if result.fragment_found is False and result.available_fragments:
+        # A parsed document with real sections can offer a precise correction;
+        # guessing a nonexistent anchor does not require another browser load.
+        return result
     # Phase A — transparent JS auto-render. Static extraction misses JS-rendered
     # content, so on a thin/empty result retry with the headless browser and use
     # it when it actually yields more text. Fail-open: keep the static body on any
     # render failure (incl. Playwright absent).
-    if len(body) < _THIN_TEXT_THRESHOLD:
-        rendered = _render_fallback(cleaned_url, limit)
-        if len(rendered) > len(body):
-            return f"[fetched: {cleaned_url} · отрисовано в браузере (JS)]\n\n{rendered}"
-    if not body:
-        return f"ERROR: empty or non-HTML response from {cleaned_url}"
-    return f"[fetched: {cleaned_url}]\n\n{body}"
+    if len(result.text) < _THIN_TEXT_THRESHOLD and not result.truncated:
+        rendered = _render_fallback(result.final_url or cleaned_url, limit)
+        if rendered.status_code is not None and not 200 <= rendered.status_code < 300:
+            return result if result.ok else rendered
+        if rendered.ok and len(rendered.text) > len(result.text):
+            return rendered
+        if not result.text and rendered.error:
+            return rendered if result.fragment_found is not False else result
+    if not result.ok:
+        return replace(result, error=result.error or f"empty or non-HTML response from {cleaned_url}")
+    return result
 
 
 def _web_corpus_on() -> bool:
@@ -321,6 +358,7 @@ def _fetch_into_corpus(url_list: list[str]) -> dict[str, Any] | None:
                 run_id=run_id, tool="web_fetch", url=res.get("final_url") or u,
                 title=res.get("title") or "", status="fetched", fetched_at=time.time(),
                 doc_id=res["doc_id"], content_hash=res.get("content_hash") or "",
+                dates=res.get("dates"), tier=res.get("tier") or "unknown",
             ))
             ol = "; ".join(res.get("outline") or [])[:200]
             lines.append(
@@ -329,6 +367,10 @@ def _fetch_into_corpus(url_list: list[str]) -> dict[str, Any] | None:
                 + (" (дубль)" if res.get("deduped") else "")
                 + f"\n  URL: {res.get('final_url')}"
                 + (f"\n  разделы: {ol}" if ol else ""))
+            links = tuple((link["label"], link["url"]) for link in res.get("links", []))
+            link_text = _format_page_links(links, bool(res.get("links_truncated")))
+            if link_text:
+                lines.append(_corpus.envelope(link_text, source=res.get("final_url") or u))
         else:
             sources.append(make_source(
                 run_id=run_id, tool="web_fetch", url=u, status="failed",
@@ -338,21 +380,89 @@ def _fetch_into_corpus(url_list: list[str]) -> dict[str, Any] | None:
     return {"text": "\n".join(lines), "ok": any_ok, "sources": [source for source in sources if source]}
 
 
-def _fetch_receipts(url: str, block: str) -> tuple[str, list[dict[str, Any]]]:
-    if block.lstrip().startswith("ERROR:"):
-        source = make_source(
-            run_id=_current_run_id(), tool="web_fetch", url=url,
-            status="failed", error=block,
+def _format_page_links(links: tuple[tuple[str, str], ...], truncated: bool) -> str:
+    lines = []
+    if links:
+        lines.append("Ссылки из основной части страницы (целевые страницы не прочитаны):")
+        lines.extend(f"- {label}: {target}" for label, target in links)
+    if truncated:
+        lines.append("Список ссылок сокращён (лимит количества или размера).")
+    return "\n".join(lines)
+
+
+def _fetch_receipts(url: str, page: PageFetchResult) -> tuple[str, list[dict[str, Any]]]:
+    final_url = page.final_url or url
+    fragment_hint = ""
+    if page.available_fragments and (page.truncated or page.fragment_found is False):
+        fragment_hint = "\nДоступные разделы: " + ", ".join(
+            "#" + quote(fragment, safe="") for fragment in page.available_fragments
         )
-        return block, [source] if source else []
-    header, separator, body = block.partition("\n\n")
+    if not page.ok:
+        error = f"ERROR: {page.error or 'empty page'} ({final_url})" + fragment_hint
+        source = make_source(
+            run_id=_current_run_id(), tool="web_fetch", url=final_url,
+            status="failed", error=error,
+        )
+        return error, [source] if source else []
+    note = " · отрисовано в браузере (JS)" if page.rendered else ""
+    header = f"[fetched: {final_url}{note}]"
     records = excerpt_sources(
-        run_id=_current_run_id(), tool="web_fetch", url=url,
-        text=body if separator else block, fetched_at=time.time(),
+        run_id=_current_run_id(), tool="web_fetch", url=final_url,
+        text=page.text, fetched_at=time.time(),
     )
     from app.application.web_evidence.corpus import envelope
-    text = envelope("\n\n".join(format_source(source) for source in records), source=url)
-    return (header + "\n\n" if separator else "") + text, records
+    payload = "\n\n".join(format_source(source) for source in records)
+    link_text = _format_page_links(page.links, page.links_truncated)
+    if link_text:
+        payload += "\n\n" + link_text
+    text = envelope(payload, source=final_url)
+    if page.truncated:
+        header += "\n[Текст обрезан по max_chars; нужный раздел читай по #якорю или через web_fetch(store=true) → web_query.]"
+    header += fragment_hint
+    return header + "\n\n" + text, records
+
+
+def _page_metadata(requested_url: str, page: PageFetchResult) -> dict[str, Any]:
+    return {"url": requested_url, "final_url": page.final_url or requested_url,
+            "status_code": page.status_code, "ok": page.ok, "error": page.error,
+            "truncated": page.truncated, "fragment_found": page.fragment_found,
+            "available_fragments": list(page.available_fragments),
+            "links": [{"label": label, "url": target} for label, target in page.links],
+            "links_truncated": page.links_truncated,
+            "rendered": page.rendered}
+
+
+def _fit_fetch_receipts(url: str, page: PageFetchResult, budget: int) -> tuple[str, list[dict[str, Any]], PageFetchResult]:
+    """Give each batch page space before the loop's global text truncation.
+
+    Rebuild receipts from the exact retained text. Cropping the already formatted
+    multi-page response would lose middle pages and break excerpt identities.
+    """
+    formatted, sources = _fetch_receipts(url, page)
+    if len(formatted) <= budget:
+        return formatted, sources, page
+    kept = replace(page, text=page.text[:max(1, budget // 2)],
+                   truncated=page.truncated or len(page.text) > budget // 2)
+    while True:
+        formatted, sources = _fetch_receipts(url, kept)
+        excess = len(formatted) - budget
+        if excess <= 0:
+            return formatted, sources, kept
+        if len(kept.links) > 1:
+            kept = replace(kept, links=kept.links[:-1], links_truncated=True)
+        elif len(kept.text) > 1:
+            kept = replace(kept, text=kept.text[:max(1, len(kept.text) - excess - 1)], truncated=True)
+        elif kept.available_fragments:
+            kept = replace(kept, available_fragments=())
+        elif kept.links:
+            kept = replace(kept, links=(), links_truncated=True)
+        elif len(kept.error) > 80:
+            kept = replace(kept, error=kept.error[:79] + "…")
+        else:
+            # An unusually long URL can itself exceed one page's allocation.
+            # Keep it intact in structured page metadata, never invent a quote.
+            return ("Текст страницы не помещается в пакетный ответ; прочитай этот URL отдельным web_fetch.",
+                    [], replace(kept, truncated=True))
 
 
 def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
@@ -383,27 +493,30 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
         # ── Batch: fetch several pages in parallel ───────────────────────────
         url_list = url_list[:_WEB_BATCH_MAX]
         import concurrent.futures
-        blocks: dict[int, str] = {}
+        blocks: dict[int, PageFetchResult] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(url_list), _WEB_BATCH_WORKERS)) as ex:
             futs = {ex.submit(contextvars.copy_context().run, _fetch_one, u, limit): i for i, u in enumerate(url_list)}
             for f in concurrent.futures.as_completed(futs):
                 i = futs[f]
-                blocks[i] = f.result() if not f.exception() else f"ERROR: {f.exception()}"
+                blocks[i] = f.result() if not f.exception() else PageFetchResult(error=str(f.exception()))
         ordered = [blocks[i] for i in range(len(url_list))]
-        receipts = [_fetch_receipts(url_list[i], block) for i, block in enumerate(ordered)]
+        from app.application.code_agent.loop_helpers import TOOL_RESULT_LLM_LIMIT
+
+        header = f"Fetched {len(url_list)} pages in parallel:\n\n"
+        separator = "\n\n———\n\n"
+        budget = (TOOL_RESULT_LLM_LIMIT - len(header) - len(separator) * (len(url_list) - 1)) // len(url_list)
+        receipts = [_fit_fetch_receipts(url_list[i], block, budget) for i, block in enumerate(ordered)]
         return {
-            "text": (
-                f"Fetched {len(url_list)} pages in parallel:\n\n"
-                + "\n\n———\n\n".join(text for text, _ in receipts)
-            ),
-            "ok": any(not block.lstrip().startswith("ERROR:") for block in ordered),
-            "sources": [source for _, sources in receipts for source in sources],
+            "text": header + separator.join(text for text, _, _ in receipts),
+            "ok": any(block.ok for block in ordered),
+            "sources": [source for _, sources, _ in receipts for source in sources],
+            "pages": [_page_metadata(url_list[i], block) for i, (_, _, block) in enumerate(receipts)],
         }
 
     # ── Single page (back-compat) ────────────────────────────────────────────
-    text = _fetch_one(url, limit)
-    formatted, sources = _fetch_receipts(url, text)
-    return {"text": formatted, "ok": not text.lstrip().startswith("ERROR:"), "sources": sources}
+    page = _fetch_one(url, limit)
+    formatted, sources = _fetch_receipts(url, page)
+    return {"text": formatted, "ok": page.ok, "sources": sources, "pages": [_page_metadata(url, page)]}
 
 
 def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str, Any]:
@@ -447,6 +560,7 @@ def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str,
             content_hash=result.get("content_hash") or "", doc_id=result["doc_id"],
             chunk_id=result["chunk_id"], offset=result["offset"],
             fetched_at=result.get("fetched_at"), quote_verified=True,
+            dates=result.get("dates"), tier=result.get("tier") or "unknown",
         )
         if source:
             sources.append(source)
@@ -608,13 +722,15 @@ def _coerce_viewport(value: Any) -> dict | None:
 
 async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
                     actions: list[dict] | None = None,
-                    viewport: dict | None = None) -> tuple[str, str, str, int, dict | None]:
+                    viewport: dict | None = None,
+                    extract_fragment: bool = False,
+                    page_metadata: dict[str, Any] | None = None) -> tuple[str, str, str, int, dict | None, int | None]:
     """Render a page with Playwright, optionally performing interaction steps (fill /
     select / check / click / wait) before capturing the DOM — so an interaction criterion
     ("after typing X and clicking Calculate the DOM shows Network: …") is verified against
     the ACTUAL post-interaction DOM, not a static render. When `viewport` is given, the page
     is sized to it and horizontal overflow is measured (positive layout evidence). Returns
-    (title, url, body, applied, viewport_signal) where `applied` counts real interactions
+    (title, url, body, applied, viewport_signal, HTTP status) where `applied` counts real interactions
     that resolved+ran and `viewport_signal` is {'checked':True,'width':W,'no_hoverflow':bool}
     (or None when no viewport was requested). Runs in a worker thread (see tool_browser):
     the worker owns its event loop and browser lifecycle."""
@@ -624,7 +740,10 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
         browser = await p.chromium.launch(headless=True)
         try:
             page = await browser.new_page(viewport=viewport) if viewport else await browser.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            response = await page.goto(url, wait_until="networkidle", timeout=30000)
+            status = response.status if response is not None else None
+            if status is not None and not 200 <= status < 300:
+                return "", page.url, "", 0, None, status
             if wait_selector:
                 try:
                     await page.wait_for_selector(wait_selector, timeout=8000)
@@ -652,7 +771,22 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
                     vp_signal = {"checked": True, "width": int(viewport["width"]), "no_hoverflow": fits}
                 except Exception:
                     vp_signal = None   # measurement failed → no viewport verdict (honest)
-            return await page.title(), page.url, (await page.inner_text("body") or "")[:limit], applied, vp_signal
+            fragment = unquote(urlsplit(page.url).fragment or urlsplit(url).fragment)
+            if (extract_fragment and fragment) or page_metadata is not None:
+                from bs4 import BeautifulSoup
+                from app.infrastructure.search.web_runtime import (
+                    _available_fragments, _extract_page_links, _extract_readable_text,
+                )
+
+                soup = BeautifulSoup(await page.content(), "html.parser")
+                body = _extract_readable_text(soup, limit, fragment=fragment if extract_fragment else "")
+                if page_metadata is not None:
+                    links, links_truncated = _extract_page_links(soup, page.url)
+                    page_metadata.update(links=links, links_truncated=links_truncated,
+                                         available_fragments=_available_fragments(soup))
+            else:
+                body = (await page.inner_text("body") or "")[:limit]
+            return await page.title(), page.url, body, applied, vp_signal, status
         finally:
             close_task = asyncio.create_task(browser.close())
             try:
@@ -664,7 +798,9 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
 
 def _browser_render(url: str, wait_selector: str | None, limit: int,
                     actions: list[dict] | None = None,
-                    viewport: dict | None = None) -> tuple[str, str, str, int, dict | None]:
+                    viewport: dict | None = None,
+                    extract_fragment: bool = False,
+                    page_metadata: dict[str, Any] | None = None) -> tuple[str, str, str, int, dict | None, int | None]:
     """Own the async browser in this worker; Stop waits for its cleanup."""
     import asyncio
     import sys
@@ -674,7 +810,9 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
     )
 
     loop = asyncio.ProactorEventLoop() if sys.platform == "win32" else asyncio.new_event_loop()
-    task = loop.create_task(_browser_render_async(url, wait_selector, limit, actions, viewport))
+    task = loop.create_task(_browser_render_async(
+        url, wait_selector, limit, actions, viewport, extract_fragment, page_metadata,
+    ))
     finished = threading.Event()
     cancel_lock = threading.Lock()
     cancel_requested = False
@@ -717,20 +855,30 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
             unregister_run_cancel_callback(token)
 
 
-def _render_fallback(url: str, limit: int) -> str:
+def _render_fallback(url: str, limit: int) -> PageFetchResult:
     """Best-effort headless-browser render for a thin/empty static fetch (Phase A).
-    Reuses _browser_render in a worker thread with the current run ownership. Returns '' on any provider failure so
-    web_fetch falls back to the static body.
+    Reuses _browser_render in a worker thread with current run ownership. HTTP
+    errors remain errors; provider failures permit retaining healthy static text.
     """
     import concurrent.futures
     try:
+        metadata: dict[str, Any] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            _title, _final_url, text, _applied, _vp = ex.submit(
-                contextvars.copy_context().run, _browser_render, url, None, limit
+            _title, final_url, text, _applied, _vp, status = ex.submit(
+                contextvars.copy_context().run, _browser_render, url, None, limit + 1, None, None, True, metadata
             ).result()
-        return (text or "").strip()
-    except Exception:
-        return ""
+        if status is not None and not 200 <= status < 300:
+            return PageFetchResult(final_url=final_url, status_code=status,
+                                   error=f"HTTP {status}", rendered=True)
+        text = (text or "").strip()
+        return PageFetchResult(text=text[:limit], final_url=final_url, status_code=status,
+                               truncated=len(text) > limit, rendered=True,
+                               links=metadata.get("links", ()),
+                               links_truncated=metadata.get("links_truncated", False),
+                               available_fragments=metadata.get("available_fragments", ()),
+                               fragment_found=True if urlsplit(url).fragment else None)
+    except Exception as exc:
+        return PageFetchResult(final_url=url, error=f"browser fallback failed: {str(exc)[:200]}")
 
 
 def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000,
@@ -770,12 +918,15 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            title, final_url, text, applied, vp_signal = ex.submit(
+            title, final_url, text, applied, vp_signal, status = ex.submit(
                 contextvars.copy_context().run, _browser_render, cleaned_url, wait_selector, limit, steps, vp
             ).result()
     except Exception as exc:
         return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}
 
+    if status is not None and not 200 <= status < 300:
+        return {"text": f"ERROR: HTTP {status} ({final_url})", "ok": False,
+                "error": "http_error", "status_code": status, "url": final_url}
     text = (text or "").strip()
     if not text:
         return {"text": f"[browser: {final_url}] страница отрендерилась, но видимого текста нет", "ok": False}

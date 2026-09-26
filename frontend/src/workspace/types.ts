@@ -1,6 +1,13 @@
 import type { AnswerMediaItem, AnswerState, AnswerStatus, SourceCitation, SourceStatus, WebSourceEvidence, CodeAgentToolCall, CompletionStatus, CriterionState } from "../api/codeAgent";
+import type { ResourceRef } from "../api/resources";
 
-export type UserTurnData = { kind: "user"; id: string; text: string };
+export type UserTurnData = {
+  kind: "user";
+  id: string;
+  text: string;
+  /** Durable IDs only, retained with the originating message in session storage. */
+  resources?: Pick<ResourceRef, "resource_id">[];
+};
 
 export type AgentTurnData = {
   kind: "agent";

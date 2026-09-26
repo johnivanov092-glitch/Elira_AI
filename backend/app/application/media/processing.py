@@ -33,6 +33,7 @@ _LOCAL_CPU = execution.ExecutionTarget.LOCAL_CPU.value
 _SAFE_ADAPTER_ERRORS = frozenset({
     "transcription_failed",
     "transcription_empty",
+    "transcript_storage_failed",
     "local_gpu_unavailable",
     "server_cpu_unavailable",
     "local_cpu_unavailable",
@@ -108,7 +109,7 @@ def _extract_text(record: resource_store.ResourceRecord) -> dict[str, Any]:
                     f"(ext={ext or 'none'}); use transcribe for audio/video")
     try:
         data = resource_store.read_bytes(record)
-        result = extract_file(record.original_name, data)
+        result = extract_file(record.original_name, data, max_chars=_MAX_RESULT_CHARS)
     except Exception:  # noqa: BLE001 — never surface extractor internals/paths
         return _err(EXTRACT_TEXT, record.resource_id, "extraction_failed",
                     "text extraction failed")
@@ -120,9 +121,12 @@ def _extract_text(record: resource_store.ResourceRecord) -> dict[str, Any]:
         return _err(EXTRACT_TEXT, record.resource_id, "extraction_failed",
                     "text extraction failed")
     text = text[:_MAX_RESULT_CHARS]
-    return {"ok": True, "operation": EXTRACT_TEXT, "resource_id": record.resource_id,
-            "kind": record.kind, "execution_target": _LOCAL_CPU,
-            "chars": len(text), "text": text}
+    out = {"ok": True, "operation": EXTRACT_TEXT, "resource_id": record.resource_id,
+           "kind": record.kind, "execution_target": _LOCAL_CPU,
+           "chars": len(text), "text": text}
+    if isinstance(result.get("document"), dict):
+        out["document"] = result["document"]
+    return out
 
 
 def _transcribe(record: resource_store.ResourceRecord, execution_target: str,

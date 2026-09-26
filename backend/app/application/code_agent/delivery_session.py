@@ -18,6 +18,7 @@ Simple tasks (no structured TaskSpec) use one ordinary run.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -65,6 +66,12 @@ DELIVERY_CONTRACT_NOTE = (
 )
 
 _CONTINUATION_MESSAGE = (
+    "Продолжи исходный запрос с последнего подтверждённого результата. "
+    "Используй сохранённый контекст и полученные источники; если данных уже "
+    "достаточно, дай итоговый ответ."
+)
+
+_DELIVERY_CONTINUATION_MESSAGE = (
     "Продолжи незавершённую задачу с последнего подтверждённого результата. "
     "Сначала проверь фактическое состояние файлов и чеклиста (todo_update без "
     "аргументов покажет его), не повторяй уже выполненные изменения и не "
@@ -144,23 +151,23 @@ def _next_milestone(run_id: str, done_event: dict) -> str | None:
     return None
 
 
-def _resume_facts_block(run_id: str, state: dict) -> str:
+def _resume_facts_block(run_id: str, state: dict, *, delivery_shaped: bool) -> str:
     """Server-owned resume context: what is done / what remains / what is
     verified — from the journal + durable checklist, never from model text.
     Prefixed with FACTS_PREFIX so _coerce_history re-tags it into a SYSTEM
     message with authoritative framing on the next slice."""
     lines = [
         FACTS_PREFIX,
-        "Продолжение того же прогона. Состояние по данным сервера (журнал + чеклист):",
+        "Продолжение того же прогона. Состояние по данным журнала сервера:",
     ]
     changed = [str(p) for p in (state.get("changed_files") or []) if str(p).strip()]
     if changed:
         shown = ", ".join(changed[:30])
         more = f" (+{len(changed) - 30})" if len(changed) > 30 else ""
         lines.append(f"— Затронутые файлы ({len(changed)}): {shown}{more}")
-    else:
+    elif delivery_shaped:
         lines.append("— Файлы ещё не менялись.")
-    items = _checklist_items(run_id)
+    items = _checklist_items(run_id) if delivery_shaped else []
     if items:
         done = sum(1 for it in items if str(it.get("status")) == "completed")
         lines.append(f"— Чеклист ({done}/{len(items)} выполнено):")
@@ -172,10 +179,11 @@ def _resume_facts_block(run_id: str, state: dict) -> str:
     if isinstance(criteria, list) and criteria:
         confirmed = _confirmed_count(criteria)
         lines.append(f"— Критерии задачи: подтверждено verifier'ом {confirmed}/{len(criteria)}.")
-    lines.append(
-        "Работай от этого состояния: продолжай первый открытый пункт, не повторяй "
-        "уже выполненное, план не пересоздавай (меняй статусы через updates)."
-    )
+    if delivery_shaped:
+        lines.append(
+            "Работай от этого состояния: продолжай первый открытый пункт, не повторяй "
+            "уже выполненное, план не пересоздавай (меняй статусы через updates)."
+        )
     return "\n".join(lines)
 
 
@@ -203,15 +211,33 @@ def build_continuation_kwargs(
     if original_message.startswith(DELIVERY_CONTRACT_NOTE):
         original_message = original_message[len(DELIVERY_CONTRACT_NOTE):].lstrip()
         task_instructions = task_instructions or DELIVERY_CONTRACT_NOTE
+    shaped = DELIVERY_CONTRACT_NOTE in task_instructions or _delivery_shaped(
+        original_message, req.get("project_root"),
+    )
     if original_message:
         history.append({"role": "user", "content": original_message})
+    # These are accepted user clarifications, not facts inferred by tools. Keep
+    # them on the user channel when rebuilding a stopped/compacted run.
+    for workflow_input in state.get("workflow_inputs") or []:
+        if not isinstance(workflow_input, dict) or not all(
+            isinstance(workflow_input.get(key), str) and workflow_input[key].strip()
+            for key in ("request_id", "question", "answer")
+        ):
+            continue
+        history.append({
+            "role": "user",
+            "content": "[Ответ пользователя на уточнение Workflow]\n" + json.dumps(
+                {key: workflow_input[key] for key in ("request_id", "question", "answer")},
+                ensure_ascii=False,
+            ),
+        })
     last_response = str(state.get("last_response") or "").strip()
     if last_response:
         history.append({"role": "assistant", "content": last_response})
-    history.append({"role": "assistant", "content": _resume_facts_block(run_id, state)})
+    history.append({"role": "assistant", "content": _resume_facts_block(run_id, state, delivery_shaped=shaped)})
 
-    user_message = _CONTINUATION_MESSAGE
-    open_item = _first_open_checklist_item(_checklist_items(run_id))
+    user_message = _DELIVERY_CONTINUATION_MESSAGE if shaped else _CONTINUATION_MESSAGE
+    open_item = _first_open_checklist_item(_checklist_items(run_id)) if shaped else None
     if open_item is not None:
         user_message += f" Следующий пункт чеклиста: «{open_item.get('text')}»."
 

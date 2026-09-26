@@ -172,13 +172,14 @@ def ocr_config() -> OcrConfig:
     )
 
 
-def ocr_document(filename: str, contents: bytes, *, language: str | None = None) -> str | None:
-    """OCR a PDF or image via the server OCR service (:8002, PaddleOCR).
+def ocr_document_result(
+    filename: str, contents: bytes, *, language: str | None = None,
+) -> dict | None:
+    """Return OCR text with its page/block coordinates and partial errors.
 
     Multipart contract: ``file`` (required), ``language`` (auto|ru|en),
-    ``pdf_fallback``. Returns the aggregate text, or ``None`` if OCR is
-    server is unreachable, or no text was found — so callers can
-    fall back to local pytesseract.
+    ``pdf_fallback``. A valid empty/partially failed response keeps its errors;
+    transport failures and invalid JSON shapes return ``None``.
     """
     cfg = ocr_config()
     if not contents:
@@ -200,11 +201,37 @@ def ocr_document(filename: str, contents: bytes, *, language: str | None = None)
         logger.warning("server OCR failed for %s: %s", filename, exc)
         return None
 
-    text = _extract_ocr_text(data)
-    if text and text.strip():
-        return text.strip()
-    logger.info("server OCR returned no text for %s", filename)
-    return None
+    if not isinstance(data, dict):
+        logger.warning("server OCR returned an invalid response for %s", filename)
+        return None
+    result = dict(data)
+    result["text"] = _extract_ocr_text(data).strip()
+    result["pages"] = []
+    raw_pages = data.get("pages")
+    for index, raw_page in enumerate(raw_pages if isinstance(raw_pages, list) else [], 1):
+        if isinstance(raw_page, str):
+            raw_page = {"text": raw_page}
+        if not isinstance(raw_page, dict):
+            continue
+        page = dict(raw_page)
+        number = page.get("page", index)
+        page["page"] = number if type(number) is int and number > 0 else index
+        text = page.get("text") or page.get("content")
+        page["text"] = text if isinstance(text, str) else ""
+        for key in ("blocks", "errors"):
+            values = page.get(key)
+            page[key] = [dict(value) for value in values if isinstance(value, dict)] if isinstance(values, list) else []
+        result["pages"].append(page)
+    errors = data.get("errors")
+    result["errors"] = [dict(error) for error in errors if isinstance(error, dict)] if isinstance(errors, list) else []
+    return result
+
+
+def ocr_document(filename: str, contents: bytes, *, language: str | None = None) -> str | None:
+    """Compatibility string API for existing OCR tools and preview callers."""
+    result = ocr_document_result(filename, contents, language=language)
+    text = result.get("text", "") if result else ""
+    return text or None
 
 
 def _extract_ocr_text(data: object) -> str:

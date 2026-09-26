@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
@@ -93,6 +95,55 @@ def test_windows_shell_guidance_matches_run_bash_runtime() -> None:
     assert "cmd.exe" in guidance
     assert "%USERPROFILE%\\.ssh\\config" in guidance
     assert "Не используй" in guidance
+
+
+@pytest.mark.parametrize(
+    "final_answer_status,done_answer_status,completion,expected_status,expected_quality",
+    [
+        ("degraded", None, "none", "answer", "degraded"),
+        (None, "degraded", "confirmed", "answer", "degraded"),
+        ("needs_input", None, "none", "answer", "needs_input"),
+        ("complete", None, "confirmed", "completed", "complete"),
+        (None, None, "none", "completed", "complete"),
+    ],
+)
+def test_journal_preserves_answer_quality_without_marking_degraded_task_completed(
+    tmp_path: Path, final_answer_status, done_answer_status, completion,
+    expected_status, expected_quality,
+) -> None:
+    runs_root = tmp_path / "runs"
+    journal = RunJournal("answer-quality", runs_root=runs_root)
+    journal.start({"user_message": "Дай цитату до 15 слов."}, {"missing": []})
+    final = {"type": "final_response", "text": "Recorded answer."}
+    if final_answer_status is not None:
+        final["answer_status"] = final_answer_status
+    journal.append_event(final)
+    done = {
+        "type": "done", "ok": True, "stop_reason": "answer",
+        "completion_status": completion, "resumable": False,
+    }
+    if done_answer_status is not None:
+        done["answer_status"] = done_answer_status
+    journal.append_event(done)
+    journal.finish()
+
+    state = RunJournal.load("answer-quality", runs_root=runs_root).state
+    assert state["status"] == expected_status
+    assert state["answer_status"] == expected_quality
+    assert state["answer_state"] == "accepted"
+    assert state["stop_reason"] == "answer"
+    assert state["resumable"] is False
+    assert state["resume_instruction"] == ""
+    assert json.loads(journal.health_path.read_text(encoding="utf-8"))["status"] == expected_status
+
+    # A later accepted response replaces prior quality; a legacy event without
+    # answer_status must not inherit a stale degraded verdict after Resume.
+    journal.resume()
+    journal.append_event({"type": "final_response", "text": "Corrected answer."})
+    journal.append_event({"type": "done", "ok": True, "stop_reason": "answer"})
+    journal.finish()
+    assert journal.state["status"] == "completed"
+    assert journal.state["answer_status"] == "complete"
 
 
 def test_capability_snapshot_marks_unconfigured_services_missing(monkeypatch) -> None:

@@ -161,6 +161,26 @@ def test_document_claim_requires_successful_exact_file_gen_artifact() -> None:
     assert evidence.unbacked_document_claims("Готово, вот report.pdf") == []
 
 
+def test_published_local_gpu_transcript_is_a_download_artifact() -> None:
+    output = {
+        "ok": True, "operation": "transcribe", "execution_target": "local_gpu",
+        "resource": {"resource_id": "transcript-id", "kind": "document", "content_type": "text/plain", "size": 50000},
+        "download_name": "transcript.txt", "download_url": "/api/skills/download/transcript.txt",
+        "size": 50000, "sha256": "a" * 64,
+    }
+    evidence = RunEvidence()
+    _record(evidence, "resource_process", args={"operation": "transcribe"}, output=output)
+    receipts = evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
+    assert len(receipts) == 1
+    assert receipts[0].target == "transcript.txt"
+    assert receipts[0].sha256 == "a" * 64
+
+    for patch in ({"ok": False}, {"sha256": ""}, {"resource": {}}, {"execution_target": "server_cpu"}):
+        invalid = RunEvidence()
+        _record(invalid, "resource_process", args={"operation": "transcribe"}, output={**output, **patch})
+        assert not invalid.receipts_of_kind(EvidenceKind.ARTIFACT)
+
+
 def test_document_qa_receipt_must_match_published_artifact_hash() -> None:
     evidence = RunEvidence()
 

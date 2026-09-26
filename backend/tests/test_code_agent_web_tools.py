@@ -18,7 +18,7 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_web_fetch,
     tool_web_search,
 )
-from app.infrastructure.search.web_runtime import _extract_readable_text  # noqa: E402
+from app.infrastructure.search.web_runtime import PageFetchResult, _extract_readable_text  # noqa: E402
 
 
 class WebSearchToolTest(unittest.TestCase):
@@ -190,11 +190,11 @@ class WebFetchToolTest(unittest.TestCase):
     def test_empty_body_returns_error(self) -> None:
         # Static extraction empty AND the JS-render fallback yields nothing → ERROR.
         with patch(
-            "app.infrastructure.search.web_search.fetch_page_text",
-            return_value="",
+            "app.infrastructure.search.web_search.fetch_page",
+            return_value=PageFetchResult(),
         ), patch(
             "app.application.code_agent.tools._web._render_fallback",
-            return_value="",
+            return_value=PageFetchResult(),
         ):
             result = tool_web_fetch(url="https://example.com/empty")
         self.assertIn("ERROR", result["text"])
@@ -205,11 +205,11 @@ class WebFetchToolTest(unittest.TestCase):
         # headless browser and return the richer rendered text (with a JS marker).
         rendered = "USD/RUB rate today: 1 USD = 78.50 RUB. " * 6
         with patch(
-            "app.infrastructure.search.web_search.fetch_page_text",
-            return_value="",
+            "app.infrastructure.search.web_search.fetch_page",
+            return_value=PageFetchResult(),
         ), patch(
             "app.application.code_agent.tools._web._render_fallback",
-            return_value=rendered,
+            return_value=PageFetchResult(text=rendered, rendered=True),
         ):
             result = tool_web_fetch(url="https://example.com/spa")
         self.assertIn("78.50", result["text"])
@@ -218,13 +218,13 @@ class WebFetchToolTest(unittest.TestCase):
 
     def test_successful_fetch_returns_body_with_source_header(self) -> None:
         with patch(
-            "app.infrastructure.search.web_search.fetch_page_text",
-            return_value=(
+            "app.infrastructure.search.web_search.fetch_page",
+            return_value=PageFetchResult(text=(
                 "The capital of France is Paris. It is the country's largest city and "
                 "its political, economic and cultural centre, located on the river Seine "
                 "in the north of the country. Paris is famous for its museums, wide "
                 "boulevards and historic landmarks such as the Eiffel Tower and the Louvre."
-            ),
+            )),
         ):
             result = tool_web_fetch(url="https://example.com/france")
         self.assertIn("Paris", result["text"])
@@ -236,10 +236,10 @@ class WebFetchToolTest(unittest.TestCase):
 
         def fake_fetch(url, max_chars):
             captured["max_chars"] = max_chars
-            return "x" * 300  # > _THIN_TEXT_THRESHOLD so no JS-render fallback fires
+            return PageFetchResult(text="x" * 300)  # No JS fallback needed.
 
         with patch(
-            "app.infrastructure.search.web_search.fetch_page_text",
+            "app.infrastructure.search.web_search.fetch_page",
             side_effect=fake_fetch,
         ):
             tool_web_fetch(url="https://example.com/", max_chars=10)
@@ -251,10 +251,10 @@ class WebFetchToolTest(unittest.TestCase):
 
         def fake_fetch(url, max_chars):
             captured["max_chars"] = max_chars
-            return "x" * 300  # > _THIN_TEXT_THRESHOLD so no JS-render fallback fires
+            return PageFetchResult(text="x" * 300)
 
         with patch(
-            "app.infrastructure.search.web_search.fetch_page_text",
+            "app.infrastructure.search.web_search.fetch_page",
             side_effect=fake_fetch,
         ):
             tool_web_fetch(url="https://example.com/", max_chars=1_000_000)
@@ -262,7 +262,7 @@ class WebFetchToolTest(unittest.TestCase):
 
     def test_fetch_exception_returns_error(self) -> None:
         with patch(
-            "app.infrastructure.search.web_search.fetch_page_text",
+            "app.infrastructure.search.web_search.fetch_page",
             side_effect=RuntimeError("network down"),
         ):
             result = tool_web_fetch(url="https://example.com/")
@@ -328,7 +328,7 @@ class BatchWebToolsTest(unittest.TestCase):
     def test_web_fetch_batch_fetches_all(self) -> None:
         import app.application.code_agent.tools._web as w
         urls = ["https://x/1", "https://x/2", "https://x/3"]
-        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: f"[fetched: {u}]\n\nbody {u}"):
+        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: PageFetchResult(text=f"body {u}", final_url=u)):
             result = tool_web_fetch(urls=urls)
         text = result["text"]
         self.assertIs(result["ok"], True)
@@ -339,14 +339,14 @@ class BatchWebToolsTest(unittest.TestCase):
     def test_web_fetch_batch_all_failures_not_ok(self) -> None:
         import app.application.code_agent.tools._web as w
 
-        with patch.object(w, "_fetch_one", return_value="ERROR: unavailable"):
+        with patch.object(w, "_fetch_one", return_value=PageFetchResult(error="unavailable")):
             result = tool_web_fetch(urls=["https://x/1", "https://x/2"])
         self.assertIs(result["ok"], False)
 
     def test_batch_is_capped(self) -> None:
         import app.application.code_agent.tools._web as w
         seen: list[str] = []
-        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: seen.append(u) or "[fetched]"):
+        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: seen.append(u) or PageFetchResult(text="fetched")):
             tool_web_fetch(urls=[f"https://x/{i}" for i in range(20)])
         self.assertLessEqual(len(seen), w._WEB_BATCH_MAX)
 

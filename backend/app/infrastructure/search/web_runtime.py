@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 
 logger = logging.getLogger(__name__)
@@ -25,34 +27,80 @@ CleanQueryFunc = Callable[[str], str]
 SubqueryBuilderFunc = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-def _extract_readable_text(soup: Any, max_chars: int) -> str:
-    for tag in soup(
-        [
-            "script",
-            "style",
-            "nav",
-            "header",
-            "footer",
-            "aside",
-            "form",
-            "button",
-            "iframe",
-            "noscript",
-            "svg",
-            "menu",
-            "advertisement",
-            "ad",
-            "banner",
-        ]
-    ):
-        tag.decompose()
+@dataclass(frozen=True)
+class PageFetchResult:
+    """Transport/extraction metadata kept separate from untrusted page text."""
 
-    for element in soup.select(
-        "[class*='advert'], [class*='banner'], [class*='cookie'], "
-        "[class*='popup'], [class*='modal'], [id*='advert'], [id*='banner']"
-    ):
-        element.decompose()
+    text: str = ""
+    final_url: str = ""
+    status_code: int | None = None
+    error: str = ""
+    truncated: bool = False
+    fragment_found: bool | None = None
+    available_fragments: tuple[str, ...] = ()
+    links: tuple[tuple[str, str], ...] = ()
+    links_truncated: bool = False
+    rendered: bool = False
 
+    @property
+    def ok(self) -> bool:
+        return not self.error and bool(self.text)
+
+
+def _available_fragments(soup: Any) -> tuple[str, ...]:
+    """A bounded manifest of actual anchors; never shorten an anchor name."""
+    fragments = []
+    size = 0
+    for element in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "dt", "a"]):
+        value = element.get("name" if element.name == "a" else "id")
+        if not isinstance(value, str) or not value.strip() or value in fragments:
+            continue
+        encoded_size = len(quote(value, safe="")) + 3
+        if size + encoded_size > 960:
+            continue
+        fragments.append(value)
+        size += encoded_size
+        if len(fragments) == 16:
+            break
+    return tuple(fragments)
+
+
+def _fragment_content(soup: Any, fragment: str) -> str | None:
+    """Read an anchor's section, including legacy <a name> heading anchors."""
+    from bs4 import NavigableString
+
+    target = soup.find(id=fragment) or soup.find("a", attrs={"name": fragment})
+    if target is None:
+        return None
+    definition = target if target.name == "dt" else target.find_parent("dt")
+    if definition is not None:
+        parts = [definition.get_text(separator="\n", strip=True)]
+        for sibling in definition.next_siblings:
+            if getattr(sibling, "name", None) == "dt":
+                break
+            if getattr(sibling, "name", None) == "dd":
+                parts.append(sibling.get_text(separator="\n", strip=True))
+        return "\n".join(part for part in parts if part)
+    heading_names = {f"h{level}" for level in range(1, 7)}
+    heading = target if target.name in heading_names else target.find_parent(heading_names)
+    if heading is None and not target.get_text(strip=True):
+        following = target.find_next()
+        if following is not None and following.name in heading_names:
+            heading = following
+    if heading is None and target.get_text(strip=True):
+        return target.get_text(separator="\n", strip=True)
+    start = heading or target
+    level = int(heading.name[1]) if heading is not None else 6
+    parts = []
+    for element in start.next_elements:
+        if getattr(element, "name", None) in heading_names and int(element.name[1]) <= level:
+            break
+        if isinstance(element, NavigableString) and element.strip():
+            parts.append(str(element).strip())
+    return "\n".join(parts)
+
+
+def _readable_container(soup: Any) -> Any:
     content_selectors = [
         "article",
         "main",
@@ -68,31 +116,91 @@ def _extract_readable_text(soup: Any, max_chars: int) -> str:
         "#content",
         "#main-content",
     ]
-    main_el = None
     for selector in content_selectors:
         main_el = soup.select_one(selector)
         if main_el and len(main_el.get_text(strip=True)) > 100:
-            break
-        main_el = None
+            return main_el
+    return soup.find("body") or soup
 
-    if main_el:
-        text = main_el.get_text(separator="\n", strip=True)
-    else:
-        body = soup.find("body")
-        text = (body or soup).get_text(separator="\n", strip=True)
 
-    lines = [line.strip() for line in text.split("\n") if len(line.strip()) > 20]
+def _extract_readable_text(soup: Any, max_chars: int | None, *, fragment: str = "") -> str:
+    for tag in soup(
+        ["script", "style", "nav", "header", "footer", "aside", "form", "button",
+         "iframe", "noscript", "svg", "menu", "advertisement", "ad", "banner"]
+    ):
+        tag.decompose()
+
+    for element in soup.select(
+        "[class*='advert'], [class*='banner'], [class*='cookie'], "
+        "[class*='popup'], [class*='modal'], [id*='advert'], [id*='banner']"
+    ):
+        element.decompose()
+
+    if fragment:
+        text = _fragment_content(soup, fragment)
+        if text is None:
+            raise ValueError(f"URL fragment #{fragment} not found")
+        return text[:max_chars] if max_chars is not None else text
+
+    text = _readable_container(soup).get_text(separator="\n", strip=True)
+
+    # DOM cleanup removes navigation/noise. Length is not a relevance filter:
+    # dates, prices, release versions and individual table cells are often short.
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
     text = "\n".join(lines)
-    return text[:max_chars] if text else ""
+    return text[:max_chars] if max_chars is not None else text
 
 
-def fetch_page_text(url: str, max_chars: int = 4000) -> str:
-    """Fetch and extract main text content from a web page."""
+def _safe_link_url(base_url: str, href: str) -> str:
+    if not href or any(ord(char) < 32 or ord(char) == 127 for char in href):
+        return ""
+    try:
+        target = urljoin(base_url, href)
+        parsed = urlsplit(target)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
+            return ""
+        _ = parsed.port  # Invalid ports must not leak into follow-up tool calls.
+        return target
+    except ValueError:
+        return ""
+
+
+def _extract_page_links(soup: Any, final_url: str) -> tuple[tuple[tuple[str, str], ...], bool]:
+    """Read a bounded manifest from the cleaned main DOM; never fetch targets."""
+    base = soup.find("base", href=True)
+    base_url = (_safe_link_url(final_url, str(base["href"]).strip()) if base else "") or final_url
+    links: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    size = 0
+    truncated = False
+    for anchor in _readable_container(soup).find_all("a", href=True):
+        href = str(anchor["href"]).strip()
+        if href.startswith("#"):
+            continue  # Same-page anchors already have their own manifest.
+        target = _safe_link_url(base_url, href)
+        label = " ".join(anchor.get_text(" ", strip=True).split())
+        if not target or not label:
+            continue
+        if len(label) > 160:
+            label = label[:159] + "…"
+        pair = (label, target)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        if len(links) >= 20 or size + len(label) + len(target) > 3200:
+            truncated = True
+            continue  # A later shorter link may still fit; URLs are never cut.
+        links.append(pair)
+        size += len(label) + len(target)
+    return tuple(links), truncated
+
+
+def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
+    """Fetch HTML with explicit status/final URL; check every redirect hop."""
     from app.application.web.ssrf_guard import check_ssrf
-    ssrf_reason = check_ssrf(url)
-    if ssrf_reason:
-        return f"ERROR: invalid URL — {ssrf_reason}"
 
+    current = url
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -105,18 +213,59 @@ def fetch_page_text(url: str, max_chars: int = 4000) -> str:
             ),
             "Accept-Language": "ru,en;q=0.9",
         }
-        resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-        if resp.status_code != 200:
-            return ""
+        for _hop in range(6):
+            ssrf_reason = check_ssrf(current)
+            if ssrf_reason:
+                return PageFetchResult(final_url=current, error=f"invalid URL — {ssrf_reason}")
+            resp = requests.get(current, headers=headers, timeout=10, allow_redirects=False)
+            try:
+                status = resp.status_code
+                if status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location") or ""
+                    if not location:
+                        return PageFetchResult(final_url=current, status_code=status,
+                                               error="redirect without Location")
+                    redirected = urljoin(current, location)
+                    # Fragments are not transmitted by HTTP. A redirect without a
+                    # fragment preserves the requested section (RFC 9110, Location).
+                    if "#" not in location and urlsplit(current).fragment:
+                        redirected += "#" + urlsplit(current).fragment
+                    current = redirected
+                    continue
+                final = resp.url or current
+                if not urlsplit(final).fragment and urlsplit(current).fragment:
+                    parsed = urlsplit(final)
+                    final = urlunsplit(parsed._replace(fragment=urlsplit(current).fragment))
+                if not 200 <= status < 300:
+                    return PageFetchResult(final_url=final, status_code=status, error=f"HTTP {status}")
+                if resp.encoding and resp.encoding.lower() != "utf-8":
+                    resp.encoding = resp.apparent_encoding or "utf-8"
+                fragment = unquote(urlsplit(final).fragment)
+                soup = BeautifulSoup(resp.text, "html.parser")
+                try:
+                    text = _extract_readable_text(soup, max_chars + 1, fragment=fragment)
+                except ValueError as exc:
+                    return PageFetchResult(final_url=final, status_code=status,
+                                           error=str(exc), fragment_found=False,
+                                           available_fragments=_available_fragments(soup))
+                links, links_truncated = _extract_page_links(soup, final)
+                return PageFetchResult(text=text[:max_chars], final_url=final, status_code=status,
+                                       truncated=len(text) > max_chars,
+                                       fragment_found=True if fragment else None,
+                                       available_fragments=_available_fragments(soup),
+                                       links=links, links_truncated=links_truncated)
+            finally:
+                resp.close()
+        return PageFetchResult(final_url=current, error="too many redirects")
+    except Exception as exc:
+        logger.debug("Web fetch failed for %s: %s", current, type(exc).__name__)
+        return PageFetchResult(final_url=current, error=f"fetch failed: {str(exc)[:200]}")
 
-        if resp.encoding and resp.encoding.lower() != "utf-8":
-            resp.encoding = resp.apparent_encoding or "utf-8"
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        return _extract_readable_text(soup, max_chars)
-    except Exception:
-        return ""
+def fetch_page_text(url: str, max_chars: int = 4000) -> str:
+    """Legacy text facade; HTTP failures remain explicitly distinguishable."""
+    result = fetch_page(url, max_chars=max_chars)
+    return f"ERROR: {result.error}" if result.error else result.text
 
 
 def count_hits_for_domains(items: list[dict], preferred_domains: tuple[str, ...]) -> int:

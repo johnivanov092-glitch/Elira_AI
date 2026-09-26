@@ -41,6 +41,7 @@ from app.core.web_runtime import (  # noqa: E402
     format_search_results,
     search_web_runtime,
 )
+from app.core.web_engines import ENGINE_LABELS  # noqa: E402
 
 
 # ---
@@ -575,8 +576,7 @@ class FormatSearchResultsTest(unittest.TestCase):
 
     def test_engine_label_shown(self) -> None:
         result = format_search_results(self._items())
-        # ENGINE_LABELS["duckduckgo"] = "DuckDuckGo"
-        self.assertIn("DuckDuckGo", result)
+        self.assertIn(ENGINE_LABELS["duckduckgo"], result)
 
     def test_single_item_no_extra_separators(self) -> None:
         single = [{"title": "T", "href": "https://x.com", "body": "B", "engine": "ddg"}]

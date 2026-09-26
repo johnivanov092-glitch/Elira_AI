@@ -49,12 +49,15 @@ option still selects a Workflow planning step; it does not refer to V8.
   quoted/code examples do not trigger this answer-based recovery.
   Local state still comes from local tools; external contracts come from primary
   sources. The model may load further groups with `capability_load`.
-- A requested download cannot finalize until an artifact receipt exists. The
-  loop requires `resource_publish`, producing the existing clickable UI download
+- A requested file download cannot finalize until an artifact receipt exists.
+  An ordinary external source/product link does not require a local artifact.
+  The loop requires `resource_publish`, producing the existing clickable UI download
   card instead of printing a Windows path as if it were a link. Every distinct
   successful publication remains available as its own download chip and as an
   item in the preview panel, including repeated publications with the same
   visible filename.
+  Local GPU transcription also emits a receipt after saving and publishing its
+  complete TXT through the same Resource Store publication primitive.
 - PDF/DOCX publication is fail-closed: the runtime binds structural checks,
   rendered page count and vision inspection to the exact published SHA-256.
   Failed or incomplete QA emits no download artifact. An exact page count is an
@@ -67,6 +70,11 @@ option still selects a Workflow planning step; it does not refer to V8.
   project filename may also resolve to one exact attached ResourceRef name and
   is then read through the existing resource extractor without materializing a
   copy. Ambiguous matches fail closed.
+  Approximate filename similarity alone never selects another file.
+- Uploaded ResourceRef IDs persist on their original user turns through session
+  save/reload and follow-up requests. Historical metadata is resolved from the
+  Resource Store and framed as untrusted attachment data; file contents are not
+  eagerly injected. Missing resources are explicit, without filename substitution.
 - Local price-list assembly/BOM requests cannot finalize on model arithmetic.
   `bom_validate` reads the declared XLSX/CSV columns and deterministically
   validates exact codes, numeric stock, quantities and prices, then calculates
@@ -94,6 +102,26 @@ option still selects a Workflow planning step; it does not refer to V8.
   of transport. Generated guidance messages use the existing compactor's pinned
   IDs; both summarization and its fallback preserve them and count them against
   the context budget. They never become a second system prefix.
+- Web fetching keeps HTTP status, final URL and truncation separate from page
+  text. Short fields and requested anchor sections survive extraction; failed
+  HTTP responses cannot become successful excerpts through browser fallback.
+  Corpus queries with no lexical matches return `no_results`, not arbitrary
+  chunks. Publication/modification metadata is separate from retrieval time.
+  The DDGS adapter selects general web engines explicitly; encyclopedia search
+  remains a separate provider. Batch fetches divide the existing tool-message
+  budget between pages before packing, keeping an excerpt and actual link
+  targets for each page instead of dropping entire middle pages.
+- Exact source receipts already in tool history are not duplicated. Missing
+  excerpts are appended within a 7000-character restoration budget; compaction
+  rebuilds that snapshot before context-budget accounting. This preserves the
+  ordinary request prefix and does not add model calls or semantic validation.
+  Restored excerpts remain untrusted input, never an assistant-answer prefill.
+  An explicit user quote-word limit is checked at answer acceptance; numeric
+  word-count labels are computed from the unchanged quote. One format correction
+  is allowed and persists across Resume; repeated overflow is degraded.
+  Recognised numeric update periods also require a local citation and the same
+  quantity/unit in its presented excerpt. One correction persists across Resume;
+  repeated failure is degraded. This is not semantic entailment validation.
 - Task skills use the same runtime_control/registry/executor path: skill_list
   returns all installed metadata; skill_load loads the model-selected package
   from Elira's trusted skills/ directory. One pinned block preserves exact
@@ -186,6 +214,11 @@ Public kinds are `input`, `secret`, `elevation`, and `approval`. Requests are
 durable and resume the same workflow run and step. Plaintext secrets are never a
 valid resolution; the payload contains only an opaque `secret_ref`.
 
+Accepted `ask_user` clarifications emit a typed `workflow_input` on the tool
+event and persist in the existing run journal and session turn. Follow-up turns
+and Resume replay these question/answer pairs as user input, not verified tool
+facts. Secret/elevation responses and declined inputs are excluded.
+
 Windows elevation is executed by the Tauri native bridge in
 `src-tauri/src/main.rs`, which opens UAC and binds the result to the Workflow
 request. The backend does not require permanent administrator rights.
@@ -199,6 +232,14 @@ workflow resumes with that answer and passes the selected target to
 `resource_process`. `auto` is itself an explicit user choice and keeps the order
 `local_gpu -> server_cpu -> local_cpu`. The legacy input `server_gpu` normalizes
 to `server_cpu`; results and telemetry expose only the canonical name.
+
+Local GPU transcription consumes all decoded segments without a character cap.
+It saves the complete UTF-8 TXT as a ResourceRef and downloadable artifact before
+returning an explicitly labelled preview of at most 8,000 characters. The result
+includes the full character count, resource ID, download URL and SHA-256;
+`resource_materialize` exposes the complete text for further processing. CPU and
+server transcription retain their existing limits. GPU power settings are not
+part of this processing contract.
 
 ## Integration boundary
 
@@ -268,6 +309,13 @@ prefix; `available_tool_names_truncated=true` reports a longer roster. LSP
 follows the same per-run rule. `ssh_hosts`
 reveals the existing SSH provider and `itops_assets` reveals the IT Ops provider
 without turning those discovery calls into authorization gates.
+
+Settings → MCP provides explicit user start/stop/restart controls and live status
+for configured servers. `api/routes/mcp_routes.py` delegates lifecycle actions to
+the same `tool_runtime_control` and `mcp_runtime`; it exposes no server arguments,
+URLs or credentials. Starting a process in Settings does not preload its schemas
+into every agent run. Batch start respects the persisted `enabled` flag; HTTP
+stop disconnects the local MCP client rather than stopping the remote service.
 
 MikroTik onboarding is SSH-only for RouterOS 6 and 7. The model uses
 `itops_mikrotik_upsert/list/remove/sync`; router identity, version, SSH target and

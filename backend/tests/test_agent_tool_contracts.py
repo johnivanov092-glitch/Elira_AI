@@ -147,7 +147,7 @@ def test_browser_reports_incomplete_multi_action_sequence() -> None:
         patch("app.application.web.ssrf_guard.check_ssrf", return_value=None),
         patch(
             "app.application.code_agent.tools._web._browser_render",
-            return_value=("Form", "https://example.com", "body", 1, None),
+            return_value=("Form", "https://example.com", "body", 1, None, 200),
         ),
     ):
         result = tool_browser(url="https://example.com", actions=actions)

@@ -148,7 +148,11 @@ def web_query(run_id: str, query: str, *, doc_id: str | None = None,
         index.add(key, c["text"])
 
     hits = index.search(query, top_k=top_k * 3)
-    candidates = [by_key[k] for k, _score in hits] or chunks[:top_k]
+    if not hits:
+        return {"ok": True, "results": [], "ranker": "bm25",
+                "note": "Совпадений по запросу в корпусе нет. Уточни запрос или добавь источник через web_fetch(store=true)."}
+    scores = dict(hits)
+    candidates = [by_key[k] for k, _score in hits]
     reranked = _embed_rerank(query, candidates)
     final = (reranked or candidates)[:top_k]
 
@@ -173,6 +177,8 @@ def web_query(run_id: str, query: str, *, doc_id: str | None = None,
             "url": d.get("final_url") or d.get("url"), "title": d.get("title"),
             "quote": quote,
             "content_hash": d.get("content_hash"), "fetched_at": d.get("fetched_at"),
+            "bm25_score": scores[f"{c['doc_id']}:{c['chunk_id']}"],
+            "dates": d.get("dates") or {}, "tier": d.get("tier") or "unknown",
         })
     return {"ok": True, "results": results,
             "ranker": "bm25+embed" if reranked else "bm25"}

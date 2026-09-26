@@ -36,11 +36,20 @@ def is_extract_error(text: str) -> bool:
     )
 
 
-def _extract_pdf(data: bytes, max_chars: int = 50000) -> str:
+def _extract_pdf(data: bytes, max_chars: int = 50000, *, document: dict | None = None) -> str:
     """Умное извлечение: pypdf → pdfplumber → OCR."""
     try:
         from app.application.pdf.runtime import extract_pdf_smart
         result = extract_pdf_smart(data, max_chars)
+        if document is not None:
+            document.update({
+                "page_count": result.get("pages", 0),
+                "pages": result.get("page_results", []),
+                "method": result.get("method", ""),
+                "ocr_used": result.get("ocr_used", False),
+                "errors": result.get("errors", []),
+                "truncated": result.get("truncated", False),
+            })
         text = result.get("text", "")
         # Добавляем таблицы в текст
         tables = result.get("tables", [])
@@ -72,7 +81,7 @@ def _extract_pdf(data: bytes, max_chars: int = 50000) -> str:
                     break
                 parts.append(t)
                 total += len(t)
-            return "\n\n".join(parts)
+            return "\n\n".join(parts)[:max_chars]
         except ImportError:
             return "[pypdf не установлен: pip install pypdf]"
     except Exception as e:
@@ -290,12 +299,13 @@ def extract_file(filename: str, contents: bytes, *, max_chars: int | None = None
     """
     filename = (filename or "").strip()
     ext = Path(filename).suffix.lower()
+    document = {}
 
     def limit(default: int) -> int:
         return default if max_chars is None else max(1, int(max_chars))
 
     if ext == ".pdf":
-        text = _extract_pdf(contents, limit(50000))
+        text = _extract_pdf(contents, limit(50000), document=document)
     elif ext in (".docx", ".doc"):
         text = _extract_docx(contents, limit(30000))
     elif ext == ".xls":
@@ -313,7 +323,7 @@ def extract_file(filename: str, contents: bytes, *, max_chars: int | None = None
     else:
         text = _extract_text(contents, limit(30000))
 
-    return {
+    result = {
         "ok": True,
         "filename": filename,
         "size": len(contents),
@@ -321,3 +331,6 @@ def extract_file(filename: str, contents: bytes, *, max_chars: int | None = None
         "chars": len(text),
         "type": ext,
     }
+    if document:
+        result["document"] = document
+    return result

@@ -78,3 +78,31 @@ def test_ingest_query_and_quote_verification_round_trip(tmp_path: Path) -> None:
         assert retrieval.web_query("run-b", "violet telescope")["results"] == []
     finally:
         store._DB_PATH_OVERRIDE = previous_override
+
+
+def test_refetch_updates_dates_without_erasing_known_dates_or_using_another_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "corpus.sqlite3"))
+    monkeypatch.setattr(retrieval, "_embed_rerank", lambda *args: None)
+    metadata = '<meta name="date" content="2025-02-14"><meta name="lastmod" content="2025-03-01">'
+    monkeypatch.setattr(corpus, "_fetch_raw", lambda url: {
+        "ok": True, "final_url": url, "mime": "text/html", "charset": "utf-8",
+        "content": f"<html><head>{metadata}</head><body>Violet telescope release.</body></html>".encode(),
+        "last_modified": None,
+    })
+    url = "https://www.python.org/release-notes"
+    original = corpus.ingest(url, "refetch-run")
+    metadata = '<meta name="lastmod" content="2025-03-19">'
+    refreshed = corpus.ingest(url, "refetch-run")
+    assert refreshed["deduped"] is True
+    assert refreshed["doc_id"] == original["doc_id"]
+    hit = retrieval.web_query("refetch-run", "violet telescope")["results"][0]
+    assert hit["dates"] == {"published": "2025-02-14", "modified": "2025-03-19"}
+
+    metadata = ""
+    assert corpus.ingest(url, "refetch-run")["deduped"] is True
+    metadata = '<meta name="date" content="2024-01-01"><meta name="lastmod" content="2024-02-02">'
+    assert corpus.ingest("https://example.org/mirror", "refetch-run")["deduped"] is True
+    hit = retrieval.web_query("refetch-run", "violet telescope")["results"][0]
+    assert hit["url"] == url
+    assert hit["dates"] == {"published": "2025-02-14", "modified": "2025-03-19"}
+    assert hit["tier"] == "official"

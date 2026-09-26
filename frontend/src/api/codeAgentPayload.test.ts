@@ -62,4 +62,27 @@ describe("streamCodeAgent request body — resource boundary", () => {
     expect(body.reasoning_effort).toBe("medium");
     expect(body.thinking).toBeUndefined();
   });
+
+  it("sends historical user attachments as IDs only, apart from current resources", async () => {
+    let body: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return emptyStreamResponse();
+    });
+    const ref = { resource_id: "a".repeat(32), name: "UNTRUSTED NAME", content: "PRIVATE FILE CONTENT" };
+    await streamCodeAgent({
+      message: "follow-up", projectRoot: "", sessionId: "s1",
+      conversationHistory: [
+        { role: "user", content: "read this", resources: [ref] },
+        { role: "assistant", content: "read", resources: [ref] },
+      ],
+    });
+    expect(body.resources).toBeUndefined();
+    expect(body.conversation_history).toEqual([
+      { role: "user", content: "read this", resources: [{ resource_id: ref.resource_id }] },
+      { role: "assistant", content: "read" },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("UNTRUSTED NAME");
+    expect(JSON.stringify(body)).not.toContain("PRIVATE FILE CONTENT");
+  });
 });

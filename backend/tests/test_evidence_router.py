@@ -7,6 +7,7 @@ import pytest
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.capabilities import (
     is_local_tabular_catalog_probe,
+    requires_bom_validation,
     route_request_capabilities,
     should_require_local_catalog_search,
     should_escalate_web_after_failure,
@@ -55,6 +56,45 @@ def test_download_request_preloads_resources_and_marks_delivery_contract() -> No
 
     assert "resources" in decision.capability_groups
     assert decision.download_requested is True
+
+
+@pytest.mark.parametrize("message", [
+    "Брала бы memory foam 40×70 за ~7 000 ₸ дай ссылку",
+    "Дай мне ссылку на подушку",
+    "Дай ссылку на PDF производителя",
+    "Give me a link to the manufacturer's PDF",
+])
+def test_external_link_does_not_require_artifact_publication(message: str) -> None:
+    decision = route_request_capabilities(message)
+
+    assert decision.download_requested is False
+
+
+@pytest.mark.parametrize("message", [
+    "Создай PDF и дай ссылку",
+    "Дай ссылку на созданный PDF",
+    "Дай мне ссылку на файл",
+    "Сформируй отчёт и дай ссылку",
+    "Create a PDF and give me a link",
+    "Give me a link to the generated PDF",
+])
+def test_generated_file_link_keeps_artifact_delivery_contract(message: str) -> None:
+    decision = route_request_capabilities(message)
+
+    assert decision.download_requested is True
+    assert "resources" in decision.capability_groups
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ("Сделай КП по прайсу", True),
+    ("Сделай кп по catalog.csv", True),
+    ("Сделай КП по скриншотам", False),
+    ("Проверь прайс КПП", False),
+])
+def test_abbreviated_quote_requires_bom_only_with_catalog(
+    message: str, expected: bool,
+) -> None:
+    assert requires_bom_validation(message) is expected
 
 
 def test_library_text_cannot_require_unsolicited_download(tmp_path) -> None:

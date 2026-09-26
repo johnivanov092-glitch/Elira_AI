@@ -5,7 +5,8 @@ no model download): capability honesty (detected AND wired AND CUDA-visible),
 lazy + thread-safe + bounded single-flight model cache, strict local_gpu never
 touches the server, auto fallback after a runtime failure, one workload for all
 containers, server-owned config allowlist (no model-controlled path/device/
-compute/URL/argv), stable leak-free errors, bounded output, and the preserved
+compute/URL/argv), stable leak-free errors, complete GPU transcript artifacts,
+bounded previews/CPU output, and the preserved
 R1/R2 timeouts.
 """
 from __future__ import annotations
@@ -291,6 +292,23 @@ class ModelCacheTest(unittest.TestCase):
         text = lt.transcribe_local("/x/a.ogg", target="local_cpu")
         self.assertLessEqual(len(text), 20000)
 
+    def test_gpu_consumes_all_segments_including_tail_after_20000_chars(self):
+        segments = [_Seg("Начало. "), _Seg("длинная запись " * 4000), _Seg("Конец записи.")]
+        expected = "".join(segment.text for segment in segments)
+        lt.set_model_factory(lambda m, d, c, cache: _FakeModel(segments=segments))
+
+        self.assertEqual(lt.transcribe_local("/x/a.ogg", target="local_gpu"), expected)
+
+    def test_gpu_does_not_return_partial_success_when_later_segment_fails(self):
+        def segments():
+            yield _Seg("x" * 25000)
+            raise RuntimeError("decode failed after the former cap")
+
+        lt.set_model_factory(lambda m, d, c, cache: _FakeModel(segments=segments()))
+        with self.assertRaises(lt.LocalTranscriptionError) as error:
+            lt.transcribe_local("/x/a.ogg", target="local_gpu")
+        self.assertEqual(error.exception.code, "transcription_failed")
+
     def test_output_iteration_stops_at_the_public_cap(self):
         consumed = 0
 
@@ -408,7 +426,8 @@ class RoutingTest(unittest.TestCase):
         out = processing.process_resource(_rec(), "transcribe", "local_gpu", adapters)
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["selected_target"], "local_gpu")
-        self.assertEqual(out["text"], "local-gpu-text")
+        self.assertTrue(out["text"].endswith("local-gpu-text"))
+        self.assertFalse(out["truncated_preview"])
         server_health.assert_not_called()
         server_tx.assert_not_called()
 
@@ -500,6 +519,107 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(out["selected_target"], "local_gpu")
         self.assertEqual(out["backend"], "faster-whisper")
         self.assertNotIn(rec.storage_path, str(out))       # internal path never leaks
+
+
+class FullGpuTranscriptTest(unittest.TestCase):
+    def setUp(self):
+        lt.clear_model_cache()
+
+    def tearDown(self):
+        lt.set_model_factory(None)
+        lt.clear_model_cache()
+
+    def test_full_transcript_survives_tool_executor_and_download_with_bounded_preview(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from app.api.routes.skills_routes import router
+        from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool
+        from app.application.code_agent.loop_helpers import _truncate_for_llm
+        from app.application.code_agent.tools._resources import (
+            tool_resource_materialize,
+            tool_resource_process,
+        )
+
+        segments = [_Seg("Начало записи. "), _Seg("полный текст " * 4000), _Seg("Проверенный конец.")]
+        expected = "".join(segment.text for segment in segments)
+        lt.set_model_factory(lambda m, d, c, cache: _FakeModel(segments=segments))
+        adapters = _adapters(gpu=_local_adapter("local_gpu", transcribe_fn=lt.gpu_transcribe_fn))
+        record = _rec()
+        app = FastAPI()
+        app.include_router(router)
+
+        for target in ("local_gpu", "auto"):
+            with self.subTest(target=target), mock.patch.object(ex, "_DEFAULT_ADAPTERS", adapters):
+                result = execute_tool(
+                    ToolExecutionRequest(
+                        run_id="full-gpu-transcript", agent_id="test", project_scope_id="test",
+                        tool_name="resource_process", source="code_agent", permission_mode="bypass",
+                        args={"resource_id": record.resource_id, "operation": "transcribe",
+                              "execution_target": target},
+                    ),
+                    lambda _name, args: tool_resource_process(**args),
+                )
+                self.assertEqual(result.status, "ok", result.output)
+                out = result.output
+                self.assertEqual(out["selected_target"], "local_gpu")
+                self.assertEqual(out["chars"], len(expected))
+                self.assertTrue(out["truncated_preview"])
+                self.assertEqual(out["preview_chars"], ex._TRANSCRIPT_PREVIEW_CHARS)
+                self.assertLess(len(out["text"]), 12000)
+                self.assertEqual(_truncate_for_llm(out["text"]), out["text"])
+                self.assertIn(out["resource"]["resource_id"], out["text"])
+                self.assertIn("truncated_preview=true", out["text"])
+
+                derived = rs.get_record(out["resource"]["resource_id"])
+                self.assertIsNotNone(derived)
+                self.assertEqual(derived.owner_session, record.owner_session)
+                self.assertEqual(rs.read_bytes(derived).decode("utf-8"), expected)
+                self.assertEqual(out["sha256"], derived.sha256)
+                self.assertEqual(out["size"], len(expected.encode("utf-8")))
+                with TestClient(app) as client:
+                    download = client.get(out["download_url"])
+                self.assertEqual(download.status_code, 200)
+                self.assertEqual(download.content.decode("utf-8"), expected)
+                with tempfile.TemporaryDirectory() as workspace:
+                    materialized = tool_resource_materialize(
+                        Path(workspace), resource_id=derived.resource_id,
+                    )
+                    self.assertTrue(materialized["ok"], materialized)
+                    self.assertEqual(
+                        (Path(workspace) / materialized["project_path"]).read_text(encoding="utf-8"),
+                        expected,
+                    )
+
+    def test_cpu_and_server_results_keep_their_existing_output_cap(self):
+        for target in ("local_cpu", "server_cpu"):
+            with self.subTest(target=target):
+                out = ex._transcript_result(_rec(), "x" * 30000, target)
+                self.assertEqual(out["text"], "x" * 20000)
+                self.assertEqual(out["chars"], 20000)
+                self.assertNotIn("resource", out)
+
+    def test_failed_publication_discards_derived_resource_and_returns_no_artifact(self):
+        record = _rec()
+        registered = []
+        register = rs.register_resource
+
+        def track_resource(**kwargs):
+            derived = register(**kwargs)
+            registered.append(derived)
+            return derived
+
+        with mock.patch.object(rs, "register_resource", side_effect=track_resource), \
+                mock.patch.object(rs, "publish_copy", side_effect=OSError("private/path/disk-full")):
+            out = ex._transcript_result(record, "x" * 30000, "local_gpu")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "transcript_storage_failed")
+        self.assertNotIn("private/path", str(out))
+        self.assertNotIn("download_url", out)
+        self.assertNotIn("resource", out)
+        self.assertEqual(len(registered), 1)
+        self.assertIsNone(rs.get_record(registered[0].resource_id))
+        self.assertIsNotNone(rs.get_record(record.resource_id))
 
 
 class ContractInvariantsTest(unittest.TestCase):

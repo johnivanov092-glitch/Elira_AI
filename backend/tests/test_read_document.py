@@ -65,16 +65,28 @@ class ReadDocumentTest(unittest.TestCase):
         self.assertIn("hello", r["text"])
         self.assertNotIn("file_extract", r["text"])
 
-    def test_fuzzy_resolves_a_mangled_cyrillic_filename(self):
-        # the model mangles long Cyrillic names (Latin look-alikes, dropped
-        # letters). read_file should still find the real file.
+    def test_mangled_cyrillic_filename_suggests_exact_name_without_reading(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "Оценка диагноза Исаева.txt").write_text(
                 "СОДЕРЖИМОЕ документа 999", encoding="utf-8")
             # Latin о,c look-alikes + a dropped final letter:
             r = tool_read_file(Path(tmp), path="Оценка диагнoза Иcаев.txt")
-        self.assertIn("СОДЕРЖИМОЕ документа 999", r["text"])
-        self.assertIn("не найдено точно", r["text"])  # transparent resolve note
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "file_not_found")
+        self.assertIn("Оценка диагноза Исаева.txt", r["text"])
+        self.assertNotIn("СОДЕРЖИМОЕ документа 999", r["text"])
+        self.assertNotIn("touched_path", r)
+
+    def test_missing_margin_file_never_reads_similar_verification_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "verify_repro.txt").write_text(
+                "OTHER DOCUMENT VERIFICATION", encoding="utf-8")
+            r = tool_read_file(Path(tmp), path="margin_repro.txt")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "file_not_found")
+        self.assertIn("verify_repro.txt", r["text"])
+        self.assertNotIn("OTHER DOCUMENT VERIFICATION", r["text"])
+        self.assertNotIn("touched_path", r)
 
     def test_image_is_auto_ocred(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,15 +9,32 @@ import hashlib
 import json
 import math
 import re
+from datetime import date
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from app.core.redaction import redact_text
+from app.application.web_evidence.tiers import TIERS
 
 SOURCE_PATTERN = re.compile(r"\[\[source:([a-zA-Z0-9_-]{1,80})\]\]")
 MAX_SOURCES = 128
 EXCERPT_CHARS = 1500
 _STATUSES = frozenset({"discovered", "fetched", "excerpt", "failed"})
+
+
+def _source_dates(value: Any) -> dict[str, str]:
+    dates = {}
+    if not isinstance(value, dict):
+        return dates
+    for key in ("published", "modified"):
+        item = value.get(key)
+        if not isinstance(item, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", item):
+            continue
+        try:
+            dates[key] = date.fromisoformat(item).isoformat()
+        except ValueError:
+            continue
+    return dates
 
 
 def digest(text: str) -> str:
@@ -43,6 +60,7 @@ def make_source(
     quote: str = "", title: str = "", fetched_at: float | None = None,
     content_hash: str = "", doc_id: str = "", chunk_id: int | None = None,
     offset: int | None = None, quote_verified: bool = False, error: str = "",
+    dates: dict[str, str] | None = None, tier: str = "unknown",
 ) -> dict[str, Any]:
     clean_url = redact_text(str(url or "").strip())[:4096]
     try:
@@ -64,6 +82,7 @@ def make_source(
         "quote_verified": bool(quote_verified and safe_quote == raw_quote),
         "presented": False, "claim_support": "not_assessed",
         "error": redact_text(str(error or ""))[:300],
+        "dates": _source_dates(dates), "tier": tier if tier in TIERS else "unknown",
     }
     record["id"] = _identity(record)
     return record
@@ -79,6 +98,10 @@ def valid_source(value: Any) -> bool:
         return False
     fetched_at = value.get("fetched_at")
     if fetched_at is not None and (type(fetched_at) not in (int, float) or not math.isfinite(fetched_at)):
+        return False
+    if "dates" in value and (not isinstance(value["dates"], dict) or _source_dates(value["dates"]) != value["dates"]):
+        return False
+    if "tier" in value and value["tier"] not in TIERS:
         return False
     for key in ("chunk_id", "offset"):
         item = value.get(key)
@@ -116,6 +139,12 @@ def merge_sources(*groups: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def format_source(source: dict[str, Any]) -> str:
     header = f"{source['title'] or source['url']}\nURL: {source['url']}"
+    dates = _source_dates(source.get("dates"))
+    if dates:
+        labels = {"published": "Опубликовано", "modified": "Изменено"}
+        header += "\nДаты страницы (метаданные): " + "; ".join(
+            f"{labels[key]}: {value}" for key, value in dates.items()
+        )
     if source["status"] == "excerpt":
         return f"[[source:{source['id']}]] {header}\n{source['quote']}"
     if source["status"] == "failed":

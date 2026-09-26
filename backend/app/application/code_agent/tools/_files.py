@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import glob as globlib
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,7 +32,8 @@ _DOCUMENT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".xls", ".xlsx", ".xlsm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
 # Latin→Cyrillic visual look-alikes: the local model often mangles long Cyrillic
 # filenames by swapping in Latin twins (лечеbной, метаcтатическом), which makes
-# an exact path miss. Fold them before fuzzy-matching so the real file is found.
+# an exact path miss. Fold them only for bounded recovery from observed glob
+# results; filename similarity alone must never authorize opening another file.
 _LOOKALIKE = {
     "a": "а", "b": "б", "c": "с", "e": "е", "h": "н", "k": "к", "m": "м",
     "o": "о", "p": "р", "t": "т", "x": "х", "y": "у",
@@ -46,42 +46,6 @@ def _norm_name(name: str) -> str:
     s = (name or "").lower()
     s = "".join(_LOOKALIKE.get(ch, ch) for ch in s)
     return "".join(ch for ch in s if ch.isalnum())
-
-
-def _fuzzy_find(target: Path) -> Path | None:
-    """When an exact path misses, find the closest real file in its directory.
-    Returns a match only when it is clearly the best (high ratio + margin over the
-    runner-up), so an ambiguous guess never silently opens the wrong file."""
-    d = target.parent
-    if not d.is_dir():
-        return None
-    want = _norm_name(target.name)
-    if len(want) < 4:
-        return None
-    best: Path | None = None
-    best_r = 0.0
-    second_r = 0.0
-    try:
-        entries = [f for f in d.iterdir() if f.is_file()]
-    except Exception:
-        return None
-    # If the query names an extension, only consider files WITH that extension
-    # (so "…раке.pdf" resolves to the .pdf, not a same-basename .docx sitting next
-    # to it — which would otherwise tie and get refused as ambiguous).
-    ext = target.suffix.lower()
-    if ext:
-        same_ext = [f for f in entries if f.suffix.lower() == ext]
-        if same_ext:
-            entries = same_ext
-    for f in entries:
-        r = difflib.SequenceMatcher(None, want, _norm_name(f.name)).ratio()
-        if r > best_r:
-            best, second_r, best_r = f, best_r, r
-        elif r > second_r:
-            second_r = r
-    if best is not None and best_r >= 0.70 and (best_r - second_r) >= 0.08:
-        return best
-    return None
 
 
 def recover_read_path_from_glob(
@@ -313,18 +277,9 @@ def tool_read_file(
             ),
         }
     target = _resolve_safe(project_root, path)
-    resolved_note = ""
     if not target.is_file():
-        # The local model frequently mangles long non-ASCII filenames (Latin/
-        # Cyrillic look-alikes, dropped syllables) → the exact path misses. Try a
-        # fuzzy match against the real files in the directory before failing.
-        alt = _fuzzy_find(target)
-        if alt is not None:
-            resolved_note = f"[имя '{path}' не найдено точно — открыл ближайшее: {alt.name}]\n"
-            target = alt
-        else:
-            return {"ok": False, "error": "file_not_found",
-                    "text": f"ERROR: not a file or does not exist: {path}{_dir_hint(target)}"}
+        return {"ok": False, "error": "file_not_found",
+                "text": f"ERROR: not a file or does not exist: {path}{_dir_hint(target)}"}
     try:
         raw = target.read_bytes()
     except Exception as exc:
@@ -359,7 +314,7 @@ def tool_read_file(
         numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
         suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
         header = f"[текст извлечён из {target.suffix} через file_extract: {target.name}]\n"
-        return {"ok": True, "text": resolved_note + header + numbered + suffix, "touched_path": path}
+        return {"ok": True, "text": header + numbered + suffix, "touched_path": path}
 
     if _looks_binary(raw):
         if target.suffix.lower() in _IMAGE_EXTS:
@@ -371,16 +326,16 @@ def tool_read_file(
             except Exception as exc:
                 _ocr = f"ERROR: OCR failed: {exc}"
             if _ocr and not _ocr.startswith("ERROR"):
-                return {"ok": True, "text": resolved_note + f"[текст с изображения через OCR: {target.name}]\n{_ocr}", "touched_path": path}
+                return {"ok": True, "text": f"[текст с изображения через OCR: {target.name}]\n{_ocr}", "touched_path": path}
             if _ocr.startswith("ERROR"):
                 return {
                     "ok": False,
                     "error": "ocr_failed",
-                    "text": resolved_note + f"[{target.name}: {_ocr}. Для описания картинки вызови `read_image`.]",
+                    "text": f"[{target.name}: {_ocr}. Для описания картинки вызови `read_image`.]",
                 }
             return {
                 "ok": True,
-                "text": resolved_note + (
+                "text": (
                     f"[{target.suffix} {target.name}: OCR не нашёл текста (похоже, обычное "
                     f"фото, а не скан документа). Для описания изображения вызови `read_image`.]"
                 ),
@@ -410,7 +365,7 @@ def tool_read_file(
     suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
     return {
         "ok": True,
-        "text": resolved_note + numbered + suffix,
+        "text": numbered + suffix,
         "touched_path": path,
     }
 

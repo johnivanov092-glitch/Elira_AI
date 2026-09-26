@@ -5,6 +5,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable, Dict, Iterable, List
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -308,7 +309,8 @@ def dedupe_results(
                 "engine": engine,
                 **{
                     key: str(item.get(key) or "").strip()
-                    for key in ("img_src", "thumbnail_src")
+                    for key in ("img_src", "thumbnail_src", "date", "source",
+                                "filter_time_range", "filter_categories")
                     if item.get(key)
                 },
             }
@@ -316,6 +318,40 @@ def dedupe_results(
         if max_results is not None and len(unique) >= max_results:
             break
     return unique
+
+
+def filter_site_results(query: str, results: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Honor explicit site constraints even when a fallback engine ignores them."""
+    included: list[tuple[str, str]] = []
+    excluded: list[tuple[str, str]] = []
+
+    def hostname(parsed) -> str:
+        return (parsed.hostname or "").encode("idna").decode("ascii").lower().rstrip(".").removeprefix("www.")
+
+    for match in re.finditer(r'(?<![\w-])(-?)site:([^\s"\'()]+)', query, re.IGNORECASE):
+        target = match.group(2)
+        try:
+            parsed = urlparse(target if "://" in target else "https://" + target)
+            host = hostname(parsed)
+        except (ValueError, UnicodeError):
+            continue
+        if host:
+            (excluded if match.group(1) else included).append((host, parsed.path))
+    if not included and not excluded:
+        return results
+
+    def matches(url: str, constraints: list[tuple[str, str]]) -> bool:
+        try:
+            parsed = urlparse(url)
+            host = hostname(parsed)
+        except (ValueError, UnicodeError):
+            return False
+        return any(domain_matches(host, (domain,)) and parsed.path.startswith(path)
+                   for domain, path in constraints)
+
+    return [row for row in results
+            if (not included or matches(row.get("href", ""), included))
+            and not matches(row.get("href", ""), excluded)]
 
 
 def search_news(
@@ -394,7 +430,8 @@ def search_web_runtime(
             if engine == "searxng" and searxng_extra:
                 combined.extend(search_fn(query, max_results=per_engine, **searxng_extra))
             elif engine in {"duckduckgo", "wikipedia"} and categories == "images":
-                combined.extend(search_fn(query, max_results=per_engine, categories="images"))
+                combined.extend({**row, "filter_categories": "images"} for row in
+                                search_fn(query, max_results=per_engine, categories="images"))
             else:
                 combined.extend(search_fn(query, max_results=per_engine))
         except Exception as exc:
@@ -406,7 +443,7 @@ def search_web_runtime(
             )
 
     dedupe_limit = max(max_results, per_engine * max(1, len(engine_list)))
-    merged = dedupe_results(combined, max_results=dedupe_limit)
+    merged = dedupe_results(filter_site_results(query, combined), max_results=dedupe_limit)
     reranked = rerank_results(
         merged,
         query=query,

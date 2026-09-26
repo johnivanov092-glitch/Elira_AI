@@ -43,6 +43,11 @@ from app.application.code_agent.capabilities import (
     should_escalate_web_from_answer,
 )
 from app.application.code_agent.answer_media import merge_answer_media
+from app.application.code_agent.answer_contracts import (
+    infer_quote_word_limit, normalize_quote_word_counts,
+    quote_word_limit_correction, quote_word_limit_violations,
+    web_cadence_citation_correction, web_cadence_citation_violations,
+)
 from app.application.code_agent.document_validation import infer_expected_page_count
 from app.application.code_agent.planning import (
     PlanArtifact,
@@ -1007,6 +1012,12 @@ def _stream_code_agent_core(
         mutated_files: list[str] = list(durable_state.get("mutated_files") or [])
         verification_log: list[str] = list(durable_state.get("verifications") or [])
         durable_failures: list[str] = list(durable_state.get("failed_attempts") or [])
+        quote_word_limit = infer_quote_word_limit(raw_user_message)
+        saved_quote_word_limit = durable_state.get("quote_word_limit")
+        if resume and type(saved_quote_word_limit) is int and 0 < saved_quote_word_limit < 10_000:
+            quote_word_limit = saved_quote_word_limit
+        quote_correction_sent = bool(durable_state.get("quote_word_limit_correction_sent"))
+        cadence_correction_sent = bool(durable_state.get("web_cadence_correction_sent"))
         durable_project_epoch = int(durable_state.get("project_epoch") or 0)
         durable_criteria_epoch = int(durable_state.get("criteria_epoch") or 0)
         if resume and durable_criteria_epoch == durable_project_epoch:
@@ -1269,15 +1280,6 @@ def _stream_code_agent_core(
             if active_skill_text:
                 messages = insert_skill_context(messages, active_skill_text, CONTEXT_ID)
                 guidance_message_ids.add(CONTEXT_ID)
-            source_context = run_evidence.source_context(messages, max_chars=min(7000, safe_num_ctx))
-            messages = [message for message in messages if message.get("_msg_id") != "web-source-context"]
-            if source_context:
-                source_message = {"role": "assistant", "content": source_context, "_msg_id": "web-source-context"}
-                source_index = len(messages) - 1
-                # Preserve the assistant tool_calls -> tool results protocol.
-                while source_index > 1 and messages[source_index].get("role") == "tool":
-                    source_index -= 1
-                messages.insert(max(1, source_index), source_message)
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
                     messages,
@@ -1288,7 +1290,10 @@ def _stream_code_agent_core(
                     tool_schemas=step_schemas,
                     cancel_handle=upstream_cancel_handle,
                     audit_sink=compaction_audit_sink,
-                    pinned_message_ids=guidance_message_ids | ({"web-source-context"} if source_context else set()),
+                    pinned_message_ids=guidance_message_ids | {"web-source-context"},
+                    restore_messages=lambda packed, *, compacted: run_evidence.restore_source_context(
+                        packed, compacted=compacted, max_chars=min(7000, safe_num_ctx),
+                    ),
                 )
             except ContextBudgetError as exc:
                 if cancel_event.is_set():
@@ -1790,6 +1795,51 @@ def _stream_code_agent_core(
                 )
                 if unverified_document_qa_claim:
                     final_text = run_evidence.document_qa_backstop()
+                if quote_word_limit is not None:
+                    final_text = normalize_quote_word_counts(final_text)
+                quote_violations = quote_word_limit_violations(final_text, max_words=quote_word_limit)
+                if quote_violations and not quote_correction_sent:
+                    quote_correction_sent = True
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({"role": "user", "content": quote_word_limit_correction(quote_violations)})
+                    call_log.append("corrected explicit quote word limit")
+                    yield {"type": "answer_format_correction", "step": step,
+                           "contract": "quote_word_limit", "limit": quote_word_limit,
+                           "word_counts": [item.word_count for item in quote_violations]}
+                    continue
+                quote_format_failed = bool(quote_violations)
+                if quote_format_failed:
+                    final_text = (
+                        "Не удалось выполнить условие цитирования: превышен лимит "
+                        f"{quote_word_limit} слов или неверно указано число слов в цитате. "
+                        "Ответ не прошёл проверку этого условия."
+                    )
+                cadence_violations = ()
+                presented_sources = run_evidence.presented_sources
+                source_request = raw_user_message or str(durable_state.get("task") or "")
+                if presented_sources and run_evidence.requires_external_source(source_request, final_text):
+                    cadence_violations = web_cadence_citation_violations(
+                        final_text,
+                        matched_source_ids={source["id"] for source in presented_sources},
+                        read_source_urls={source["url"] for source in presented_sources},
+                        read_sources=presented_sources,
+                    )
+                if cadence_violations and not cadence_correction_sent:
+                    cadence_correction_sent = True
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({"role": "user", "content": web_cadence_citation_correction(cadence_violations)})
+                    call_log.append("requested local source binding for update cadence")
+                    yield {"type": "answer_format_correction", "step": step,
+                           "contract": "web_cadence_citation",
+                           "quantities": [item.quantity for item in cadence_violations]}
+                    continue
+                cadence_format_failed = bool(cadence_violations)
+                if cadence_format_failed:
+                    final_text = (
+                        "Не удалось подкрепить указанный период обновлений ссылкой "
+                        "на прочитанный источник для того же объекта. "
+                        "Ответ не прошёл проверку ссылок."
+                    )
                 answer_status = (
                     "degraded"
                     if (
@@ -1797,6 +1847,8 @@ def _stream_code_agent_core(
                         or bom_validation_failed
                         or catalog_web_failed
                         or unverified_document_qa_claim
+                        or quote_format_failed
+                        or cadence_format_failed
                     )
                     else "complete"
                 )
@@ -2009,12 +2061,12 @@ def _stream_code_agent_core(
                     _last_keepalive = _wait_started
                     _response: dict[str, Any] | None = None
                     while True:
-                        if cancel_event.is_set():
-                            break
                         with _WORKFLOW_RESPONSE_LOCK:
                             _stored = _WORKFLOW_RESPONSES.get(_qid)
                         if _stored is not None:
                             _response = dict(_stored)
+                            break
+                        if cancel_event.is_set():
                             break
                         _now = time.monotonic()
                         if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
@@ -2027,8 +2079,12 @@ def _stream_code_agent_core(
                             _last_keepalive = _now
                         time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
                     with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES.pop(_qid, None)
-                    if cancel_event.is_set():
+                        # A response accepted just before Stop still belongs to
+                        # the user and must survive Resume / the next chat turn.
+                        _stored = _WORKFLOW_RESPONSES.pop(_qid, None)
+                        if _stored is not None:
+                            _response = dict(_stored)
+                    if cancel_event.is_set() and _response is None:
                         yield {
                             "type": "done", "ok": False, "steps": step,
                             "stop_reason": "cancelled", "error": "Cancelled by user",
@@ -2039,11 +2095,27 @@ def _stream_code_agent_core(
                         "Workflow UI response: "
                         + json.dumps(_response or {}, ensure_ascii=False)
                     )
+                    _accepted = str((_response or {}).get("action") or "") == "accept"
+                    _values = (_response or {}).get("values")
+                    _answer = _values.get("answer") if isinstance(_values, dict) else None
+                    _workflow_input = (
+                        redact_secrets({"request_id": _qid, "question": _question, "answer": _answer})
+                        if _accepted and isinstance(_answer, str) and _answer.strip()
+                        else None
+                    )
                     yield {
                         "type": "tool_call", "step": step, "tool": name,
                         "arguments": redact_secrets(parsed_args), "result": _ans_text,
-                        "ok": str((_response or {}).get("action") or "") == "accept",
+                        "ok": _accepted,
+                        **({"workflow_input": _workflow_input} if _workflow_input is not None else {}),
                     }
+                    if cancel_event.is_set():
+                        yield {
+                            "type": "done", "ok": False, "steps": step,
+                            "stop_reason": "cancelled", "error": "Cancelled by user",
+                            **_completion_fields(criteria, terminated_incomplete=True),
+                        }
+                        return
                     messages.append({"role": "tool", "content": _ans_text, "name": name})
                     tool_round_trips += 1
                     call_log.append(f"ask_user({(_question[:40] or '?')})")
@@ -2783,7 +2855,8 @@ def _stream_code_agent_core(
                     "remote_process_identity_captured", "remote_cleanup_ready",
                     "error", "recovered_from", "recovered_path",
                     "resolved_from_resource", "resource_id", "resource_name",
-                    "sources",
+                    "sources", "resource", "chars", "preview_chars", "truncated_preview",
+                    "selected_target", "execution_target",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.

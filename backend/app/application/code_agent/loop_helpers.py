@@ -451,6 +451,7 @@ def _prepare_messages_for_llm(
     cancel_handle: Any | None = None,
     audit_sink: Callable[[dict[str, Any]], None] | None = None,
     pinned_message_ids: set[str] | None = None,
+    restore_messages: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     """Compact at policy thresholds and enforce the effective request budget."""
     from app.application.context.compaction import maybe_compact
@@ -471,6 +472,8 @@ def _prepare_messages_for_llm(
             {"tools": list(tool_schemas)} if tool_schemas else None
         ),
     }
+    if restore_messages is not None:
+        messages = restore_messages(messages, compacted=False)
     usage = get_context_usage(messages, **usage_kwargs)
     compacted = False
     thresholds = context_profile.get("compaction_thresholds") or {}
@@ -506,6 +509,8 @@ def _prepare_messages_for_llm(
             pinned_message_ids=pinned_message_ids,
         )
         compacted = compacted or changed
+        if restore_messages is not None:
+            messages = restore_messages(messages, compacted=changed)
         usage = get_context_usage(messages, **usage_kwargs)
 
     if float(usage["percent"]) >= strong_threshold:
@@ -524,6 +529,8 @@ def _prepare_messages_for_llm(
             pinned_message_ids=pinned_message_ids,
         )
         compacted = compacted or changed
+        if restore_messages is not None:
+            messages = restore_messages(messages, compacted=changed)
         usage = get_context_usage(messages, **usage_kwargs)
 
     safe_input_budget = int(context_profile.get("safe_input_budget") or 0)

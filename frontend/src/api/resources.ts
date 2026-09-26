@@ -77,6 +77,6 @@ export async function uploadResource(file: File, sessionId: string): Promise<Res
 
 /** The wire shape sent back to /api/code-agent/stream — resource_id is all the
  *  backend trusts (it re-derives everything else from the store). */
-export function toWireResource(ref: ResourceRef): { resource_id: string } {
+export function toWireResource(ref: Pick<ResourceRef, "resource_id">): { resource_id: string } {
   return { resource_id: ref.resource_id };
 }

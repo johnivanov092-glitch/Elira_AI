@@ -42,7 +42,22 @@ export type DocumentQa = {
   issues?: { code: string; message: string }[];
 };
 
+export type WorkflowInput = {
+  request_id: string;
+  question: string;
+  answer: string;
+};
+
 export type CodeAgentToolCall = {
+  /** Server-confirmed non-secret answer accepted through Workflow ask_user. */
+  workflow_input?: WorkflowInput;
+  /** Complete generated resource with a bounded, explicitly labeled preview. */
+  resource?: ResourceRef;
+  chars?: number;
+  preview_chars?: number;
+  truncated_preview?: boolean;
+  selected_target?: string;
+  execution_target?: string;
   /** Runtime receipt; the instruction itself belongs to the run context. */
   skill?: { name: string; title: string; sha256: string; reason: string; already_loaded: boolean };
   step: number;
@@ -103,6 +118,8 @@ export type CodeAgentResponse = {
 export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
+  /** Original attachments for this historical user turn; resolved by the server. */
+  resources?: Pick<ResourceRef, "resource_id">[];
 };
 
 export type CodeAgentMode = "code" | "search";
@@ -382,7 +399,10 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         model,
         mode,
         auto_remember: autoRemember,
-        conversation_history: conversationHistory,
+        conversation_history: conversationHistory?.map(({ role, content, resources: refs }) => ({
+          role, content,
+          ...(role === "user" && refs?.length ? { resources: refs.map(toWireResource) } : {}),
+        })),
         run_id: runId,
         ...(profileName ? { profile_name: profileName } : {}),
         ...(permissionMode ? { permission_mode: permissionMode } : {}),

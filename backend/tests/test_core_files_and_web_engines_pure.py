@@ -397,10 +397,10 @@ class CleanUrlTest(unittest.TestCase):
         result = clean_url(google_url)
         self.assertIn("example.com", result)
 
-    def test_percent_encoded_url_decoded(self) -> None:
+    def test_percent_encoded_url_preserved(self) -> None:
         url = "https://example.com/path%20with%20spaces"
         result = clean_url(url)
-        self.assertIn("path with spaces", result)
+        self.assertEqual(result, url)
 
     def test_strips_leading_whitespace(self) -> None:
         result = clean_url("  https://example.com  ")
