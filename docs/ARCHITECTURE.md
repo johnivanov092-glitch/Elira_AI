@@ -27,6 +27,14 @@ Workflow request
 Multi-agent uses `application/workflows` as a coordinator but every agent step
 returns to the same `run_code_agent`, executor and provider registry.
 
+Managed application updates use the separate standard-library supervisor
+`scripts/elira_release.py` from the stable platform checkout. It prepares and
+verifies a backend/UI candidate, then switches after active work drains, with
+restart and pre-admission recovery. The agent loop itself belongs to the
+replaceable application; the launch/recovery supervisor is not replaced by the
+candidate. This is a release boundary, not OS-enforced immutability against
+same-user writes. See `RELEASE_LIFECYCLE.md` for receipts and rollback limits.
+
 The disconnected `domain/agents` V8 graph runtime and `application/project_brain`
 chat/LLM chain were removed after a caller audit. The UI's `use_orchestrator`
 option still selects a Workflow planning step; it does not refer to V8.
@@ -41,18 +49,30 @@ option still selects a Workflow planning step; it does not refer to V8.
 - The UI exposes one personality: `Elira / Auto`, with one sampling temperature.
   Legacy profiles remain readable but do not switch identity, tone or sampling.
   Their evidence/calculation requirements survive as relevant task instructions.
-- Every normal first turn sees `capability_load` and `ask_user`. Explicit search,
-  attachments and resumed activations may add schemas. The model loads other
+- Every normal first turn sees the ordinary work tools from `tool_policy.BASE_TOOLS`,
+  including file/shell, web search/reading, memory, `runtime_control` and
+  `capability_load`. Workflow questions remain available through the runtime.
+  Explicit search, attachments and resumed activations may add schemas. The model loads other
   groups through the existing registry; routing hints do not preload them. An external
   first failure, repeated local failure, or a false denial of available Web
   access triggers one evidence pass before acceptance. General uncertainty and
   quoted/code examples do not trigger this answer-based recovery.
   Local state still comes from local tools; external contracts come from primary
   sources. The model may load further groups with `capability_load`.
-- A requested file download cannot finalize until an artifact receipt exists.
-  An ordinary external source/product link does not require a local artifact.
-  The loop requires `resource_publish`, producing the existing clickable UI download
-  card instead of printing a Windows path as if it were a link. Every distinct
+- The model declares chat file delivery through `task_decide.config.delivery`;
+  request keywords only suggest guidance. A download feature being implemented
+  does not itself require a file in the current chat. Without a declaration,
+  actual publication attempts establish the targets to check. A later explicit
+  contract can correct those targets; omitting `delivery` preserves the contract.
+  `TaskOutcome` binds successful publication to the exact local target (when
+  mapped), current SHA-256 and canonical stored download. A generic artifact
+  receipt is insufficient; Resume rechecks the files and preserves stale status.
+  `resource_publish`, `file_gen` and published local-GPU transcription use this
+  owner. Unmapped publications cannot satisfy an arbitrary local target.
+  Missing delivery or an unbacked canonical Markdown/autolink gets one correction,
+  then a degraded answer with a diagnostic; unsupported links are made non-clickable.
+  Ordinary prose is preserved. External source/product links require no local
+  artifact. See `ANSWER_CONTRACT.md`. Every distinct
   successful publication remains available as its own download chip and as an
   item in the preview panel, including repeated publications with the same
   visible filename.
@@ -134,7 +154,9 @@ option still selects a Workflow planning step; it does not refer to V8.
   `data/skill_development/` owns local Git history and an atomic active pointer.
   Generated code executes out of process; loading a skill only reads instructions.
 - The primary Qwen agent interprets requests and selects tools from the existing
-  catalog. There is no separate semantic classifier or legacy regex router.
+  catalog. The local learned `skill_advisor` ranks skill hints only; it does not
+  select tools, impose a route or replace Qwen. Compatibility heuristics supply
+  guidance and specific evidence recovery, not an independent intent classifier.
   Exact download and BOM delivery contracts remain deterministic; they do not
   grant permissions. The rejected Laya experiment is retained only in Git and
   `research/LAYA_CPU_EVALUATION_RU.md`. Embeddings retain their existing model.
@@ -176,22 +198,28 @@ option still selects a Workflow planning step; it does not refer to V8.
   SHA-256 hashes, replaces changed source versions, removes stale files, and
   resumes after the per-pass 5000-chunk budget. This is not the run-scoped web
   Corpus and does not introduce a second vector store.
+  All chunks of one source are prepared before publication; chunks and manifest
+  are replaced in one SQLite transaction after rechecking the source hash.
+  Failure preserves a complete previously indexed version, or records `failed`
+  when none exists. Retrieval reads one database snapshot and excludes managed
+  chunks whose hash/status disagree with the manifest. Atomicity is per source,
+  not across the entire corpus; freshness requires another indexing pass.
 - Workflow exposes that owner through `runtime_control(project_status)` and
   `runtime_control(project_index)`. Both default to the connected project.
   `memory_recall` maps a project path to the same opaque scope ID, so ingestion
   and retrieval cannot silently address different namespaces.
 - The memory facade is the application-level boundary over curated facts
   (`smart_memory.db`) and semantic/project records (`rag_memory.db`). A
-  correction with an explicit `replaces_id` updates that profile's prior
-  curated row in place, including when the wording changes completely.
+  correction with an explicit `replaces_id` can update that profile's prior
+  curated row in place, subject to provenance and compare-and-swap checks.
   `runtime_control(memory_search)` exposes fact IDs so the agent can make that
   replacement deterministic; lexical matching remains only a compatibility
   fallback. Before the first model call, the harness sends each substantive user
   request through `memory.resolve_relevant_facts`, using a separate raw
   `memory_query` before attachments/Library enrichment. Resume preserves this
   field; old journals and internal callers without it disable automatic recall.
-  The capability/download router also uses this raw text when provided: words
-  inside retrieved documents cannot create a download request or activate SSH.
+  Capability guidance also uses this raw text when provided. Retrieved documents
+  do not establish a delivery contract or activate SSH schemas.
   Legacy callers without the field keep routing from their explicit task text.
   The compatibility `run_agent` adapter requires this field explicitly; Telegram
   supplies it only after its existing allowlist and memory-setting checks.
@@ -202,7 +230,13 @@ option still selects a Workflow planning step; it does not refer to V8.
   rules are non-authoritative. Legacy `runtime_control(memory_add)` rows remain
   subject to prompt-override filtering, and selected rows are JSON-encoded before
   inclusion in the prompt. Legacy rows are readable only through this relevance
-  gate; new rows use server-owned source `user_command` or `user_correction`.
+  gate. Model-authored `remember`/`memory_add` default to `agent_note`, with a run
+  reference when available. Only the literal current `memory_query`, or the exact
+  remainder of its explicit remember command, receives server-owned
+  `user_command`/`user_correction` provenance. Model `config.source`, paraphrases
+  and `replaces_id` cannot elevate trust. Agent notes cannot replace trusted user
+  rows; dedup keeps their origins separate. Manual user APIs retain their existing
+  contract, and historical rows are not relabelled automatically.
   Automatic retrieval never implies automatic write. `memory_prune` removes only aged
   volatile rows in addition to the existing bounded semantic-memory prune.
 - Legacy ToolSpec policy columns are inventory compatibility only.
@@ -268,10 +302,13 @@ permission decision. A hidden built-in schema does not remove its canonical
 dispatch owner; if a valid native/inline call reaches the runtime, it still uses
 the same ToolExecutor and handler.
 
-`route_request_capabilities()` supplies task/evidence hints and download contracts.
-`classify_domain_policies()` retains compatibility labels for task requirements;
-`resolve_persona_mode()` always returns the single neutral personality mode.
-Neither function grants permission or creates an executor/provider. TCP checks use `itops_network_inventory` with an
+`route_request_capabilities()` supplies task/evidence and file-delivery hints only;
+`task_outcomes.py` owns model-declared delivery and current publication receipts.
+Legacy domain metadata in `DOMAIN_CAPABILITY_GROUPS` remains a compatibility
+hint, not a persona switch or schema-activation policy. The HTTP adapter's
+`application/chat/local_chat.py:resolve_persona_mode()` returns `DEFAULT_PROFILE`,
+which the agent loop also applies. No hint grants permission
+or creates an executor/provider. TCP checks use `itops_network_inventory` with an
 explicit per-connect timeout and concurrency, not sequential shell
 `Test-NetConnection`.
 

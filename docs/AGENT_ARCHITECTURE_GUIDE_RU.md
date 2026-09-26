@@ -1,6 +1,7 @@
 # Архитектура агента Elira — полное простое руководство
 
-> Актуальное состояние после упрощения runtime. Обновлено 23 августа 2026 года.
+> Текущие контракты сверены с исходниками 27 сентября 2026 года.
+> Это описание кода, не подтверждение установленной версии или живой приёмки.
 > Это главный документ: что за что отвечает, куда идёт запрос, где хранятся данные,
 > как работают разрешения, интеграции, Windows, UAC, Stop и локальная модель.
 
@@ -71,6 +72,9 @@ Transcript + Workflow request card
 | Providers | Builtin, SSH, IT Ops, MCP, LSP | `application/tool_providers/` |
 | Capability catalog | Группирует необязательные builtin-схемы для загрузки моделью | `application/code_agent/capabilities.py` |
 | Runtime control | Управляет скрытыми интеграциями из Workflow | `application/code_agent/tools/_runtime_control.py` |
+| TaskOutcome | Решение о повторном использовании, свежие проверки и receipts выдачи файлов | `application/code_agent/task_outcomes.py` |
+| Навыки и опыт | Загруженные инструкции, локальные Git-пакеты и рекомендательные модели | `application/code_agent/task_skills.py`, `skill_development.py`, `skill_advisor.py` |
+| Самообновление | Проверка и переключение цельного backend/UI с восстановлением | `scripts/elira_release.py` стабильной платформы |
 | LLM client | OpenAI-compatible HTTP, reasoning kwargs, prompt cache | `infrastructure/llm/openai_compatible.py` |
 | Vault | Переносимые секреты AES-256-GCM | `infrastructure/secrets/vault.py` |
 | Stores | SQLite/JSON/filesystem persistence | `application/*/store.py`, `infrastructure/*/store.py` |
@@ -154,7 +158,7 @@ sequenceDiagram
 Evidence Router
     ├─ локальный факт → project/files/system tools
     ├─ актуальный/внешний факт → Web
-    └─ неизвестность/ошибка → локальная проверка + Web
+    └─ внешняя/повторная ошибка → evidence recovery с учётом владельца данных
                                   ↓
                          тот же Runtime Registry / ToolExecutor
 ```
@@ -177,11 +181,12 @@ Legacy `profile_name` остаётся в HTTP/journal для совместим
 в бюджете и не меняют стабильный system prefix.
 
 Модель сама вызывает Web для актуальных/внешних данных и первичных источников.
-Evidence Router сохраняет восстановление после первой внешней или
-второй локальной неудачи. Если черновик модели заканчивается «не знаю / не
-уверен / нет данных / не удалось», оркестратор делает один evidence-проход через
-официальную документацию/первичный источник до финального ответа. Интернет не
-заменяет локальную проверку файлов, Windows, сервера или сети.
+Evidence Router сохраняет восстановление после первой внешней или повторной
+локальной неудачи; ошибки локальных memory/Library/Workflow/project stores
+остаются у локального владельца. Отдельный проход также исправляет явное ложное
+отрицание доступного Web. Обычная неуверенность, цитаты и примеры в коде сами по
+себе его не запускают. Интернет не заменяет проверку локальных файлов,
+Windows, сервера или сети.
 
 | Группа | Что появляется |
 |---|---|
@@ -272,6 +277,30 @@ LLM уже на первом ходе знает корень и использ�
 не ускорит, а только создаст второй источник состояния. Без реального проекта
 backend явно подставляет scratch workspace и противоположный блок «проект не
 подключён».
+
+### 3.3. Результат, навыки и самообновление
+
+Qwen сама решает `one_off/reuse/develop` через `task_decide`; локальный CPU
+`skill_advisor` только ранжирует рекомендации из проверенного опыта. Он не
+управляет tools или разрешениями. `result_verify` связывает результат с текущими
+входами, выходами, отчётом, версией навыка и `code_input_epoch`; успешный процесс
+сам по себе не подтверждает содержательную правильность. Проверенные пакеты
+публикуются в локальном Git через прежний runtime. Контракт и ограничения:
+[`TASK_SKILLS.md`](TASK_SKILLS.md).
+
+Выдача готового файла в чат объявляется отдельно в `task_decide.config.delivery`.
+Слова о скачивании не устанавливают её автоматически: задача сделать кнопку
+архива не равна запросу самого архива в этом чате. Receipt проверяет конкретные
+байты target и канонической опубликованной копии, включая Resume. Явные попытки
+публикации и выданные download-ссылки также проверяются; простого `ARTIFACT`
+недостаточно. Подробнее: [`ANSWER_CONTRACT.md`](ANSWER_CONTRACT.md).
+
+Самоизменение backend/UI выполняется в отдельном кандидате. Стабильный
+`scripts/elira_release.py` проверяет его, ждёт завершения работы и переключает
+приложение с перезапуском и восстановлением до admission. Сам agent loop входит
+в заменяемое приложение; supervisor не заменяется кандидатом. Это разделение
+lifecycle, не защита от прямой записи с правами того же пользователя.
+Подробные границы: [`RELEASE_LIFECYCLE.md`](RELEASE_LIFECYCLE.md).
 
 ## 4. Multi-agent — не второй агентный движок
 
@@ -404,6 +433,9 @@ Stop
 
 В Settings больше не нужен отдельный пульт на каждую интеграцию. Агент вызывает
 `runtime_control(operation, ...)`, а Workflow показывает нужную карточку.
+Имеющееся исключение для ручного управления — Settings → MCP: статус и
+start/stop/restart настроенных серверов через `/api/mcp`. Этот API делегирует
+тому же runtime; запуск процесса пользователем не раскрывает schemas всем чатам.
 
 ```text
 Агент
@@ -472,9 +504,9 @@ cancelled
 `_runtime_control_data.py`. Они не исполняют tools сами и не создают второй
 registry.
 
-FastAPI не запускает MCP автоматически. В начале обычного прогона MCP/LSP не
-добавляют схемы в prompt; infrastructure intent заранее раскрывает typed IT Ops
-и SSH. Если задача требует внешнюю интеграцию, модель действует явно:
+FastAPI не запускает MCP автоматически. Новый обычный прогон не добавляет схемы
+MCP/LSP/SSH/IT Ops по ключевым словам или профилю. Нужную интеграцию выбирает
+сама модель через уже доступный `runtime_control`:
 
 ```text
 MCP: runtime_control(mcp_list)
@@ -488,7 +520,7 @@ LSP: runtime_control(lsp_list)
 SSH: runtime_control(ssh_hosts)
   → SSH tools текущего прогона
 
-IT Ops вне профиля Инфраструктура: runtime_control(itops_assets)
+IT Ops: runtime_control(itops_assets)
   → IT Ops tools текущего прогона по решению LLM
 
 Новый MikroTik: runtime_control(itops_mikrotik_upsert, host, user, label,
@@ -507,10 +539,10 @@ IT Ops вне профиля Инфраструктура: runtime_control(itops
 store. MikroMCP и `routers.yaml` удалены. Typed SSH использует OpenSSH key или
 ssh-agent; пароль и содержимое private key никогда не передаются модели/tool.
 
-Сетевой/серверный intent подключает внутреннюю политику `Инфраструктура`, typed
-IT Ops, SSH и Web уже на первом model turn независимо от прежнего сохранённого
-профиля. Это не permission и не guard: вызов проходит через тот же provider,
-ToolExecutor и режим Workflow. Для TCP-проверок модель должна использовать
+Legacy доменные метки сохраняют подсказки о требованиях задачи, но не раскрывают
+SSH/IT Ops schemas и не меняют личность. После discovery текущего прогона вызов
+проходит через тот же provider, ToolExecutor и режим Workflow.
+Для TCP-проверок модель должна использовать
 `itops_network_inventory` с `/32` для одного IP, явными портами,
 `connect_timeout` и `concurrency`, а не последовательный `Test-NetConnection`
 через shell.
@@ -580,9 +612,14 @@ scoped hybrid search → text + file/lines + repo/commit/language
 другим `project_root` через стабильный `project_scope_id`.
 
 Повторная кнопка «Индексировать проект» не перестраивает embeddings целиком:
-совпавшие SHA-256 пропускаются, новая версия файла сначала индексируется под
-новым hash, затем старая удаляется. Удалённые файлы удаляются из manifest и RAG.
-Ошибка оставляет статус `failed`; следующий запуск продолжает её. Лимит 5000
+совпавшие SHA-256 пропускаются. Все chunks одного файла и embeddings сначала
+готовятся в памяти. Runtime повторно проверяет хеш файла и заменяет chunks
+вместе с manifest одной SQLite-транзакцией. Ошибка сохраняет полную прежнюю
+индексированную версию; `failed` записывается, если такой версии нет. Следующий
+запуск повторяет попытку. Поиск использует единый снимок SQLite и исключает
+управляемые chunks с несовпадающими hash/status manifest. Атомарность относится
+к одному файлу, не ко всему corpus; поиск не обещает свежесть без переиндексации.
+Удалённые файлы удаляются из manifest и RAG при reconciliation. Лимит 5000
 chunks ограничивает один проход, а не общий размер corpus: следующий запуск
 пропускает готовые файлы и продолжает дальше. Если Git не смог построить полный
 snapshot, reconciliation не запускается и предыдущий индекс сохраняется.
@@ -610,11 +647,18 @@ web_corpus.sqlite3               ← временный run-scoped кэш, не 
 семантических `agent_turn/verified_turn` и удаление только устаревших
 `volatile_fact` (по умолчанию старше 7 дней). Обычные пользовательские факты
 эта операция не удаляет. `runtime_control(memory_search)` показывает ID
-найденных curated facts, не смешивая этот lookup с Project RAG. Поэтому для
-поправки агент передаёт `source=user_correction` и явный `replaces_id`: прежняя
-запись заменяется даже при полном перефразировании, а ID из другого профиля не
-принимается. Лексический same-topic поиск оставлен только как совместимый
-fallback для старых callers без `replaces_id`.
+найденных curated facts, не смешивая этот lookup с Project RAG. Для поправки
+передаётся явный `replaces_id`, но он не повышает доверие к записи.
+`remember`/`memory_add` по умолчанию сохраняют `agent_note` и ссылку на run.
+Сервер сверяет текст с исходным `memory_query` текущего RunJournal: только
+буквальные слова пользователя или точный остаток его команды «запомни» получают
+`user_command`/`user_correction`. Парафразы, выводы модели, вложения и её
+`config.source` не устанавливают пользовательское происхождение.
+Заметка агента не может заменить доверенный пользовательский факт; dedup
+разделяет эти источники. Замена проверяет профиль и прежнюю строку, чтобы не
+затереть конкурентное изменение. Manual API сохраняет свой контракт;
+исторические записи массово не перемаркируются. Лексический same-topic поиск
+остаётся совместимым fallback для corrections без `replaces_id`.
 
 Детерминированный Harness запускает весь цикл в отдельном временном
 `ELIRA_DATA_DIR`, без LLM, сети и пользовательских баз. Он проверяет шесть
@@ -754,6 +798,7 @@ Qwen chat template с ошибкой `System message must be at the beginning`.
 | `/api/chat-agent` | memory compatibility API |
 | `/api/models`, `/api/profiles`, `/api/persona` | model/persona reads |
 | `/api/skills` | document/SQL/HTTP/skill endpoints |
+| `/api/mcp` | ручной статус и start/stop/restart настроенных MCP через прежний runtime |
 | `/api/voice` | STT/TTS |
 | `/api/elira` | settings and legacy chat persistence |
 | `/api/drift` | live server-fact drift status |
@@ -868,7 +913,8 @@ run timeout. Для скорости переключите chip на `medium/lo
 3. Не добавлять provider-specific approvals.
 4. Не возвращать internal scopes/allowlists/feature activation gates.
 5. Не добавлять product timeout или max steps.
-6. Интеграции управляются через Workflow/runtime, не отдельными Settings-пультами.
+6. Интеграции используют существующий Workflow/runtime; ручной MCP lifecycle
+   в Settings делегирует ему, не создавая отдельного исполнителя.
 7. Секрет в model/tool/event payload — только `secret_ref`.
 8. Windows elevation — только через Workflow card + native Tauri UAC bridge.
 9. Основные рабочие tools видимы сразу, дополнительные группы загружает модель.

@@ -22,7 +22,9 @@ here, and do not store keys, passwords, or tokens here.
 
 ## Services
 
-Current service topology:
+Last confirmed service topology: 2026-09-26. This is a dated configuration
+summary, not a live health check; see the [model inventory](research/MODEL_INVENTORY_2026-09-26_RU.md)
+for the measured state, CPU/GPU split and verification limits.
 
 | Service | Runtime | Endpoint | Backing model / contract | Compute |
 |---------|---------|----------|--------------------------|---------|
@@ -30,8 +32,8 @@ Current service topology:
 | Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | Qwen3-Embedding-0.6B Q8, dim 1024, ctx 4096 | CPU |
 | OCR | `elira-ocr` | `http://192.168.88.15:8002/ocr` | PaddleOCR multipart API | CPU |
 | Search | `elira-searxng` | `http://192.168.88.15:8003` | SearXNG JSON search API | CPU |
-| Vision | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | MiniCPM-V 4.6 Q5 + F16 projector, ctx 8192 | GPU (ROCm) |
-| TTS | systemd service | `http://192.168.88.15:8005` | Silero v4_ru HTTP API | CPU |
+| Vision | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | MiniCPM-V 4.6 Q5 + F16 projector, ctx 8192 | GPU (ROCm); projector CPU |
+| TTS | systemd service | `http://192.168.88.15:8005` | Silero v5_5_ru HTTP API | CPU |
 | STT | `elira-stt` | `http://192.168.88.15:8006` | Faster Whisper Large v3 HTTP API | CPU |
 
 LAN integrations on the same host are separate from model inference:
@@ -42,8 +44,9 @@ LAN integrations on the same host are separate from model inference:
 | Home Assistant MCP | `hass-mcp` | `http://192.168.88.15:8124` |
 
 - Monitoring (Netdata): `http://192.168.88.15:19999`
-- Backing models change on swaps; `../Elira_AI_Server/Server/ACCESS.md` is the
-  source of truth for the currently-served model.
+- Backing models change on swaps. The running service's `/props` or `/health`
+  and its process/configuration identify the served model; sibling operational
+  docs provide access and deployment instructions, not proof of current health.
 
 ## How Elira connects
 

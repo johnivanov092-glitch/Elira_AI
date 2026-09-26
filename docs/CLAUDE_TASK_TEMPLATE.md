@@ -1,21 +1,20 @@
 # Claude Task Template
 
-Use this header for implementation tasks that must stay small, reviewable, and
-low on token/limit usage.
+Optional template for external coding-agent tasks. Adapt it to the actual request
+and repository instructions; this document does not authorize a commit or push.
 
 ```text
-STRICT TOKEN/LIMIT MODE:
+FOCUSED IMPLEMENTATION:
 - Maximize implementation, minimize narration.
 - Do not restate obvious context.
 - Inspect only files needed for this commit.
 - No broad grep unless needed; prefer exact files from the preflight/task.
-- No full-suite pytest until focused tests pass.
-- Do not run full pytest more than once.
-- Do not run tsc more than once.
-- Do not spawn Opus until code + focused tests are final.
+- Run checks appropriate to the change and required repository gates.
+- Repeat checks when a fix or unresolved failure requires it, not without cause.
+- Use an independent review when its scope justifies it; no particular model is required.
 - Final report max 20 lines.
-- If blocked, stop after the first real blocker; do not explore alternatives for hours.
-- One commit only. Push. STOP.
+- Resolve routine blockers within scope; report a genuine external dependency precisely.
+- Commit/push only when the user authorized it. Keep unrelated changes separate.
 
 Use strict bounded mode. This is one small commit, not the whole phase.
 
@@ -31,30 +30,27 @@ Scope:
 - Change only: <files/modules>
 - Do not touch: <excluded areas>
 - No unrelated refactors.
-- No docs unless this is explicitly a docs task.
-- Do not mention external idea sources.
+- Update affected documentation when behavior or usage changes.
+- Preserve links, versions and attribution for external sources actually used.
 
 Architecture constraints:
 - No second executor.
-- No second router.
-- No new registry.
-- No new database unless explicitly required.
-- Reuse existing project modules and policy gates.
+- Reuse the current provider, tool registry and DB modules.
+- Keep launch/recovery separate from replaceable application releases.
+- Use current structured contracts; do not reintroduce removed semantic prefill routing.
 
 Verification:
-- Run focused tests first.
-- Run full pytest once only after focused tests pass.
-- Run tsc once only.
-- Get Opus PASS only after implementation and tests are final.
-- Push branch.
-- STOP.
+- State exact commands and actual results.
+- For runtime changes, run the repository gates in AGENTS.md.
+- Distinguish source tests, real-agent acceptance and deployed behavior.
+- Before an authorized push, review the diff, encoding and staged scope.
 
 Final report format, max 20 lines:
 - SHA:
 - Files changed:
 - What changed:
 - Tests:
-- Opus verdict:
+- Review findings and remaining risk:
 - Deviations/blockers:
 - Next step:
 ```

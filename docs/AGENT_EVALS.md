@@ -1,4 +1,17 @@
-# Agent Routing Live Evals
+# Agent Workflow Live Evals
+
+Current routing belongs to the main Qwen agent: it chooses skills and capability
+groups through the existing runtime. Laya and the old semantic prefill classifier
+are not active. `agent_loop.py` uses the canonical `DEFAULT_PROFILE`; compatibility
+domain hints are not independently selected personas or permissions.
+
+**Legacy eval limitation (2026-09-27):** `routing_cases.json` still contains
+`expected_profile` assertions for Personal/Engineering/etc. `routing_eval.py`
+checks them literally and includes them in `profile_accuracy`. These expectations
+describe the earlier router and must be revised before treating the aggregate as
+current routing acceptance. No fresh live routing-suite PASS is claimed here.
+Tool, lifecycle and output contracts remain useful, but a case verdict must be
+read with this known mismatch. Dated results below preserve their original scope.
 
 Persona, streaming and structured-source diagnostics are documented separately
 in [ANSWER_CONTRACT.md](ANSWER_CONTRACT.md). URL overlap in routing evals proves
@@ -10,7 +23,7 @@ The routing eval suite verifies the real user path, not an isolated model call:
 ```text
 CLI case
   -> POST /api/code-agent/stream
-  -> profile router
+  -> request normalization / compatibility hints
   -> agent loop
   -> capability / builtin / IT Ops / MCP tools
   -> public SSE events
@@ -54,9 +67,11 @@ There is no MikroTik-specific Harness. Router targets use the same generic SSH
 tools when an ordinary SSH case is appropriate.
 
 Harness prompts state the user outcome, not exact JSON arguments or a scripted
-tool recipe. The evaluator keeps the exact evidence contract hidden: required
-successful operations, forbidden mutations, lifecycle order and grounded final
-claims. When the model repeatedly emits a coherent alternative argument shape,
+tool recipe. The exact evidence contract is omitted from the task prompt:
+required successful operations, forbidden mutations, lifecycle order and grounded
+final claims. Evaluator sources in this repository are accessible; omission is
+not OS-level isolation or proof of a blind test. Record observed exposure in a
+live acceptance run. When the model repeatedly emits a coherent alternative argument shape,
 the canonical adapter normalizes that shape at its existing seam. The Harness
 does not teach a production model test-specific calls and does not add a
 repetition/step guard.
@@ -92,9 +107,9 @@ one is required for CI.
 
 `backend/tests/smokes/routing_cases.json` covers:
 
-- Auto routing to Personal, Balanced, Engineering, Business, Infrastructure,
-  Science, and Medicine profiles;
-- starter capability groups for each routed profile;
+- legacy assertions for Personal, Balanced, Engineering, Business, Infrastructure,
+  Science, and Medicine profiles (see the compatibility limitation above);
+- initial and dynamically loaded capability groups;
 - project-file reading and exact answer grounding;
 - one-off work on an explicit absolute path with no project connected;
 - durable finite-job start plus polling to `completed` through `run_server`;
@@ -174,10 +189,10 @@ tokens, maximum total context from 36,923 to 17,881, worst model TTFT from
 129.8 s to 54.3 s and end-to-end duration from 197.8 s to 127.7 s while keeping
 the same `mcp_list → mcp_start → unity__read_console → mcp_stop` behavior.
 
-Current external blockers are configuration, not agent routing: the user's
-DBHub DSN still has literal placeholders, and typed Telegram live acceptance
-requires the user to unlock the portable vault in Workflow UI. The existing
-offline/provider tests do not bypass either condition.
+At the dated acceptance above, external blockers included DBHub DSN placeholders
+and a locked portable vault for Telegram. This documentation review did not
+retest those external installations. Offline/provider tests do not establish
+their current connection or vault state.
 
 ## Observability and reports
 
@@ -231,3 +246,19 @@ does not write to the user's databases. The six contracts cover:
 Reports are written to `.agent/evals/memory/<suite-id>/report.md` and
 `results.json`. Unit coverage for the entrypoint lives in
 `backend/tests/test_memory_eval_harness.py`.
+
+## Autonomous development and recovery
+
+- `backend/tests/smokes/autonomy_mcp.py`: real MCP creation, adaptation after an
+  API change and reuse in a new task.
+- `backend/tests/smokes/autonomy_ui.py`: isolated UI/backend release acceptance.
+- `backend/tests/smokes/skill_advisor_eval.py` and `skill_advisor_warmup.py`:
+  diagnostic data and comparisons for optional skill recommendations.
+
+These are opt-in harnesses, not evidence that all scenarios passed. Current
+results, failed attempts, developer interventions and pending checks are in
+[AUTONOMY_ADVISOR_ACCEPTANCE_RU.md](research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
+Canonical release verification (backend tests, frontend checks, native build and
+staged startup) is distinct from a real Qwen task and native visual acceptance.
+The long task through actual context compaction, Stop, restart and Resume has a
+separate local protocol; its preparation alone is not an observed PASS.

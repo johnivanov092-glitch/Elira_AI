@@ -23,6 +23,12 @@ redesigned during agent-core/context work.
 The screenshot is a local visual reference. The commit is the durable code
 reference if the screenshot is moved.
 
+This document records approved visual constraints; it does not certify the
+latest release or every screen. Current release and isolated browser acceptance
+status are tracked in [the autonomy acceptance report](research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
+A browser fixture, native build and visual check of the actual Tauri window
+are separate forms of evidence.
+
 ## Locked visual characteristics
 
 - Narrow left chat sidebar with the `Новый чат` action and connection status.

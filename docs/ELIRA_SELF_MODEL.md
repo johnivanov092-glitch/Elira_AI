@@ -1,40 +1,50 @@
 # Elira Self-Model
 
-Компактная самомодель для recall. Обновлять при архитектурных изменениях.
+Компактная карта текущего кода для recall. Сверена 27 сентября 2026 года;
+не подтверждает установленную версию или качество живой приёмки.
 
 ## Ядро
 
 - **Точка входа**: `stream_code_agent` (SSE-генератор) / `run_code_agent` (sync legacy)
 - **Worker**: `_chat_events` — поток + `queue.Queue`, heartbeat 10 c, cancel через `threading.Event`
 - **Re-exports**: `indexing`, `inline_tool_calls`, `prompts`, `history`, `project_prompt`
+- **Самообновление**: отдельный `scripts/elira_release.py` стабильной платформы
+  проверяет и переключает backend/UI-кандидат после завершения работы.
+  Agent loop заменяем; supervisor не заменяется кандидатом. Это не OS-изоляция
+  от прямой записи с теми же правами. См. `RELEASE_LIFECYCLE.md`.
 
 ## Ключевые инварианты
 
 | Инвариант | Механизм |
 |---|---|
-| DONE решает верификатор, не слово модели | `CriteriaTracker` в agent_loop |
-| Stop = OS-kill, не Python event | Popen + process group + `taskkill /F /T` / `killpg` |
-| Не могу молча испортить файл | strict encoding detect + byte-exact round-trip + backup (sha256[:16].bak) |
+| Runtime `done.ok` не означает, что задача решена | `CriteriaTracker` наблюдает критерии; `TaskOutcome` проверяет свежие receipts и delivery; `answer_status` отдельно |
+| Stop отменяет run и зарегистрированные процессы | cancel event + закрытие LLM response + `taskkill /F /T` / `killpg`; произвольные внешние процессы этим не охватываются |
+| Запись сохраняет обнаруженную кодировку | strict encoding detect + byte-exact round-trip; backup best-effort, не гарантия восстановления любого изменения |
 | Авторизация — не моя | Workflow permission mode; runtime не добавляет allowlist'ов |
 | Секреты — только secret_ref | `sref_*` из vault; plaintext не аргумент |
-| DRY-дегенерация застрахована | Sequence breakers: цифры, точки, слэши, подчёркивания сбрасывают match |
+| DRY уменьшает нежелательные повторы | Sequence breakers сбрасывают match; это не гарантия правильности вывода |
 
 ## Анти-дегенерация (DRY)
 
 - `dry_multiplier=0.8`, `dry_base=1.75`, `dry_allowed_length=12`, окно 1024 токена
-- Breakers: `\n : " * . - / \ _ , ; = 0-9` — IP/MAC/пути/номера не мутируются
+- Breakers: `\n : " * . - / \ _ , ; = 0-9` — снижают штраф за допустимые повторы IP/MAC/путей/номеров
 
 ## Контекст и grounding
 
 - `context_profile`: requested/server/effective window, reserved output/system, safety margin
 - `established_facts` + `recent_tool_outputs` — передаются между ходами
 - `RunEvidence` — run-local ledger; мутация продвигает project epoch
+- `TaskOutcome` — model-owned `task_decide`, привязанные к текущей версии
+  `result_verify`, публикации с target/store hashes; снимки переживают Resume,
+  но не превращают устаревший результат в текущий pass.
 
 ## Файлы (`_files.py`)
 
 - **Encoding**: BOM авторитетен; cp1251/cp866/cp1252 через charset-normalizer; strict = chaos ≤ 0.10 + round-trip
 - **Неопределимая кодировка** → отказ, файл не перезаписывается
-- **`recover_read_path_from_glob`**: lookalike-маппинг (a→а, b→б…) для кириллических имён, ровно 1 кандидат
+- **`recover_read_path_from_glob`**: ровно 1 кандидат из последнего glob,
+  та же папка, согласованное расширение и нормализованный префикс имени;
+  lookalike-маппинг не разрешает произвольный fuzzy-поиск
 - **Backup**: `data/code_agent_backups/<sha256[:16]>.bak`, один на файл (latest)
 
 ## Shell и процессы
@@ -63,18 +73,29 @@
 - **grep**: exclude .git/node_modules/.venv/…; max 200 matches, 5000 files, 2 MB/file
 - **project_map**: manifests + entry points + top-level signatures (py/js/ts/rs/go)
 - **recall**: curated facts (lexical) + RAG (vector, project-scoped + global)
-- **remember**: `save_fact(text, correction, replaces_id)`; volatile_fact → требует live-проверку
+- **remember/memory_add**: `agent_note` + run ref по умолчанию; только буквальный
+  текущий `memory_query` или остаток его команды «запомни» даёт user provenance.
+  `config.source`/`replaces_id` не повышают доверие; заметка агента не заменяет
+  доверенный пользовательский факт. `volatile_fact` требует live-проверки.
+- **Project Corpus**: все chunks одного файла готовятся до публикации;
+  manifest и chunks заменяются одной транзакцией после сверки source hash.
+  Ошибка сохраняет полную старую версию; поиск не смешивает версии файла.
+  Свежесть требует переиндексации; атомарность не распространяется на весь corpus.
 
 ## Web
 
 - **search**: parallel fan-out (max 6), categories (it/science/images/…), time_range, page 1-5
 - **fetch**: parallel; thin text (<200 chars) → headless browser fallback
 - **browser**: Playwright/Chromium; fill/click; cancel → `task.cancel()`
+- Успешное чтение DOM сохраняет web receipt с конечным URL; команды действий
+  не входят в цитируемый текст. `matched` подтверждает происхождение, не смысл.
 
 ## Runtime Control
 
 - Тонкий адаптер: MCP, LSP, SSH, IT Ops, Telegram, Library, Memory, Plugins, Workflows, Vault
-- Контракт: `completed` / `failed` / `requested` / `input_request` / `secret_request`
+- Статусы: `completed` / `failed` / `needs_input` / `needs_secret` /
+  `needs_elevation` / `waiting_approval` / `cancelled`.
+  `requested`, `input_request`, `secret_request` — имена helpers, не статусы.
 
 ## Executor (`agent_kernel/executor.py`)
 
@@ -91,8 +112,24 @@ Thread-local: `run_id`, `execution_channel`, `permission_mode`
 
 - 8 groups: project, runtime, web, desktop, resources, data, memory, operations
 - CORE: `{capability_load}` — всегда доступен
-- `route_request_capabilities` — детерминированный preflight (regex → evidence)
+- `route_request_capabilities` — compatibility/evidence hints; intent и выбор
+  tools принадлежат Qwen. Download keyword не устанавливает delivery contract.
+- Обычные рабочие tools доступны из `tool_policy.BASE_TOOLS`; MCP/LSP/SSH/IT Ops
+  выбираются через `runtime_control`, а не автоматически по доменной метке.
 - Domain policies (hidden): Личный, Баланс, Инженерный, Деловой, Инфраструктура, Научный, Медицина
+
+## Навыки и доставка
+
+- `skill_create/check/publish/load` — проверенный локальный Git-пакет;
+  инструкции закреплены на run, явный load обновляет версию.
+- CPU `skill_advisor` учится только по подходящим проверенным исходам и даёт
+  рекомендации; отсутствие активной модели не блокирует полный каталог Qwen.
+- `task_decide.delivery`: `chat_download` с локальными targets или явное `none`.
+  Пропущенное поле при обновлении сохраняет контракт. Без декларации проверяются
+  реальные попытки публикации; исправленный контракт может заменить их список.
+- Receipt связывает target и канонический download store с SHA-256; произвольный
+  artifact не закрывает цель. Неподтверждённые ссылки исправляются или становятся
+  некликабельными в degraded-ответе. См. `ANSWER_CONTRACT.md` и `TASK_SKILLS.md`.
 
 ## Workflows
 

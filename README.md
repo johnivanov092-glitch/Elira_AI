@@ -97,6 +97,27 @@ OCR also requires a separate Tesseract installation.
 
 ## Run
 
+For normal Windows use, launch `Elira.bat` from the repository root. When
+`.runtime/releases/enabled` exists, it starts the installed, verified release
+through the supervisor. Editing or pulling this checkout does **not** update that
+installed release. See [release preparation, verification and activation](docs/RELEASE_LIFECYCLE.md).
+
+To hide the launcher console:
+
+```powershell
+Start-Process -FilePath $env:ComSpec `
+  -ArgumentList '/d','/c','D:\AIWork\Elira_AI\Elira.bat' `
+  -WorkingDirectory 'D:\AIWork\Elira_AI' -WindowStyle Hidden
+```
+
+Release logs are in `.runtime/releases/logs/`. A stored `active` release ID alone
+does not prove the application is running; check `/health` for the expected
+`release_id`, `admitted=true` and `draining=false`.
+
+The commands below start development processes directly. Use them when working
+on source; they do not perform managed release activation. Install root npm
+dependencies with `npm install` before using the Tauri CLI for the first time.
+
 ```powershell
 # Backend
 cd D:\AIWork\Elira_AI\backend
@@ -113,7 +134,7 @@ npm run tauri dev
 
 Windows launchers:
 
-- `Elira.bat` - main local launcher.
+- `Elira.bat` - managed release launcher when enabled; otherwise development startup.
 - `run_tauri_dev.bat` - dev launcher.
 - `Elira_Mobile.bat` - LAN/mobile launcher.
 - `kill_elira.bat` - stops Elira processes.
@@ -140,15 +161,16 @@ cd D:\AIWork\Elira_AI\backend
 
 ## Documentation
 
-- `docs/README.md` - documentation index.
-- `docs/ARCHITECTURE.md` - current architecture and contracts.
-- `docs/PROJECT_MAP.md` - repository map and ownership.
-- `docs/SERVER.md` - AI inference server summary (host, endpoints, models).
-- `docs/POST_SERVER_BACKLOG.md` - current post-server status.
+- [Documentation index](docs/README.md).
+- [Architecture and contracts](docs/ARCHITECTURE.md).
+- [Repository map and ownership](docs/PROJECT_MAP.md).
+- [Inference server](docs/SERVER.md).
+- [Autonomy implementation and acceptance status](docs/research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
+- [Post-server migration record](docs/POST_SERVER_BACKLOG.md).
 
 The dedicated inference server has its own repo, `Elira_AI_Server`, in the same
-parent folder; its full operational docs live at
-`../Elira_AI_Server/Server/ACCESS.md`.
+parent folder; its full operational docs live at the local checkout path
+`../Elira_AI_Server/Server/ACCESS.md` (outside this GitHub repository).
 
 ## Repository Rules
 

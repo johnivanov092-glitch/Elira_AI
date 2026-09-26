@@ -1,6 +1,9 @@
 # Post-Server Status
 
-Last cleaned: 2026-09-06.
+Provider contract reviewed: 2026-09-27. The quality measurements below are a
+dated 2026-09-06 record, not a fresh deployment or model benchmark. Current
+autonomy checks and deployment status are tracked in
+[the acceptance report](research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
 
 The local inference migration is implemented at the Elira client layer. Elira
 uses OpenAI-compatible LLM and embedding endpoints exposed by the dedicated AI
@@ -44,15 +47,17 @@ LOCAL_EMBED_TIMEOUT_SECONDS=30
 объективная provider/transport error. Эффективный context дополнительно
 сверяется с live server properties и не может превышать доступное окно модели.
 
-Server summary: `docs/SERVER.md`. Live access and smoke tests are documented in
-the sibling repo at `../Elira_AI_Server/Server/ACCESS.md`.
+Server summary: [SERVER.md](SERVER.md). Live access and smoke tests are documented
+at the local sibling-checkout path `../Elira_AI_Server/Server/ACCESS.md`, outside
+this GitHub repository.
 
 ## Remaining Work
 
 Keep follow-up work narrow and evidence-based:
 
-1. Run `backend/tests/smokes/routing_eval.py` after every server-model swap; see
-   `docs/AGENT_EVALS.md` for cases and report locations.
+1. Run applicable live Workflow cases after a server-model swap; see
+   [AGENT_EVALS.md](AGENT_EVALS.md) for cases, report locations and the legacy
+   profile-assertion limitation of `routing_eval.py`.
 2. Use its per-case latency, TTFT, tool/MCP trace, token usage, and failure data
    when comparing active models. Measure the maximum safe context separately
    with a dedicated long-context case before changing limits.
@@ -64,7 +69,7 @@ Keep follow-up work narrow and evidence-based:
 
 The consolidated continuation list lives in `docs/BACKLOG.md` (sections 2–9).
 
-## Agent Review and Current Quality Status (2026-09-06)
+## Historical Agent Review and Quality Status (2026-09-06)
 
 The runtime review fixes cover Workflow approval classification, browser
 cancellation, MCP HTTP retry/redirect handling, SSE attempt ownership and
@@ -72,7 +77,7 @@ premature EOF, evidence redaction, and context continuation. The unused V8
 orchestrator and disconnected Project Brain modules have been removed. Poppler
 is resolved from the project runtime rather than an obsolete drive-root install.
 
-Elira has one stable identity and temperature. Mood, learned traits and relevant
+At that review, Elira had one stable identity and temperature. Mood, learned traits and relevant
 memory remain separate from the stable system prefix. Ordinary work starts with
 17 built-in tools and their verification instructions; discovery-only defaults
 were reverted after a live current-events refusal. Capability loading and MCP
@@ -95,7 +100,9 @@ Full answer-quality readiness is **not** established. Follow-up work remains:
   these quality failures with an unbounded verification loop.
 
 Raw conversations, machine-specific traces and source snapshots stay local in
-`.scratch/`; this section is the shared readiness record.
+`.scratch/`; this section preserves that review's evidence. For current routing,
+memory and source contracts use [ARCHITECTURE.md](ARCHITECTURE.md) and
+[ANSWER_CONTRACT.md](ANSWER_CONTRACT.md).
 
 ## Regression Checks
 

@@ -31,13 +31,18 @@ move Elira's backend state or tools into that repository.
 | Multi-agent HTTP/SSE | `backend/app/api/routes/advanced_routes.py` |
 | Agent loop | `backend/app/application/code_agent/agent_loop.py` |
 | Context rollover | `backend/app/application/code_agent/delivery_session.py` |
+| Context compaction and pinned runtime blocks | `backend/app/application/context/compaction.py` |
+| Durable run state and Resume | `backend/app/application/code_agent/run_journal.py` |
 | Planning | `backend/app/application/code_agent/planning.py` |
 | Prompts/schemas | `backend/app/application/code_agent/prompts.py`, `tool_schemas.py` |
-| Domain/Capability/Evidence routing + built-in groups | `backend/app/application/code_agent/capabilities.py` |
+| Capability groups and compatibility/evidence hints | `backend/app/application/code_agent/capabilities.py` |
+| Observed tool/web evidence | `backend/app/application/code_agent/run_evidence.py` |
+| Model-owned task decisions, current checks and file-delivery receipts | `backend/app/application/code_agent/task_outcomes.py` |
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
 | Deterministic local price-list/BOM validation | `backend/app/application/code_agent/tools/_bom.py` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
 | Task skill instructions and run context | `skills/`, `backend/app/application/code_agent/task_skills.py` |
+| Agent-authored packages, verification and local Git versions | `backend/app/application/code_agent/skill_development.py` |
 | Learned skill hints from verified run outcomes | `backend/app/application/code_agent/skill_advisor.py`, `task_outcomes.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
 | Workflow/data runtime adapters | `backend/app/application/code_agent/tools/_runtime_control_workflows.py`, `_runtime_control_data.py` |
@@ -57,6 +62,8 @@ move Elira's backend state or tools into that repository.
 | IT Ops persistence | `backend/app/infrastructure/it_ops/store.py` |
 | Durable SSH-only MikroTik onboarding/inventory | `backend/app/application/it_ops/mikrotik_registry.py`, `mikrotik_runtime.py` |
 | Memory facade | `backend/app/application/memory/facade.py` |
+| Model-written memory provenance and trust | `backend/app/application/memory/tool_provenance.py`, `policy.py` |
+| Curated memory storage, origin-aware dedup and correction | `backend/app/application/smart_memory/store.py` |
 | Library upload/import, full-text paging and bounded relevance context | `backend/app/application/library/runtime.py`, `api/routes/library_sqlite.py` |
 | Project Corpus ingestion/recall | `backend/app/application/code_agent/indexing.py` + existing `application/rag_memory` |
 | Durable finite-job recovery | `backend/app/application/code_agent/tools/_run.py`, `_background_jobs.py`, `_job_worker.py` |
@@ -65,6 +72,9 @@ move Elira's backend state or tools into that repository.
 | SQLite helper | `backend/app/infrastructure/db/connection.py` |
 
 Do not create another loop, executor, registry, provider stack or DB facade.
+
+The stable launch/recovery supervisor is `scripts/elira_release.py`; candidate
+backend/UI code remains separate from it. See `docs/RELEASE_LIFECYCLE.md`.
 
 ## Frontend owners
 
@@ -119,6 +129,8 @@ data/
 ├─ drift_facts.db
 ├─ portable_vault.json       encrypted vault; backup includes smart/rag memory
 ├─ background_jobs/          machine-local job journal/spec/launch/result sidecars
+├─ skill_development/        published packages, verification receipts and local Git
+├─ skill_advisor/            learned hint samples, model versions and active pointer
 ├─ mcp_servers.json
 ├─ lsp_servers.json
 ├─ ssh_acl.json          legacy filename; saved SSH shortcuts
@@ -132,7 +144,10 @@ machine-local `.env.local` values.
 
 - `docs/AGENT_ARCHITECTURE_GUIDE_RU.md`: full readable agent map.
 - `docs/ARCHITECTURE.md`: canonical invariants and boundaries.
-- `docs/ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md`: shipped refactor audit.
+- `docs/ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md`: historical 2026-08-23 refactor snapshot.
+- `docs/TASK_SKILLS.md`: package lifecycle, verified outcomes and learned hints.
+- `docs/ANSWER_CONTRACT.md`: accepted answers, file delivery and web provenance.
+- `docs/RELEASE_LIFECYCLE.md`: managed application updates and recovery limits.
 - `docs/UI_BASELINE.md`: approved visual baseline.
 - `docs/SERVER.md`: inference server boundary.
 
