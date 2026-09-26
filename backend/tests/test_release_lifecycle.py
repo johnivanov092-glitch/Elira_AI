@@ -101,6 +101,9 @@ def test_release_real_process_lifecycle_verification_drain_and_recovery(tmp_path
     manager = FixtureManager(tmp_path, port=release._free_port(), startup_timeout=5)
     a = _candidate(manager, "a")
     b = _candidate(manager, "b")
+    native_dependency = b / ".runtime/poppler/bin/pdftoppm.exe"
+    native_dependency.parent.mkdir(parents=True)
+    native_dependency.write_bytes(b"native dependency v1")
     try:
         manager.verify("a")
         manager.verify("b")
@@ -139,6 +142,12 @@ def test_release_real_process_lifecycle_verification_drain_and_recovery(tmp_path
         assert manager.state()["active"] == "a"
         with pytest.raises(ValueError, match="changed after verification"):
             manager.request("b")
+        (b / "backend/.venv/dependency.txt").write_text("v1", encoding="utf-8")
+        manager.checked("b")
+        native_dependency.write_bytes(b"native dependency changed after verification")
+        with pytest.raises(ValueError, match="changed after verification"):
+            manager.request("b")
+        assert manager.backend.pid == backend_pid
 
         manager._http("drain")
         manager._stop_ui()

@@ -32,6 +32,8 @@ LOG = logging.getLogger("elira.release")
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _CACHE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".vite"}
 _DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+_DEPENDENCY_DIRECTORIES = ("backend/.venv", "node_modules", "frontend/node_modules")
+_OPTIONAL_NATIVE_DIRECTORIES = (".runtime/poppler",)
 
 
 def _process_identity(pid: int) -> str | None:
@@ -285,15 +287,18 @@ class ReleaseManager:
                 target = _contained(root / name, root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target)
-        for relative in ("backend/.venv", "node_modules", "frontend/node_modules"):
-            dependency = source / relative
+        for relative in _DEPENDENCY_DIRECTORIES + _OPTIONAL_NATIVE_DIRECTORIES:
+            dependency = _contained(source / relative, source)
+            if relative in _OPTIONAL_NATIVE_DIRECTORIES and not dependency.exists():
+                continue
             if not dependency.is_dir():
                 raise ValueError(f"Install the platform dependency environment first: {relative}")
             # Validate redirections before copying; do not flatten a junction
             # into an apparently independent candidate environment.
             for _ in _tree_files(dependency):
                 pass
-            shutil.copytree(dependency, root / relative, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(dependency, _contained(root / relative, root),
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         scripts = self._python(root).parent
         source_env = str(source / "backend" / ".venv")
         old_paths = {source_env.encode().lower(), source_env.replace("\\", "/").encode().lower()}
@@ -334,8 +339,11 @@ class ReleaseManager:
 
     def fingerprint(self, root: Path, *, executable: str = "") -> str:
         paths = self._source_files(root)
-        for relative in ("backend/.venv", "node_modules", "frontend/node_modules"):
-            paths.extend((file.relative_to(root).as_posix(), file) for file in _tree_files(root / relative))
+        for relative in _DEPENDENCY_DIRECTORIES + _OPTIONAL_NATIVE_DIRECTORIES:
+            dependency = _contained(root / relative, root)
+            if relative in _OPTIONAL_NATIVE_DIRECTORIES and not dependency.exists():
+                continue
+            paths.extend((file.relative_to(root).as_posix(), file) for file in _tree_files(dependency))
         if executable:
             paths.extend((file.relative_to(root).as_posix(), file) for file in _tree_files(root / "frontend/dist"))
             paths.append((executable, _contained(root / executable, root)))
