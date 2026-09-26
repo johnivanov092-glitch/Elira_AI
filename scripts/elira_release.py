@@ -140,14 +140,18 @@ def _tree_files(root: Path, *, excluded: set[str] | None = None):
             path = Path(folder) / name
             if name in _CACHE_DIRS or path.relative_to(root).as_posix() in excluded:
                 continue
-            _contained(path, root)
+            info = path.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise ValueError(f"Linked/reparse directories cannot belong to a release snapshot: {path}")
             kept.append(name)
         directories[:] = kept
         for name in sorted(names):
             if not name.endswith((".pyc", ".pyo")):
                 path = Path(folder) / name
-                _contained(path, root)
-                if not stat.S_ISREG(path.stat().st_mode):
+                info = path.lstat()
+                if (not stat.S_ISREG(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
                     raise ValueError(f"Release files must be regular files: {path}")
                 yield path
 
