@@ -57,16 +57,20 @@ def load_harness():
     return module
 
 
-def run(root):
+def run(root, *, reasoning_effort="none"):
     require_admin()
+    if reasoning_effort not in {"none", "low", "medium", "xhigh"}:
+        raise ValueError("Unsupported reasoning effort")
     if root.parent != REPO / ".scratch" or not root.name.startswith("autonomy-admin-"):
         raise ValueError("Expected a fresh owned trial directory")
     if (root / "config.json").exists():
         raise ValueError("An existing trial is never restarted or overwritten")
     m = load_harness()
     report = {"status": "RUNNING", "started_at": time.time(), "root": str(root),
+              "thinking": reasoning_effort != "none", "reasoning_effort": reasoning_effort,
               "privilege_mode": "full_administrator_user_decision", "foundation": "NOT_RUN",
               "native_tauri": "NOT_RUN", "repair": "NOT_OBSERVED", "steps": []}
+    save(root / "RESULT.json", report)
     server = None
 
     def step(name, value):
@@ -105,7 +109,7 @@ def run(root):
         errors = evidence.get("archive_check", {}).get("errors", [])
         evidence["review_only"] = bool(result.returncode == 0 and evidence.get("ok") and errors
             and all(error.startswith("Author label needs independent review:") for error in errors))
-        step(label, evidence)
+        step("browser-" + label, evidence)
         return evidence
 
     try:
@@ -123,6 +127,7 @@ def run(root):
         if not Path(cfg.get("browser_executable", "")).is_file():
             raise RuntimeError("Configured acceptance browser is missing")
         cfg["max_seconds_per_phase"] = m.PHASE_SECONDS
+        cfg["reasoning_effort"] = reasoning_effort
         save(root / "config.json", cfg)
         platform = Path(cfg["platform"])
         module = m.release_module(REPO)
@@ -132,6 +137,21 @@ def run(root):
         m.command(["git", "remote", "remove", "origin"], cwd=frozen_source)
         m.copy_source(module, frozen_source, platform)
         m.copy_source(module, frozen_source, platform / ".runtime/releases/candidates" / cfg["baseline"])
+        # These fresh private clones inherited an older production Git HEAD.
+        # Record the overlaid baseline before model work, without runtime config.
+        for checkout in (platform, platform / ".runtime/releases/candidates" / cfg["baseline"]):
+            m.command(["git", "add", "--all"], cwd=checkout)
+            staged = subprocess.check_output(["git", "diff", "--cached", "--name-only", "-z"], cwd=checkout)
+            if staged:
+                for raw in staged.split(b"\0"):
+                    if not raw:
+                        continue
+                    path = Path(raw.decode("utf-8"))
+                    if (path.name in {".env", ".env.local", "elira_secret.key", "elira_api_token"}
+                            or any(part in {".venv", "node_modules", ".runtime"} for part in path.parts)):
+                        raise ValueError(f"Runtime file unexpectedly staged in test baseline: {path}")
+                m.command(["git", "-c", "user.name=Elira Acceptance", "-c", "user.email=acceptance@localhost",
+                           "-c", "commit.gpgsign=false", "commit", "-m", "Record isolated acceptance baseline"], cwd=checkout)
         (platform / "backend/.env.local").write_text(
             "\n".join(f"{key}={value}" for key, value in cfg["model_env"].items())
             + "\nLOCAL_EMBED_ENABLED=false\n", encoding="utf-8", newline="\n")
@@ -149,7 +169,7 @@ def run(root):
             save(root / "config.json", cfg)
             save(runtime.with_name("runtime.json"), cfg)
             os.environ.update(m.environment(root))
-        step("source", {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+        step("source", {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=frozen_source, text=True).strip(),
                         "runtime_sha256": m.digest(runtime), "harness_sha256": m.digest(m.SELF)})
         m.command([sys.executable, str(m.SELF), "verify", "--root", str(root), "--release", cfg["baseline"]],
                   cwd=root, env=m.environment(root), timeout=m.VERIFY_SECONDS + 60, log=root / "baseline-build.log")
@@ -158,27 +178,41 @@ def run(root):
             server = subprocess.Popen([sys.executable, str(runtime), "serve"], cwd=root, env=m.environment(root),
                                       stdout=output, stderr=subprocess.STDOUT, creationflags=HIDDEN)
         step("baseline_active", settled())
-        step("create", m.phase(root, "create", 1, "user-approved-admin-unattended", attempt="run"))
+        normal_prompt = m.task_prompt
+        release_guidance = (
+            f"\n\nКорень проекта и стабильная платформа: {platform}. "
+            "Сначала прочитай docs/RELEASE_LIFECYCLE.md. Для обновления подготовь новый кандидат через "
+            "scripts/elira_release.py prepare и редактируй исходники в каталоге этого кандидата. "
+            "Команды prepare/verify/request вызывай из корня платформы, указав --port "
+            f"{cfg['backend_port']} перед операцией. "
+            "Активный релиз уже обслуживается supervisor; повторный запуск сервера не устанавливает изменения. "
+            "После успешных verify и request заверши текущую задачу: supervisor применит обновление, "
+            "когда закончится работа агента."
+        )
+        m.task_prompt = lambda workspace, phase, batch, *, attempt="": (
+            normal_prompt(workspace, phase, batch, attempt=attempt) + release_guidance)
+        phase_options = {"attempt": "run", "reasoning_effort": reasoning_effort, "project_root": platform}
+        step("create", m.phase(root, "create", 1, "user-approved-admin-unattended", **phase_options))
         step("after_create", settled())
         checked = browser(1, "create")
         if not checked["checked_ok"] and not checked["review_only"]:
             current = m.manager_for(root)
             candidate = str(current.path(current.state()["active"]))
             m.write_json(root / "injection.json", {"candidate": candidate, "kind": "observed_failure_no_injection"})
-            normal_prompt = m.task_prompt
+            guided_prompt = m.task_prompt
             failure = {key: checked.get(key) for key in ("error", "downloadError", "failures", "requests")}
             failure["archive_errors"] = checked.get("archive_check", {}).get("errors", [])
             def repair_prompt(workspace, phase, batch, *, attempt=""):
                 if phase != "repair":
-                    return normal_prompt(workspace, phase, batch, attempt=attempt)
+                    return guided_prompt(workspace, phase, batch, attempt=attempt)
                 return (f"В тестовой Elira {cfg['platform']} после обновления не прошла загрузка архива папки диалогов. "
                         f"Наблюдение интерфейса: {json.dumps(failure, ensure_ascii=False)}. "
                         "Исправь причину, проверь полный ZIP и установи исправление штатным механизмом релиза. "
                         "Работай самостоятельно в этой тестовой копии, исходные чаты сохрани. "
-                        "После request заверши текущую задачу, чтобы supervisor смог применить обновление.")
+                        + release_guidance)
             m.task_prompt = repair_prompt
             report["repair"] = "ATTEMPTED_ON_OBSERVED_FAILURE"
-            step("repair", m.phase(root, "repair", 1, "user-approved-admin-unattended", attempt="run"))
+            step("repair", m.phase(root, "repair", 1, "user-approved-admin-unattended", **phase_options))
             step("after_repair", settled())
             checked = browser(1, "repair")
         if not checked["checked_ok"] and not checked["review_only"]:
@@ -186,7 +220,7 @@ def run(root):
         step("freeze", m.freeze_feature(root, "run"))
         active = m.manager_for(root).state()["active"]
         step("new_inputs", m.seed_heldout(root, active, 3, "run"))
-        step("reuse", m.phase(root, "reuse", 3, "user-approved-admin-unattended", attempt="run"))
+        step("reuse", m.phase(root, "reuse", 3, "user-approved-admin-unattended", **phase_options))
         step("after_reuse", settled())
         reused = browser(3, "reuse")
         if not reused["checked_ok"] and not reused["review_only"]:
@@ -220,17 +254,21 @@ def run(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, help="Internal child: fresh evidence root")
+    parser.add_argument("--reasoning-effort", choices=("none", "low", "medium", "xhigh"), default="none",
+                        help="Qwen Think level for every model phase (default: none)")
     args = parser.parse_args()
     if args.run:
-        return run(args.run.resolve())
+        return run(args.run.resolve(), reasoning_effort=args.reasoning_effort)
     require_admin()
     root = REPO / ".scratch" / ("autonomy-admin-" + time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8])
     root.mkdir(parents=True)
     with (root / "controller.log").open("xb") as output:
-        child = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--run", str(root)],
+        child = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--run", str(root),
+                                  "--reasoning-effort", args.reasoning_effort],
                                  cwd=REPO, stdout=output, stderr=subprocess.STDOUT,
                                  creationflags=HIDDEN | getattr(subprocess, "DETACHED_PROCESS", 0))
-    result = {"pid": child.pid, "root": str(root), "result": str(root / "RESULT.json")}
+    result = {"pid": child.pid, "root": str(root), "result": str(root / "RESULT.json"),
+              "thinking": args.reasoning_effort != "none", "reasoning_effort": args.reasoning_effort}
     save(REPO / ".scratch/autonomy-admin-latest.json", result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

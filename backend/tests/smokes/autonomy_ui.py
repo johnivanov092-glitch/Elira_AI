@@ -625,9 +625,12 @@ def read_audit(root: Path, tools: list[dict], project: Path) -> dict:
             "scope": "procedural read audit, not OS isolation or complete shell dataflow analysis"}
 
 
-def phase(root: Path, name: str, batch: int, slot: str, *, attempt: str = "") -> dict:
+def phase(root: Path, name: str, batch: int, slot: str, *, attempt: str = "",
+          reasoning_effort: str = "none", project_root: Path | None = None) -> dict:
     if not slot.strip():
         raise ValueError("Live model execution requires the coordinator's explicit slot")
+    if reasoning_effort not in {"none", "low", "medium", "xhigh"}:
+        raise ValueError("Unsupported reasoning effort")
     cfg = config(root)
     manager = manager_for(root)
     active = manager.state().get("active")
@@ -643,9 +646,11 @@ def phase(root: Path, name: str, batch: int, slot: str, *, attempt: str = "") ->
             "scope": cfg["scope"], "history_messages": 0, "tools": [], "lifecycle": [], "before_state": manager.state()}
     write_json(evidence / f"snapshot-before-{name}.json", acceptance_snapshot(root))
     project = read_json(root / "injection.json")["candidate"] if name == "repair" else str(manager.path(active))
+    if project_root is not None:
+        project = str(contained(project_root, root))
     body = {"message": task_prompt(root, name, batch, attempt=attempt), "project_root": project,
-            "model": cfg["model_env"].get("LLAMA_SERVER_MODEL", "local-model"), "thinking": False,
-            "reasoning_effort": "none", "run_id": run_id, "session_id": f"fresh-{run_id}",
+            "model": cfg["model_env"].get("LLAMA_SERVER_MODEL", "local-model"), "thinking": reasoning_effort != "none",
+            "reasoning_effort": reasoning_effort, "run_id": run_id, "session_id": f"fresh-{run_id}",
             "conversation_history": [], "auto_remember": False, "permission_mode": "bypass"}
     info["request"] = body
     write_json(summary_path, info)
