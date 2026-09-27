@@ -73,8 +73,14 @@ move Elira's backend state or tools into that repository.
 
 Do not create another loop, executor, registry, provider stack or DB facade.
 
-The stable launch/recovery supervisor is `scripts/elira_release.py`; candidate
-backend/UI code remains separate from it. See `docs/RELEASE_LIFECYCLE.md`.
+The release state machine is `scripts/elira_release.py`. Its Windows service
+adapter is `scripts/foundation_service.py`; `foundation_windows.py` owns Windows
+tokens, processes and authenticated IPC, `foundation_storage.py` publishes
+protected bytes, and `foundation_client.py` is the user CLI. The installer is
+`scripts/install_foundation.ps1`. `check_foundation.py` and the proof-only
+`foundation_fixture.py` exercise the isolated Windows installation. Candidate
+backend/UI code remains separate. See `docs/RELEASE_LIFECYCLE.md` for deployment
+status and the legacy launcher path.
 
 ## Frontend owners
 

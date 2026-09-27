@@ -214,14 +214,70 @@ def _restore_databases(data: Path, snapshot: Path) -> None:
         os.replace(temporary, target)
 
 
+class LocalProcessHost:
+    """The legacy, same-user host. Foundation injects its checked user-token host."""
+
+    def user_environment(self) -> dict:
+        return os.environ.copy()
+
+    def process_identity(self, pid: int) -> str | None:
+        return _process_identity(pid)
+
+    def run(self, arguments, *, cwd, env=None, log=None, timeout=None):
+        return subprocess.run(arguments, cwd=cwd, env=env, check=True, timeout=timeout,
+                              stdout=log, stderr=subprocess.STDOUT if log else None,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    def popen(self, arguments, *, cwd, env=None, log=None, desktop=False):
+        return subprocess.Popen(arguments, cwd=cwd, env=env, stdout=log,
+                                stderr=subprocess.STDOUT if log else None,
+                                creationflags=0 if desktop else getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    def terminate_owned(self, pid: int, identity: str) -> None:
+        if self.process_identity(pid) == identity:
+            os.kill(pid, signal.SIGTERM)
+
+
+class ReleaseLayout:
+    """Explicit authorities: private records, editable sources, sealed runtime, user data."""
+
+    def __init__(self, *, store: Path, candidates: Path, data: Path, journals: Path,
+                 config_root: Path, published: Path | None = None, worker_root: Path | None = None,
+                 worker_python: Path | None = None, worker_script: Path | None = None,
+                 service_name: str = "EliraFoundation"):
+        for name, value in locals().copy().items():
+            if name not in {"self", "service_name"}:
+                setattr(self, name, Path(value).resolve() if value is not None else None)
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,79}", service_name):
+            raise ValueError("Invalid Foundation service name")
+        self.service_name = service_name
+        self.published = self.published or self.candidates
+
+    @property
+    def protected(self) -> bool:
+        return self.published != self.candidates
+
+
 class ReleaseManager:
     def __init__(self, platform: Path, *, port: int = 8000, startup_timeout: float = 90,
-                 publish_processes: bool = True):
+                 publish_processes: bool = True, layout: ReleaseLayout | None = None,
+                 host=None, storage=None):
         self.platform = platform.resolve()
-        self.store = self.platform / ".runtime" / "releases"
-        _contained(self.store, self.platform)
-        self.data = Path(os.getenv("ELIRA_DATA_DIR") or self.platform / "data").resolve()
-        self.journals = Path(os.getenv("ELIRA_AGENT_RUNS_DIR") or self.platform / ".agent" / "runs").resolve()
+        self.layout = layout or ReleaseLayout(
+            store=self.platform / ".runtime/releases", candidates=self.platform / ".runtime/releases/candidates",
+            data=Path(os.getenv("ELIRA_DATA_DIR") or self.platform / "data"),
+            journals=Path(os.getenv("ELIRA_AGENT_RUNS_DIR") or self.platform / ".agent/runs"),
+            config_root=self.platform / "backend")
+        self.host = host if host is not None else LocalProcessHost()
+        self.storage = storage
+        if self.layout.protected:
+            if host is None or type(host) is LocalProcessHost or storage is None:
+                raise ValueError("Protected releases require an explicit user process host and secure storage")
+            if not all((self.layout.worker_root, self.layout.worker_python, self.layout.worker_script)):
+                raise ValueError("Protected releases require explicit user worker root and protected Python/script")
+        self.store = self.layout.store
+        self.data = self.layout.data
+        self.journals = self.layout.journals
         self.port = port
         self.startup_timeout = startup_timeout
         self.publish_processes = publish_processes
@@ -232,12 +288,23 @@ class ReleaseManager:
         self.store.mkdir(parents=True, exist_ok=True)
 
     def path(self, release_id: str) -> Path:
+        self._validate_id(release_id)
+        return _contained(self.layout.published / release_id, self.layout.published)
+
+    @staticmethod
+    def _validate_id(release_id: str) -> None:
         if not _ID.fullmatch(release_id) or release_id in {".", ".."}:
             raise ValueError("Release id must contain only lowercase letters, digits, dots, dashes or underscores")
-        return self.owned("candidates/" + release_id)
+
+    def candidate_path(self, release_id: str) -> Path:
+        self._validate_id(release_id)
+        if self.layout.protected:
+            with self.storage.user_access():
+                return _contained(self.layout.candidates / release_id, self.layout.candidates)
+        return self.path(release_id)
 
     def owned(self, relative: str) -> Path:
-        return _contained(self.store / relative, self.platform)
+        return _contained(self.store / relative, self.store)
 
     def record(self, release_id: str) -> Path:
         self.path(release_id)
@@ -251,34 +318,52 @@ class ReleaseManager:
     def _save(self, state: dict) -> None:
         _write_json(self.owned("state.json"), state)
 
-    def _python(self, root: Path) -> Path:
+    @staticmethod
+    def _python(root: Path) -> Path:
         return root / "backend" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     def _npm(self) -> str:
-        result = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+        result = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=self.host.user_environment().get("PATH", ""))
         if not result:
             raise RuntimeError("npm is required to verify a complete application release")
         return result
 
     def _command(self, arguments: list[str], *, cwd: Path, env: dict | None = None,
-                 log=None) -> subprocess.CompletedProcess:
-        return subprocess.run(arguments, cwd=cwd, env=env, check=True,
-                              stdout=log, stderr=subprocess.STDOUT if log else None)
+                 log=None, timeout=None) -> subprocess.CompletedProcess:
+        result = self.host.run(arguments, cwd=cwd, env=env, log=log, timeout=timeout)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, arguments)
+        return result
 
     def prepare(self, release_id: str) -> dict:
-        root = self.path(release_id)
-        if root.exists():
-            raise ValueError("Candidate already exists; continue editing that candidate or choose a new id")
-        root.parent.mkdir(parents=True, exist_ok=True)
+        root = self.candidate_path(release_id)
         active = self.state().get("active")
         source = self.path(active) if active else self.platform
         if active:
             self.checked(active)
+        if self.layout.protected:
+            work = self._work_path("prepare")
+            try:
+                self._worker("prepare", root=root, source=source, work=work, overlay=bool(active))
+            finally:
+                self._worker("cleanup", work=work)
+        else:
+            self._prepare_files(root, source, overlay=bool(active))
+        value = {"release_id": release_id, "status": "candidate", "root": str(root)}
+        _write_json(self.record(release_id), value)
+        return value
+
+    def _prepare_files(self, root: Path, source: Path, *, overlay: bool) -> None:
+        if root.exists():
+            raise ValueError("Candidate already exists; continue editing that candidate or choose a new id")
+        root.parent.mkdir(parents=True, exist_ok=True)
         # Start from the active release, so successive improvements accumulate.
-        # The initial developer checkout contributes committed source only.
-        self._command(["git", "clone", "--local", "--no-hardlinks", str(source), str(root)], cwd=self.platform)
+        # Published snapshots have no Git administration files. The platform Git
+        # supplies history; the exact published source is overlaid below.
+        git_source = source if (source / ".git").exists() else self.platform
+        self._command(["git", "clone", "--local", "--no-hardlinks", str(git_source), str(root)], cwd=self.platform)
         self._command(["git", "remote", "remove", "origin"], cwd=root)
-        if active:
+        if overlay:
             files = dict(self._source_files(source))
             for name, path in self._source_files(root):
                 if name not in files:
@@ -325,9 +410,50 @@ class ReleaseManager:
             "if e.group in {'console_scripts','gui_scripts'}]"
         )
         self._command([str(self._python(root)), "-c", relaunchers], cwd=root)
-        value = {"release_id": release_id, "status": "candidate", "root": str(root)}
-        _write_json(self.record(release_id), value)
-        return value
+
+    def _work_path(self, purpose: str) -> Path:
+        return self.layout.worker_root / (purpose + "-" + secrets.token_hex(16))
+
+    def _worker(self, operation: str, *, log=None, **values) -> None:
+        arguments = [str(self.layout.worker_python), "-I", "-S", "-B", str(self.layout.worker_script),
+                     "--platform", str(self.platform), "worker", operation,
+                     "--worker-root", str(self.layout.worker_root)]
+        for key, value in values.items():
+            arguments.extend(["--" + key.replace("_", "-"), "1" if value is True else "0" if value is False else str(value)])
+        if log is not None:
+            self._command(arguments, cwd=self.layout.worker_script.parent,
+                          env=self.host.user_environment(), log=log, timeout=1800)
+        else:
+            worker_log = self.owned("logs/worker-" + secrets.token_hex(16) + ".log")
+            worker_log.parent.mkdir(parents=True, exist_ok=True)
+            with worker_log.open("xb") as output:
+                try:
+                    self._command(arguments, cwd=self.layout.worker_script.parent,
+                                  env=self.host.user_environment(), log=output, timeout=1800)
+                except Exception as exc:
+                    raise RuntimeError(f"Release worker {operation} failed; log: {worker_log}") from exc
+
+    def _snapshot(self, destination: Path) -> None:
+        if not self.layout.protected:
+            _snapshot_databases(self.data, destination)
+            return
+        work = self._work_path("backup")
+        try:
+            self._worker("snapshot", data=self.data, destination=work / "snapshot", work=work)
+            self.storage.publish(work / "snapshot", destination)
+        finally:
+            self._worker("cleanup", work=work)
+
+    def _restore(self, snapshot: Path) -> None:
+        if not self.layout.protected:
+            _restore_databases(self.data, snapshot)
+            return
+        work = self._work_path("restore")
+        try:
+            self.storage.export(snapshot, work / "snapshot")
+            self._worker("restore", data=self.data, source=work / "snapshot", work=work)
+        finally:
+            self._worker("cleanup", work=work)
 
     def _source_files(self, root: Path) -> list[tuple[str, Path]]:
         # Runtime code may be ignored by Git. Seal the actual source tree rather
@@ -337,7 +463,7 @@ class ReleaseManager:
                     "src-tauri/target", "src-tauri/gen", "target"}
         return [(path.relative_to(root).as_posix(), path) for path in _tree_files(root, excluded=excluded)]
 
-    def fingerprint(self, root: Path, *, executable: str = "") -> str:
+    def _fingerprint_files(self, root: Path, *, executable: str = "") -> list[tuple[str, Path]]:
         paths = self._source_files(root)
         for relative in _DEPENDENCY_DIRECTORIES + _OPTIONAL_NATIVE_DIRECTORIES:
             dependency = _contained(root / relative, root)
@@ -347,7 +473,10 @@ class ReleaseManager:
         if executable:
             paths.extend((file.relative_to(root).as_posix(), file) for file in _tree_files(root / "frontend/dist"))
             paths.append((executable, _contained(root / executable, root)))
-        return _digest(paths)
+        return paths
+
+    def fingerprint(self, root: Path, *, executable: str = "") -> str:
+        return _digest(self._fingerprint_files(root, executable=executable))
 
     def _verification_commands(self, root: Path) -> list[list[str]]:
         return [
@@ -364,14 +493,14 @@ class ReleaseManager:
             raise ValueError("A complete release must have exactly one freshly built Elira desktop executable")
         return candidates[0].relative_to(root).as_posix()
 
-    def _environment(self, release_id: str, *, data: Path | None = None) -> dict:
-        env = os.environ.copy()
-        candidate = self.path(release_id)
+    def _environment(self, release_id: str, *, data: Path | None = None, root: Path | None = None) -> dict:
+        env = dict(self.host.user_environment())
+        candidate = root or self.path(release_id)
         env.pop("PYTHONHOME", None)
         env.pop("PYTHONPATH", None)
         env.update({"ELIRA_RELEASE_ID": release_id, "ELIRA_RELEASE_STAGING": "1",
                     "ELIRA_RELEASE_TOKEN": self.token, "ELIRA_RELEASE_INSTANCE": self.instance,
-                    "ELIRA_CONFIG_ROOT": str(self.platform / "backend"),
+                    "ELIRA_CONFIG_ROOT": str(self.layout.config_root),
                     "ELIRA_PLATFORM_ROOT": str(self.platform),
                     "ELIRA_DATA_DIR": str(data or self.data),
                     "ELIRA_AGENT_RUNS_DIR": str(self.journals if data is None else data / "agent-runs"),
@@ -380,13 +509,20 @@ class ReleaseManager:
         env["PATH"] = os.pathsep.join((str(self._python(candidate).parent),
                                       str(candidate / "node_modules/.bin"),
                                       str(candidate / "frontend/node_modules/.bin"), env.get("PATH", "")))
-        env.setdefault("ELIRA_FS_UNRESTRICTED", "1")
+        if self.layout.protected:
+            env.update({"ELIRA_FOUNDATION_MANAGED": "1", "ELIRA_FOUNDATION_SERVICE": self.layout.service_name,
+                        "ELIRA_FOUNDATION_PYTHON": str(self.layout.worker_python),
+                        "ELIRA_FOUNDATION_CLIENT": str(self.layout.worker_script.parent / "foundation_client.py")})
+        else:
+            env.setdefault("ELIRA_FS_UNRESTRICTED", "1")
         if data is not None:
             env.update({"ELIRA_DRIFT_CHECK": "0", "LLAMA_SERVER_ENABLED": "false",
                         "LOCAL_EMBED_ENABLED": "false"})
         return env
 
     def verify(self, release_id: str) -> dict:
+        if self.layout.protected:
+            return self._verify_protected(release_id)
         root = self.path(release_id)
         before = self.fingerprint(root)
         value = {"release_id": release_id, "status": "verifying", "root": str(root)}
@@ -413,7 +549,7 @@ class ReleaseManager:
                 # Exercise actual candidate imports/startup against copied data,
                 # with schedulers and user requests held until admission.
                 probe = type(self)(self.platform, port=_free_port(), startup_timeout=self.startup_timeout,
-                                   publish_processes=False)
+                                   publish_processes=False, layout=self.layout, host=self.host, storage=self.storage)
                 try:
                     probe._start_backend(release_id, data=check_data)
                 finally:
@@ -424,6 +560,67 @@ class ReleaseManager:
             value.update({"status": "failed", "error": str(exc)})
             _write_json(self.record(release_id), value)
             raise
+
+    def _verify_protected(self, release_id: str) -> dict:
+        root, published = self.candidate_path(release_id), self.path(release_id)
+        if published.exists():
+            raise ValueError("Published release IDs are immutable; prepare a new candidate ID")
+        with self.storage.user_access():
+            before = self.fingerprint(root)
+        work = self._work_path("verify")
+        value = {"release_id": release_id, "status": "verifying", "root": str(published),
+                 "candidate_root": str(root), "verification_work": str(work)}
+        _write_json(self.record(release_id), value)
+        self.owned("logs").mkdir(exist_ok=True)
+        check_data = work / "data"
+        restore_pending = False
+        try:
+            self._worker("snapshot", data=self.data, destination=check_data, work=work)
+            env = self._environment(release_id, data=check_data, root=root)
+            env["ELIRA_RELEASE_STAGING"] = "0"
+            with self.owned(f"logs/{release_id}-verify.log").open("w", encoding="utf-8") as log:
+                with self.storage.user_access():
+                    commands = self._verification_commands(root)
+                for command in commands:
+                    LOG.info("Verifying %s: %s", release_id, command[1:])
+                    self._command(command, cwd=root, env=env, log=log, timeout=3600)
+            with self.storage.user_access():
+                if self.fingerprint(root) != before:
+                    raise ValueError("Candidate code or dependencies changed during verification; verify the final version")
+                executable = self._find_executable(root)
+            try:
+                restore_pending = True
+                self._worker("relocate", root=root, destination=published, backup=work / "environment", work=work)
+                with self.storage.user_access():
+                    files = sorted({name for name, _ in self._fingerprint_files(root, executable=executable)})
+                    copied_hash = self.fingerprint(root, executable=executable)
+                self.storage.publish(root, published, files=files)
+                if self.fingerprint(published, executable=executable) != copied_hash:
+                    raise ValueError("Published bytes do not match the observed candidate snapshot")
+            finally:
+                self._worker("restore-environment", root=root, backup=work / "environment", work=work)
+                restore_pending = False
+            with self.storage.user_access():
+                if self.fingerprint(root) != before:
+                    raise ValueError("Candidate environment restoration did not reproduce its original bytes")
+            probe = type(self)(self.platform, port=_free_port(), startup_timeout=self.startup_timeout,
+                               publish_processes=False, layout=self.layout, host=self.host, storage=self.storage)
+            try:
+                probe._start_backend(release_id, data=check_data)
+            finally:
+                probe._stop_backend()
+            if self.fingerprint(published, executable=executable) != copied_hash:
+                raise ValueError("Published runtime changed during staged startup")
+            value.update(status="verified", executable=executable, sha256=copied_hash, verified_at=time.time())
+            _write_json(self.record(release_id), value)
+            return value
+        except Exception as exc:
+            value.update(status="failed", error=str(exc))
+            _write_json(self.record(release_id), value)
+            raise
+        finally:
+            if not restore_pending:
+                self._worker("cleanup", work=work)
 
     def checked(self, release_id: str) -> dict:
         value = _read_json(self.record(release_id))
@@ -458,15 +655,17 @@ class ReleaseManager:
         return result
 
     def _backend_command(self, release_id: str) -> list[str]:
-        return [str(self._python(self.path(release_id))), str(self.platform / "scripts/elira_release.py"),
-                "--platform", str(self.platform), "--port", str(self.port), "serve", release_id]
+        script = self.layout.worker_script or self.platform / "scripts/elira_release.py"
+        return [str(self._python(self.path(release_id))), str(script),
+                "--platform", str(self.platform), "--port", str(self.port),
+                "--runtime-root", str(self.path(release_id)), "serve", release_id]
 
     def _save_processes(self) -> None:
         if self.publish_processes:
             owned = {"port": self.port, "token": self.token, "instance": self.instance}
             for name, process in (("backend", self.backend), ("ui", self.ui)):
                 if process is not None and process.poll() is None:
-                    identity = _process_identity(process.pid)
+                    identity = getattr(process, "creation_identity", None) or self.host.process_identity(process.pid)
                     if identity is None:
                         raise RuntimeError(f"Cannot identify owned {name} process")
                     owned[name] = {"pid": process.pid, "identity": identity}
@@ -476,7 +675,7 @@ class ReleaseManager:
         saved = _read_json(self.owned("live.json"), {})
         owned = {name: item for name in ("backend", "ui")
                  if isinstance(item := saved.get(name), dict)
-                 and _process_identity(int(item["pid"])) == item.get("identity")}
+                 and self.host.process_identity(int(item["pid"])) == item.get("identity")}
         if not owned:
             return
         prior_token, prior_instance = self.token, self.instance
@@ -492,12 +691,12 @@ class ReleaseManager:
                 self._http("shutdown")
             for name, item in owned.items():
                 pid, identity = int(item["pid"]), item["identity"]
-                if name == "ui" and _process_identity(pid) == identity:
-                    os.kill(pid, signal.SIGTERM)
+                if name == "ui" and self.host.process_identity(pid) == identity:
+                    self.host.terminate_owned(pid, identity)
                 deadline = time.monotonic() + 15
-                while time.monotonic() < deadline and _process_identity(pid) == identity:
+                while time.monotonic() < deadline and self.host.process_identity(pid) == identity:
                     time.sleep(0.1)
-                if _process_identity(pid) == identity:
+                if self.host.process_identity(pid) == identity:
                     raise RuntimeError(f"Owned {name} did not exit; databases have not been restored")
         finally:
             self.token, self.instance = prior_token, prior_instance
@@ -509,14 +708,14 @@ class ReleaseManager:
         logs = self.owned("logs")
         logs.mkdir(exist_ok=True)
         with self.owned(f"logs/{release_id}-backend.log").open("ab") as log:
-            self.backend = subprocess.Popen(self._backend_command(release_id), cwd=self.path(release_id) / "backend",
-                                            env=self._environment(release_id, data=data), stdout=log, stderr=log,
-                                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self.backend = self.host.popen(self._backend_command(release_id), cwd=self.path(release_id) / "backend",
+                                           env=self._environment(release_id, data=data), log=log)
         self._save_processes()
         deadline = time.monotonic() + self.startup_timeout
         while time.monotonic() < deadline:
-            if self.backend.poll() is not None:
-                raise RuntimeError(f"Candidate backend exited with code {self.backend.returncode}")
+            exit_code = self.backend.poll()
+            if exit_code is not None:
+                raise RuntimeError(f"Candidate backend exited with code {exit_code}")
             try:
                 health = self._http()
                 if (health.get("service") == "elira-ai-api" and health.get("release_id") == release_id
@@ -528,34 +727,49 @@ class ReleaseManager:
         raise RuntimeError("Candidate startup health deadline exceeded; see the release backend log")
 
     def _start_ui(self, release_id: str, executable: str) -> None:
-        self.ui = subprocess.Popen([str(self.path(release_id) / executable)], cwd=self.path(release_id),
-                                   env=self._environment(release_id))
+        env = self._environment(release_id)
+        env.pop("ELIRA_RELEASE_TOKEN", None)
+        self.ui = self.host.popen([str(self.path(release_id) / executable)], cwd=self.path(release_id),
+                                  env=env, desktop=True)
         self._save_processes()
         time.sleep(0.5)
         if self.ui.poll() is not None:
             raise RuntimeError("Candidate desktop exited during startup")
 
     def _stop_ui(self) -> None:
-        if self.ui is not None and self.ui.poll() is None:
-            self.ui.terminate()
-            try:
-                self.ui.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.ui.kill()
-                self.ui.wait(timeout=10)
-        self.ui = None
-        self._save_processes()
+        try:
+            if self.ui is not None and self.ui.poll() is None:
+                self.ui.terminate()
+                try:
+                    self.ui.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.ui.kill()
+                    self.ui.wait(timeout=10)
+        finally:
+            self._close_exited_process("ui")
 
     def _stop_backend(self) -> None:
-        if self.backend is not None and self.backend.poll() is None:
-            try:
-                self._http("shutdown")
-                self.backend.wait(timeout=15)
-            except (OSError, URLError, ValueError, subprocess.TimeoutExpired):
-                self.backend.terminate()
-                self.backend.wait(timeout=15)
-        self.backend = None
-        self._save_processes()
+        try:
+            if self.backend is not None and self.backend.poll() is None:
+                try:
+                    self._http("shutdown")
+                    self.backend.wait(timeout=15)
+                except (OSError, URLError, ValueError, subprocess.TimeoutExpired):
+                    self.backend.terminate()
+                    self.backend.wait(timeout=15)
+        finally:
+            self._close_exited_process("backend")
+
+    def _close_exited_process(self, name: str) -> None:
+        process = getattr(self, name)
+        try:
+            if process is not None and process.poll() is not None:
+                setattr(self, name, None)
+                close = getattr(process, "close", None)
+                if callable(close):
+                    close()
+        finally:
+            self._save_processes()
 
     def apply_pending(self) -> bool:
         state = self.state()
@@ -590,7 +804,7 @@ class ReleaseManager:
             self._stop_backend()
             try:
                 self.checked(release_id)
-                _snapshot_databases(self.data, backup)
+                self._snapshot(backup)
                 state["transition"]["phase"] = "switching"
                 self._save(state)
                 self._start_backend(release_id)
@@ -612,7 +826,7 @@ class ReleaseManager:
                     self._save(state)
                     raise
                 if (backup / "snapshot.json").exists():
-                    _restore_databases(self.data, backup)
+                    self._restore(backup)
                 state.update({"active": previous, "pending": None, "transition": None, "error": str(exc)})
                 self._save(state)
                 if previous:
@@ -631,11 +845,11 @@ class ReleaseManager:
         transition = state.get("transition")
         if transition:
             if transition["phase"] in {"stopping", "switching"}:
-                backup = _contained(Path(transition["backup"]), self.platform)
+                backup = _contained(Path(transition["backup"]), self.store)
                 if backup.parent != self.owned("backups"):
                     raise ValueError("Invalid transition backup path")
                 if (backup / "snapshot.json").exists():
-                    _restore_databases(self.data, backup)
+                    self._restore(backup)
                 state.update({"active": transition.get("from"), "pending": None})
             # admitting may have served real work. Keep its code and data.
             state["transition"] = None
@@ -680,21 +894,152 @@ def _free_port() -> int:
         return listener.getsockname()[1]
 
 
+def _relocate_environment(root: Path, destination: Path, backup: Path) -> None:
+    """Temporarily rebase copied venv launchers; executed only by the user worker."""
+    scripts = ReleaseManager._python(root).parent
+    for _ in _tree_files(scripts):
+        pass
+    backup.mkdir(parents=True, exist_ok=False)
+    shutil.copytree(scripts, backup / "scripts")
+    config = root / "backend/.venv/pyvenv.cfg"
+    if config.exists():
+        shutil.copy2(config, backup / "pyvenv.cfg")
+    _write_json(backup / "ready.json", {"config": config.exists()})
+    replacements = [(str(root / "backend/.venv").encode(), str(destination / "backend/.venv").encode()),
+                    ((root / "backend/.venv").as_posix().encode(), (destination / "backend/.venv").as_posix().encode())]
+    for file in list(_tree_files(scripts)) + ([config] if config.exists() else []):
+        if file.suffix.lower() not in {".exe", ".dll", ".pyd"}:
+            content = original = file.read_bytes()
+            for old, new in replacements:
+                content = content.replace(old, new)
+            if content != original:
+                file.write_bytes(content)
+    code = (
+        "import importlib.metadata,sys; from pip._vendor.distlib.scripts import ScriptMaker; "
+        "m=ScriptMaker(None,sys.argv[1]); m.executable=sys.argv[2]; m.clobber=True; m.variants={''}; "
+        "[m.make(e.name+'='+e.value,options={'gui':e.group=='gui_scripts'}) "
+        "for d in importlib.metadata.distributions() for e in d.entry_points "
+        "if e.group in {'console_scripts','gui_scripts'}]"
+    )
+    LocalProcessHost().run([str(ReleaseManager._python(root)), "-I", "-c", code,
+                            str(scripts), str(ReleaseManager._python(destination))], cwd=root)
+    for file in _tree_files(scripts):
+        if any(old.lower() in file.read_bytes().lower() for old, _ in replacements):
+            raise ValueError(f"Venv launcher still refers to the editable candidate: {file.name}")
+
+
+def _restore_environment(root: Path, backup: Path) -> None:
+    if not (backup / "ready.json").exists():
+        return  # Relocation failed before any original bytes were changed.
+    scripts = ReleaseManager._python(root).parent
+    saved = {file.relative_to(backup / "scripts"): file for file in _tree_files(backup / "scripts")}
+    for file in list(_tree_files(scripts)):
+        if file.relative_to(scripts) not in saved:
+            file.unlink()
+    for relative, source in saved.items():
+        target = _contained(scripts / relative, scripts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    if _read_json(backup / "ready.json")["config"]:
+        shutil.copy2(backup / "pyvenv.cfg", root / "backend/.venv/pyvenv.cfg")
+
+
+def _run_worker(args) -> None:
+    """Fixed filesystem recipes. This entry point must run under the user host."""
+    if args.work is None or args.worker_root is None:
+        raise ValueError("Worker operation requires its assigned work directory")
+    required = {
+        "prepare": ("root", "source"), "snapshot": ("data", "destination"),
+        "restore": ("data", "source"), "relocate": ("root", "destination", "backup"),
+        "restore-environment": ("root", "backup"), "cleanup": (),
+    }
+    if any(getattr(args, name) is None for name in required[args.operation]):
+        raise ValueError(f"Missing paths for worker operation: {args.operation}")
+    work = _contained(args.work, args.worker_root)
+    if work == args.worker_root or work.parent != args.worker_root:
+        raise ValueError("Worker directory must be a direct child of its assigned root")
+    if args.operation == "cleanup":
+        if work.exists():
+            shutil.rmtree(work)
+        return
+    if args.operation == "prepare":
+        layout = ReleaseLayout(store=work / "state", candidates=args.root.parent,
+                               data=work / "data", journals=work / "journals", config_root=args.platform / "backend")
+        manager = ReleaseManager(args.platform, layout=layout, publish_processes=False)
+        manager._prepare_files(args.root, args.source, overlay=args.overlay == "1")
+    elif args.operation == "snapshot":
+        _snapshot_databases(args.data, _contained(args.destination, work))
+    elif args.operation == "restore":
+        _restore_databases(args.data, _contained(args.source, work))
+    elif args.operation == "relocate":
+        _relocate_environment(args.root, args.destination, _contained(args.backup, work))
+    elif args.operation == "restore-environment":
+        _restore_environment(args.root, _contained(args.backup, work))
+
+
+def _foundation_client_command() -> list[str] | None:
+    if os.name != "nt":
+        return None
+    import winreg
+
+    managed = os.environ.get("ELIRA_FOUNDATION_MANAGED") == "1"
+    service = os.environ.get("ELIRA_FOUNDATION_SERVICE", "EliraFoundation") if managed else "EliraFoundation"
+    if service not in {"EliraFoundation", "EliraFoundationProof"}:
+        raise ValueError("Unknown Foundation service")
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Elira\{service}",
+                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            location, kind = winreg.QueryValueEx(key, "InstallRoot")
+    except FileNotFoundError:
+        if managed:
+            raise RuntimeError("Managed Foundation registration is missing; local supervisor fallback is disabled")
+        return None
+    root = Path(location)
+    if kind != winreg.REG_SZ or not root.is_absolute():
+        raise ValueError("Invalid protected Foundation registration")
+    python, client = root / "python/python.exe", root / "host/foundation_client.py"
+    if not python.is_file() or not client.is_file():
+        raise RuntimeError("Foundation installation is incomplete; local supervisor fallback is disabled")
+    return [str(python), "-I", "-S", "-B", str(client), "--service", service]
+
+
+def _load_application_environment(config_root: Path) -> None:
+    # Only the unprivileged serve child imports application dependencies/secrets.
+    from dotenv import dotenv_values
+
+    values = {**dotenv_values(config_root / ".env"), **dotenv_values(config_root / ".env.local")}
+    for key, value in values.items():
+        if value is not None:
+            os.environ.setdefault(key, value)
+    os.environ.setdefault("ELIRA_FS_UNRESTRICTED", "1")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", type=Path,
                         default=Path(os.getenv("ELIRA_PLATFORM_ROOT") or Path(__file__).resolve().parents[1]))
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--startup-timeout", type=float, default=90)
+    parser.add_argument("--runtime-root", type=Path)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("prepare", "verify", "request", "serve"):
         commands.add_parser(name).add_argument("release_id")
     for name in ("status", "run", "rollback"):
         commands.add_parser(name)
+    worker = commands.add_parser("worker", help="Private user-process filesystem worker; not a service IPC operation")
+    worker.add_argument("operation", choices=("prepare", "snapshot", "restore", "relocate", "restore-environment", "cleanup"))
+    for name in ("worker-root", "work", "root", "source", "destination", "data", "backup"):
+        worker.add_argument("--" + name, type=Path)
+    worker.add_argument("--overlay", choices=("0", "1"), default="0")
     args = parser.parse_args()
-    manager = ReleaseManager(args.platform, port=args.port, startup_timeout=args.startup_timeout)
+    if args.command == "worker":
+        _run_worker(args)
+        return 0
     if args.command == "serve":
-        root = manager.path(args.release_id)
+        ReleaseManager._validate_id(args.release_id)
+        root = args.runtime_root or args.platform / ".runtime/releases/candidates" / args.release_id
+        if os.environ.get("ELIRA_FOUNDATION_MANAGED") == "1":
+            _load_application_environment(Path(os.environ.get("ELIRA_CONFIG_ROOT") or args.platform / "backend"))
         sys.path.insert(0, str(root / "backend"))
         import uvicorn
         from app.main import app
@@ -704,6 +1049,16 @@ def main() -> int:
         release_runtime.set_callbacks(shutdown=lambda: setattr(server, "should_exit", True))
         server.run()
         return 0
+    client = _foundation_client_command()
+    if client is not None:
+        command = "open" if args.command == "run" else args.command
+        arguments = client + [command]
+        if getattr(args, "release_id", None):
+            arguments.append(args.release_id)
+        arguments.append("--wait")
+        return subprocess.run(arguments, check=False,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode
+    manager = ReleaseManager(args.platform, port=args.port, startup_timeout=args.startup_timeout)
     if args.command == "run":
         manager.run()
         return 0

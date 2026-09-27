@@ -41,6 +41,7 @@ are not current launch instructions or a live probe of the server:
 - [Delivery, 2026-09-26](research/AUTONOMOUS_DELIVERY_2026-09-26_RU.md) - initial implementation and release evidence.
 - [Live skill proof](research/AUTONOMOUS_LIVE_PROOF_RU.md) - recorded Qwen creation and reuse.
 - [Recovery acceptance](research/AUTONOMOUS_RECOVERY_ACCEPTANCE_RU.md) - recorded create/repair/reuse and web-source work.
+- [Windows Foundation acceptance](research/FOUNDATION_WINDOWS_ACCEPTANCE_RU.md) - service identity, ACL and release recovery evidence; separate from live Qwen/product acceptance.
 - [Laya CPU evaluation](research/LAYA_CPU_EVALUATION_RU.md) - rejected experiment and removal evidence.
 - [Model inventory, 2026-09-26](research/MODEL_INVENTORY_2026-09-26_RU.md) - installed/running model snapshot.
 - [Post-server record](POST_SERVER_BACKLOG.md) - migration and dated quality measurements.

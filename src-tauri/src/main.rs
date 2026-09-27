@@ -9,6 +9,34 @@ struct BackendState {
     child: Mutex<Option<Child>>,
 }
 
+fn foundation_managed() -> bool {
+    std::env::var("ELIRA_FOUNDATION_MANAGED").as_deref() == Ok("1")
+}
+
+fn foundation_command(operation: &str) -> Result<serde_json::Value, String> {
+    let python = std::env::var_os("ELIRA_FOUNDATION_PYTHON")
+        .ok_or("Foundation Python path is missing")?;
+    let client = std::env::var_os("ELIRA_FOUNDATION_CLIENT")
+        .ok_or("Foundation client path is missing")?;
+    let service = std::env::var("ELIRA_FOUNDATION_SERVICE")
+        .unwrap_or_else(|_| "EliraFoundation".to_string());
+    let mut command = Command::new(python);
+    command.args(["-I", "-S", "-B"]).arg(client)
+        .args(["--service", &service, operation, "--wait", "--timeout", "60"])
+        .stdin(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.output().map_err(|e| format!("Foundation client failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("Foundation: {} {}", String::from_utf8_lossy(&output.stdout),
+                           String::from_utf8_lossy(&output.stderr)));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid Foundation response: {e}"))
+}
+
 /// Walk up from current working directory (and exe dir as fallback)
 /// until we find a directory that contains "backend/"
 fn find_project_root() -> Option<std::path::PathBuf> {
@@ -67,6 +95,10 @@ fn start_backend(
     _app: tauri::AppHandle,
     state: tauri::State<BackendState>,
 ) -> Result<String, String> {
+    if foundation_managed() {
+        foundation_command("open")?;
+        return Ok("Application is managed by EliraFoundation".to_string());
+    }
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(child) = guard.as_ref() {
         return Ok(format!("Backend already running with pid {}", child.id()));
@@ -121,6 +153,9 @@ fn start_backend(
 
 #[tauri::command]
 fn stop_backend(state: tauri::State<BackendState>) -> Result<String, String> {
+    if foundation_managed() {
+        return Err("Close the application window to stop the Foundation-managed application".to_string());
+    }
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(mut child) = guard.take() {
         child
@@ -135,6 +170,12 @@ fn stop_backend(state: tauri::State<BackendState>) -> Result<String, String> {
 
 #[tauri::command]
 fn backend_status(state: tauri::State<BackendState>) -> Result<serde_json::Value, String> {
+    if foundation_managed() {
+        let status = foundation_command("status")?;
+        return Ok(serde_json::json!({
+            "running": status["running"], "pid": status["backend_pid"], "mode": "foundation-managed"
+        }));
+    }
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     let mut running = false;
     let mut pid = None;
@@ -346,6 +387,19 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if foundation_managed() {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // Foundation drains work and closes its owned UI/backend.
+                    // A user closing the window is distinct from a crashed UI.
+                    api.prevent_close();
+                    std::thread::spawn(|| {
+                        if let Err(error) = foundation_command("close") {
+                            eprintln!("[Elira] {error}");
+                        }
+                    });
+                }
+                return;
+            }
             // Graceful shutdown: останавливаем backend при закрытии окна
             if let tauri::WindowEvent::Destroyed = event {
                 let state: tauri::State<BackendState> = window.state();

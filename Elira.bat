@@ -11,6 +11,27 @@ set "BACKEND_PY=%REPO_ROOT%\backend\.venv\Scripts\python.exe"
 set "BACKEND_ENV=%REPO_ROOT%\backend\.env"
 set "BACKEND_ENV_LOCAL=%REPO_ROOT%\backend\.env.local"
 
+rem Installed Foundation is registered under administrator-owned HKLM. A stopped
+rem or broken service must never silently select the same-user supervisor.
+set "FOUNDATION_ROOT="
+for /f "tokens=2,*" %%A in ('"%SystemRoot%\System32\reg.exe" query "HKLM\SOFTWARE\Elira\EliraFoundation" /v InstallRoot /reg:64 2^>nul') do (
+    if "%%A"=="REG_SZ" set "FOUNDATION_ROOT=%%B"
+)
+if defined FOUNDATION_ROOT (
+    "%FOUNDATION_ROOT%\python\python.exe" -I -S -B "%FOUNDATION_ROOT%\host\foundation_client.py" open --wait --timeout 300
+    if errorlevel 1 (
+        echo [ERROR] Foundation could not start the application. No unmanaged backend was started.
+        pause
+        exit /b 1
+    )
+    exit /b 0
+)
+if exist "%ProgramFiles%\EliraFoundation" (
+    echo [ERROR] Foundation installation is incomplete. Repair its installation before launching.
+    pause
+    exit /b 1
+)
+
 rem Owner default: full local filesystem access for the agent (private,
 rem single-owner local tool). Set BEFORE the .env/.env.local load below so you can
 rem opt back INTO the project-root sandbox with ELIRA_FS_UNRESTRICTED=0 in

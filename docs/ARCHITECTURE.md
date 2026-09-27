@@ -27,13 +27,17 @@ Workflow request
 Multi-agent uses `application/workflows` as a coordinator but every agent step
 returns to the same `run_code_agent`, executor and provider registry.
 
-Managed application updates use the separate standard-library supervisor
-`scripts/elira_release.py` from the stable platform checkout. It prepares and
-verifies a backend/UI candidate, then switches after active work drains, with
-restart and pre-admission recovery. The agent loop itself belongs to the
-replaceable application; the launch/recovery supervisor is not replaced by the
-candidate. This is a release boundary, not OS-enforced immutability against
-same-user writes. See `RELEASE_LIFECYCLE.md` for receipts and rollback limits.
+Managed application updates use `scripts/elira_release.py` to prepare and verify
+a backend/UI candidate, then switch after active work drains, with restart and
+pre-admission recovery. The Windows Foundation adapter runs this same release
+manager in a protected LocalService installation; application commands run with
+the authenticated interactive user's limited token. Service code/state and
+published releases are separate from editable candidates. The agent loop remains
+part of the replaceable application. Legacy same-user supervision remains
+available without a Foundation installation and does not provide this OS
+boundary. Source implementation, isolated Windows proof and production deployment
+are separate statuses; see `RELEASE_LIFECYCLE.md` and
+`research/FOUNDATION_WINDOWS_ACCEPTANCE_RU.md`.
 
 The disconnected `domain/agents` V8 graph runtime and `application/project_brain`
 chat/LLM chain were removed after a caller audit. The UI's `use_orchestrator`
