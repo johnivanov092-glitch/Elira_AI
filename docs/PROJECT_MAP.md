@@ -29,7 +29,14 @@ move Elira's backend state or tools into that repository.
 | Workflow HTTP/API | `backend/app/api/routes/workflow_routes.py` |
 | Durable event SSE | `backend/app/api/routes/event_bus_routes.py` |
 | Multi-agent HTTP/SSE | `backend/app/api/routes/advanced_routes.py` |
-| Agent loop | `backend/app/application/code_agent/agent_loop.py` |
+| Agent coordinator, public stream/sync and journal adapters | `backend/app/application/code_agent/agent_loop.py` |
+| Live-run control, upstream cancel and Workflow rendezvous | `backend/app/application/code_agent/run_control.py` |
+| One model exchange and heartbeat | `backend/app/application/code_agent/model_turn.py` |
+| Run-local tool activation and schema visibility | `backend/app/application/code_agent/runtime_activation.py` |
+| Turn messages, skill/input context and pinned packing | `backend/app/application/code_agent/turn_context.py` |
+| Selected tool call and Workflow execution branches | `backend/app/application/code_agent/tool_execution.py` |
+| Ordered evidence/outcome/recovery/criteria accounting | `backend/app/application/code_agent/run_observations.py` |
+| Final-answer acceptance and correction state | `backend/app/application/code_agent/answer_acceptance.py` |
 | Context rollover | `backend/app/application/code_agent/delivery_session.py` |
 | Context compaction and pinned runtime blocks | `backend/app/application/context/compaction.py` |
 | Durable run state and Resume | `backend/app/application/code_agent/run_journal.py` |
@@ -72,6 +79,9 @@ move Elira's backend state or tools into that repository.
 | SQLite helper | `backend/app/infrastructure/db/connection.py` |
 
 Do not create another loop, executor, registry, provider stack or DB facade.
+The seven code-agent modules are leaves of the existing coordinator. Result
+accounting before a yield and criterion/message updates after it remain distinct
+stages; see `docs/ARCHITECTURE.md` for the Workflow and cancellation boundaries.
 
 The release state machine is `scripts/elira_release.py`. Its Windows service
 adapter is `scripts/foundation_service.py`; `foundation_windows.py` owns Windows

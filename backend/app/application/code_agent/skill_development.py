@@ -13,8 +13,10 @@ import logging
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from typing import Any, Iterator
@@ -165,6 +167,78 @@ def _directory(name: str, candidate_id: str) -> Path:
     return _managed(ROOT / "packages" / _name(name) / candidate_id)
 
 
+def _command(arguments: list[str]) -> str:
+    return subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
+
+
+def _python_environment(
+    directory: Path, *, required: bool = False, validate: bool = True,
+) -> dict[str, Any]:
+    """Discover package-owned paths without importing or executing package code.
+
+    The complete package digest covers this environment too. Python's base
+    standard library remains an OS installation; third-party search paths must
+    stay inside the durable package, never an application or scratch venv.
+    """
+    environment = _managed(directory / ".venv")
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    configuration = environment / "pyvenv.cfg"
+    ready = configuration.is_file() and python.is_file()
+    if required and not ready:
+        raise ValueError("Package Python environment is missing; create its .venv and run skill_check again")
+    if ready and validate:
+        settings = dict(line.split("=", 1) for line in configuration.read_text(encoding="utf-8").splitlines()
+                        if "=" in line)
+        settings = {key.strip().lower(): value.strip().lower() for key, value in settings.items()}
+        if settings.get("include-system-site-packages") != "false":
+            raise ValueError("Package .venv must set include-system-site-packages = false")
+        for path in _files(directory):
+            if not path.is_relative_to(environment) or path.suffix not in {".pth", ".egg-link"}:
+                continue
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                entry = line.strip()
+                # Normal package hooks (e.g. setuptools) are Python code, not
+                # declarative paths. This contract is not a code sandbox.
+                if not entry or entry.startswith(("#", "import ", "import\t")):
+                    continue
+                if not (path.parent / entry).resolve().is_relative_to(directory):
+                    raise ValueError(f"Package environment has an external dependency path: {path.name}")
+    python_argv = [str(python), "-E", "-s"]
+    pip_argv = [*python_argv, "-m", "pip", "--isolated", "--require-virtualenv"]
+    pip_command = ((f'set "PIP_CONFIG_FILE={os.devnull}" && ' if os.name == "nt"
+                    else f"PIP_CONFIG_FILE={shlex.quote(os.devnull)} ") + _command(pip_argv))
+    return {
+        "kind": "python", "status": "ready" if ready else "not_created",
+        "isolation": ("validated" if validate else "legacy_unverified") if ready else "not_created",
+        "directory": str(environment), "python": str(python),
+        "python_argv": python_argv, "pip_argv": pip_argv,
+        "pip_env": {"PIP_CONFIG_FILE": os.devnull},
+        "python_command": _command(python_argv), "pip_command": pip_command,
+        "command_shell": "cmd" if os.name == "nt" else "sh",
+        "create_command": _command([str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
+                                    "-I", "-m", "venv", "--copies", str(environment)]),
+        "guidance": "Use these absolute python/pip commands, never bare python or pip. -E -s ignores "
+                    "PYTHONHOME/PYTHONPATH and user-site packages. Install only in this candidate .venv; "
+                    "do not change application dependencies. MCP command uses python and args starts with -E, -s. "
+                    "Use pip_command (or pip_argv with pip_env) to disable inherited pip configuration. "
+                    "Do not move/copy a venv or depend on .scratch; published environments are immutable."
+                    + (" This legacy environment predates isolation checks; create a new candidate with "
+                       "config.environment='python' to migrate it." if ready and not validate else ""),
+    }
+
+
+def _python_check_environment(environment: dict[str, Any]) -> dict[str, str | None]:
+    """Scope existing shell execution to this version without changing the app."""
+    scripts = str(Path(environment["python"]).parent)
+    return {
+        "PATH": scripts + os.pathsep + os.environ.get("PATH", ""),
+        "VIRTUAL_ENV": environment["directory"], "PYTHONNOUSERSITE": "1",
+        "PYTHONHOME": None, "PYTHONPATH": None,
+        "PIP_TARGET": None, "PIP_PREFIX": None, "PIP_USER": None,
+        "PIP_CONFIG_FILE": os.devnull,
+    }
+
+
 def _files(directory: Path, *, include_dependencies: bool = True) -> list[Path]:
     def walk_error(error: OSError) -> None:
         raise error
@@ -277,7 +351,7 @@ def active_directories() -> dict[str, Path]:
     return result
 
 
-def active_package(name: str) -> dict[str, str] | None:
+def active_package(name: str) -> dict[str, Any] | None:
     entry = _read_json(ROOT / "active.json").get(_name(name))
     if entry is None:
         return None
@@ -329,7 +403,7 @@ def _source_diff(directory: Path, repository: Path, revision: str) -> dict[str, 
 
 def validated_package(
     name: str, candidate_id: str, *, expected: dict[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Bind an active/saved reference to its exact published package receipt."""
     directory, _, metadata = _candidate(name, candidate_id)
     digest = metadata.get("sha256")
@@ -352,6 +426,8 @@ def validated_package(
     return {
         "candidate_id": candidate_id, "package_sha256": digest,
         "revision": revision, "directory": str(directory),
+        "environment": _python_environment(directory, required=metadata.get("environment") == "python",
+                                           validate=metadata.get("environment") == "python"),
     }
 
 
@@ -395,6 +471,9 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
                     "active": _read_json(ROOT / "active.json").get(name),
                     "repository": str(_managed(ROOT / "history" / name)), "integrity": integrity}
         if operation == "skill_create":
+            environment_kind = config.get("environment")
+            if environment_kind not in (None, "python"):
+                raise ValueError("config.environment must be 'python' or omitted")
             candidate_id = uuid.uuid4().hex
             directory = _directory(name, candidate_id)
             recovery = None
@@ -429,8 +508,17 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
                     if (_digest(current, include_dependencies=False) != before
                             or _digest(directory, include_dependencies=False) != before):
                         raise ValueError("Source changed while copying the candidate; retry skill_create")
+                if environment_kind == "python":
+                    from app.application.code_agent.tools._run import tool_run_bash
+
+                    created = tool_run_bash(directory, command=_python_environment(directory)["create_command"])
+                    _check_cancelled()
+                    if created.get("ok") is not True or created.get("exit_code") != 0:
+                        raise ValueError("Package environment creation failed: " + str(created.get("text", ""))[-2000:])
+                environment = _python_environment(directory, required=environment_kind == "python")
                 _write_json(ROOT / "receipts" / f"{candidate_id}.json",
                             {"name": name, "candidate_id": candidate_id, "status": "candidate",
+                              **({"environment": "python"} if environment_kind else {}),
                              **({"source": source} if source else {})})
                 completed = True
             finally:
@@ -439,7 +527,7 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
                     shutil.rmtree(_managed(directory))
             logger.info("skill_candidate_created name=%s candidate=%s", name, candidate_id)
             return {"ok": True, "name": name, "candidate_id": candidate_id,
-                    "directory": str(directory), "status": "candidate",
+                    "directory": str(directory), "status": "candidate", "environment": environment,
                     **({"source": source, "source_diff": recovery["source_diff"],
                         "warning": "Copied modified source into an UNVERIFIED candidate. The previous package "
                                    "was not repaired or activated; recreate dependencies and verify this candidate."}
@@ -451,18 +539,21 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
                         "layout": "Start SKILL.md with --- followed by YAML, then --- and Markdown body. Quote YAML strings containing colon-space, or use a YAML block scalar.",
                         "body": "Applicability, execution instructions, result checks, known limitations. Use the candidate directory returned here for reusable scripts.",
                     },
-                    "next": "Write SKILL.md and scripts with file tools; create candidate-local dependencies; skill_check with config.command."}
+                    "next": "Write SKILL.md/scripts here. For Python use environment.create_command if not_created, "
+                            "then its absolute pip_command/python_command; keep dependencies in this .venv. "
+                            "skill_check with config.command, then skill_publish and skill_load."}
         if operation == "skill_rollback":
             state = _read_json(ROOT / "active.json")
             current = state.get(name) or {}
             previous = current.get("previous")
             if not isinstance(previous, dict):
                 raise ValueError("No previously activated version exists")
-            validated_package(name, previous.get("candidate_id", ""), expected=previous)
+            package = validated_package(name, previous.get("candidate_id", ""), expected=previous)
             state[name] = {**previous, "previous": {key: value for key, value in current.items() if key != "previous"}}
             _write_json(ROOT / "active.json", state, activation=True)
             logger.info("skill_rolled_back name=%s candidate=%s", name, previous["candidate_id"])
-            return {"ok": True, "name": name, "status": "rolled_back", **state[name]}
+            return {"ok": True, "name": name, "status": "rolled_back", **state[name],
+                    "environment": package["environment"]}
         directory, receipt_path, metadata = _candidate(name, candidate_id)
         _ensure_inactive(name, candidate_id)
         if operation == "skill_discard":
@@ -484,11 +575,15 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
             if not isinstance(command, str) or not command.strip():
                 raise ValueError("config.command must run a meaningful package verification")
             task_skills.read_package(name, directory)
+            environment = _python_environment(directory, required=metadata.get("environment") == "python")
             before = _digest(directory)
             # Invalidate an older receipt BEFORE a check which may fail/Stop.
-            metadata.update(status="checking", sha256=None)
+            metadata.update(status="checking", sha256=None,
+                            **({"environment": "python"} if environment["status"] == "ready" else {}))
             _write_json(receipt_path, metadata)
-            check = tool_run_bash(directory, command=command)
+            options = ({"env_overrides": _python_check_environment(environment)}
+                       if environment["status"] == "ready" else {})
+            check = tool_run_bash(directory, command=command, **options)
             after = _digest(directory)
             passed = check.get("ok") is True and check.get("exit_code") == 0 and before == after
             metadata.update(status="verified" if passed else "failed", sha256=after if passed else None,
@@ -497,6 +592,7 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
             _write_json(receipt_path, metadata)
             logger.info("skill_candidate_checked name=%s candidate=%s passed=%s", name, candidate_id, passed)
             return {"ok": passed, "name": name, "candidate_id": candidate_id,
+                    "environment": environment,
                     "status": "completed" if passed else ("cancelled" if check.get("error") == "cancelled" else "failed"),
                     "verification": metadata["check"],
                     "text": check.get("text", ""),
@@ -506,6 +602,7 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
         if operation == "skill_publish":
             if metadata.get("status") != "verified" or _digest(directory) != metadata.get("sha256"):
                 raise ValueError("Verify the current candidate before activation; its files or dependencies changed")
+            environment = _python_environment(directory, required=metadata.get("environment") == "python")
             repository = _managed(ROOT / "history" / name)
             repository.mkdir(parents=True, exist_ok=True)
             if not (repository / ".git").exists():
@@ -562,5 +659,6 @@ def _develop(operation: str, name: str, config: dict[str, Any]) -> dict[str, Any
             _write_json(ROOT / "active.json", state, activation=True)
             logger.info("skill_published name=%s candidate=%s revision=%s", name, candidate_id, revision)
             return {"ok": True, "name": name, "status": "active", "directory": str(directory),
+                    "environment": environment,
                     **state[name], "next": "skill_load to use this version now; MCP still uses mcp_upsert/start."}
         raise ValueError(f"Unsupported skill development operation: {operation}")

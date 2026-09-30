@@ -312,34 +312,44 @@ def token_info(handle: int) -> dict[str, Any]:
             "administrator_enabled": any(g["sid"] == "S-1-5-32-544" and g["attributes"] & 4 for g in groups)}
 
 
-def _validate_user(info: dict[str, Any], *, allowed_sid: str | None = None) -> None:
+def _validate_user(info: dict[str, Any], *, allowed_sid: str | None = None,
+                   token_mode: str = "limited") -> None:
+    if token_mode not in {"limited", "administrator"}:
+        raise ValueError("Unknown application token mode")
+    if (info["session_id"] == 0 or info["ui_access"]
+            or info["sid"] in {"S-1-5-18", "S-1-5-19", "S-1-5-20"}
+            or (allowed_sid is not None and info["sid"] != allowed_sid)):
+        raise PermissionError("An authenticated interactive user token is required")
+    if token_mode == "administrator":
+        if not info["elevated"] or not info["administrator_enabled"] or info["integrity_rid"] != 12288:
+            raise PermissionError("Administrator mode requires the current elevated interactive user; no automatic elevation")
+        return
     dangerous = {"SeDebugPrivilege", "SeTcbPrivilege", "SeImpersonatePrivilege",
                  "SeAssignPrimaryTokenPrivilege", "SeBackupPrivilege", "SeRestorePrivilege",
                  "SeTakeOwnershipPrivilege", "SeLoadDriverPrivilege", "SeCreateTokenPrivilege"}
-    if (info["session_id"] == 0 or info["elevated"] or info["elevation_type"] == 2
-            or info["integrity_rid"] > 8192 or info["administrator_enabled"] or info["ui_access"]
-            or info["sid"] in {"S-1-5-18", "S-1-5-19", "S-1-5-20"}
-            or any(p["name"] in dangerous for p in info["privileges"])
-            or (allowed_sid is not None and info["sid"] != allowed_sid)):
+    if (info["elevated"] or info["elevation_type"] == 2
+            or info["integrity_rid"] > 8192 or info["administrator_enabled"]
+            or any(p["name"] in dangerous for p in info["privileges"])):
         raise PermissionError("An authenticated unelevated interactive user token is required")
 
 
 class UserToken(_Handle):
-    def __init__(self, value: int, *, allowed_sid: str | None = None):
+    def __init__(self, value: int, *, allowed_sid: str | None = None, token_mode: str = "limited"):
         super().__init__(value)
         try:
             self.info = token_info(self.value)
-            _validate_user(self.info, allowed_sid=allowed_sid)
+            _validate_user(self.info, allowed_sid=allowed_sid, token_mode=token_mode)
+            self.token_mode = token_mode
         except BaseException:
             self.close()
             raise
 
 
-def _primary_token(handle: int, *, allowed_sid: str | None = None) -> UserToken:
+def _primary_token(handle: int, *, allowed_sid: str | None = None, token_mode: str = "limited") -> UserToken:
     duplicate = w.HANDLE()
     _check(_a.DuplicateTokenEx(handle, _TOKEN_QUERY | _TOKEN_DUPLICATE | _TOKEN_ASSIGN_PRIMARY | _TOKEN_IMPERSONATE,
                               None, 2, 1, ctypes.byref(duplicate)))
-    return UserToken(duplicate.value, allowed_sid=allowed_sid)
+    return UserToken(duplicate.value, allowed_sid=allowed_sid, token_mode=token_mode)
 
 
 def _restricted_user_token(handle: int, allowed_sid: str) -> UserToken:
@@ -404,13 +414,15 @@ def _user_default_dacl(token: int, sid: str) -> None:
         _k.LocalFree(descriptor)
 
 
-def current_user_token(*, limited: bool = True) -> UserToken:
+def current_user_token(*, limited: bool = True, token_mode: str = "limited") -> UserToken:
     _windows()
     original = w.HANDLE()
     _check(_a.OpenProcessToken(_k.GetCurrentProcess(), _TOKEN_QUERY | _TOKEN_DUPLICATE, ctypes.byref(original)))
     with _Handle(original.value) as owned:
         info = token_info(owned.value)
-        if limited and info["elevated"]:
+        if token_mode not in {"limited", "administrator"}:
+            raise ValueError("Unknown application token mode")
+        if token_mode == "limited" and limited and info["elevated"]:
             try:
                 linked = ctypes.cast(_token_buffer(owned.value, 19), ctypes.POINTER(w.HANDLE)).contents.value
             except OSError as exc:
@@ -421,7 +433,7 @@ def current_user_token(*, limited: bool = True) -> UserToken:
                 result = _primary_token(linked_handle.value, allowed_sid=info["sid"])
                 result.origin = "linked_limited"
                 return result
-        result = _primary_token(owned.value)
+        result = _primary_token(owned.value, token_mode=token_mode)
         result.origin = "current_process"
         return result
 
@@ -455,14 +467,14 @@ def _impersonate(token: UserToken):
         yield
 
 
-def _capture_pipe_token(pipe: int, allowed_sid: str) -> UserToken:
+def _capture_pipe_token(pipe: int, allowed_sid: str, *, token_mode: str = "limited") -> UserToken:
     with _restore_thread_identity():
         _check(_a.ImpersonateNamedPipeClient(pipe))
         thread_token = w.HANDLE()
         _check(_a.OpenThreadToken(_k.GetCurrentThread(), _TOKEN_QUERY | _TOKEN_DUPLICATE,
                                   True, ctypes.byref(thread_token)))
         with _Handle(thread_token.value) as owned:
-            return _primary_token(owned.value, allowed_sid=allowed_sid)
+            return _primary_token(owned.value, allowed_sid=allowed_sid, token_mode=token_mode)
 
 
 def _enable_launch_privileges() -> None:
@@ -498,6 +510,7 @@ class WindowsProcess:
         self.image_path = image_buffer.value
         self.returncode: int | None = None
         self._relay: _LogRelay | None = None
+        self._terminated = False
 
     def poll(self) -> int | None:
         if self.returncode is not None:
@@ -523,13 +536,16 @@ class WindowsProcess:
                 raise subprocess.TimeoutExpired(self.args, timeout)
             if _k.WaitForSingleObject(self._process.value, 100) == _WAIT_OBJECT_0 and self._relay is not None:
                 self._relay.done.wait(0.1)
-        if self._relay is not None:
+        if self._relay is not None and not self._terminated:
             self._relay.check(self.returncode)
         return self.returncode
 
     def terminate(self) -> None:
         if self.poll() is None:
             _check(_k.TerminateJobObject(self._job.value, 1))
+            # Terminating the owned job also kills its runner. It cannot send
+            # an exit receipt; require receipts only for normal command exits.
+            self._terminated = True
 
     kill = terminate
 
@@ -601,7 +617,7 @@ def _open_source_handles(path: str | Path, root: str | Path):
         info = _FILE_INFORMATION()
         _check(_k.GetFileInformationByHandle(file_handle.value, ctypes.byref(info)))
         if _k.GetFileType(file_handle.value) != 1 or info.attributes & (0x400 | 0x10) or info.links != 1:
-            raise ValueError("Source must be one regular non-reparse file without hard-link aliases")
+            raise ValueError(f"Source must be one regular non-reparse file without hard-link aliases: {source}")
         if _final_path(file_handle.value) != os.path.normcase(os.path.normpath(str(source))):
             raise ValueError("Source handle final path differs from its approved path")
         descriptor = msvcrt.open_osfhandle(file_handle.value, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
@@ -637,8 +653,8 @@ class WindowsProcessHost:
     def __init__(self, token: UserToken, *, runner_python: str | None = None,
                  runner_script: str | None = None):
         _windows()
-        _validate_user(token.info)
-        self.token = _primary_token(token.value, allowed_sid=token.info["sid"])
+        _validate_user(token.info, token_mode=token.token_mode)
+        self.token = _primary_token(token.value, allowed_sid=token.info["sid"], token_mode=token.token_mode)
         self.runner_python = str(Path(runner_python or sys.executable).resolve())
         self.runner_script = str(Path(runner_script or __file__).resolve())
 
@@ -688,7 +704,7 @@ class WindowsProcessHost:
                 _check(_a.OpenProcessToken(owned.value, _TOKEN_QUERY, ctypes.byref(token)))
                 with _Handle(token.value) as captured:
                     actual = token_info(captured.value)
-            _validate_user(actual, allowed_sid=self.token.info["sid"])
+            _validate_user(actual, allowed_sid=self.token.info["sid"], token_mode=self.token.token_mode)
             if actual["session_id"] != self.token.info["session_id"]:
                 raise PermissionError("Recovery process belongs to another session")
             if _k.WaitForSingleObject(owned.value, 0) == _WAIT_TIMEOUT:
@@ -774,7 +790,7 @@ class WindowsProcessHost:
                     _check(_a.OpenProcessToken(process.hProcess, _TOKEN_QUERY, ctypes.byref(child_token)))
                     with _Handle(child_token.value) as owned:
                         identity = token_info(owned.value)
-                _validate_user(identity, allowed_sid=self.token.info["sid"])
+                _validate_user(identity, allowed_sid=self.token.info["sid"], token_mode=self.token.token_mode)
                 if identity["session_id"] != self.token.info["session_id"]:
                     raise PermissionError("Child session differs from authenticated user session")
                 security = None
@@ -826,7 +842,7 @@ class WindowsProcessHost:
             name = "\\\\.\\pipe\\EliraFoundation-relay-" + uuid.uuid4().hex
             pipe = _new_pipe(name, _current_server_sid(), self.token.info["sid"], first=True)
             child = self.popen([self.runner_python, "-I", "-S", "-B", self.runner_script,
-                                "--worker", name, str(os.getpid())],
+                                "--worker", name, str(os.getpid()), self.token.token_mode],
                                cwd=Path(self.runner_script).parent, env=self.user_environment())
             _connect_server(pipe.value, threading.Event(), deadline=time.monotonic() + 20)
             hello = _receive(pipe.value, time.monotonic() + 10)
@@ -834,7 +850,7 @@ class WindowsProcessHost:
             _check(_k.GetNamedPipeClientProcessId(pipe.value, ctypes.byref(peer)))
             if peer.value != child.pid or hello != {"ready": True}:
                 raise PermissionError("Log relay peer differs from the owned user runner")
-            with _capture_pipe_token(pipe.value, self.token.info["sid"]) as peer_token:
+            with _capture_pipe_token(pipe.value, self.token.info["sid"], token_mode=self.token.token_mode) as peer_token:
                 if peer_token.info["session_id"] != self.token.info["session_id"]:
                     raise PermissionError("Log relay peer belongs to another session")
             _send(pipe.value, {"args": list(args), "cwd": str(directory), "env": values,
@@ -1150,7 +1166,7 @@ def pipe_request(pipe_name: str, request: dict, *, service_name: str,
 
 def serve_pipe(pipe_name: str, *, service_name: str, allowed_user_sid: str,
                handler: Callable[[dict, WindowsProcessHost], dict], stop_event: threading.Event,
-               diagnostic_path: Path | None = None) -> None:
+               diagnostic_path: Path | None = None, token_mode: str = "limited") -> None:
     _windows()
     service_sid = account_sid("NT SERVICE\\" + service_name)
     listener = _new_pipe(pipe_name, service_sid, allowed_user_sid, first=True)
@@ -1182,7 +1198,7 @@ def serve_pipe(pipe_name: str, *, service_name: str, allowed_user_sid: str,
             with accepted:
                 try:
                     request = _receive(accepted.value, time.monotonic() + 30)
-                    with _capture_pipe_token(accepted.value, allowed_user_sid) as token:
+                    with _capture_pipe_token(accepted.value, allowed_user_sid, token_mode=token_mode) as token:
                         with WindowsProcessHost(token) as host:
                             peer_pid = w.ULONG()
                             _check(_k.GetNamedPipeClientProcessId(accepted.value, ctypes.byref(peer_pid)))
@@ -1258,11 +1274,11 @@ def serve_service(service_name: str, callback: Callable[[threading.Event], None]
         raise RuntimeError("Foundation service failed") from errors[0]
 
 
-def _relay_worker(name: str, expected_server_pid: int) -> int:
-    """Protected code, running entirely as the unelevated command owner."""
+def _relay_worker(name: str, expected_server_pid: int, token_mode: str = "limited") -> int:
+    """Protected code, running as the installation's authenticated command owner."""
     if expected_server_pid <= 0:
         raise ValueError("Expected relay server PID is required")
-    with current_user_token(limited=False):
+    with current_user_token(limited=False, token_mode=token_mode):
         pass  # Validate the actual process identity before receiving a command.
     deadline = time.monotonic() + 20
     while True:
@@ -1398,7 +1414,7 @@ def _proof_service(service_name: str, allowed_sid: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--proof-service":
         _proof_service(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) == 4 and sys.argv[1] == "--worker":
-        raise SystemExit(_relay_worker(sys.argv[2], int(sys.argv[3])))
+    elif len(sys.argv) in {4, 5} and sys.argv[1] == "--worker":
+        raise SystemExit(_relay_worker(sys.argv[2], int(sys.argv[3]), sys.argv[4] if len(sys.argv) == 5 else "limited"))
     else:
         raise SystemExit("Expected --proof-service SERVICE_NAME ALLOWED_USER_SID or --worker PIPE_NAME SERVER_PID")

@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,182 @@ from app.application.code_agent import skill_development as development, task_sk
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.tools import _shell
 from app.application.code_agent.tools._runtime_control import tool_runtime_control
+
+
+def test_python_environment_is_durable_isolated_and_pinned_through_rollback(tmp_path, monkeypatch):
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    external = tmp_path / "application-site"
+    external.mkdir()
+    (external / "app_only_dependency.py").write_text("VALUE = 42\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(external))
+    # Neither bootstrap nor execution may bind to an inherited application home.
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "nonexistent-python-home"))
+    for setting in ("PIP_TARGET", "PIP_PREFIX", "PIP_USER"):
+        monkeypatch.setenv(setting, str(external))
+    inherited_config = tmp_path / "application-pip.ini"
+    inherited_config.write_text("[global]\ntarget = " + str(external) + "\n", encoding="utf-8")
+    monkeypatch.setenv("PIP_CONFIG_FILE", str(inherited_config))
+    name = "isolated-python"
+
+    def create_and_publish():
+        created = tool_runtime_control(tmp_path, operation="skill_create", name=name,
+                                       config={"environment": "python"})
+        assert created["ok"], created
+        result = created["result"]
+        directory = Path(result["directory"])
+        environment = result["environment"]
+        assert environment["status"] == "ready"
+        assert Path(environment["python"]).is_file()
+        assert Path(environment["directory"]).parent == directory
+        assert environment["python_argv"] == [environment["python"], "-E", "-s"]
+        assert environment["pip_argv"] == [*environment["python_argv"], "-m", "pip", "--isolated", "--require-virtualenv"]
+        from app.application.code_agent.tools._run import tool_run_bash
+        pip = tool_run_bash(directory, command=environment["pip_command"] + " --version")
+        assert pip["ok"] and str(directory) in pip["text"], pip
+        pip_config = tool_run_bash(directory, command=environment["pip_command"] + " config list")
+        assert pip_config["ok"] and "global.target" not in pip_config["text"], pip_config
+        assert os.environ["PIP_CONFIG_FILE"] == str(inherited_config)
+        (directory / "SKILL.md").write_text(
+            "---\nname: isolated-python\ndescription: Run a package-local Python capability.\n---\n"
+            "Run check.py with the environment returned by skill_load.\n", encoding="utf-8", newline="\n")
+        (directory / "helper.py").write_text("VALUE = 42\n", encoding="utf-8")
+        (directory / "check.py").write_text(
+            "import importlib.util, os, pathlib, sys\nfrom helper import VALUE\n"
+            "assert VALUE == 42\nassert sys.prefix != sys.base_prefix\n"
+            "assert pathlib.Path(sys.prefix).resolve() == pathlib.Path(__file__).parent.joinpath('.venv').resolve()\n"
+            "assert importlib.util.find_spec('app_only_dependency') is None\n"
+            "assert all(key not in os.environ for key in ('PYTHONHOME', 'PYTHONPATH', 'PIP_TARGET', 'PIP_PREFIX', 'PIP_USER'))\n"
+            "assert os.environ['VIRTUAL_ENV'] == sys.prefix\nassert sys.flags.no_user_site\n"
+            "assert os.environ['PIP_CONFIG_FILE'] == os.devnull\n"
+            "print('isolated package check passed')\n", encoding="utf-8", newline="\n")
+        checked = tool_runtime_control(tmp_path, operation="skill_check", name=name, config={
+            "candidate_id": result["candidate_id"], "command": "python check.py && python -m pip --version"})
+        assert checked["ok"], checked
+        assert os.environ["PYTHONPATH"] == str(external)
+        published = tool_runtime_control(tmp_path, operation="skill_publish", name=name,
+                                         config={"candidate_id": result["candidate_id"]})
+        assert published["ok"], published
+        assert published["result"]["environment"] == environment
+        return result, task_skills.skill_control("skill_load", name)["skill"]
+
+    first, snapshot = create_and_publish()
+    context = task_skills.SkillContext()
+    context.activate(snapshot)
+    assert context.snapshots()[0]["environment"] == first["environment"]
+    assert json.dumps(first["environment"]["python"])[1:-1] in context.context()
+    journal = RunJournal("isolated-package-pin")
+    journal.start({"user_message": "Use isolated Python"}, {})
+    try:
+        journal.append_event({"type": "skills_changed", "active_skills": context.snapshots()})
+    finally:
+        journal.release()
+    second, _ = create_and_publish()
+    assert second["environment"]["python"] != first["environment"]["python"]
+    resumed = task_skills.SkillContext()
+    resumed.restore("isolated-package-pin")
+    assert resumed.snapshots()[0]["environment"] == first["environment"]
+    status = tool_runtime_control(tmp_path, operation="skill_status", name=name)["result"]
+    assert status["integrity"]["environment"] == second["environment"]
+    rollback = tool_runtime_control(tmp_path, operation="skill_rollback", name=name)
+    assert rollback["ok"], rollback
+    assert rollback["result"]["environment"] == first["environment"]
+    assert task_skills.skill_control("skill_load", name)["skill"]["environment"] == first["environment"]
+
+
+def test_python_environment_rejects_external_search_paths_and_system_packages(tmp_path, monkeypatch):
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
+    created = tool_runtime_control(tmp_path, operation="skill_create", name="isolated-check",
+                                   config={"environment": "python"})["result"]
+    directory = Path(created["directory"])
+    (directory / "SKILL.md").write_text(
+        "---\nname: isolated-check\ndescription: Check isolated dependencies.\n---\nRun checks.\n",
+        encoding="utf-8", newline="\n")
+    environment = created["environment"]
+    config = {"candidate_id": created["candidate_id"],
+              "command": environment["python_command"] + ' -c "assert 2 + 2 == 4"'}
+    cfg = Path(environment["directory"]) / "pyvenv.cfg"
+    original = cfg.read_text(encoding="utf-8")
+    cfg.write_text(original.replace("include-system-site-packages = false", "include-system-site-packages = true"),
+                   encoding="utf-8", newline="\n")
+    rejected = tool_runtime_control(tmp_path, operation="skill_check", name="isolated-check", config=config)
+    assert not rejected["ok"] and "system-site-packages" in rejected["text"]
+    cfg.write_text(original, encoding="utf-8", newline="\n")
+    site = next(Path(environment["directory"]).rglob("site-packages"))
+    pth = site / "external.pth"
+    pth.write_text(str(tmp_path / "scratch-environment") + "\n", encoding="utf-8")
+    rejected = tool_runtime_control(tmp_path, operation="skill_check", name="isolated-check", config=config)
+    assert not rejected["ok"] and "external dependency" in rejected["text"]
+    pth.write_text(str(directory) + "\n", encoding="utf-8")
+    assert tool_runtime_control(tmp_path, operation="skill_check", name="isolated-check", config=config)["ok"]
+    assert tool_runtime_control(tmp_path, operation="skill_publish", name="isolated-check", config=config)["ok"]
+    pth.write_text(str(tmp_path / "scratch-environment") + "\n", encoding="utf-8")
+    assert not task_skills.skill_control("skill_load", "isolated-check")["ok"]
+
+
+def test_python_environment_bootstrap_failure_leaves_no_candidate_or_receipt(tmp_path, monkeypatch):
+    from app.application.code_agent.tools import _run
+
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
+
+    def fail_bootstrap(directory, *, command):
+        assert " -I -m venv --copies " in command
+        (directory / ".venv").mkdir()
+        (directory / ".venv/partial.txt").write_text("incomplete", encoding="utf-8")
+        return {"ok": False, "exit_code": 1, "text": "Unable to bootstrap bundled pip"}
+
+    monkeypatch.setattr(_run, "tool_run_bash", fail_bootstrap)
+    result = tool_runtime_control(tmp_path, operation="skill_create", name="failed-environment",
+                                  config={"environment": "python"})
+    assert not result["ok"] and "Unable to bootstrap bundled pip" in result["text"]
+    assert not list((development.ROOT / "packages/failed-environment").iterdir())
+    assert not (development.ROOT / "receipts").exists()
+
+
+def test_legacy_published_environment_can_load_and_create_isolated_successor(tmp_path, monkeypatch):
+    monkeypatch.setattr(development, "ROOT", tmp_path / "development")
+    monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "installed")
+    name = "legacy-python"
+    created = tool_runtime_control(tmp_path, operation="skill_create", name=name,
+                                   config={"environment": "python"})["result"]
+    directory = Path(created["directory"])
+    (directory / "SKILL.md").write_text(
+        "---\nname: legacy-python\ndescription: Legacy package migration.\n---\nRun the saved checker.\n",
+        encoding="utf-8", newline="\n")
+    config = {"candidate_id": created["candidate_id"], "command": 'python -c "assert 2 + 2 == 4"'}
+    assert tool_runtime_control(tmp_path, operation="skill_check", name=name, config=config)["ok"]
+    assert tool_runtime_control(tmp_path, operation="skill_publish", name=name, config=config)["ok"]
+    # Model the exact old receipt contract, before environment policy existed.
+    cfg = directory / ".venv/pyvenv.cfg"
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace(
+        "include-system-site-packages = false", "include-system-site-packages = true"),
+        encoding="utf-8", newline="\n")
+    site = next((directory / ".venv").rglob("site-packages"))
+    (site / "legacy.pth").write_text(str(tmp_path / "legacy-dependencies") + "\n", encoding="utf-8")
+    legacy_digest = development._digest(directory)
+    receipt_path = development.ROOT / "receipts" / f"{created['candidate_id']}.json"
+    receipt = development._read_json(receipt_path)
+    receipt.pop("environment")
+    receipt["sha256"] = legacy_digest
+    development._write_json(receipt_path, receipt)
+    state = development._read_json(development.ROOT / "active.json")
+    state[name]["sha256"] = legacy_digest
+    development._write_json(development.ROOT / "active.json", state)
+    receipt_before = receipt_path.read_bytes()
+
+    loaded = task_skills.skill_control("skill_load", name)
+    assert loaded["ok"], loaded
+    assert loaded["skill"]["environment"]["isolation"] == "legacy_unverified"
+    successor = tool_runtime_control(tmp_path, operation="skill_create", name=name,
+                                     config={"environment": "python"})
+    assert successor["ok"], successor
+    assert successor["result"]["environment"]["isolation"] == "validated"
+    assert successor["result"]["environment"]["python"] != created["environment"]["python"]
+    assert receipt_path.read_bytes() == receipt_before and development._digest(directory) == legacy_digest
+    assert development._read_json(development.ROOT / "active.json") == state
 
 
 def test_failed_skill_check_preserves_actionable_checker_diagnostics(tmp_path, monkeypatch):

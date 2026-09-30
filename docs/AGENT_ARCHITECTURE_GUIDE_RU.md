@@ -63,7 +63,7 @@ Transcript + Workflow request card
 | API client | SSE code-agent и Workflow event stream | `frontend/src/api/codeAgent.ts`, `frontend/src/api/workflows.ts` |
 | FastAPI routes | Принимают HTTP, создают stream/run, resume/cancel | `backend/app/api/routes/` |
 | Delivery session | Продолжает тот же run после переполнения контекста | `application/code_agent/delivery_session.py` |
-| Agent core | Диалог с LLM, tool calls, journal, context, финальный ответ | `application/code_agent/agent_loop.py` |
+| Agent core | Единственный координатор, публичные stream/sync и journal adapters | `application/code_agent/agent_loop.py` |
 | Planning | Валидированный структурный план для сложной задачи | `application/code_agent/planning.py` |
 | Workflow | Durable run, step, request, resume, cancel | `application/workflows/` |
 | ToolExecutor | Единственная точка Workflow-разрешения и запуска tool | `application/agent_kernel/executor.py` |
@@ -78,6 +78,32 @@ Transcript + Workflow request card
 | LLM client | OpenAI-compatible HTTP, reasoning kwargs, prompt cache | `infrastructure/llm/openai_compatible.py` |
 | Vault | Переносимые секреты AES-256-GCM | `infrastructure/secrets/vault.py` |
 | Stores | SQLite/JSON/filesystem persistence | `application/*/store.py`, `infrastructure/*/store.py` |
+
+### 2.1. Внутренние владельцы одного запуска
+
+Координатор использует семь модулей в `application/code_agent/`:
+
+| Модуль | Что хранит или выполняет |
+|---|---|
+| `run_control.py` | Живую регистрацию run, Stop, закрытие upstream и ожидание Workflow response |
+| `model_turn.py` | Один обмен с моделью, reasoning/content и heartbeat |
+| `runtime_activation.py` | Видимость групп и MCP/LSP/SSH/IT Ops в текущем run |
+| `turn_context.py` | Messages, skills, уточнения пользователя, pinned blocks и подготовку контекста |
+| `tool_execution.py` | Один выбранный tool call через прежний executor и ветки Workflow |
+| `run_observations.py` | Прежние evidence, TaskOutcome, CommandProgress и CriteriaTracker — по одному экземпляру |
+| `answer_acceptance.py` | Упорядоченные проверки ответа и состояние одноразовых корректировок |
+
+Эти модули не импортируют `agent_loop` и не создают отдельный runtime, provider
+или DB. Следующий ход модели выбирает координатор; journal, planning, compactor
+и права исполнения остаются у прежних владельцев. Публичные `stream_code_agent`
+и `run_code_agent` сохраняются в `agent_loop.py`.
+
+После canonical tool result обновляются evidence, версия входов, outcome,
+recovery и инвалидирование критериев, затем публикуются события результата.
+Поздний criterion verdict и добавление tool message выполняются после yield:
+закрытие stream на этой границе не должно выполнять позднюю стадию. Binding
+`result_verify` захватывается до dispatch и заново после ожидания approval.
+Три epoch-счётчика и формат старых журналов сохраняют прежние значения.
 
 ## 3. Обычный запуск — по шагам
 
@@ -409,6 +435,13 @@ Stop
   ├─ после ответа cancel endpoint закрывает UI SSE reader
   └─ убивает зарегистрированное дерево shell-процесса
 ```
+
+`run_control` пытается выполнить все cleanup stages даже при ошибке одного из
+них; неполная очистка возвращает ошибку вместо успешного подтверждения Stop.
+Session Stop между delivery slices остаётся у `delivery_session`. При совпадении
+Workflow response и Stop ветка `ask_user` сначала сохраняет принятый ответ как
+`workflow_input`, затем сообщает отмену; approval и остальные ветки сохраняют
+свой приоритет отмены. Ожидание ответа пользователя не получает новый deadline.
 
 Нет:
 
@@ -867,8 +900,8 @@ evidence и audit events разные lifecycle и recovery semantics.
 | Хочу изменить | Менять здесь |
 |---|---|
 | Permission modes | `agent_kernel/impact_policy.py`, `agent_kernel/executor.py`, `Composer.tsx` |
-| Stop/cancel | `agent_loop.py`, `delivery_session.py`, `code_agent_routes.py`, `_shell.py` |
-| Reasoning chip | `Composer.tsx`, `agent_loop.py` |
+| Stop/cancel | `run_control.py`, `delivery_session.py`, `code_agent_routes.py`, `_shell.py` |
+| Reasoning chip | `Composer.tsx`, `agent_loop.py`, `model_turn.py` |
 | LLM payload/cache | `infrastructure/llm/openai_compatible.py` |
 | Новый built-in tool | `capabilities.py` + существующие `tool_schemas.py`/`_dispatch.py`, без второго registry |
 | Новый provider | `application/tool_providers/`, зарегистрировать в runtime registry |

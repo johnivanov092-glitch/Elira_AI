@@ -21,7 +21,9 @@ import time
 # administrator-installed host, not a directory supplied by an IPC request.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from elira_release import ReleaseLayout, ReleaseManager, _lock, _read_json, _write_json
+from elira_release import (ReleaseLayout, ReleaseManager, _lock, _read_json, _write_json,
+                           _begin_progress, _advance_progress, read_release_progress)
+from elira_release import _progress_metadata, saved_release_action
 from foundation_storage import FoundationStorage
 from foundation_windows import serve_pipe, serve_service
 
@@ -29,7 +31,7 @@ from foundation_windows import serve_pipe, serve_service
 LOG = logging.getLogger("elira.foundation")
 _REQUEST_ID = re.compile(r"[a-z0-9-]{16,64}")
 _RELEASE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
-_MUTATIONS = {"prepare", "verify", "request", "rollback", "open", "close", "register"}
+_MUTATIONS = {"prepare", "verify", "request", "confirm", "rollback", "open", "close", "register"}
 
 
 def _session_key(host) -> tuple:
@@ -59,6 +61,17 @@ def validate_request(value: dict) -> dict:
         fields.add("operation_id")
         if not isinstance(value.get("operation_id"), str) or not _REQUEST_ID.fullmatch(value["operation_id"]):
             raise ValueError("Invalid operation_id")
+    if operation == "confirm":
+        fields.add("confirmation_id")
+        if not isinstance(value.get("confirmation_id"), str) or not re.fullmatch(r"[a-f0-9]{32}", value["confirmation_id"]):
+            raise ValueError("Invalid confirmation_id")
+    if operation == "rollback" and "expected_active" in value:
+        fields.update({"expected_active", "expected_previous", "confirm"})
+        if (value.get("confirm") is not True
+                or any(not isinstance(value.get(key), str) or not _RELEASE_ID.fullmatch(value[key])
+                       or value[key] in {".", ".."} for key in ("expected_active", "expected_previous"))
+                or value["expected_active"] == value["expected_previous"]):
+            raise ValueError("Invalid confirmed rollback selection")
     if set(value) != fields:
         raise ValueError("Unexpected or missing Foundation request fields")
     return dict(value)
@@ -66,6 +79,8 @@ def validate_request(value: dict) -> dict:
 
 class Foundation:
     def __init__(self, config: dict):
+        if config.get("application_token_mode", "limited") not in {"limited", "administrator"}:
+            raise ValueError("Invalid protected application token mode")
         self.config = config
         self.store = Path(config["store"])
         self.worker_root = Path(config["platform"]) / ".runtime" / "foundation-work"
@@ -94,7 +109,17 @@ class Foundation:
         operation = request["operation"]
         if operation == "status":
             with self.lock:
-                return dict(self.snapshot)
+                snapshot = dict(self.snapshot)
+            # The pipe thread remains responsive while the owner verifies a
+            # candidate. Read its atomic events rather than its pre-operation cache.
+            state = _read_json(self.store / "state.json", {})
+            snapshot.update({key: state.get(key) for key in (
+                "active", "previous", "pending", "confirmation", "last_confirmation", "error")})
+            transition = state.get("transition")
+            snapshot["transition"] = transition.get("phase") if isinstance(transition, dict) else None
+            snapshot["last_error"] = self.last_error or state.get("error")
+            snapshot["progress"] = read_release_progress(self.store)
+            return snapshot
         if operation == "operation_status":
             return _read_json(self.operations / (request["operation_id"] + ".json"))
         operation_id = request["request_id"]
@@ -178,20 +203,30 @@ class Foundation:
         _write_json(path, record)
         with self.lock:
             self.snapshot.update(operation_id=request["request_id"], operation=request["operation"])
+        previous_progress = _progress_metadata(self.store).get("operation_id")
+        manager_operation_started = False
         try:
             self._attach(host)
             manager = self.manager
             operation = request["operation"]
             if operation in {"prepare", "verify", "request"}:
+                manager_operation_started = True
                 result = getattr(manager, operation)(request["release_id"])
                 if operation == "request":
                     result = {"state": result, "deployed": result.get("active") == request["release_id"],
-                              "handoff": "Finish the current run. Foundation applies pending releases after idle."}
+                              "handoff": "Await explicit user confirmation of this proposal before installation."}
+            elif operation == "confirm":
+                result = manager.confirm(request["confirmation_id"])
             elif operation == "rollback":
                 previous = manager.state().get("previous")
                 if not previous:
                     raise ValueError("No previous verified release")
-                result = manager.request(previous)
+                manager_operation_started = True
+                result = manager.request(request.get("expected_previous", previous), operation="rollback",
+                                         expected_active=request.get("expected_active"),
+                                         expected_previous=request.get("expected_previous"))
+                if request.get("confirm"):
+                    result = manager.confirm(result["confirmation"]["request_id"])
             elif operation in {"open", "register"}:
                 if operation == "open":
                     self._set_desired(True)
@@ -212,6 +247,11 @@ class Foundation:
         except Exception as exc:
             LOG.exception("Foundation operation %s failed", request["operation"])
             record.update(status="failed", error=str(exc)[:2000])
+            if (request["operation"] in {"prepare", "verify", "request", "rollback"}
+                    and not manager_operation_started
+                    and _progress_metadata(self.store).get("operation_id") == previous_progress):
+                progress_id = _begin_progress(self.store, request["operation"], request.get("release_id"), "failed")
+                _advance_progress(self.store, progress_id, "failed", error=str(exc))
         finally:
             record["finished_at"] = time.time()
             _write_json(path, record)
@@ -225,12 +265,17 @@ class Foundation:
         snapshot = {"foundation": "running", "application": "running" if running else
                     ("awaiting_user_session" if manager is None else "stopped"),
                     "running": running, "desired_running": self.desired,
+                    "application_token_mode": self.config.get("application_token_mode", "limited"),
                     "active": state.get("active"), "previous": state.get("previous"),
+                    "saved_release_action": saved_release_action(state),
+                    "confirmation": state.get("confirmation"),
+                    "last_confirmation": state.get("last_confirmation"),
                     "pending": state.get("pending"), "transition": state.get("transition", {}).get("phase")
                     if isinstance(state.get("transition"), dict) else None,
                     "backend_pid": backend.pid if running else None,
                     "ui_pid": ui.pid if ui is not None and ui.poll() is None else None,
-                    "last_error": self.last_error}
+                    "last_error": self.last_error or state.get("error"), "error": state.get("error"),
+                    "progress": read_release_progress(self.store)}
         with self.lock:
             self.snapshot = snapshot
 
@@ -251,9 +296,22 @@ class Foundation:
             state = manager.state()
             if state.get("active"):
                 manager._launch_active(state["active"])
+                self.last_error = None
             elif not state.get("pending"):
                 raise RuntimeError("No published verified release is selected")
-        manager.apply_pending()
+        if manager.apply_pending():
+            progress = _progress_metadata(self.store)
+            state = manager.state()
+            if (progress.get("operation") == "rollback" and progress.get("phase") == "completed"
+                    and saved_release_action(state) == "update"
+                    and state.get("previous") and not state.get("pending") and not state.get("confirmation")
+                    and not state.get("transition")):
+                try:
+                    # Older applications already show installation proposals.
+                    # Offer the preserved version there; never approve it.
+                    manager.request(state["previous"])
+                except Exception:
+                    LOG.exception("Saved-version proposal could not be created; admitted application remains running")
 
     def advance_lifecycle(self) -> None:
         """One service iteration; also exercised by the installed Windows proof."""
@@ -262,7 +320,13 @@ class Foundation:
         except Exception as exc:
             LOG.exception("Application lifecycle failed; Foundation remains available")
             self.last_error = str(exc)[:2000]
-            self._stop_application()
+            progress = _progress_metadata(self.store)
+            if progress.get("phase") in {"preparing", "checking", "switching", "rolling_back"}:
+                _advance_progress(self.store, progress["operation_id"], "failed", error=self.last_error)
+            if self._stop_application():
+                # Reconcile a persisted admission transaction before restarting;
+                # do not leave a healthy retry stuck in an old transition.
+                self.recovered = False
             now = time.monotonic()
             while self.restarts and now - self.restarts[0] > 300:
                 self.restarts.popleft()
@@ -278,6 +342,7 @@ class Foundation:
                 "pipe_name": "\\\\.\\pipe\\" + self.config["pipe_name"], "service_name": self.config["service_name"],
                 "allowed_user_sid": self.config["user_sid"], "handler": self.dispatch,
                 "stop_event": stop_event,
+                "token_mode": self.config.get("application_token_mode", "limited"),
             }, name="foundation-pipe", daemon=True)
             pipe.start()
             try:

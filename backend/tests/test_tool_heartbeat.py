@@ -18,12 +18,12 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.code_agent import agent_loop  # noqa: E402
+from app.application.code_agent import agent_loop, tool_execution  # noqa: E402
 
 
 class ToolHeartbeatTest(unittest.TestCase):
     def test_slow_tool_emits_heartbeats_then_result(self):
-        with patch.object(agent_loop, "_LLM_HEARTBEAT_EVERY", 0.05):
+        with patch.object(tool_execution, "_LLM_HEARTBEAT_EVERY", 0.05):
             evs = list(agent_loop._exec_with_heartbeat(
                 lambda: (time.sleep(0.3), "RESULT")[1], step=7))
         heartbeats = [e for e in evs if e.get("type") == "heartbeat"]

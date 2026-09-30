@@ -1,4 +1,4 @@
-"""Run-local command observations; recovery advice, never an execution gate.
+"""Run-local command observations and bounded recovery in the existing loop.
 
 The agent loop owns the input/code epoch and persists ``snapshot()`` in its
 existing journal. Process IDs identify attempts only: they never establish
@@ -40,6 +40,8 @@ class CommandProgress:
         self._results: dict[str, dict[str, Any]] = {}
         self._attempts: dict[str, dict[str, Any]] = {}
         self._notice: dict[str, str] = {}
+        self._revision = 0
+        self._diagnostics: dict[str, str] = {}
 
     @classmethod
     def from_snapshot(cls, value: Any) -> "CommandProgress":
@@ -50,6 +52,12 @@ class CommandProgress:
         if type(epoch) not in (str, int, type(None)):
             return tracker
         tracker._epoch = epoch
+        revision = value.get("revision", 0)
+        tracker._revision = revision if type(revision) is int and revision >= 0 else 0
+        diagnostics = value.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            tracker._diagnostics = {key: result for key, result in diagnostics.items()
+                                    if _valid_digest(key) and _valid_digest(result)}
         results = value.get("results")
         for key, row in results.items() if isinstance(results, dict) else ():
             if (_valid_digest(key) and isinstance(row, dict)
@@ -59,6 +67,9 @@ class CommandProgress:
                 tracker._results[key] = {
                     "result": row["result"], "count": row["count"], "notified": row["notified"],
                 }
+                for field in ("checked_revision", "rechecks", "refusals"):
+                    number = row.get(field, 0)
+                    tracker._results[key][field] = number if type(number) is int and number >= 0 else 0
         attempts = value.get("attempts")
         for key, row in attempts.items() if isinstance(attempts, dict) else ():
             if (_valid_digest(key) and isinstance(row, dict)
@@ -80,11 +91,70 @@ class CommandProgress:
             "results": {key: dict(value) for key, value in self._results.items()},
             "attempts": {key: dict(value) for key, value in self._attempts.items()},
             "notice": dict(self._notice),
+            "revision": self._revision,
+            "diagnostics": dict(self._diagnostics),
         }
 
     def context(self) -> str:
         """Active advice to pin across Resume until its evidence changes."""
         return self._notice.get("text", "")
+
+    def _sync_epoch(self, epoch: str | int) -> None:
+        if type(epoch) not in (str, int):
+            raise ValueError("Command progress epoch must identify the code/input version")
+        if self._epoch != epoch:
+            self._epoch = epoch
+            self._results.clear()
+            self._notice.clear()
+            self._diagnostics.clear()
+            self._revision = 0
+
+    def before_dispatch(
+        self, tool_name: str, arguments: dict[str, Any], *, cwd: str, epoch: str | int = 0,
+    ) -> dict[str, Any] | None:
+        """Stop another unchanged execution, while permitting distinct diagnosis.
+
+        This is a recovery boundary, not a permission check or a business-result
+        verifier. Logs/status of existing jobs remain available without limits.
+        A newly observed diagnostic authorizes one probe of external state; two
+        unchanged probes exhaust recovery for this exact command/input version.
+        """
+        self._sync_epoch(epoch)
+        if tool_name not in {"run_bash", "run_server", "sandbox_run"}:
+            return None
+        if tool_name == "run_server" and arguments.get("action", "start") != "start":
+            return None
+        command = arguments.get("code" if tool_name == "sandbox_run" else "command")
+        if not isinstance(command, str) or not command or not cwd:
+            return None
+        command_hash = command_digest(command if tool_name == "sandbox_run" else command.strip())
+        key = _digest({"tool": tool_name, "command": command_hash, "cwd": cwd})
+        row = self._results.get(key)
+        if row is None or row["count"] < 3:
+            return None
+        if row["rechecks"] < 2 and self._revision > row["checked_revision"]:
+            row["checked_revision"] = self._revision
+            row["rechecks"] += 1
+            row["refusals"] = 0
+            return None
+        row["refusals"] += 1
+        status = "blocked" if row["rechecks"] >= 2 or row["refusals"] >= 2 else "recovery_required"
+        text = (
+            f"[ВОССТАНОВЛЕНИЕ ХОДА ЗАДАЧИ] Повтор {tool_name} не исполнен: "
+            f"{row['count']} отдельных запуска дали одинаковый наблюдаемый результат "
+            "в том же каталоге и версии входов/кода. Корректность бизнес-результата не оценивалась. "
+            "Сначала выполни другую диагностическую проверку: прочитай входы, проверь конкретный "
+            "артефакт или внешнее состояние. Новый наблюдаемый результат разрешает одну контрольную "
+            "попытку. Измени способ решения, если контрольная попытка снова ничего не изменила. "
+            "Для работающей фоновой задачи используй run_server(action='logs') без нового запуска."
+        )
+        if status == "blocked":
+            text += " Повторная стратегия исчерпана; задача приостановлена и доступна для Resume с новыми данными или другим способом."
+        self._notice = {"key": key, "result": row["result"], "text": text}
+        return {"status": status, "reason": "repeated_command_without_progress",
+                "command_sha256": command_hash, "result_sha256": row["result"],
+                "observed_attempts": row["count"], "rechecks": row["rechecks"],
+                "business_outcome": "not_assessed", "text": text}
 
     def observe(
         self,
@@ -96,12 +166,14 @@ class CommandProgress:
         epoch: str | int = 0,
         cwd: str = "",
     ) -> str | None:
-        if type(epoch) not in (str, int):
-            raise ValueError("Command progress epoch must identify the code/input version")
-        if self._epoch != epoch:
-            self._epoch = epoch
-            self._results.clear()
-            self._notice.clear()
+        self._sync_epoch(epoch)
+        if (execution_status == "ok" and output.get("ok", True)
+                and tool_name in {"read_file", "grep", "glob", "project_map", "web_fetch", "web_search"}):
+            key = _digest({"tool": tool_name, "arguments": arguments, "cwd": cwd})
+            result = _digest(output)
+            if self._diagnostics.get(key) != result:
+                self._diagnostics[key] = result
+                self._revision += 1
         # The kernel reports an executed nonzero process as "error". Typed
         # terminal evidence below distinguishes it from dispatch/preflight errors.
         if execution_status not in {"ok", "error"} or tool_name not in {"run_server", "run_bash", "sandbox_run"}:
@@ -154,9 +226,14 @@ class CommandProgress:
             self._notice.clear()
         previous = self._results.get(key)
         if previous is None or previous["result"] != result:
-            self._results[key] = {"result": result, "count": 1, "notified": False}
+            self._revision += 1
+            self._results[key] = {"result": result, "count": 1, "notified": False,
+                                  "checked_revision": self._revision, "rechecks": 0, "refusals": 0}
             return None
         previous["count"] += 1
+        if previous["count"] == 3:
+            # Recovery needs evidence observed after repetition was established.
+            previous["checked_revision"] = self._revision
         if previous["notified"]:
             return None
         previous["notified"] = True

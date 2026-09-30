@@ -20,6 +20,7 @@ _admitted = not _draining
 _activate: Callable[[], None] | None = None
 _shutdown: Callable[[], None] | None = None
 CONTROL_PATH = "/api/release/control"
+STATUS_PATH = "/api/release/status"
 
 
 def set_callbacks(*, activate: Callable[[], None] | None = None,
@@ -56,7 +57,8 @@ class ReleaseDrainMiddleware:
     async def __call__(self, scope, receive, send):
         global _active_requests
         if (scope["type"] != "http" or scope.get("method") == "OPTIONS"
-                or scope.get("path") in {"/health", CONTROL_PATH}):
+                or scope.get("path") in {"/health", CONTROL_PATH}
+                or (scope.get("method") == "GET" and scope.get("path") == STATUS_PATH)):
             await self.app(scope, receive, send)
             return
         # This observer cannot create work. Its perpetual SSE response must not

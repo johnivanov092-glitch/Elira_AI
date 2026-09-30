@@ -2,6 +2,7 @@ import { ChevronDown, Folder, PanelRight, Settings } from "lucide-react";
 import { IconButton } from "../ui/Button";
 import { ContextLibraryChip } from "./ContextLibraryChip";
 import { DriftChip } from "./DriftChip";
+import { ReleaseUpdateChip } from "./ReleaseUpdateChip";
 
 type TopbarProps = {
   project: string;
@@ -29,6 +30,7 @@ export function Topbar({
       </button>
 
       <div className="ml-auto flex gap-2">
+        <ReleaseUpdateChip />
         <DriftChip />
         <ContextLibraryChip />
         <IconButton onClick={onSettings} title="Настройки" aria-label="Настройки">

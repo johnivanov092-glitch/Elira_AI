@@ -8,10 +8,17 @@ export function Transcript({ turns, onResume }: { turns: Turn[]; onResume?: (tur
       {turns.map((t) => {
         if (t.kind === "user") {
           return (
-            <div key={t.id} className="my-3.5 flex justify-end">
-              <div className="max-w-[82%] whitespace-pre-wrap rounded-[13px_13px_4px_13px] border border-acl bg-acs px-3.5 py-2.5 text-[13px]">
+            <div key={t.id} className="my-3.5">
+              <div className="ml-auto max-w-[82%] whitespace-pre-wrap rounded-[13px_13px_4px_13px] border border-acl bg-acs px-3.5 py-2.5 text-[13px]">
                 {t.text}
               </div>
+              {t.steering && <p role="status" className="mt-1 text-right text-[11px] text-mut">{
+                t.steering.state === "applied" ? "Уточнение передано в контекст задачи"
+                  : turns.some(turn => turn.kind === "agent" && turn.runId === t.steering!.runId && turn.running)
+                    ? "Доставлено — ожидает следующего шага"
+                    : "Ожидает обработки; сохранено для продолжения задачи"
+              }</p>}
+              {t.steering?.reply && <p className="mt-2 whitespace-pre-wrap text-[13px] text-t2">{t.steering.reply}</p>}
             </div>
           );
         }

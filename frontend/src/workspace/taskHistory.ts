@@ -19,7 +19,7 @@ function compactLabel(value: string): string {
 export function latestUserTaskLabel(turns: Turn[]): string {
   for (let i = turns.length - 1; i >= 0; i -= 1) {
     const turn = turns[i];
-    if (turn.kind === "user" && turn.text.trim()) return compactLabel(turn.text);
+    if (turn.kind === "user" && !turn.steering && turn.text.trim()) return compactLabel(turn.text);
   }
   return "";
 }
@@ -34,7 +34,7 @@ export function taskHistoryItems(
 ): TaskHistoryItem[] {
   const terminal = ledger.filter((entry) => TERMINAL_TYPES.has(entry.type));
   const users = turns
-    .filter((turn): turn is Extract<Turn, { kind: "user" }> => turn.kind === "user")
+    .filter((turn): turn is Extract<Turn, { kind: "user" }> => turn.kind === "user" && !turn.steering)
     .map((turn) => compactLabel(turn.text));
 
   const items = terminal.map((entry, index) => {

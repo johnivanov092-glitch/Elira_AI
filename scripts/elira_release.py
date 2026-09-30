@@ -11,6 +11,7 @@ import ctypes
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -24,16 +25,32 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 LOG = logging.getLogger("elira.release")
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_CONFIRMATION_ID = re.compile(r"[a-f0-9]{32}")
 _CACHE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".vite"}
 _DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+_NATIVE_PROFILE_DIRS = {"webview2"}  # Tauri window profile, never application databases.
 _DEPENDENCY_DIRECTORIES = ("backend/.venv", "node_modules", "frontend/node_modules")
 _OPTIONAL_NATIVE_DIRECTORIES = (".runtime/poppler",)
+_PROGRESS_PHASES = {"idle", "preparing", "prepared", "checking", "verified", "awaiting_confirmation", "waiting", "switching",
+                    "completed", "rolling_back", "failed", "interrupted"}
+_PROGRESS_BUSY = {"preparing", "checking", "switching", "rolling_back"}
+
+
+def saved_release_action(state: dict) -> str:
+    """Publication order survives pair swaps; identifiers are not version numbers."""
+    history = state.get("installed_releases")
+    if (isinstance(history, list) and all(isinstance(item, str) for item in history)
+            and len(history) == len(set(history))
+            and state.get("active") in history and state.get("previous") in history
+            and history.index(state["previous"]) > history.index(state["active"])):
+        return "update"
+    return "rollback"
 
 
 def _process_identity(pid: int) -> str | None:
@@ -88,6 +105,131 @@ def _read_json(path: Path, default: dict | None = None) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"Invalid release record: {path.name}")
     return value
+
+
+def _empty_progress() -> dict:
+    return {"version": 1, "operation_id": None, "release_id": None, "operation": None,
+            "phase": "idle", "updated_at": None, "started_at": None, "step": None,
+            "error": None, "owner_pid": None, "owner_identity": None}
+
+
+def _confirmation_matches(state: dict, release_id: str, sha256: str | None = None) -> bool:
+    accepted = state.get("last_confirmation")
+    return (isinstance(accepted, dict) and isinstance(release_id, str)
+            and bool(_ID.fullmatch(release_id)) and accepted.get("release_id") == release_id
+            and isinstance(accepted.get("request_id"), str)
+            and bool(_CONFIRMATION_ID.fullmatch(accepted["request_id"]))
+            and isinstance(accepted.get("sha256"), str)
+            and bool(re.fullmatch(r"[a-f0-9]{64}", accepted["sha256"]))
+            and (sha256 is None or accepted["sha256"] == sha256))
+
+
+def _progress_metadata(store: Path) -> dict:
+    """Best-effort bookkeeping; observer corruption cannot break the owner loop."""
+    result = read_release_progress(store)
+    if result["phase"] == "unavailable":
+        LOG.warning("Release progress metadata is unreadable; existing lifecycle state remains authoritative")
+        return {}
+    return result
+
+
+def read_release_progress(store: Path) -> dict:
+    """Read durable owner events without constructing a manager or writing files.
+
+    A missing journal is idle. Broken journals are unavailable; dead/reused owner
+    PIDs project busy work to interrupted. Confirmation and pending waits are
+    durable handoffs, not live process claims. Foundation reads inside its owner.
+    """
+    result = _empty_progress()
+    try:
+        value = _read_json(Path(store) / "progress.json", result)
+        if value.get("version") != 1 or value.get("phase") not in _PROGRESS_PHASES:
+            raise ValueError("Invalid release progress record")
+        if value["phase"] != "idle" and (
+                not isinstance(value.get("operation_id"), str) or not re.fullmatch(r"[a-f0-9]{32}", value["operation_id"])
+                or value.get("operation") not in {"prepare", "verify", "request", "confirm", "apply", "rollback", "recover"}
+                or value.get("started_at") is None or value.get("updated_at") is None):
+            raise ValueError("Incomplete release progress identity")
+        for key in ("operation_id", "release_id", "operation", "error", "owner_identity"):
+            if value.get(key) is not None and not isinstance(value[key], str):
+                raise ValueError("Invalid release progress field")
+        for key in ("started_at", "updated_at"):
+            if value.get(key) is not None and (type(value[key]) not in (int, float)
+                                              or not math.isfinite(value[key]) or value[key] < 0):
+                raise ValueError("Invalid release progress timestamp")
+        pid = value.get("owner_pid")
+        if pid is not None and (type(pid) is not int or pid <= 0):
+            raise ValueError("Invalid release progress owner")
+        step = value.get("step")
+        if step is not None and (not isinstance(step, dict) or type(step.get("index")) is not int
+                or type(step.get("total")) is not int or not 1 <= step["index"] <= step["total"]
+                or not isinstance(step.get("label"), str)):
+            raise ValueError("Invalid release progress step")
+        result.update({key: value.get(key) for key in result})
+        if step is not None:
+            result["step"] = {"index": step["index"], "total": step["total"], "label": step["label"][:160]}
+        if result["phase"] in _PROGRESS_BUSY and (
+                pid is None or not result["owner_identity"] or _process_identity(pid) != result["owner_identity"]):
+            result.update(phase="interrupted", error="Владелец обновления завершился; результат этапа не подтверждён.")
+        if result["phase"] == "waiting":
+            state = _read_json(Path(store) / "state.json", {})
+            if (not result["release_id"] or state.get("pending") != result["release_id"]
+                    or not _confirmation_matches(state, result["release_id"])):
+                result.update(phase="interrupted", error="Ожидавший запрос обновления больше не выбран или не подтверждён.")
+        if result["phase"] == "awaiting_confirmation":
+            confirmation = _read_json(Path(store) / "state.json", {}).get("confirmation")
+            if (not isinstance(confirmation, dict) or not result["release_id"]
+                    or confirmation.get("release_id") != result["release_id"]
+                    or confirmation.get("request_id") != result["operation_id"]):
+                result.update(phase="interrupted", error="Предложение установки заменено или больше не выбрано.")
+    except (OSError, ValueError, TypeError) as exc:
+        result.update(phase="unavailable", error=f"Состояние обновления недоступно: {type(exc).__name__}")
+    return result
+
+
+@contextlib.contextmanager
+def _progress_lock(store: Path):
+    deadline = time.monotonic() + 2
+    while True:
+        lock = _lock(store / "progress.lock")
+        try:
+            lock.__enter__()
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def _begin_progress(store: Path, operation: str, release_id: str | None, phase: str) -> str:
+    operation_id = secrets.token_hex(16)
+    now = time.time()
+    if not isinstance(release_id, str) or not _ID.fullmatch(release_id) or release_id in {".", ".."}:
+        release_id = None
+    record = {**_empty_progress(), "operation_id": operation_id, "release_id": release_id,
+              "operation": operation, "phase": phase, "started_at": now, "updated_at": now,
+              "owner_pid": os.getpid() if phase in _PROGRESS_BUSY else None,
+              "owner_identity": _process_identity(os.getpid()) if phase in _PROGRESS_BUSY else None}
+    with _progress_lock(store):
+        _write_json(store / "progress.json", record)
+    return operation_id
+
+
+def _advance_progress(store: Path, operation_id: str, phase: str, *, step: dict | None = None,
+                      error: str | None = None) -> bool:
+    with _progress_lock(store):
+        record = _progress_metadata(store)
+        if record.get("operation_id") != operation_id:
+            return False  # A newer operation owns the visible event stream.
+        record.update(phase=phase, step=step, error=str(error)[:2000] if error is not None else None,
+                      updated_at=time.time(), owner_pid=os.getpid() if phase in _PROGRESS_BUSY else None,
+                      owner_identity=_process_identity(os.getpid()) if phase in _PROGRESS_BUSY else None)
+        _write_json(store / "progress.json", record)
+        return True
 
 
 @contextlib.contextmanager
@@ -174,10 +316,39 @@ def _digest(paths: list[tuple[str, Path]]) -> str:
     return digest.hexdigest()
 
 
+def _detach_build_artifact(root: Path, executable: str) -> None:
+    """Give Cargo's linked desktop output its own inode before sealing it."""
+    artifact = _contained(root / executable, root)
+    info = artifact.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("Desktop build output must be a regular file")
+    if info.st_nlink == 1:
+        return
+    before = _digest([(executable, artifact)])
+    descriptor, name = tempfile.mkstemp(prefix=".elira-desktop-", suffix=".tmp", dir=artifact.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output, artifact.open("rb") as source:
+            shutil.copyfileobj(source, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        shutil.copystat(artifact, temporary)
+        if (_digest([(executable, temporary)]) != before
+                or _digest([(executable, artifact)]) != before):
+            raise ValueError("Desktop build output changed while detaching its hard links")
+        _contained(artifact, root)
+        os.replace(temporary, artifact)
+        if artifact.stat().st_nlink != 1:
+            raise ValueError("Desktop build output still has hard-link aliases")
+        LOG.info("Detached hard-linked desktop build output: %s", executable)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _snapshot_databases(data: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=False)
     names = []
-    for source in sorted(_tree_files(data)) if data.exists() else []:
+    for source in sorted(_tree_files(data, excluded=_NATIVE_PROFILE_DIRS)) if data.exists() else []:
         if not source.is_file() or source.suffix not in _DB_SUFFIXES:
             continue
         relative = source.relative_to(data)
@@ -194,11 +365,14 @@ def _restore_databases(data: Path, snapshot: Path) -> None:
     names = _read_json(snapshot / "snapshot.json")["databases"]
     if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
         raise ValueError("Invalid database snapshot inventory")
+    # Older snapshots included Chromium SQLite files. Keep the current profile
+    # even when restoring one of those snapshots; an open WebView owns its locks.
+    names = [name for name in names if not Path(name).parts or Path(name).parts[0].casefold() not in _NATIVE_PROFILE_DIRS]
     for name in names:
         _contained(data / name, data)
         _contained(snapshot / name, snapshot)
     known = set(names)
-    current_files = list(_tree_files(data))
+    current_files = list(_tree_files(data, excluded=_NATIVE_PROFILE_DIRS))
     for source in current_files:
         if source.is_file() and source.suffix in _DB_SUFFIXES and source.relative_to(data).as_posix() not in known:
             source.unlink()  # Created during failed, unadmitted startup only.
@@ -328,6 +502,11 @@ class ReleaseManager:
             raise RuntimeError("npm is required to verify a complete application release")
         return result
 
+    def _candidate_provenance(self, release_id: str) -> dict:
+        record = _read_json(self.record(release_id), {})
+        return {key: record[key] for key in ("base_release_id", "base_sha256", "base_runtime", "source_root")
+                if key in record}
+
     def _command(self, arguments: list[str], *, cwd: Path, env: dict | None = None,
                  log=None, timeout=None) -> subprocess.CompletedProcess:
         result = self.host.run(arguments, cwd=cwd, env=env, log=log, timeout=timeout)
@@ -336,20 +515,59 @@ class ReleaseManager:
         return result
 
     def prepare(self, release_id: str) -> dict:
+        operation_id = _begin_progress(self.store, "prepare", release_id, "preparing")
+        try:
+            result = self._prepare(release_id)
+        except Exception as exc:
+            _advance_progress(self.store, operation_id, "failed", error=str(exc))
+            raise
+        _advance_progress(self.store, operation_id, "prepared")
+        return result
+
+    def _prepare(self, release_id: str) -> dict:
         root = self.candidate_path(release_id)
         active = self.state().get("active")
         source = self.path(active) if active else self.platform
+        base_release_id, base_sha256, base_runtime = active, None, "foundation" if self.layout.protected else "legacy"
         if active:
-            self.checked(active)
+            base_sha256 = self.checked(active)["sha256"]
+        elif self.layout.protected:
+            # Bootstrap from the selected, sealed legacy application rather
+            # than an unrelated platform HEAD. Read untrusted legacy metadata
+            # as the user; never execute its code in the LocalService process.
+            with self.storage.user_access():
+                legacy_store = self.platform / ".runtime/releases"
+                legacy = _read_json(legacy_store / "state.json", {})
+                if legacy.get("pending") or legacy.get("transition"):
+                    raise ValueError("Finish the legacy release transition before Foundation bootstrap")
+                legacy_id = legacy.get("active")
+                if legacy_id:
+                    self._validate_id(legacy_id)
+                    source = _contained(legacy_store / "candidates" / legacy_id, legacy_store / "candidates")
+                    receipt = _read_json(_contained(legacy_store / "records" / (legacy_id + ".json"), legacy_store))
+                    if (receipt.get("status") != "verified" or receipt.get("release_id") != legacy_id
+                            or receipt.get("root") != str(source)):
+                        raise ValueError("Legacy source does not have a matching verified receipt")
+                    executable = receipt.get("executable")
+                    if not isinstance(executable, str) or not executable or Path(executable).is_absolute():
+                        raise ValueError("Invalid legacy desktop executable")
+                    _contained(source / executable, source)
+                    base_sha256 = self.fingerprint(source, executable=executable)
+                    if base_sha256 != receipt.get("sha256"):
+                        raise ValueError("Legacy source changed after verification; bootstrap was not prepared")
+                    base_release_id, base_runtime = legacy_id, "legacy"
         if self.layout.protected:
             work = self._work_path("prepare")
             try:
-                self._worker("prepare", root=root, source=source, work=work, overlay=bool(active))
+                self._worker("prepare", root=root, source=source, work=work, overlay=bool(base_release_id))
             finally:
                 self._worker("cleanup", work=work)
         else:
             self._prepare_files(root, source, overlay=bool(active))
-        value = {"release_id": release_id, "status": "candidate", "root": str(root)}
+        value = {"release_id": release_id, "status": "candidate", "root": str(root),
+                 "candidate_root": str(root), "python": str(self._python(root)),
+                 "base_release_id": base_release_id, "base_sha256": base_sha256,
+                 "base_runtime": base_runtime, "source_root": str(source), "platform_root": str(self.platform)}
         _write_json(self.record(release_id), value)
         return value
 
@@ -422,14 +640,14 @@ class ReleaseManager:
             arguments.extend(["--" + key.replace("_", "-"), "1" if value is True else "0" if value is False else str(value)])
         if log is not None:
             self._command(arguments, cwd=self.layout.worker_script.parent,
-                          env=self.host.user_environment(), log=log, timeout=1800)
+                          env=self.host.user_environment(), log=log)
         else:
             worker_log = self.owned("logs/worker-" + secrets.token_hex(16) + ".log")
             worker_log.parent.mkdir(parents=True, exist_ok=True)
             with worker_log.open("xb") as output:
                 try:
                     self._command(arguments, cwd=self.layout.worker_script.parent,
-                                  env=self.host.user_environment(), log=output, timeout=1800)
+                                  env=self.host.user_environment(), log=output)
                 except Exception as exc:
                     raise RuntimeError(f"Release worker {operation} failed; log: {worker_log}") from exc
 
@@ -455,7 +673,8 @@ class ReleaseManager:
         finally:
             self._worker("cleanup", work=work)
 
-    def _source_files(self, root: Path) -> list[tuple[str, Path]]:
+    @staticmethod
+    def _source_files(root: Path) -> list[tuple[str, Path]]:
         # Runtime code may be ignored by Git. Seal the actual source tree rather
         # than trusting Git's inventory or an agent-supplied file manifest.
         excluded = {".git", ".runtime", ".agent", ".scratch", "data", "backend/data",
@@ -514,6 +733,8 @@ class ReleaseManager:
                         "ELIRA_FOUNDATION_PYTHON": str(self.layout.worker_python),
                         "ELIRA_FOUNDATION_CLIENT": str(self.layout.worker_script.parent / "foundation_client.py")})
         else:
+            for name in ("ELIRA_FOUNDATION_MANAGED", "ELIRA_FOUNDATION_SERVICE", "ELIRA_FOUNDATION_PYTHON", "ELIRA_FOUNDATION_CLIENT"):
+                env.pop(name, None)
             env.setdefault("ELIRA_FS_UNRESTRICTED", "1")
         if data is not None:
             env.update({"ELIRA_DRIFT_CHECK": "0", "LLAMA_SERVER_ENABLED": "false",
@@ -521,11 +742,25 @@ class ReleaseManager:
         return env
 
     def verify(self, release_id: str) -> dict:
+        operation_id = _begin_progress(self.store, "verify", release_id, "checking")
+        try:
+            result = self._verify(release_id, operation_id=operation_id)
+        except Exception as exc:
+            _advance_progress(self.store, operation_id, "failed", error=str(exc))
+            raise
+        _advance_progress(self.store, operation_id, "verified")
+        return result
+
+    def _verify(self, release_id: str, *, operation_id: str) -> dict:
+        state = self.state()
+        if release_id in {state.get("active"), state.get("previous"), state.get("pending")}:
+            raise ValueError("Selected release IDs are immutable; prepare a new candidate ID before verification")
         if self.layout.protected:
-            return self._verify_protected(release_id)
+            return self._verify_protected(release_id, operation_id=operation_id)
         root = self.path(release_id)
         before = self.fingerprint(root)
-        value = {"release_id": release_id, "status": "verifying", "root": str(root)}
+        value = {**self._candidate_provenance(release_id), "release_id": release_id,
+                 "status": "verifying", "root": str(root)}
         _write_json(self.record(release_id), value)
         self.owned("logs").mkdir(exist_ok=True)
         try:
@@ -537,12 +772,16 @@ class ReleaseManager:
                 # isolated; the subsequent real startup probe remains staged.
                 env["ELIRA_RELEASE_STAGING"] = "0"
                 with self.owned(f"logs/{release_id}-verify.log").open("w", encoding="utf-8") as log:
-                    for command in self._verification_commands(root):
+                    commands = self._verification_commands(root)
+                    for index, command in enumerate(commands, 1):
+                        self._verification_progress(operation_id, index, len(commands) + 2, command)
                         LOG.info("Verifying %s: %s", release_id, command[1:])
                         self._command(command, cwd=root, env=env, log=log)
+                self._verification_progress(operation_id, len(commands) + 1, len(commands) + 2, label="Проверка целостности")
                 if self.fingerprint(root) != before:
                     raise ValueError("Candidate code or dependencies changed during verification; verify the final version")
                 executable = self._find_executable(root)
+                _detach_build_artifact(root, executable)
                 value.update({"status": "verified", "executable": executable,
                               "sha256": self.fingerprint(root, executable=executable),
                               "verified_at": time.time()})
@@ -550,10 +789,13 @@ class ReleaseManager:
                 # with schedulers and user requests held until admission.
                 probe = type(self)(self.platform, port=_free_port(), startup_timeout=self.startup_timeout,
                                    publish_processes=False, layout=self.layout, host=self.host, storage=self.storage)
+                self._verification_progress(operation_id, len(commands) + 2, len(commands) + 2, label="Проверка запуска")
                 try:
                     probe._start_backend(release_id, data=check_data)
                 finally:
                     probe._stop_backend()
+                if self.fingerprint(root, executable=executable) != value["sha256"]:
+                    raise ValueError("Candidate runtime changed during staged startup")
             _write_json(self.record(release_id), value)
             return value
         except Exception as exc:
@@ -561,14 +803,23 @@ class ReleaseManager:
             _write_json(self.record(release_id), value)
             raise
 
-    def _verify_protected(self, release_id: str) -> dict:
+    def _verification_progress(self, operation_id: str, index: int, total: int,
+                               command: list[str] | None = None, *, label: str | None = None) -> None:
+        if label is None:
+            parts = command or []
+            label = ("Проверка типов" if "typecheck" in parts else "Тесты backend" if "pytest" in parts
+                     else "Сборка приложения" if "tauri" in parts else "Сборка интерфейса" if "build" in parts
+                     else "Проверка кандидата")
+        _advance_progress(self.store, operation_id, "checking", step={"index": index, "total": total, "label": label})
+
+    def _verify_protected(self, release_id: str, *, operation_id: str) -> dict:
         root, published = self.candidate_path(release_id), self.path(release_id)
         if published.exists():
             raise ValueError("Published release IDs are immutable; prepare a new candidate ID")
         with self.storage.user_access():
             before = self.fingerprint(root)
         work = self._work_path("verify")
-        value = {"release_id": release_id, "status": "verifying", "root": str(published),
+        value = {**self._candidate_provenance(release_id), "release_id": release_id, "status": "verifying", "root": str(published),
                  "candidate_root": str(root), "verification_work": str(work)}
         _write_json(self.record(release_id), value)
         self.owned("logs").mkdir(exist_ok=True)
@@ -581,13 +832,16 @@ class ReleaseManager:
             with self.owned(f"logs/{release_id}-verify.log").open("w", encoding="utf-8") as log:
                 with self.storage.user_access():
                     commands = self._verification_commands(root)
-                for command in commands:
+                for index, command in enumerate(commands, 1):
+                    self._verification_progress(operation_id, index, len(commands) + 2, command)
                     LOG.info("Verifying %s: %s", release_id, command[1:])
-                    self._command(command, cwd=root, env=env, log=log, timeout=3600)
+                    self._command(command, cwd=root, env=env, log=log)
+            self._verification_progress(operation_id, len(commands) + 1, len(commands) + 2, label="Проверка и публикация целостного релиза")
             with self.storage.user_access():
                 if self.fingerprint(root) != before:
                     raise ValueError("Candidate code or dependencies changed during verification; verify the final version")
                 executable = self._find_executable(root)
+                _detach_build_artifact(root, executable)
             try:
                 restore_pending = True
                 self._worker("relocate", root=root, destination=published, backup=work / "environment", work=work)
@@ -605,6 +859,7 @@ class ReleaseManager:
                     raise ValueError("Candidate environment restoration did not reproduce its original bytes")
             probe = type(self)(self.platform, port=_free_port(), startup_timeout=self.startup_timeout,
                                publish_processes=False, layout=self.layout, host=self.host, storage=self.storage)
+            self._verification_progress(operation_id, len(commands) + 2, len(commands) + 2, label="Проверка запуска")
             try:
                 probe._start_backend(release_id, data=check_data)
             finally:
@@ -630,18 +885,76 @@ class ReleaseManager:
             raise ValueError("Candidate changed after verification; run verify again")
         return value
 
-    def request(self, release_id: str) -> dict:
-        self.checked(release_id)
+    def request(self, release_id: str, *, operation: str = "request",
+                expected_active: str | None = None, expected_previous: str | None = None) -> dict:
         with _lock(self.owned("state.lock")):
             state = self.state()
+            if expected_active is not None or expected_previous is not None:
+                if (operation != "rollback" or not expected_active or not expected_previous
+                        or release_id != expected_previous or expected_active == expected_previous
+                        or state.get("active") != expected_active or state.get("previous") != expected_previous):
+                    raise ValueError("Rollback selection changed; refresh the application release status")
+            if state.get("active") == release_id and not state.get("transition"):
+                self.checked(release_id)
+                return state
+            if state.get("pending"):
+                raise ValueError("An explicitly confirmed installation is still pending")
+            operation_id = _begin_progress(self.store, operation, release_id, "checking")
+            try:
+                candidate = self.checked(release_id)
+                if state.get("transition"):
+                    raise ValueError("Another release transition is still in progress")
+                state.update(pending=None, confirmation={"request_id": operation_id,
+                    "release_id": release_id, "sha256": candidate["sha256"], "requested_at": time.time()})
+                state.pop("error", None)
+                self._save(state)
+                _advance_progress(self.store, operation_id, "awaiting_confirmation")
+            except Exception as exc:
+                _advance_progress(self.store, operation_id, "failed", error=str(exc))
+                raise
+            return state
+
+    def confirm(self, request_id: str) -> dict:
+        """Approve only the displayed proposal and its verified immutable bytes."""
+        if not isinstance(request_id, str) or not _CONFIRMATION_ID.fullmatch(request_id):
+            raise ValueError("Invalid confirmation request_id")
+        with _lock(self.owned("state.lock")):
+            state = self.state()
+            proposal = state.get("confirmation")
+            if not isinstance(proposal, dict) or proposal.get("request_id") != request_id:
+                accepted = state.get("last_confirmation")
+                if (proposal is None and isinstance(accepted, dict) and accepted.get("request_id") == request_id
+                        and accepted.get("release_id") in {state.get("pending"), state.get("active")}):
+                    candidate = self.checked(accepted["release_id"])
+                    self._check_approval(state, accepted["release_id"], candidate["sha256"])
+                    return state  # Replaying an accepted click never approves another proposal.
+                raise ValueError("Confirmation is stale or no longer selected")
             if state.get("transition"):
                 raise ValueError("Another release transition is still in progress")
-            if state.get("active") == release_id:
-                return state
-            state["pending"] = release_id
-            self._save(state)
-            self.owned("enabled").touch()
+            release_id = proposal.get("release_id")
+            previous_progress = _progress_metadata(self.store)
+            operation = "rollback" if (previous_progress.get("operation_id") == request_id
+                                        and previous_progress.get("operation") == "rollback") else "confirm"
+            operation_id = _begin_progress(self.store, operation, release_id, "checking")
+            try:
+                candidate = self.checked(release_id)
+                if candidate["sha256"] != proposal.get("sha256"):
+                    raise ValueError("Candidate changed since the installation proposal; request it again")
+                state.update(pending=release_id, confirmation=None, last_confirmation={
+                    "request_id": request_id, "release_id": release_id, "sha256": candidate["sha256"]})
+                state.pop("error", None)
+                self._save(state)
+                self.owned("enabled").touch()
+                _advance_progress(self.store, operation_id, "waiting")
+            except Exception as exc:
+                _advance_progress(self.store, operation_id, "failed", error=str(exc))
+                raise
             return state
+
+    @staticmethod
+    def _check_approval(state: dict, release_id: str, sha256: str) -> None:
+        if not _confirmation_matches(state, release_id, sha256):
+            raise ValueError("Pending release does not match an explicitly confirmed installation proposal")
 
     def _http(self, action: str | None = None) -> dict:
         path = "/api/release/control" if action else "/health"
@@ -776,8 +1089,23 @@ class ReleaseManager:
         release_id = state.get("pending")
         if not release_id:
             return False
+        progress = _progress_metadata(self.store)
+        if progress.get("release_id") == release_id and progress.get("phase") == "waiting":
+            operation_id = progress["operation_id"]
+        else:
+            operation_id = _begin_progress(self.store, "apply", release_id, "waiting")
+        try:
+            return self._apply_pending(release_id, operation_id=operation_id)
+        except Exception as exc:
+            _advance_progress(self.store, operation_id, "failed", error=str(exc))
+            raise
+
+    def _apply_pending(self, release_id: str, *, operation_id: str) -> bool:
+        progress = _progress_metadata(self.store)
+        switching = "rolling_back" if progress.get("operation") == "rollback" else "switching"
         try:
             candidate = self.checked(release_id)
+            self._check_approval(self.state(), release_id, candidate["sha256"])
         except (OSError, ValueError) as exc:
             with _lock(self.owned("state.lock")):
                 state = self.state()
@@ -785,38 +1113,52 @@ class ReleaseManager:
                     state.update({"pending": None, "error": str(exc)})
                     self._save(state)
             LOG.error("Pending release rejected without interrupting the active application: %s", exc)
+            _advance_progress(self.store, operation_id, "failed", error=str(exc))
             return False
         if self.backend is not None:
             if not self._http("drain").get("idle"):
                 self._http("resume")
+                _advance_progress(self.store, operation_id, "waiting")
                 return False
         with _lock(self.owned("state.lock")):
             state = self.state()
             if state.get("pending") != release_id:
                 if self.backend is not None:
                     self._http("resume")
+                _advance_progress(self.store, operation_id, "interrupted", error="Запрос обновления заменён до переключения.")
                 return False
+            self._check_approval(state, release_id, candidate["sha256"])
             previous = state.get("active")
             backup = self.owned("backups/" + secrets.token_hex(12))
             state["transition"] = {"from": previous, "to": release_id, "phase": "stopping", "backup": str(backup)}
             self._save(state)
+            _advance_progress(self.store, operation_id, switching,
+                              step={"index": 1, "total": 4, "label": "Завершение текущей работы"})
             self._stop_ui()
             self._stop_backend()
             try:
                 self.checked(release_id)
+                _advance_progress(self.store, operation_id, switching,
+                                  step={"index": 2, "total": 4, "label": "Сохранение пользовательских данных"})
                 self._snapshot(backup)
                 state["transition"]["phase"] = "switching"
                 self._save(state)
+                _advance_progress(self.store, operation_id, switching,
+                                  step={"index": 3, "total": 4, "label": "Запуск выбранной версии"})
                 self._start_backend(release_id)
                 self._start_ui(release_id, candidate["executable"])
                 self.checked(release_id)
                 state.update({"active": release_id, "previous": previous, "pending": None})
                 state["transition"]["phase"] = "admitting"
                 self._save(state)  # From here, never silently restore older user data.
-                self._http("activate")
+                _advance_progress(self.store, operation_id, switching,
+                                  step={"index": 4, "total": 4, "label": "Подтверждение готовности"})
+                self._activate(release_id)
                 state["transition"] = None
                 state.pop("error", None)
                 self._save(state)
+                _advance_progress(self.store, operation_id, "completed")
+                self._retain_installed_releases(state)
                 return True
             except Exception as exc:
                 self._stop_ui()
@@ -825,25 +1167,138 @@ class ReleaseManager:
                     state["error"] = f"Activation acknowledgement failed: {exc}; data retained"
                     self._save(state)
                     raise
+                _advance_progress(self.store, operation_id, "rolling_back", error=str(exc))
                 if (backup / "snapshot.json").exists():
                     self._restore(backup)
                 state.update({"active": previous, "pending": None, "transition": None, "error": str(exc)})
                 self._save(state)
                 if previous:
-                    self._launch_active(previous)
+                    self._launch_active(previous, retain=False)
                 LOG.error("Candidate %s failed startup; previous release restored: %s", release_id, exc)
+                _advance_progress(self.store, operation_id, "failed", error=f"Новая версия не запущена; предыдущая восстановлена. {exc}")
                 return False
 
-    def _launch_active(self, release_id: str) -> None:
+    def _launch_active(self, release_id: str, *, retain: bool = True) -> None:
+        progress = _progress_metadata(self.store)
+        recovery_id = progress.get("operation_id") if (
+            progress.get("operation") == "recover" and progress.get("phase") == "switching"
+            and progress.get("release_id") == release_id) else None
         candidate = self.checked(release_id)
         self._start_backend(release_id)
         self._start_ui(release_id, candidate["executable"])
-        self._http("activate")
+        self._activate(release_id)
+        if recovery_id:
+            with _lock(self.owned("state.lock")):
+                state = self.state()
+                if state.get("active") == release_id and not state.get("transition"):
+                    state.pop("error", None)
+                    self._save(state)
+            _advance_progress(self.store, recovery_id, "completed")
+        if retain:
+            with _lock(self.owned("state.lock")):
+                self._retain_installed_releases(self.state())
+
+    def _activate(self, release_id: str) -> None:
+        for attempt in range(3):
+            try:
+                acknowledged = self._http("activate")
+                break
+            except URLError as exc:
+                # Older releases may admit work before starting a scheduler.
+                # Retrying this idempotent control action can finish a transient
+                # failure, but an observed health alone is never an ACK.
+                if attempt == 2 or isinstance(exc, HTTPError) and exc.code < 500:
+                    raise
+                health = self._http()
+                if (health.get("service") != "elira-ai-api" or health.get("release_id") != release_id
+                        or health.get("instance_id") != self.instance or health.get("admitted") is not True
+                        or health.get("draining") is not False):
+                    raise
+                LOG.warning("Retrying activation acknowledgement for admitted release %s", release_id)
+                time.sleep(0.1)
+        if acknowledged.get("ok") is not True:
+            raise RuntimeError("Backend refused activation; admission is not confirmed")
+        health = self._http()
+        if (health.get("service") != "elira-ai-api" or health.get("release_id") != release_id
+                or health.get("instance_id") != self.instance or health.get("admitted") is not True
+                or health.get("draining") is not False):
+            raise RuntimeError("Backend health did not confirm release identity and admission")
+
+    def _retain_installed_releases(self, state: dict) -> None:
+        """Called under state.lock only AFTER successful admission. Candidates stay editable."""
+        if not self.layout.protected or state.get("pending") or state.get("transition") or state.get("confirmation"):
+            return
+        try:
+            history = state.get("installed_releases", [])
+            if (not isinstance(history, list) or any(not isinstance(item, str) for item in history)
+                    or len(history) != len(set(history))):
+                raise ValueError("Invalid installed release inventory")
+            history = list(history)
+            for item in [*history, state.get("previous"), state.get("active")]:
+                if item:
+                    self._validate_id(item)
+                    if item not in history:
+                        history.append(item)
+            state["installed_releases"] = history
+            self._save(state)
+            selected = [item for item in (state.get("active"), state.get("previous")) if item]
+            keep = set(selected)
+            for item in reversed(history):
+                if len(keep) >= 3:
+                    break
+                keep.add(item)
+            if len(history) <= 3:
+                return
+            # The hidden reserve must also be usable before an older copy goes.
+            for item in keep:
+                self.checked(item)
+            for item in list(history):
+                if item in keep:
+                    continue
+                root = self.path(item)
+                receipt = _read_json(self.record(item))
+                if root.parent != self.layout.published or any(
+                    boundary == root or root in boundary.parents
+                    for boundary in (self.platform, self.store, self.data, self.journals,
+                                     self.layout.candidates, self.layout.config_root)
+                ):
+                    raise ValueError("Retention target overlaps persistent or editable paths")
+                if not receipt.get("retention_retiring"):
+                    self.checked(item)
+                    receipt["retention_retiring"] = True
+                    _write_json(self.record(item), receipt)
+                if root.exists():
+                    # Include caches and bytecode: rmtree must never encounter a
+                    # junction or link hidden in fingerprint-excluded paths.
+                    _contained(root, self.layout.published)
+                    def walk_error(error: OSError) -> None:
+                        raise error
+
+                    for folder, directories, names in os.walk(root, onerror=walk_error):
+                        for name in [*directories, *names]:
+                            path = Path(folder) / name
+                            info = path.lstat()
+                            if (path.is_symlink() or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                                    or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
+                                raise ValueError("Retention refuses linked or special release files")
+                    shutil.rmtree(root)
+                receipt.update(status="retired", retired_at=time.time())
+                _write_json(self.record(item), receipt)
+                history.remove(item)
+                state["installed_releases"] = list(history)
+                self._save(state)
+                LOG.info("Retired installed release %s; active/return/hidden reserve retained: %s", item, sorted(keep))
+        except Exception:
+            # Cleanup cannot turn a successfully admitted release into a rollback.
+            # The durable retirement intent allows retry on the next admission.
+            LOG.exception("Installed release retention incomplete; application and candidates retained")
 
     def recover(self) -> dict:
         state = self.state()
         transition = state.get("transition")
         if transition:
+            operation_id = _begin_progress(self.store, "recover", transition.get("to"),
+                                           "rolling_back" if transition["phase"] in {"stopping", "switching"} else "switching")
             if transition["phase"] in {"stopping", "switching"}:
                 backup = _contained(Path(transition["backup"]), self.store)
                 if backup.parent != self.owned("backups"):
@@ -855,6 +1310,9 @@ class ReleaseManager:
             state["transition"] = None
             state["recovered_at"] = time.time()
             self._save(state)
+            if transition["phase"] in {"stopping", "switching"}:
+                _advance_progress(self.store, operation_id, "interrupted",
+                                  error="Обновление прервано до допуска работы; восстановлены предыдущая версия и данные.")
         return state
 
     def run(self) -> None:
@@ -939,7 +1397,10 @@ def _restore_environment(root: Path, backup: Path) -> None:
     for relative, source in saved.items():
         target = _contained(scripts / relative, scripts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        # Relocation leaves the interpreter binaries untouched. Do not rewrite
+        # an unchanged executable that Windows may still hold as an image.
+        if not target.is_file() or source.read_bytes() != target.read_bytes():
+            shutil.copy2(source, target)
     if _read_json(backup / "ready.json")["config"]:
         shutil.copy2(backup / "pyvenv.cfg", root / "backend/.venv/pyvenv.cfg")
 
@@ -977,7 +1438,7 @@ def _run_worker(args) -> None:
         _restore_environment(args.root, _contained(args.backup, work))
 
 
-def _foundation_client_command() -> list[str] | None:
+def _foundation_client_command(*, platform: Path, port: int) -> list[str] | None:
     if os.name != "nt":
         return None
     import winreg
@@ -989,7 +1450,12 @@ def _foundation_client_command() -> list[str] | None:
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Elira\{service}",
                             0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
-            location, kind = winreg.QueryValueEx(key, "InstallRoot")
+            try:
+                location, kind = winreg.QueryValueEx(key, "InstallRoot")
+                registered_platform, platform_kind = winreg.QueryValueEx(key, "Platform")
+                registered_port, port_kind = winreg.QueryValueEx(key, "Port")
+            except FileNotFoundError as exc:
+                raise RuntimeError("Foundation registration lacks its platform/port binding; repair the installation") from exc
     except FileNotFoundError:
         if managed:
             raise RuntimeError("Managed Foundation registration is missing; local supervisor fallback is disabled")
@@ -997,6 +1463,15 @@ def _foundation_client_command() -> list[str] | None:
     root = Path(location)
     if kind != winreg.REG_SZ or not root.is_absolute():
         raise ValueError("Invalid protected Foundation registration")
+    if (platform_kind != winreg.REG_SZ or not Path(registered_platform).is_absolute()
+            or port_kind != winreg.REG_DWORD or not 1024 <= registered_port <= 65535):
+        raise ValueError("Invalid protected Foundation platform/port binding")
+    if platform.resolve() != Path(registered_platform).resolve():
+        if port == registered_port:
+            raise ValueError("An isolated platform must use a port different from the installed Foundation")
+        return None
+    if port != registered_port:
+        raise ValueError("This platform belongs to Foundation at its registered port; local fallback is disabled")
     python, client = root / "python/python.exe", root / "host/foundation_client.py"
     if not python.is_file() or not client.is_file():
         raise RuntimeError("Foundation installation is incomplete; local supervisor fallback is disabled")
@@ -1024,14 +1499,22 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("prepare", "verify", "request", "serve"):
         commands.add_parser(name).add_argument("release_id")
-    for name in ("status", "run", "rollback"):
+    commands.add_parser("confirm").add_argument("confirmation_id")
+    for name in ("status", "run"):
         commands.add_parser(name)
+    rollback = commands.add_parser("rollback")
+    rollback.add_argument("--expected-active")
+    rollback.add_argument("--expected-previous")
+    rollback.add_argument("--confirm", action="store_true")
     worker = commands.add_parser("worker", help="Private user-process filesystem worker; not a service IPC operation")
     worker.add_argument("operation", choices=("prepare", "snapshot", "restore", "relocate", "restore-environment", "cleanup"))
     for name in ("worker-root", "work", "root", "source", "destination", "data", "backup"):
         worker.add_argument("--" + name, type=Path)
     worker.add_argument("--overlay", choices=("0", "1"), default="0")
     args = parser.parse_args()
+    if args.command == "rollback" and (args.expected_active or args.expected_previous or args.confirm):
+        if not args.expected_active or not args.expected_previous or not args.confirm:
+            parser.error("Confirmed rollback requires both expected releases and --confirm")
     if args.command == "worker":
         _run_worker(args)
         return 0
@@ -1049,12 +1532,17 @@ def main() -> int:
         release_runtime.set_callbacks(shutdown=lambda: setattr(server, "should_exit", True))
         server.run()
         return 0
-    client = _foundation_client_command()
+    client = _foundation_client_command(platform=args.platform, port=args.port)
     if client is not None:
         command = "open" if args.command == "run" else args.command
         arguments = client + [command]
         if getattr(args, "release_id", None):
             arguments.append(args.release_id)
+        if getattr(args, "confirmation_id", None):
+            arguments.append(args.confirmation_id)
+        if args.command == "rollback" and args.confirm:
+            arguments.extend(["--expected-active", args.expected_active,
+                              "--expected-previous", args.expected_previous, "--confirm"])
         arguments.append("--wait")
         return subprocess.run(arguments, check=False,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode
@@ -1068,7 +1556,12 @@ def main() -> int:
         previous = manager.state().get("previous")
         if not previous:
             raise ValueError("No previous verified release")
-        result = manager.request(previous)
+        result = manager.request(args.expected_previous or previous, operation="rollback",
+                                 expected_active=args.expected_active, expected_previous=args.expected_previous)
+        if args.confirm:
+            result = manager.confirm(result["confirmation"]["request_id"])
+    elif args.command == "confirm":
+        result = manager.confirm(args.confirmation_id)
     else:
         result = getattr(manager, args.command)(args.release_id)
     print(json.dumps(result, ensure_ascii=False, indent=2))

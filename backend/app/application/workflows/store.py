@@ -129,7 +129,10 @@ def _connect(db_path: str | Path):
 
 def init_db(*, db_path: str | Path) -> None:
     with _connect(db_path) as connection:
-        connection.executescript(CREATE_SQL)
+        # Serialize schema changes across scheduler, API and startup connections.
+        # executescript commits an existing transaction, so BEGIN belongs inside
+        # the script and must also cover the following column/index migrations.
+        connection.executescript("BEGIN IMMEDIATE;\n" + CREATE_SQL)
         columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(workflow_runs)").fetchall()

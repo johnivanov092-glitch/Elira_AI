@@ -2,6 +2,8 @@ import {
   cancelCodeAgent,
   resumeCodeAgent,
   streamCodeAgent,
+  sendCodeAgentInput,
+  type UserInputReceipt,
   type CodeAgentMode,
   type CodeAgentStreamEvent,
   type CodeAgentToolCall,
@@ -71,6 +73,7 @@ type RunEntry = {
   persistedAtDone: boolean;
   /** Mode of the in-flight run. */
   lastMode: CodeAgentMode | null;
+  pendingInput?: { runId: string; requestId: string; text: string };
 };
 
 type CodeAgentDoneEvent = Extract<CodeAgentStreamEvent, { type: "done" }>;
@@ -287,6 +290,14 @@ function wire(
     },
     onEvent: (e: CodeAgentStreamEvent) => {
       if (!ownsRun()) {
+        if (e.type === "user_input_applied") {
+          const turn = entry.snapshot.turns.find(t => t.kind === "agent" && t.id === agentId);
+          if (turn?.kind === "agent" && !turn.running && turn.answerState === "interrupted" && turn.runId === e.run_id) {
+            recordUserInput(entry, agentId, e.run_id, { request_id: e.request_id, text: e.text, state: "applied" });
+            entry.persist?.(entry.snapshot);
+          }
+          return;
+        }
         // Stop can race the server's accepted answer receipt. Retain only that
         // user input on this reader's stopped turn, never its other late output
         // or any state of the currently active run.
@@ -312,6 +323,14 @@ function wire(
         patch((a) => ({ ...a, brainPhase: "execution" }));
       }
       else if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool }));
+      else if (e.type === "user_input_applied") {
+        recordUserInput(entry, agentId, e.run_id, { request_id: e.request_id, text: e.text, state: "applied" });
+      }
+      else if (e.type === "user_input_reply") {
+        update(entry, (s) => ({ ...s, turns: s.turns.map(t => t.kind === "user" && t.steering?.runId === e.run_id
+          && e.request_ids.includes(t.steering.requestId)
+          ? { ...t, steering: { ...t.steering, reply: e.text } } : t) }));
+      }
       else if (e.type === "step_started") {
         // Show only the CURRENT step's stream. Deltas used to concatenate across
         // all steps into one blob; final_response normally replaced it, but on
@@ -445,6 +464,61 @@ function wire(
 }
 
 // ── Public mutation API ─────────────────────────────────────────────────────
+
+function recordUserInput(entry: RunEntry, agentId: string, runId: string, receipt: UserInputReceipt) {
+  update(entry, (s) => {
+    const index = s.turns.findIndex(t => t.kind === "user" && t.steering?.requestId === receipt.request_id && t.steering.runId === runId);
+    const turns = [...s.turns];
+    if (index >= 0) {
+      const turn = turns[index];
+      if (turn.kind === "user" && turn.steering) turns[index] = { ...turn,
+        steering: { ...turn.steering, state: turn.steering.state === "applied" ? "applied" : receipt.state } };
+    } else {
+      const agentIndex = turns.findIndex(t => t.id === agentId);
+      turns.splice(agentIndex < 0 ? turns.length : agentIndex, 0, { kind: "user", id: nid(), text: receipt.text,
+        steering: { requestId: receipt.request_id, runId, state: receipt.state } });
+    }
+    return { ...s, turns };
+  });
+}
+
+/** Add a user update to the existing run; its stream and Stop token stay intact. */
+export async function steer(sessionId: string, text: string): Promise<void> {
+  const entry = ensureEntry(sessionId);
+  const agentId = entry.activeAgentId;
+  if (!entry.snapshot.running || !agentId || entry.lastMode === null) {
+    throw new Error("Уточнение пока недоступно для этого прогона. Текст сохранён.");
+  }
+  if (!entry.runId) {
+    // Send may follow the initial click before SSE supplies the run identity.
+    // Wait on the existing owner; Stop/error/new run reject without losing text.
+    await new Promise<void>((resolve, reject) => {
+      const ready = () => {
+        if (!entry.snapshot.running || entry.activeAgentId !== agentId) {
+          entry.listeners.delete(ready);
+          reject(new Error("Задача остановлена или завершилась. Текст сохранён."));
+        } else if (entry.runId) {
+          entry.listeners.delete(ready);
+          resolve();
+        }
+      };
+      entry.listeners.add(ready);
+      ready();
+    });
+  }
+  const runId = entry.runId;
+  if (!runId || !entry.snapshot.running || entry.activeAgentId !== agentId) {
+    throw new Error("Задача остановлена или завершилась. Текст сохранён.");
+  }
+  const msg = text.trim();
+  if (!msg) return;
+  const pending = entry.pendingInput;
+  const requestId = pending?.runId === runId && pending.text === msg ? pending.requestId : crypto.randomUUID().replace(/-/g, "");
+  entry.pendingInput = { runId, requestId, text: msg };
+  const receipt = await sendCodeAgentInput(runId, sessionId, requestId, msg);
+  recordUserInput(entry, agentId, runId, receipt);
+  if (entry.pendingInput?.requestId === requestId) entry.pendingInput = undefined;
+}
 
 export type SendArgs = {
   sessionId: string;
@@ -655,6 +729,7 @@ export function resume(sessionId: string, agentId: string, runId: string): void 
   const entry = ensureEntry(sessionId);
   if (entry.snapshot.running) return;
   entry.runId = runId;
+  entry.lastMode = "code";
   update(entry, (s) => ({
     ...s,
     running: true,

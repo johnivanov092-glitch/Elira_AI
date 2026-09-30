@@ -228,6 +228,15 @@ export default function WorkspaceShell() {
       return false;
     }
     const runKey = activeKey;
+    if (run.running) {
+      try {
+        await bg.steer(runKey, msg);
+        return activeKeyRef.current === runKey;
+      } catch (error) {
+        if (activeKeyRef.current === runKey) setLoadError(error instanceof Error ? error.message : "Уточнение не отправлено. Текст сохранён.");
+        return false;
+      }
+    }
     try {
       const resolvedSessionId = await startWithServerSession(
         sessionId,

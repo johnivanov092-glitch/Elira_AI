@@ -12,6 +12,7 @@ from app.api.routes.mcp_routes import router as mcp_router
 from app.api.routes.models import router as models_router
 from app.api.routes.persona import router as persona_router
 from app.api.routes.profiles import router as profiles_router
+from app.api.routes.release_routes import router as release_router
 from app.api.routes.skills_routes import router as skills_router
 from app.api.routes.voice_routes import router as voice_router
 from app.api.routes.workflow_routes import router as workflow_router
@@ -21,6 +22,7 @@ ALL_ROUTERS = (
     chat_agent_router,
     models_router,
     profiles_router,
+    release_router,
     persona_router,
     library_sqlite_router,
     media_router,

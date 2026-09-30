@@ -60,14 +60,21 @@ _INLINE_SCRIPT_INTERPRETERS = frozenset(
 )
 
 
-def _agent_child_env() -> dict[str, str]:
+def _agent_child_env(overrides: dict[str, str | None] | None = None) -> dict[str, str]:
     """Full environment of Elira's current OS token for spawned tools.
 
     Product authorization is owned exclusively by the Workflow permission mode.
     The runtime does not silently remove credentials or Windows/toolchain state
-    after the UI has authorized execution.
+    after the UI has authorized execution. Internal package checks may explicitly
+    override interpreter search paths without mutating the backend environment.
     """
-    return dict(os.environ)
+    environment = dict(os.environ)
+    for key, value in (overrides or {}).items():
+        if value is None:
+            environment.pop(key, None)
+        else:
+            environment[key] = value
+    return environment
 _INLINE_SCRIPT_FLAGS = frozenset({"-c", "-e", "--eval"})
 _WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
@@ -117,7 +124,10 @@ def _inline_script_argv(command: str) -> list[str] | None:
     return None
 
 
-def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
+def tool_run_bash(
+    project_root: Path, *, command: str, timeout: int = 60,
+    env_overrides: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
     del timeout  # compatibility input; Workflow Stop owns termination
     cleaned_command = (command or "").strip()
     if not cleaned_command:
@@ -145,7 +155,7 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             cwd=str(project_root.resolve()),
             # Inherit the complete environment available to Elira's current
             # Windows token. Workflow permission is the authorization boundary.
-            env=_agent_child_env(),
+            env=_agent_child_env(env_overrides),
             # Close stdin: a shell tool must never block on input. Interactive
             # prompts (ssh host-key/password, apt, etc.) get EOF and fail fast.
             stdin=subprocess.DEVNULL,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
-  Check, ChevronDown, ChevronRight, FolderPlus, MessageSquare, Pencil, Pin, PinOff, Plus, Trash2, X,
+  Check, ChevronDown, ChevronRight, Download, FolderPlus, MessageSquare, Pencil, Pin, PinOff, Plus, Trash2, X,
 } from "lucide-react";
 import type { CodeSessionMeta } from "../api/codeAgent";
 import { EliraMark } from "../ui/EliraMark";
@@ -199,8 +199,16 @@ function FolderRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(folder.name);
+  const [downloading, setDownloading] = useState(false);
   const ref = useRef<HTMLInputElement | null>(null);
   useEffect(() => { if (editing) ref.current?.focus(); }, [editing]);
+
+  async function downloadArchive() {
+    if (downloading) return;
+    setDownloading(true);
+    try { await folders.downloadFolderArchive(folder.id); }
+    finally { setDownloading(false); }
+  }
 
   function commit() {
     const next = draft.trim();
@@ -246,6 +254,16 @@ function FolderRow({
               {folder.name}
             </button>
             <span className="shrink-0 text-[10.5px] text-mut">{count}</span>
+            <button
+              type="button"
+              onClick={() => { void downloadArchive(); }}
+              disabled={downloading || count === 0}
+              aria-label="Скачать архив"
+              title={count === 0 ? "В папке нет чатов" : "Скачать архив (ZIP с Markdown по каждому чату)"}
+              className="grid h-5 w-5 shrink-0 place-items-center rounded text-mut transition-opacity hover:text-tx disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <Download size={12} className={downloading ? "animate-pulse" : ""} />
+            </button>
             <button
               type="button"
               onClick={() => { setDraft(folder.name); setEditing(true); }}

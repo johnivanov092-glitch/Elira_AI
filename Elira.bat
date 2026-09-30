@@ -14,11 +14,11 @@ set "BACKEND_ENV_LOCAL=%REPO_ROOT%\backend\.env.local"
 rem Installed Foundation is registered under administrator-owned HKLM. A stopped
 rem or broken service must never silently select the same-user supervisor.
 set "FOUNDATION_ROOT="
-for /f "tokens=2,*" %%A in ('"%SystemRoot%\System32\reg.exe" query "HKLM\SOFTWARE\Elira\EliraFoundation" /v InstallRoot /reg:64 2^>nul') do (
+for /f "tokens=2,*" %%A in ('%SystemRoot%\System32\reg.exe query "HKLM\SOFTWARE\Elira\EliraFoundation" /v InstallRoot /reg:64 2^>nul') do (
     if "%%A"=="REG_SZ" set "FOUNDATION_ROOT=%%B"
 )
 if defined FOUNDATION_ROOT (
-    "%FOUNDATION_ROOT%\python\python.exe" -I -S -B "%FOUNDATION_ROOT%\host\foundation_client.py" open --wait --timeout 300
+    "%FOUNDATION_ROOT%\python\python.exe" -I -S -B "%FOUNDATION_ROOT%\host\foundation_client.py" open --wait --timeout 0
     if errorlevel 1 (
         echo [ERROR] Foundation could not start the application. No unmanaged backend was started.
         pause

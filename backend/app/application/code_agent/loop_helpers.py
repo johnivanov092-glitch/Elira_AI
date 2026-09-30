@@ -215,6 +215,7 @@ def _recent_tools_digest(entries: list[str]) -> str:
 # cancel the NEXT slice the moment it registers its run.
 _SESSION_LOCK = threading.Lock()
 _SESSION_CANCEL: dict[str, threading.Event] = {}
+_SESSION_INPUTS: dict[str, dict[str, Any]] = {}
 
 
 class DeliverySessionActiveError(RuntimeError):
@@ -226,9 +227,10 @@ def request_session_cancel(run_id: str) -> bool:
     live session was found."""
     with _SESSION_LOCK:
         ev = _SESSION_CANCEL.get(run_id)
+        if ev is not None:
+            ev.set()
     if ev is None:
         return False
-    ev.set()
     return True
 
 
@@ -246,13 +248,20 @@ def session_active(run_id: str) -> bool:
         return run_id in _SESSION_CANCEL
 
 
-def register_session(run_id: str) -> threading.Event:
+def register_session(run_id: str, *, session_id: str | None = None) -> threading.Event:
     """Atomic ownership claim. A live session's cancel token is NEVER
     overwritten — a duplicate stream/resume of the same run_id raises
     DeliverySessionActiveError and the original stays the sole owner."""
     with _SESSION_LOCK:
         if run_id in _SESSION_CANCEL:
             raise DeliverySessionActiveError(run_id)
+        if session_id:
+            from app.application.code_agent.run_journal import RunJournal
+
+            inputs = RunJournal(run_id).read_user_inputs() or {"version": 1, "session_id": session_id, "items": []}
+            if inputs["session_id"] != session_id:
+                raise ValueError("Run belongs to another chat")
+            _SESSION_INPUTS[run_id] = {"accepting": True, "journal": inputs}
         ev = threading.Event()
         _SESSION_CANCEL[run_id] = ev
     return ev
@@ -265,6 +274,73 @@ def unregister_session(run_id: str, ev: threading.Event) -> None:
     with _SESSION_LOCK:
         if _SESSION_CANCEL.get(run_id) is ev:
             _SESSION_CANCEL.pop(run_id, None)
+            _SESSION_INPUTS.pop(run_id, None)
+
+
+class SessionInputError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 409):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def session_user_inputs(run_id: str, session_id: str) -> list[dict[str, Any]]:
+    from app.application.code_agent.run_journal import RunJournal
+
+    with _SESSION_LOCK:
+        live = _SESSION_INPUTS.get(run_id)
+        value = live["journal"] if live else RunJournal(run_id).read_user_inputs()
+        if not value or value["session_id"] != session_id:
+            raise SessionInputError("Прогон не найден в этом чате.", 404)
+        return [dict(row) for row in value["items"]]
+
+
+def queue_session_input(run_id: str, session_id: str, request_id: str, text: str) -> dict[str, Any]:
+    from app.application.code_agent.run_journal import RunJournal
+
+    if not re.fullmatch(r"[a-f0-9]{32}", request_id) or not text.strip() or len(text) > 16000:
+        raise SessionInputError("Некорректное уточнение.", 422)
+    with _SESSION_LOCK:
+        live = _SESSION_INPUTS.get(run_id)
+        value = live["journal"] if live else RunJournal(run_id).read_user_inputs()
+        if value and value["session_id"] != session_id:
+            raise SessionInputError("Прогон не найден в этом чате.", 404)
+        for row in (value or {}).get("items", []):
+            if row["request_id"] == request_id:
+                if row["text"] != text:
+                    raise SessionInputError("Этот идентификатор уже принадлежит другому уточнению.")
+                return dict(row)
+        cancel = _SESSION_CANCEL.get(run_id)
+        if not live or not live["accepting"] or cancel is None or cancel.is_set():
+            raise SessionInputError("Задача завершилась или остановлена. Текст сохранён — отправьте его следующим сообщением.")
+        if len(value["items"]) >= 512 or sum(row["state"] == "queued" for row in value["items"]) >= 32:
+            raise SessionInputError("Очередь уточнений заполнена. Дождитесь обработки сообщений.", 429)
+        row = {"request_id": request_id, "text": text, "state": "queued"}
+        updated = {**value, "items": [*value["items"], row]}
+        RunJournal(run_id).write_user_inputs(updated)
+        live["journal"] = updated
+        return dict(row)
+
+
+def take_session_inputs(run_id: str, *, finishing: bool = False) -> list[dict[str, Any]]:
+    """One owner consumes between model/tool steps. Final admission shares the enqueue lock."""
+    from app.application.code_agent.run_journal import RunJournal
+
+    with _SESSION_LOCK:
+        live = _SESSION_INPUTS.get(run_id)
+        if not live:
+            return []
+        cancel = _SESSION_CANCEL.get(run_id)
+        if cancel is None or cancel.is_set():
+            return []
+        value = live["journal"]
+        pending = [dict(row, state="applied") for row in value["items"] if row["state"] == "queued"]
+        if pending:
+            updated = {**value, "items": [dict(row, state="applied") for row in value["items"]]}
+            RunJournal(run_id).write_user_inputs(updated)
+            live["journal"] = updated
+        elif finishing:
+            live["accepting"] = False
+        return pending
 
 
 def tool_state_changed(tool_name: str, tool_meta: dict, *, exec_ok: bool) -> bool:

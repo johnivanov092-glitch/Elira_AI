@@ -73,12 +73,12 @@ def sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+def _atomic_json(path: Path, payload: dict[str, Any], *, clean_payload: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(_clean(payload), handle, ensure_ascii=False, indent=2)
+            json.dump(_clean(payload) if clean_payload else payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -139,7 +139,7 @@ class RunJournal:
     """Owns state/events/commands/health files for one stable run id."""
 
     def __init__(self, run_id: str, *, runs_root: Path | None = None) -> None:
-        if not _RUN_ID_RE.fullmatch(run_id):
+        if not _RUN_ID_RE.fullmatch(run_id) or run_id in {".", ".."}:
             raise ValueError("run_id must contain only letters, digits, dot, underscore or dash")
         self.run_id = run_id
         self.runs_root = (runs_root or _runtime_root()).resolve()
@@ -170,6 +170,34 @@ class RunJournal:
     @property
     def state(self) -> dict[str, Any]:
         return dict(self._state)
+
+    def read_user_inputs(self) -> dict[str, Any] | None:
+        path = self.run_dir / "user-inputs.json"
+        if not path.exists():
+            return None
+        if path.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError("User input journal is too large")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(value, dict) or value.get("version") != 1
+                or not isinstance(value.get("session_id"), str) or not isinstance(value.get("items"), list)
+                or len(value["items"]) > 512):
+            raise ValueError("Invalid user input journal")
+        seen = set()
+        for row in value["items"]:
+            if (not isinstance(row, dict) or not isinstance(row.get("request_id"), str)
+                    or not re.fullmatch(r"[a-f0-9]{32}", row["request_id"]) or row["request_id"] in seen
+                    or row.get("state") not in {"queued", "applied"}
+                    or not isinstance(row.get("text"), str) or not 1 <= len(row["text"]) <= 16000):
+                raise ValueError("Invalid queued user input")
+            seen.add(row["request_id"])
+        return value
+
+    def write_user_inputs(self, value: dict[str, Any]) -> None:
+        # This is conversation input, like session turns, not diagnostic tool
+        # output. Preserve its exact text for idempotency and manual Resume.
+        if len(json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")) >= 16 * 1024 * 1024:
+            raise ValueError("User input journal is too large")
+        _atomic_json(self.run_dir / "user-inputs.json", value, clean_payload=False)
 
     def acquire(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)

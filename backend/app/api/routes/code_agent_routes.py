@@ -19,7 +19,8 @@ from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from app.application.code_agent.loop_helpers import SessionInputError, queue_session_input, session_user_inputs
 from starlette.background import BackgroundTask
 
 from app.application.code_agent.agent_loop import (
@@ -40,6 +41,12 @@ from app.application.code_agent.delivery_session import (
     stream_resume_session,
 )
 from app.application.code_agent import sessions as session_store
+from app.application.code_agent.archive import (
+    ArchiveError,
+    FolderEmpty,
+    FolderNotFound,
+    build_folder_archive,
+)
 from app.application.chat.local_chat import resolve_persona_mode
 from app.application.library.runtime import inject_library_context
 from app.application.persona.service import PersonaPostTurnObservation
@@ -589,28 +596,31 @@ def _stream_with_workflow_requests(
         )
         raise
     finally:
+        cleanup_error: Exception | None = None
         if not terminal_seen:
             # A chat switch keeps its reader alive in backgroundRuns and never
             # reaches this finalizer. Reaching it means the transport actually
             # disappeared, so stop both the delivery session and its live slice
             # before closing the durable Workflow projection.
-            cleanup_error: Exception | None = None
             try:
                 _cancel_live_run(code_agent_run_id)
             except Exception as exc:
                 cleanup_error = exc
-            close_events = getattr(events, "close", None)
-            if callable(close_events):
-                try:
-                    close_events()
-                except Exception as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
-                    logger.warning(
-                        "code-agent stream cleanup failed for %s",
-                        code_agent_run_id,
-                        exc_info=True,
-                    )
+        # Closing at the yielded terminal event still leaves the owned iterator
+        # suspended. Release it on every exit, without cancelling a finished run.
+        close_events = getattr(events, "close", None)
+        if callable(close_events):
+            try:
+                close_events()
+            except Exception as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                logger.warning(
+                    "code-agent stream cleanup failed for %s",
+                    code_agent_run_id,
+                    exc_info=True,
+                )
+        if not terminal_seen:
             finish_code_agent_workflow_run(
                 db_path=db_path,
                 workflow_run_id=workflow_run_id,
@@ -620,11 +630,11 @@ def _stream_with_workflow_requests(
                     "error": "code-agent stream closed",
                 },
             )
-            if cleanup_error is not None:
-                raise RuntimeError(
-                    f"code-agent stream closed with incomplete live cleanup: "
-                    f"{cleanup_error}"
-                ) from cleanup_error
+        if cleanup_error is not None:
+            raise RuntimeError(
+                f"code-agent stream closed with incomplete live cleanup: "
+                f"{cleanup_error}"
+            ) from cleanup_error
 
 
 @router.post("/stream")
@@ -716,6 +726,33 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
             "X-Run-Id": run_id,
         },
     )
+
+
+class CodeAgentUserInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str = Field(min_length=1, max_length=128)
+    request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    message: str = Field(min_length=1, max_length=16000)
+
+
+@router.post("/runs/{run_id}/input")
+def user_input(run_id: str, payload: CodeAgentUserInput) -> dict:
+    try:
+        return queue_session_input(run_id, payload.session_id, payload.request_id, payload.message)
+    except SessionInputError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/inputs")
+def user_inputs(run_id: str, session_id: str) -> dict:
+    try:
+        return {"items": session_user_inputs(run_id, session_id)}
+    except SessionInputError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/resume")
@@ -1005,6 +1042,37 @@ def update_chat_folders(payload: session_store.ChatFolderPatch) -> dict[str, Any
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return {"ok": True, "state": state}
+
+
+@router.get("/chat-folders/{folder_id}/archive")
+def download_chat_folder_archive(folder_id: str) -> Response:
+    """Download one chat folder as a ZIP of Markdown transcripts.
+
+    Each chat of the folder becomes a single ``.md`` file with the full text of
+    every user message and assistant answer. Read-only: sessions and folder
+    state are never modified. Errors are surfaced with a clear Russian message.
+    """
+    try:
+        data, filename, count = build_folder_archive(folder_id)
+    except FolderNotFound as exc:
+        raise HTTPException(status_code=404, detail="Папка не найдена") from exc
+    except FolderEmpty as exc:
+        raise HTTPException(status_code=409, detail="В папке нет чатов для экспорта") from exc
+    except ArchiveError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось собрать архив: {exc}") from exc
+    # RFC 5987: HTTP headers are latin-1, so the Cyrillic file name is carried
+    # as filename*=UTF-8''… with an ASCII fallback for older clients.
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "replace").decode("ascii").replace("\x7f", "_")
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": disposition,
+            "X-Chat-Count": str(count),
+        },
+    )
 
 
 class SessionCreateRequest(BaseModel):

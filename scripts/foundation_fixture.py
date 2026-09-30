@@ -342,7 +342,7 @@ def lifecycle_proof(client_host):
     def operation(name, release_id=None):
         request = {"version": 1, "operation": name, "request_id": uuid.uuid4().hex}
         if release_id is not None:
-            request["release_id"] = release_id
+            request["confirmation_id" if name == "confirm" else "release_id"] = release_id
         with client_host.clone() as connection_host:
             queued = foundation.dispatch(request, connection_host)
         _require(queued["status"] == "queued", "Operation did not enter real Foundation queue")
@@ -386,6 +386,7 @@ def lifecycle_proof(client_host):
                      "Published import escaped the sealed environment")
             observe("published-launcher", identity)
             operation("request", "a")
+            operation("confirm", manager.state()["confirmation"]["request_id"])
             operation("open")
             tick_until(lambda: manager.state().get("active") == "a" and manager._http().get("admitted") is True)
             observe("active-a", manager._http())
@@ -393,6 +394,7 @@ def lifecycle_proof(client_host):
             user("busy")
             pid_before = manager.backend.pid
             operation("request", "b")
+            operation("confirm", manager.state()["confirmation"]["request_id"])
             for _ in range(3):
                 foundation.advance_lifecycle()
                 _require(manager.state().get("active") == "a" and manager.state().get("pending") == "b"
@@ -410,6 +412,7 @@ def lifecycle_proof(client_host):
             observe("failed-startup-rollback", {"state": manager.state(), "all_database_rows_equal": True})
             user("fail-off")
             operation("request", "b")
+            operation("confirm", manager.state()["confirmation"]["request_id"])
             tick_until(lambda: manager.state().get("active") == "b" and manager._http().get("admitted") is True)
             observe("active-b", manager._http())
             post_admission = user("post-chat")["databases"]
@@ -437,6 +440,7 @@ def lifecycle_proof(client_host):
             observe("automatic-child-recovery", {"killed": killed, "replacement_pid": manager.backend.pid,
                                                   "service_pid": os.getpid(), "health": manager._http()})
             operation("rollback")
+            operation("confirm", manager.state()["confirmation"]["request_id"])
             tick_until(lambda: manager.state().get("active") == "a" and manager._http().get("admitted") is True)
             final_rows = user("snapshot")["databases"]
             expected = json.loads(json.dumps(post_admission))

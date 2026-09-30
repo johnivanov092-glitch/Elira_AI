@@ -1,8 +1,9 @@
 import {
-  getChatFolders, initializeChatFolders, patchChatFolders,
+  fetchFolderArchive, getChatFolders, initializeChatFolders, patchChatFolders,
   type FolderOperation, type FolderState,
 } from "../api/chatFolders";
 import { ApiError } from "../api/client";
+import { toast } from "../components/ToastHost";
 
 export type { ChatFolder, FolderState } from "../api/chatFolders";
 
@@ -141,4 +142,30 @@ export function assignToFolder(sessionId: string, folderId: string | null): void
 }
 export function toggleCollapsed(id: string): void {
   enqueue(() => ({ operation: "collapse", folder_id: id, collapsed: !state.collapsed[id] }));
+}
+
+/** Download the folder's ZIP archive in the browser and report the outcome
+ *  with a toast. Returns true when the download was triggered. */
+export async function downloadFolderArchive(id: string): Promise<boolean> {
+  try {
+    const { blob, filename } = await fetchFolderArchive(id);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    // Revoke after the click has been handled so the download can start.
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast.success(`Архив «${filename}» скачивается`);
+    return true;
+  } catch (error) {
+    toast.error(
+      error instanceof ApiError
+        ? `Не удалось скачать архив: ${error.message}`
+        : "Не удалось скачать архив. Проверь соединение и повтори.",
+    );
+    return false;
+  }
 }

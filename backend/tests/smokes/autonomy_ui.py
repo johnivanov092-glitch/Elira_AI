@@ -35,9 +35,12 @@ DEFAULT_ROOT = REPO / ".scratch/autonomy-ui-acceptance"
 GIB = 1024 ** 3
 MAX_BYTES = 30 * GIB
 MIN_FREE = 50 * GIB
-PHASE_SECONDS = 1200
-VERIFY_SECONDS = 1800
+PHASE_SECONDS = None  # A user task has no elapsed-time cancellation budget.
+VERIFY_SECONDS = None
 SELF = Path(__file__).resolve()
+# The controller later installs its isolated environment in this process.
+# Preserve explicit production overrides before that change.
+_PRODUCTION_ENV = {key: os.environ.get(key) for key in ("ELIRA_DATA_DIR", "ELIRA_AGENT_RUNS_DIR")}
 
 
 def stamp() -> str:
@@ -79,7 +82,7 @@ def budget(root: Path) -> dict:
 
 
 def command(args: list[str], *, cwd: Path, env: dict | None = None,
-            timeout: int = VERIFY_SECONDS, log: Path | None = None) -> None:
+            timeout: int | None = VERIFY_SECONDS, log: Path | None = None) -> None:
     if log:
         log.parent.mkdir(parents=True, exist_ok=True)
     out = log.open("w", encoding="utf-8", newline="\n") if log else None
@@ -124,23 +127,84 @@ def sqlite_digest(path: Path) -> dict:
     return {"sha256": h.hexdigest(), "dump_lines": count}
 
 
+def foundation_paths() -> dict | None:
+    """Missing registration is legacy; broken/inaccessible registration fails."""
+    if os.name != "nt":
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Elira\EliraFoundation",
+                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY):
+            pass
+    except FileNotFoundError:
+        return None
+    spec = importlib.util.spec_from_file_location("acceptance_foundation_client", REPO / "scripts/foundation_client.py")
+    client = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(client)
+    # Once registration exists, missing fields/files or removal races are errors.
+    return client.installation_paths()
+
+
 def production_snapshot() -> dict:
-    state = read_json(REPO / ".runtime/releases/state.json")
-    active = REPO / ".runtime/releases/candidates" / state["active"]
     module = release_module(REPO)
-    # An existing manager only computes file inventory; it starts no process.
-    manager = module.ReleaseManager(REPO, publish_processes=False)
-    core = [REPO / "scripts/elira_release.py", REPO / "backend/app/core/release_runtime.py"]
-    sources = {name: digest(path) for name, path in manager._source_files(active)}
+    installed = foundation_paths()
+    if installed is not None:
+        layout = {"kind": "foundation", **installed}
+        platform, store = Path(layout["platform"]), Path(layout["store"])
+        configuration = read_json(store / "installation.json")
+        for key in ("platform", "store", "candidates", "published", "data", "journals", "port", "application_token_mode"):
+            if configuration.get(key) != layout[key]:
+                raise ValueError(f"Foundation configuration differs from registered {key}")
+        core = [*module._tree_files(Path(layout["host"])), Path(layout["python"]), store / "installation.json"]
+        if (store / "installation-manifest.json").is_file():
+            core.append(store / "installation-manifest.json")
+    else:
+        from dotenv import dotenv_values
+
+        platform, store = REPO, REPO / ".runtime/releases"
+        settings = {**dotenv_values(REPO / "backend/.env"), **dotenv_values(REPO / "backend/.env.local")}
+        layout = {"kind": "legacy", "platform": str(platform), "store": str(store),
+                  "published": str(store / "candidates"),
+                  "data": str(Path(_PRODUCTION_ENV["ELIRA_DATA_DIR"] or settings.get("ELIRA_DATA_DIR") or platform / "data").resolve()),
+                  "journals": str(Path(_PRODUCTION_ENV["ELIRA_AGENT_RUNS_DIR"] or settings.get("ELIRA_AGENT_RUNS_DIR") or platform / ".agent/runs").resolve())}
+        core = []
+    state_path = store / "state.json"
+    state = read_json(state_path)
+    if not isinstance(state, dict) or not isinstance(state.get("active"), str):
+        raise ValueError("Production has no selected active release")
+    module.ReleaseManager._validate_id(state["active"])
+    active = module._contained(Path(layout["published"]) / state["active"], Path(layout["published"]))
+    receipt_path = module._contained(store / "records" / (state["active"] + ".json"), store)
+    receipt = read_json(receipt_path)
+    if (receipt.get("release_id") != state["active"] or receipt.get("status") != "verified"
+            or Path(receipt.get("root", "")).resolve() != active):
+        raise ValueError("Production active release has no matching verified receipt")
+    expected = receipt.get("sha256")
+    executable = receipt.get("executable")
+    if (not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+            or not isinstance(executable, str) or not executable):
+        raise ValueError("Production verified receipt has no valid runtime seal")
+    # Fingerprinting only reads files; __init__ would create store directories.
+    reader = object.__new__(module.ReleaseManager)
+    runtime_sha256 = reader.fingerprint(active, executable=executable)
+    if runtime_sha256 != expected:
+        raise ValueError("Production active runtime differs from its verified receipt")
+    core.extend([platform / "scripts/elira_release.py", platform / "backend/app/core/release_runtime.py"])
+    core.extend(path for path in (platform / "backend/.env", platform / "backend/.env.local") if path.is_file())
+    # The inventory is pure; never initialize a manager/store in production.
+    sources = {name: digest(path) for name, path in module.ReleaseManager._source_files(active)}
     databases = {}
-    for path in sorted((REPO / "data").rglob("*.db")):
-        try:
-            databases[str(path.relative_to(REPO))] = sqlite_digest(path)
-        except (sqlite3.Error, OSError) as exc:
-            databases[str(path.relative_to(REPO))] = {"error": str(exc)}
-    return {"at": stamp(), "state": state, "active_source": sources,
-            "platform_core": {str(path.relative_to(REPO)): digest(path) for path in core},
-            "databases": databases}
+    data = Path(layout["data"])
+    for path in sorted(module._tree_files(data)):
+        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            databases[str(path.relative_to(data))] = sqlite_digest(path)
+    result = {"at": stamp(), "layout": layout, "state": state, "source_root": str(active),
+              "active_receipt": receipt, "active_source": sources, "active_runtime_sha256": runtime_sha256,
+              "platform_core": {str(path): digest(path) for path in core}, "databases": databases}
+    if read_json(state_path) != state or read_json(receipt_path) != receipt:
+        raise RuntimeError("Production release changed while collecting its snapshot")
+    return result
 
 
 def config(root: Path) -> dict:
@@ -198,7 +262,8 @@ def setup(root: Path) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     initial = production_snapshot()
     write_json(root / "production-before.json", initial)
-    source = REPO / ".runtime/releases/candidates" / initial["state"]["active"]
+    source = Path(initial["source_root"])
+    production_platform = Path(initial["layout"]["platform"])
     platform = root / "platform"
     if platform.exists():
         raise ValueError("Partial setup exists; inspect before resuming")
@@ -210,7 +275,7 @@ def setup(root: Path) -> dict:
     from dotenv import dotenv_values
     provider = {}
     for name in (".env", ".env.local"):
-        provider.update(dotenv_values(REPO / "backend" / name))
+        provider.update(dotenv_values(production_platform / "backend" / name))
     allowed = ("LLAMA_SERVER_ENABLED", "LLAMA_SERVER_BASE_URL", "LLAMA_SERVER_MODEL",
                "LLAMA_SERVER_TIMEOUT_SECONDS", "LLAMA_SERVER_CONTEXT_WINDOW", "LLAMA_SERVER_MAX_TOKENS")
     model_env = {key: str(os.environ.get(key) or provider[key]) for key in allowed if os.environ.get(key) or provider.get(key)}
@@ -225,7 +290,10 @@ def setup(root: Path) -> dict:
     write_json(root / "config.json", cfg)
     for key in ("data", "runs", "temp"):
         Path(cfg[key]).mkdir()
-    command(["git", "clone", "--local", "--no-hardlinks", str(source), str(platform)], cwd=root)
+    # Published Foundation releases contain sealed runtime bytes, not .git.
+    # Clone repository history, then replace source with the selected live bytes.
+    command(["git", "-c", "safe.directory=" + REPO.resolve().as_posix(),
+             "clone", "--local", "--no-hardlinks", str(REPO), str(platform)], cwd=root)
     command(["git", "remote", "remove", "origin"], cwd=platform)
     module = release_module(REPO)
     copy_source(module, source, platform)
@@ -246,7 +314,7 @@ def setup(root: Path) -> dict:
     command([str(manager._python(baseline)), str(SELF), "seed", "--root", str(root), "--release", cfg["baseline"]],
             cwd=root, env=environment(root), timeout=120, log=root / "seed.log")
     result = {"ok": True, "scope": cfg["scope"], "baseline": str(baseline), "budget": budget(root),
-              "platform_supervisor_matches_production": digest(platform / "scripts/elira_release.py") == digest(REPO / "scripts/elira_release.py")}
+              "platform_supervisor_matches_production": digest(platform / "scripts/elira_release.py") == digest(source / "scripts/elira_release.py")}
     write_json(root / "setup.json", result)
     return result
 
@@ -658,7 +726,7 @@ def phase(root: Path, name: str, batch: int, slot: str, *, attempt: str = "",
     started = time.monotonic()
     def monitor():
         while not done.wait(15):
-            reason = "operator_stop" if (evidence / "STOP").exists() else "phase_timeout" if time.monotonic() - started > PHASE_SECONDS else ""
+            reason = "operator_stop" if (evidence / "STOP").exists() else ""
             try:
                 budget(root)
             except (RuntimeError, OSError) as exc:
@@ -675,7 +743,7 @@ def phase(root: Path, name: str, batch: int, slot: str, *, attempt: str = "",
     req = urllib.request.Request(f"http://127.0.0.1:{cfg['backend_port']}/api/code-agent/stream",
                                  data=json.dumps(body, ensure_ascii=False).encode(), headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=PHASE_SECONDS + 30) as stream, (evidence / f"events-{name}.jsonl").open("w", encoding="utf-8", newline="\n") as log:
+        with urllib.request.urlopen(req, timeout=None) as stream, (evidence / f"events-{name}.jsonl").open("w", encoding="utf-8", newline="\n") as log:
             for raw in stream:
                 if not raw.startswith(b"data:"):
                     continue
@@ -716,7 +784,8 @@ def integrity(root: Path) -> dict:
     before = read_json(root / "production-before.json")
     after = production_snapshot()
     write_json(root / "production-after.json", after)
-    differences = {key: before[key] != after[key] for key in ("state", "active_source", "platform_core", "databases")}
+    differences = {key: before.get(key) != after.get(key)
+                   for key in ("layout", "state", "active_receipt", "active_source", "active_runtime_sha256", "platform_core", "databases")}
     result = {"ok": not any(differences.values()), "changed": differences,
               "note": "Production background activity may change databases; any difference requires review, never silently passes."}
     write_json(root / "production-integrity.json", result)
@@ -794,14 +863,13 @@ def serve(root: Path, *, preview: str | None = None) -> None:
         arguments = [sys.executable, str(public_runtime), "preview" if preview else "serve"]
         if preview:
             arguments.extend(["--release", preview])
-        command(arguments, cwd=root, env=environment(root), timeout=7260)
+        command(arguments, cwd=root, env=environment(root))
         return
     manager = manager_for(root)
     module = release_module(Path(config(root)["platform"]))
     stop = root / "STOP_SERVER"
     if stop.exists():
         stop.unlink()  # Task-owned control marker only.
-    started = time.monotonic()
     with module._lock(manager.owned("supervisor.lock")):
         manager._reap_owned_processes()
         with socket.socket() as sock:
@@ -820,7 +888,7 @@ def serve(root: Path, *, preview: str | None = None) -> None:
                 manager._launch_active(state["active"])
             elif not state.get("pending"):
                 raise ValueError("No verified baseline has been requested")
-            while not stop.exists() and time.monotonic() - started < 7200:
+            while not stop.exists():
                 if not preview:
                     manager.apply_pending()
                 if manager.backend is None or manager.ui is None or manager.ui.poll() is not None:
@@ -838,6 +906,35 @@ def serve(root: Path, *, preview: str | None = None) -> None:
             manager._stop_backend()
 
 
+def confirm_fixture_release(root: Path, manager, release_id: str, *, purpose: str) -> dict:
+    """Explicit controller decision for owned baseline/recovery fixtures only."""
+    cfg = config(root)
+    platform = Path(cfg["platform"]).resolve()
+    if (manager.platform.resolve() != platform or manager.port != cfg["backend_port"]
+            or manager.store.resolve() != platform / ".runtime/releases"
+            or manager.data.resolve() != Path(cfg["data"]).resolve()
+            or manager.journals.resolve() != Path(cfg["runs"]).resolve()):
+        raise ValueError("Fixture confirmation requires the owned isolated installation")
+    state = manager.state()
+    expected = (cfg["baseline"] if purpose == "baseline" else state.get("previous")
+                if purpose in {"rollback", "startup-fault"} else None)
+    if not expected or release_id != expected:
+        raise ValueError("Fixture confirmation cannot approve a model-generated update")
+    if state.get("confirmation"):
+        raise ValueError("Preserve the existing installation proposal for the user")
+    requested = manager.request(release_id)
+    proposal = requested.get("confirmation")
+    if proposal is None and requested.get("active") == release_id:
+        return requested
+    if not isinstance(proposal, dict) or proposal.get("release_id") != release_id:
+        raise ValueError("Fixture request returned no matching proposal")
+    write_json(root / f"fixture-{purpose}-confirmation.json", {
+        "at": stamp(), "decision": "explicit_test_fixture", "purpose": purpose,
+        "confirmation": proposal,
+    })
+    return manager.confirm(proposal["request_id"])
+
+
 def rollback_check(root: Path) -> dict:
     manager = manager_for(root)
     prior = manager.state()
@@ -846,7 +943,7 @@ def rollback_check(root: Path) -> dict:
         raise ValueError("A prior verified version is required for rollback")
     marker = api(root, "/api/code-agent/sessions", {"title": "FICTIONAL_POST_ADMISSION_RETAIN"})["session"]
     baseline_db = sqlite_digest(Path(config(root)["data"]) / "code_agent_sessions.db")
-    manager.request(target)
+    confirm_fixture_release(root, manager, target, purpose="rollback")
     deadline = time.monotonic() + 120
     after_health = {}
     while time.monotonic() < deadline:
@@ -907,7 +1004,7 @@ def startup_fault_check(root: Path) -> dict:
         try:
             manager._launch_active(original)
             before = sqlite_digest(database)
-            manager.request(target)
+            confirm_fixture_release(root, manager, target, purpose="startup-fault")
             applied = manager.apply_pending()
             after = sqlite_digest(database)
             health = manager._http()

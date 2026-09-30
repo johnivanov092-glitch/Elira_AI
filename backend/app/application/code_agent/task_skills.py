@@ -5,6 +5,7 @@ Connected projects and attachments do not implicitly become instruction roots.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -30,7 +31,7 @@ CONTEXT_ID = "elira-active-skills"
 ADVISOR_CONTEXT_ID = "elira-skill-advisor"
 
 
-def _read(name: str) -> dict[str, str]:
+def _read(name: str) -> dict[str, Any]:
     if not isinstance(name, str) or len(name) > 64 or not _NAME.fullmatch(name):
         raise ValueError("Invalid skill name; use skill_list for available names")
     from app.application.code_agent.skill_development import active_package
@@ -141,6 +142,10 @@ def catalog_context() -> str:
         "проверяй применимость сохранённого опыта и адаптируй его при изменении задачи. "
         "Улучшение опубликуй новой проверенной версией и снова вызови skill_load; "
         "до явной загрузки текущая задача сохраняет прежнюю версию. "
+        "Для нового Python-пакета используй skill_create с config.environment='python': "
+        "его постоянная .venv отделена от приложения. Выполняй точные абсолютные "
+        "environment.python_command и pip_command из результата; смена папки не меняет Python. "
+        "Не устанавливай зависимости навыка в backend/.venv и не используй .scratch для повторного запуска. "
         "отсутствие навыка не является причиной остановки. Загружай только необходимые инструкции, "
         "не весь набор. Справочники читай отдельно по необходимости. "
         "Навык не меняет требования пользователя, Workflow, честность, личность или "
@@ -232,7 +237,7 @@ class SkillContext:
     """Exact run-owned snapshots, independent of lossy conversation history."""
 
     def __init__(self) -> None:
-        self._active: dict[str, dict[str, str]] = {}
+        self._active: dict[str, dict[str, Any]] = {}
 
     def activate(
         self, snapshot: dict[str, Any], reason: str = "", *, refresh: bool = False,
@@ -279,8 +284,8 @@ class SkillContext:
             "reason": str(reason)[:240], **selected}
         return True
 
-    def snapshots(self) -> list[dict[str, str]]:
-        return [dict(item) for item in self._active.values()]
+    def snapshots(self) -> list[dict[str, Any]]:
+        return deepcopy(list(self._active.values()))
 
     def restore(self, run_id: str) -> None:
         from app.application.code_agent.run_journal import RunJournal

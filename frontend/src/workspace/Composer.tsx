@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Library, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode, ReasoningEffort } from "../api/codeAgent";
 import { importResourceToLibrary } from "../api/library";
@@ -111,6 +111,27 @@ export function Composer({
   const submittingRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const submitRef = useRef<() => void>(() => {});
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const resize = () => {
+      const style = getComputedStyle(input);
+      const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+      const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+      const maximum = lineHeight * 10 + padding;
+      input.style.height = "0px";
+      const height = Math.min(input.scrollHeight, maximum);
+      input.style.height = `${Math.max(lineHeight + padding, height)}px`;
+      input.style.overflowY = input.scrollHeight > maximum ? "auto" : "hidden";
+    };
+    resize();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
+    if (input.parentElement) observer?.observe(input.parentElement);
+    window.addEventListener("resize", resize);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", resize); };
+  }, [value]);
   const usage = contextUsage
     && Number.isFinite(contextUsage.current_tokens)
     && Number.isFinite(contextUsage.ctx_size)
@@ -140,7 +161,12 @@ export function Composer({
 
   function submit() {
     const text = value.trim();
-    if (!text || running || submittingRef.current) return;
+    if (!text || submittingRef.current) return;
+    setSendError(null);
+    if (running && (multiAgent || attachments.length > 0 || uploading.length > 0)) {
+      setSendError("Во время работы можно отправить текстовое уточнение. Вложения и мульти-агент доступны для следующей задачи.");
+      return;
+    }
     // Multi-agent runs through a separate pipeline endpoint that takes only the
     // query (no chat attachments). Route there and keep any staged files intact.
     if (multiAgent) {
@@ -166,6 +192,7 @@ export function Composer({
         onChange("");
         setAttachments([]);
       })
+      .catch((error) => setSendError(error instanceof Error ? error.message : "Сообщение не отправлено. Текст сохранён."))
       .finally(() => {
         submittingRef.current = false;
         setSubmitting(false);
@@ -184,7 +211,7 @@ export function Composer({
   }, [pendingSend, uploading]);
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     }
@@ -258,7 +285,7 @@ export function Composer({
             effort={reasoningEffort}
             onChange={setReasoningEffort}
           />
-          <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running || submitting} />
+          <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={submitting} />
           <MultiAgentChip
             active={multiAgent}
             useOrchestrator={useOrchestrator}
@@ -357,15 +384,17 @@ export function Composer({
             <Plus size={16} />
           </button>
           <textarea
+            ref={inputRef}
+            aria-label={running ? "Уточнение текущей задачи" : "Сообщение Elira"}
             rows={1}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKey}
             disabled={submitting}
-            placeholder="Опиши задачу или перетащи файл…  Enter — отправить"
-            className="max-h-[120px] flex-1 resize-none bg-transparent text-sm text-tx outline-none placeholder:text-mut"
+            placeholder={running ? "Добавь уточнение, не прерывая работу…  Enter — отправить" : "Опиши задачу или перетащи файл…  Enter — отправить"}
+            className="min-w-0 flex-1 resize-none bg-transparent text-sm leading-5 text-tx outline-none placeholder:text-mut"
           />
-          {running ? (
+          {running && (
             <button
               type="button"
               onClick={onStop}
@@ -374,13 +403,13 @@ export function Composer({
             >
               <Square size={15} />
             </button>
-          ) : (
+          )}
             <button
               type="button"
               onClick={submit}
               disabled={submitting || !value.trim()}
-              aria-label="Отправить"
-              title={pendingSend ? "Отправлю, как только загрузится файл" : undefined}
+              aria-label={running ? "Отправить уточнение" : "Отправить"}
+              title={running ? "Отправить, не прерывая работу Elira" : pendingSend ? "Отправлю, как только загрузится файл" : undefined}
               className={cn(
                 "grid h-[33px] w-[33px] shrink-0 place-items-center rounded-lg text-[#14151b] transition-opacity",
                 value.trim() ? "bg-ac" : "cursor-not-allowed bg-ac/40",
@@ -388,8 +417,8 @@ export function Composer({
             >
               {pendingSend || submitting ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
             </button>
-          )}
         </div>
+        {sendError && <p role="alert" className="mt-2 text-[11px] text-danger">{sendError}</p>}
       </div>
     </div>
   );

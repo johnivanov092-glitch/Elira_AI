@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StreamCodeAgentArgs } from "../api/codeAgent";
 
-const fake = vi.hoisted(() => ({ handlers: [] as StreamCodeAgentArgs[], cancels: [] as string[] }));
+const fake = vi.hoisted(() => ({ handlers: [] as StreamCodeAgentArgs[], cancels: [] as string[], input: vi.fn() }));
 vi.mock("../api/codeAgent", () => ({
+  sendCodeAgentInput: fake.input,
   streamCodeAgent: (args: StreamCodeAgentArgs) => {
     fake.handlers.push(args);
     return new Promise<void>(() => {});
@@ -13,9 +14,68 @@ vi.mock("../api/codeAgent", () => ({
     return new Promise<void>(() => {});
   },
 }));
-import { send, stop, getSnapshot, seed, setPersist } from "./backgroundRuns";
+import { send, stop, steer, getSnapshot, seed, setPersist } from "./backgroundRuns";
 import { isAcceptedAnswer } from "./answerLifecycle";
 import { uploadResource } from "../api/resources";
+
+describe("updates to a live run", () => {
+  afterEach(() => { fake.cancels.length = 0; fake.input.mockReset(); });
+  it("waits for the same starting stream identity and preserves the draft if stopped first", async () => {
+    const args = { sessionId: "steer-starting", text: "проверь", mode: "code" as const, projectRoot: "", model: "auto" };
+    send(args);
+    const handler = fake.handlers.at(-1)!;
+    fake.input.mockImplementationOnce(async (_run, _session, id, text) => ({ request_id: id, text, state: "queued" }));
+    const pending = steer(args.sessionId, "только прочитай");
+    expect(fake.input).not.toHaveBeenCalled();
+    handler.onRunId?.("starting-run");
+    await pending;
+    expect(fake.input.mock.calls[0].slice(0, 2)).toEqual(["starting-run", args.sessionId]);
+    stop(args.sessionId);
+    fake.input.mockClear();
+    send({ ...args, sessionId: "steer-stopped-at-start" });
+    const interrupted = steer("steer-stopped-at-start", "сохранённый текст");
+    const rejected = expect(interrupted).rejects.toThrow("Текст сохранён");
+    stop("steer-stopped-at-start");
+    await rejected;
+    expect(fake.input).not.toHaveBeenCalled();
+  });
+  it("keeps the same stream, preserves an early applied receipt and saves the model reply", async () => {
+    const sessionId = "steer-live";
+    send({ sessionId, text: "исходная задача", mode: "code", projectRoot: "", model: "auto" });
+    const handler = fake.handlers.at(-1)!;
+    handler.onRunId?.("live-run");
+    let resolve: (value: unknown) => void = () => {};
+    fake.input.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const streamCount = fake.handlers.length;
+    const result = steer(sessionId, "только прочитай файл");
+    const requestId = fake.input.mock.calls.at(-1)![2];
+    handler.onEvent?.({ type: "user_input_applied", run_id: "live-run", step: 2, request_id: requestId, text: "только прочитай файл" });
+    handler.onEvent?.({ type: "user_input_reply", run_id: "live-run", step: 2, request_ids: [requestId], text: "Ок, только прочитаю." });
+    resolve({ request_id: requestId, text: "только прочитай файл", state: "queued" });
+    await result;
+    expect(fake.handlers).toHaveLength(streamCount);
+    expect(getSnapshot(sessionId).running).toBe(true);
+    const updates = getSnapshot(sessionId).turns.filter(t => t.kind === "user" && t.steering);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ steering: { state: "applied", reply: "Ок, только прочитаю." } });
+    stop(sessionId);
+    expect(fake.cancels.at(-1)).toBe("live-run");
+  });
+
+  it("retains the same request ID after uncertainty and refuses a completed run", async () => {
+    const sessionId = "steer-retry";
+    send({ sessionId, text: "проверь", mode: "code", projectRoot: "", model: "auto" });
+    fake.handlers.at(-1)!.onRunId?.("retry-run");
+    fake.input.mockRejectedValueOnce(new Error("connection lost"));
+    await expect(steer(sessionId, "сохрани данные")).rejects.toThrow("connection lost");
+    const first = fake.input.mock.calls.at(-1)!;
+    fake.input.mockImplementationOnce(async (_run, _session, id, text) => ({ request_id: id, text, state: "queued" }));
+    await steer(sessionId, "сохрани данные");
+    expect(fake.input.mock.calls.at(-1)![2]).toBe(first[2]);
+    stop(sessionId);
+    await expect(steer(sessionId, "поздно")).rejects.toThrow("Текст сохранён");
+  });
+});
 
 describe("attachment history", () => {
   it("keeps uploaded IDs on their originating turn through follow-up and reload", async () => {

@@ -5,6 +5,7 @@ export type UserTurnData = {
   kind: "user";
   id: string;
   text: string;
+  steering?: { requestId: string; runId: string; state: "queued" | "applied"; reply?: string };
   /** Durable IDs only, retained with the originating message in session storage. */
   resources?: Pick<ResourceRef, "resource_id">[];
 };

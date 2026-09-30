@@ -36,6 +36,7 @@ from app.application.code_agent.loop_helpers import (
     request_session_cancel,
     session_active as _session_active,
     unregister_session as _unregister_session,
+    session_user_inputs,
 )
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.taskspec import derive_task_spec
@@ -234,6 +235,12 @@ def build_continuation_kwargs(
     last_response = str(state.get("last_response") or "").strip()
     if last_response:
         history.append({"role": "assistant", "content": last_response})
+    try:
+        for row in session_user_inputs(run_id, str(req.get("session_id") or "")):
+            if row["state"] == "applied":
+                history.append({"role": "user", "content": row["text"]})
+    except RuntimeError:
+        pass  # Older journals have no user input ledger.
     history.append({"role": "assistant", "content": _resume_facts_block(run_id, state, delivery_shaped=shaped)})
 
     user_message = _DELIVERY_CONTINUATION_MESSAGE if shaped else _CONTINUATION_MESSAGE
@@ -338,9 +345,7 @@ def stream_delivery_session(
     }
     shaped = _delivery_shaped(user_message, project_root)
     if not shaped:
-        # Simple task / diagnostic one-shot: one ordinary run, byte-for-byte
-        # today's behaviour (no session registry, no extra events).
-        yield from stream_code_agent(**first_kwargs)
+        yield from _run_single(rid, first_kwargs)
         return
     first_kwargs["task_instructions"] = DELIVERY_CONTRACT_NOTE
     yield from _run_session(
@@ -375,7 +380,7 @@ def stream_resume_session(
         str(req.get("user_message") or ""), str(req.get("project_root") or "")
     )
     if not shaped:
-        yield from stream_code_agent(**kwargs)
+        yield from _run_single(run_id, kwargs)
         return
     yield from _run_session(
         run_id,
@@ -385,6 +390,19 @@ def stream_resume_session(
         seen_touched={str(p) for p in (state.get("changed_files") or []) if str(p).strip()},
         prev_confirmed=_confirmed_count(state.get("criteria")),
     )
+
+
+def _run_single(rid: str, kwargs: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """One ordinary run with the same Stop/input ownership as structural tasks."""
+    try:
+        token = _register_session(rid, session_id=kwargs.get("session_id"))
+    except DeliverySessionActiveError:
+        yield _duplicate_session_done(rid)
+        return
+    try:
+        yield from stream_code_agent(**kwargs)
+    finally:
+        _unregister_session(rid, token)
 
 
 def _run_session(
@@ -397,7 +415,7 @@ def _run_session(
     prev_confirmed: int,
 ) -> Iterator[dict[str, Any]]:
     try:
-        cancel_ev = _register_session(rid)
+        cancel_ev = _register_session(rid, session_id=first_kwargs.get("session_id"))
     except DeliverySessionActiveError:
         # A live session already owns this run_id — refuse the duplicate with a
         # stable error and WITHOUT touching the original's cancel token.
@@ -414,8 +432,10 @@ def _run_session(
             slice_new_touched: list[str] = []
             slice_state_changes = 0
             fallback_seen = False
+            slice_stream = None
             try:
-                for ev in stream_code_agent(**current_kwargs):
+                slice_stream = stream_code_agent(**current_kwargs)
+                for ev in slice_stream:
                     et = ev.get("type")
                     if et == "tool_call":
                         # Proven progress = real MUTATIONS this slice (runtime
@@ -449,6 +469,10 @@ def _run_session(
                     "partial": True,
                     "resumable": True,
                 }
+            finally:
+                close_slice = getattr(slice_stream, "close", None)
+                if callable(close_slice):
+                    close_slice()
             if done_event is None:
                 done_event = {
                     "type": "done",

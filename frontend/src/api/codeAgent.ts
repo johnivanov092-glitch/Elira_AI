@@ -6,6 +6,39 @@ export type { PermissionMode } from "./workflows";
 
 export const DEFAULT_CODE_AGENT_MODEL = "auto";
 
+export type UserInputReceipt = { request_id: string; text: string; state: "queued" | "applied" };
+
+function parseUserInput(value: unknown): UserInputReceipt {
+  const row = value as Partial<UserInputReceipt> | null;
+  if (!row || typeof row.request_id !== "string" || !/^[a-f0-9]{32}$/.test(row.request_id)
+    || typeof row.text !== "string" || (row.state !== "queued" && row.state !== "applied")) {
+    throw new Error("Некорректный ответ о доставке уточнения. Текст сохранён.");
+  }
+  return { request_id: row.request_id, text: row.text, state: row.state };
+}
+
+export async function sendCodeAgentInput(runId: string, sessionId: string, requestId: string, text: string): Promise<UserInputReceipt> {
+  const path = `/api/code-agent/runs/${encodeURIComponent(runId)}`;
+  try {
+    const row = parseUserInput(await request<unknown>(`${path}/input`, {
+      method: "POST", body: { session_id: sessionId, request_id: requestId, message: text }, timeoutMs: 10000,
+    }));
+    if (row.request_id !== requestId || row.text !== text) throw new Error("Уточнение не подтверждено. Текст сохранён.");
+    return row;
+  } catch (error) {
+    // A lost POST response is uncertain, not proof of rejection. Reconcile by
+    // the same ID with a read; never resend a mutation automatically.
+    if (!(error instanceof ApiError && error.status >= 400 && error.status < 500)) {
+      try {
+        const result = await request<{ items: unknown[] }>(`${path}/inputs?session_id=${encodeURIComponent(sessionId)}`, { timeoutMs: 6000 });
+        const row = result.items.map(parseUserInput).find(item => item.request_id === requestId && item.text === text);
+        if (row) return row;
+      } catch { /* Keep the original failure and the draft. */ }
+    }
+    throw error;
+  }
+}
+
 /** Proxied favicon URL for a source origin. The endpoint literal lives here in
  *  the api layer (not in components) per the smoke-contract guard. */
 export function codeAgentFaviconUrl(url: string): string {
@@ -200,6 +233,8 @@ export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
   | { type: "run_resumed"; run_id: string; from_step: number }
   | { type: "step_started"; step: number }
+  | { type: "user_input_applied"; step: number; run_id: string; request_id: string; text: string }
+  | { type: "user_input_reply"; step: number; run_id: string; request_ids: string[]; text: string }
   | { type: "heartbeat"; step?: number; phase?: "planning" }
   | { type: "planning_started"; run_id: string }
   | { type: "plan_ready"; run_id: string; plan: PlanArtifact }

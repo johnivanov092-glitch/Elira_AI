@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import importlib.util
 import json
 import os
@@ -21,7 +22,7 @@ import uuid
 
 
 REPO = Path(__file__).resolve().parents[1]
-TEMPLATES = REPO / ".scratch/autonomy-ui-acceptance"
+TEMPLATES = REPO / "backend/tests/smokes/autonomy_ui_support"
 HIDDEN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -37,27 +38,115 @@ def require_admin():
         raise RuntimeError("Run Elira_Autonomy_Test.bat as administrator; Windows policy is not changed.")
 
 
+def browser_path(explicit: Path | None = None) -> Path:
+    if explicit is not None:
+        if not explicit.is_file():
+            raise ValueError("The specified browser executable does not exist")
+        return explicit.resolve()
+    candidates = [shutil.which("chrome"), shutil.which("msedge")]
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        if os.environ.get(variable):
+            base = Path(os.environ[variable])
+            candidates.extend((base / "Google/Chrome/Application/chrome.exe",
+                               base / "Microsoft/Edge/Application/msedge.exe"))
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate).resolve()
+    raise RuntimeError("No installed Chromium browser found; use --browser-executable")
+
+
+def browser_preflight(executable: Path, playwright_module: Path | None) -> None:
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("Node is not available")
+    # Loading an existing driver never installs a package or downloads a browser.
+    probe = subprocess.run([node, "-e", "const p=require(process.argv[1]); if(!p.chromium)process.exit(2)",
+                            str(playwright_module) if playwright_module else "playwright"],
+                           cwd=REPO, capture_output=True, timeout=30, creationflags=HIDDEN)
+    if probe.returncode:
+        raise RuntimeError("Playwright is unavailable; supply --playwright-module for an existing installation")
+    browser_path(executable)
+
+
 def load_harness():
     source = REPO / "backend/tests/smokes/autonomy_ui.py"
     spec = importlib.util.spec_from_file_location("unattended_ui_harness", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.PHASE_SECONDS = 3600
     checks_spec = importlib.util.spec_from_file_location(
-        "unattended_checkpoints", REPO / ".scratch/autonomy-compaction-acceptance/checkpoints.py")
+        "unattended_checkpoints", TEMPLATES / "checkpoints.py")
     checks = importlib.util.module_from_spec(checks_spec)
     checks_spec.loader.exec_module(checks)
     module.budget = lambda root: checks.stable_budget(root, module.MAX_BYTES, module.MIN_FREE)
     original_snapshot = module.production_snapshot
     def snapshot():
         result = original_snapshot()
-        result["databases"] = {name: value["sha256"] for name, value in checks.all_databases(REPO / "data").items()}
+        result["databases"] = {name: value["sha256"]
+                               for name, value in checks.all_databases(Path(result["layout"]["data"])).items()}
         return result
     module.production_snapshot = snapshot
     return module
 
 
-def run(root, *, reasoning_effort="none"):
+def freeze_working_source(repo: Path, destination: Path, harness, module) -> dict:
+    """Freeze approved source bytes, including current uncommitted implementation.
+
+    Runtime data and ignored files never enter this isolated source snapshot.
+    Only the new clone is changed; the user's index/history remain untouched.
+    """
+    git = ["git", "-c", "safe.directory=" + repo.resolve().as_posix()]
+    names = subprocess.check_output(
+        git + ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=repo)
+    excluded = {".git", ".runtime", ".agent", ".scratch", "data", "node_modules",
+                ".venv", "__pycache__", "target"}
+    secrets = {".env", ".env.local", "elira_secret.key", "elira_api_token", "portable_vault.json"}
+    sources = {}
+    for raw in names.split(b"\0"):
+        if not raw:
+            continue
+        relative = Path(raw.decode("utf-8"))
+        if (relative.is_absolute() or ".." in relative.parts
+                or any(part in excluded for part in relative.parts)
+                or relative.name in secrets or relative.suffix.lower() in {".db", ".sqlite", ".sqlite3"}):
+            continue
+        source = module._contained(repo / relative, repo)
+        if source.is_file():
+            sources[relative.as_posix()] = (source, harness.digest(source))
+    if not sources:
+        raise ValueError("No source files available for the acceptance snapshot")
+    harness.command(git + ["clone", "--local", "--no-hardlinks", str(repo), str(destination)], cwd=destination.parent)
+    harness.command(["git", "remote", "remove", "origin"], cwd=destination)
+    manager = module.ReleaseManager(destination, publish_processes=False)
+    for name, path in manager._source_files(destination):
+        if name not in sources:
+            harness.contained(path, destination).unlink()
+    for name, (source, expected) in sources.items():
+        target = harness.contained(destination / name, destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        if harness.digest(target) != expected or harness.digest(source) != expected:
+            raise RuntimeError(f"Source changed during snapshot: {name}")
+    files = {name: expected for name, (_, expected) in sorted(sources.items())}
+    return {"base_commit": subprocess.check_output(git + ["rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+            "files": files, "source_sha256": hashlib.sha256(
+                json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+
+
+class AwaitingUserConfirmation(RuntimeError):
+    def __init__(self, proposal: dict):
+        super().__init__("A model-generated installation requires the user's actual UI confirmation")
+        self.proposal = dict(proposal)
+
+
+def require_confirmed_release(state: dict) -> None:
+    proposal = state.get("confirmation")
+    if proposal is not None:
+        if not isinstance(proposal, dict):
+            raise ValueError("Invalid installation proposal in trial state")
+        raise AwaitingUserConfirmation(proposal)
+
+
+def run(root, *, reasoning_effort="medium", browser_executable=None, playwright_module=None):
     require_admin()
     if reasoning_effort not in {"none", "low", "medium", "xhigh"}:
         raise ValueError("Unsupported reasoning effort")
@@ -65,6 +154,7 @@ def run(root, *, reasoning_effort="none"):
         raise ValueError("Expected a fresh owned trial directory")
     if (root / "config.json").exists():
         raise ValueError("An existing trial is never restarted or overwritten")
+    cargo_cache = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
     m = load_harness()
     report = {"status": "RUNNING", "started_at": time.time(), "root": str(root),
               "thinking": reasoning_effort != "none", "reasoning_effort": reasoning_effort,
@@ -80,12 +170,12 @@ def run(root, *, reasoning_effort="none"):
         save(root / "RESULT.json", report)
 
     def settled():
-        deadline = time.monotonic() + 180
-        while time.monotonic() < deadline:
+        while True:
             if server.poll() is not None:
                 raise RuntimeError("Test supervisor exited; no assisted restart is performed")
             try:
                 state = m.manager_for(root).state()
+                require_confirmed_release(state)
                 health = m.api(root, "/health")
                 if (state.get("active") and not state.get("pending") and not state.get("transition")
                         and health.get("release_id") == state["active"] and health.get("admitted") is True
@@ -95,7 +185,6 @@ def run(root, *, reasoning_effort="none"):
             except OSError:
                 pass
             time.sleep(1)
-        raise TimeoutError("Release did not become active/admitted after the model turn")
 
     def browser(batch, label):
         with (root / (label + "-browser.log")).open("xb") as output:
@@ -113,28 +202,36 @@ def run(root, *, reasoning_effort="none"):
         return evidence
 
     try:
-        for path in (TEMPLATES / "runtime/browser_runtime.py", TEMPLATES / "browser_check.cjs"):
+        for path in (TEMPLATES / "browser_runtime.py", TEMPLATES / "browser_check.cjs"):
             if not path.is_file():
                 raise FileNotFoundError(f"Existing acceptance helper is missing: {path}")
         if not shutil.which("node"):
             raise RuntimeError("Node is not available")
         step("setup", m.setup(root))
         cfg = m.config(root)
-        original_cfg = m.read_json(TEMPLATES / "config.json")
-        for key in ("browser_executable", "rust_toolchain_bin"):
-            if original_cfg.get(key):
-                cfg[key] = original_cfg[key]
+        cfg["browser_executable"] = str(browser_executable or "")
+        if playwright_module:
+            cfg["playwright_module"] = str(playwright_module)
+        rustc = shutil.which("rustc")
+        if shutil.which("rustup"):
+            resolved = subprocess.run([shutil.which("rustup"), "which", "rustc"],
+                                      capture_output=True, text=True, timeout=30, creationflags=HIDDEN)
+            if resolved.returncode == 0 and Path(resolved.stdout.strip()).is_file():
+                rustc = resolved.stdout.strip()
+        if rustc:
+            cfg["rust_toolchain_bin"] = str(Path(rustc).parent)
         if not Path(cfg.get("browser_executable", "")).is_file():
             raise RuntimeError("Configured acceptance browser is missing")
         cfg["max_seconds_per_phase"] = m.PHASE_SECONDS
         cfg["reasoning_effort"] = reasoning_effort
+        cfg["max_trial_seconds"] = 14400
         save(root / "config.json", cfg)
         platform = Path(cfg["platform"])
         module = m.release_module(REPO)
-        # Tracked source only: never copy the live checkout's .env or credentials.
+        # Freeze current changes too: cloning HEAD alone silently tested old code.
         frozen_source = root / "source"
-        m.command(["git", "clone", "--local", "--no-hardlinks", str(REPO), str(frozen_source)], cwd=root)
-        m.command(["git", "remote", "remove", "origin"], cwd=frozen_source)
+        frozen = freeze_working_source(REPO, frozen_source, m, module)
+        save(root / "source-snapshot.json", frozen)
         m.copy_source(module, frozen_source, platform)
         m.copy_source(module, frozen_source, platform / ".runtime/releases/candidates" / cfg["baseline"])
         # These fresh private clones inherited an older production Git HEAD.
@@ -157,23 +254,23 @@ def run(root, *, reasoning_effort="none"):
             + "\nLOCAL_EMBED_ENABLED=false\n", encoding="utf-8", newline="\n")
         runtime = root / "runtime/browser_runtime.py"
         runtime.parent.mkdir()
-        template = (TEMPLATES / "runtime/browser_runtime.py").read_text(encoding="utf-8")
-        runtime.write_text(template.replace("started < 7200", "started < 14400"), encoding="utf-8", newline="\n")
+        template = (TEMPLATES / "browser_runtime.py").read_text(encoding="utf-8")
+        runtime.write_text(template, encoding="utf-8", newline="\n")
         save(runtime.with_name("runtime.json"), cfg)
         shutil.copy2(TEMPLATES / "browser_check.cjs", root / "browser_check.cjs")
         os.environ.update(m.environment(root))
         # Reuse local build caches; no models are downloaded or selected here.
-        old_cargo = TEMPLATES / "cargo-home"
-        if old_cargo.is_dir():
-            cfg["model_env"]["CARGO_HOME"] = str(old_cargo)
+        if cargo_cache.is_dir():
+            cfg["model_env"]["CARGO_HOME"] = str(cargo_cache)
             save(root / "config.json", cfg)
             save(runtime.with_name("runtime.json"), cfg)
             os.environ.update(m.environment(root))
-        step("source", {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=frozen_source, text=True).strip(),
+        step("source", {"commit": frozen["base_commit"], "source_sha256": frozen["source_sha256"],
                         "runtime_sha256": m.digest(runtime), "harness_sha256": m.digest(m.SELF)})
         m.command([sys.executable, str(m.SELF), "verify", "--root", str(root), "--release", cfg["baseline"]],
-                  cwd=root, env=m.environment(root), timeout=m.VERIFY_SECONDS + 60, log=root / "baseline-build.log")
-        step("baseline_request", m.manager_for(root).request(cfg["baseline"]))
+                  cwd=root, env=m.environment(root), log=root / "baseline-build.log")
+        step("baseline_request", m.confirm_fixture_release(
+            root, m.manager_for(root), cfg["baseline"], purpose="baseline"))
         with (root / "supervisor.log").open("xb") as output:
             server = subprocess.Popen([sys.executable, str(runtime), "serve"], cwd=root, env=m.environment(root),
                                       stdout=output, stderr=subprocess.STDOUT, creationflags=HIDDEN)
@@ -186,8 +283,10 @@ def run(root, *, reasoning_effort="none"):
             "Команды prepare/verify/request вызывай из корня платформы, указав --port "
             f"{cfg['backend_port']} перед операцией. "
             "Активный релиз уже обслуживается supervisor; повторный запуск сервера не устанавливает изменения. "
-            "После успешных verify и request заверши текущую задачу: supervisor применит обновление, "
-            "когда закончится работа агента."
+            "После успешных verify и request заверши текущую задачу: проверено, ожидает пользователя. "
+            "request сохраняет предложение, а не разрешение установки; нужен реальный выбор "
+            "пользователя в UI «Установить сейчас» или «Позже». Не вызывай confirm за пользователя "
+            "и не имитируй нажатие; стенд остановит приёмку до этого решения."
         )
         m.task_prompt = lambda workspace, phase, batch, *, attempt="": (
             normal_prompt(workspace, phase, batch, attempt=attempt) + release_guidance)
@@ -218,6 +317,13 @@ def run(root, *, reasoning_effort="none"):
         if not checked["checked_ok"] and not checked["review_only"]:
             raise RuntimeError("Archive still failed after one repair; evidence retained for review")
         step("freeze", m.freeze_feature(root, "run"))
+        # Reuse must survive an actual backend/UI restart, not only a new prompt.
+        (root / "STOP_SERVER").write_text("restart acceptance\n", encoding="utf-8", newline="\n")
+        server.wait(timeout=90)
+        with (root / "supervisor-restarted.log").open("xb") as output:
+            server = subprocess.Popen([sys.executable, str(runtime), "serve"], cwd=root, env=m.environment(root),
+                                      stdout=output, stderr=subprocess.STDOUT, creationflags=HIDDEN)
+        step("restart", settled())
         active = m.manager_for(root).state()["active"]
         step("new_inputs", m.seed_heldout(root, active, 3, "run"))
         step("reuse", m.phase(root, "reuse", 3, "user-approved-admin-unattended", **phase_options))
@@ -226,6 +332,10 @@ def run(root, *, reasoning_effort="none"):
         if not reused["checked_ok"] and not reused["review_only"]:
             raise RuntimeError("Reuse on fresh input failed")
         report["status"] = "FAILED_REVIEW_REQUIRED" if report.get("failed_phases") else "REVIEW_REQUIRED"
+    except AwaitingUserConfirmation as exc:
+        report.update(status="AWAITING_USER_CONFIRMATION", confirmation=exc.proposal,
+                      next_action="The proposal is preserved. Restart the owned test UI, make an actual user decision, "
+                                  "then explicitly continue acceptance; this controller does not resume or approve automatically.")
     except BaseException as exc:
         report.update(status="FAILED_REVIEW_REQUIRED", error=str(exc), traceback=traceback.format_exc())
     finally:
@@ -248,23 +358,34 @@ def run(root, *, reasoning_effort="none"):
                 report["status"] = "FAILED_REVIEW_REQUIRED"
         report["finished_at"] = time.time()
         save(root / "RESULT.json", report)
-    return 0 if report["status"] == "REVIEW_REQUIRED" else 1
+    return 0 if report["status"] == "REVIEW_REQUIRED" else 2 if report["status"] == "AWAITING_USER_CONFIRMATION" else 1
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, help="Internal child: fresh evidence root")
-    parser.add_argument("--reasoning-effort", choices=("none", "low", "medium", "xhigh"), default="none",
-                        help="Qwen Think level for every model phase (default: none)")
+    parser.add_argument("--reasoning-effort", choices=("none", "low", "medium", "xhigh"), default="medium",
+                        help="Qwen Think level for every model phase (default: medium)")
+    parser.add_argument("--browser-executable", type=Path,
+                        help="Installed Chromium browser; no browser is downloaded")
+    parser.add_argument("--playwright-module", type=Path,
+                        help="Existing Playwright module directory, if not in Node's module search path")
     args = parser.parse_args()
+    args.browser_executable = browser_path(args.browser_executable)
     if args.run:
-        return run(args.run.resolve(), reasoning_effort=args.reasoning_effort)
+        return run(args.run.resolve(), reasoning_effort=args.reasoning_effort,
+                   browser_executable=args.browser_executable, playwright_module=args.playwright_module)
     require_admin()
+    browser_preflight(args.browser_executable, args.playwright_module)
     root = REPO / ".scratch" / ("autonomy-admin-" + time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8])
     root.mkdir(parents=True)
     with (root / "controller.log").open("xb") as output:
-        child = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--run", str(root),
-                                  "--reasoning-effort", args.reasoning_effort],
+        arguments = [sys.executable, "-u", str(Path(__file__).resolve()), "--run", str(root),
+                     "--reasoning-effort", args.reasoning_effort,
+                     "--browser-executable", str(args.browser_executable.resolve())]
+        if args.playwright_module:
+            arguments.extend(["--playwright-module", str(args.playwright_module.resolve())])
+        child = subprocess.Popen(arguments,
                                  cwd=REPO, stdout=output, stderr=subprocess.STDOUT,
                                  creationflags=HIDDEN | getattr(subprocess, "DETACHED_PROCESS", 0))
     result = {"pid": child.pid, "root": str(root), "result": str(root / "RESULT.json"),

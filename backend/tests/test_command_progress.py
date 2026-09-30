@@ -113,6 +113,62 @@ def test_sandbox_checks_structured_outputs_without_parsing_false() -> None:
     assert hint is not None and "exit=0" in hint
 
 
+def test_unchanged_commands_require_new_diagnosis_and_bound_rechecks_across_resume() -> None:
+    tracker = CommandProgress()
+    args = {"command": "find evidence"}
+    output = {"exit_code": 0, "stdout": "", "stderr": ""}
+    for _ in range(3):
+        assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
+        tracker.observe("run_bash", args, output, cwd="D:/work")
+    recovery = tracker.before_dispatch("run_bash", args, cwd="D:/work")
+    assert recovery["status"] == "recovery_required"
+    assert recovery["observed_attempts"] == 3
+    assert recovery["business_outcome"] == "not_assessed"
+    tracker = CommandProgress.from_snapshot(json.loads(json.dumps(tracker.snapshot())))
+    for diagnostic in ("first observation", "external state changed"):
+        tracker.observe("read_file", {"path": "input.txt"}, {"ok": True, "text": diagnostic})
+        assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
+        tracker.observe("run_bash", args, output, cwd="D:/work")
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work")["status"] == "blocked"
+    # Actual input-version change authorizes work again, including after Resume.
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work", epoch=1) is None
+
+
+def test_replayed_diagnostics_do_not_unlock_commands_but_changed_results_do() -> None:
+    tracker = CommandProgress()
+    args = {"command": "observe service"}
+    output = {"exit_code": 0, "stdout": "waiting", "stderr": ""}
+    for _ in range(3):
+        tracker.observe("run_bash", args, output, cwd="D:/work")
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work")["status"] == "recovery_required"
+    tracker.observe("read_file", {"path": "service.log"}, {"text": "waiting"}, cwd="D:/work")
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
+    tracker.observe("run_bash", args, output, cwd="D:/work")
+    tracker.observe("read_file", {"path": "service.log"}, {"text": "waiting"}, cwd="D:/work")
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work")["status"] == "recovery_required"
+    # Model-written strategy claims and failed diagnostic calls are not evidence.
+    tracker.observe("runtime_control", {"operation": "task_decide"}, {"ok": True, "text": "new plan"})
+    tracker.observe("read_file", {"path": "service.log"}, {"ok": False, "text": "missing"})
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work")["status"] == "blocked"
+    tracker.observe("read_file", {"path": "service.log"}, {"text": "ready"}, cwd="D:/work")
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
+    tracker.observe("run_bash", args, {**output, "stdout": "ready"}, cwd="D:/work")
+    assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
+    assert tracker.context() == ""
+
+
+def test_recovery_never_blocks_polling_an_existing_job_or_another_directory() -> None:
+    tracker = CommandProgress()
+    for identity in ("a", "b", "c"):
+        tracker.observe("run_server", {}, _job(identity))
+    args = {"action": "start", "command": "python transform.py"}
+    assert tracker.before_dispatch("run_server", args, cwd="D:/work")["status"] == "recovery_required"
+    for _ in range(10):
+        assert tracker.before_dispatch("run_server", {"action": "logs", "pid": 123}, cwd="D:/work") is None
+        tracker.observe("run_server", {}, _job("a"))
+    assert tracker.before_dispatch("run_server", args, cwd="D:/other") is None
+
+
 def test_kernel_failed_process_repeats_but_rejected_receipts_do_not_count(tmp_path: Path) -> None:
     from app.application.agent_kernel import executor
     from app.application.code_agent.tools import _run

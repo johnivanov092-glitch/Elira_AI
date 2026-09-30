@@ -1,7 +1,7 @@
 <#
 Installs the isolated Windows host. Application data and user accounts stay in
-place. Run from an elevated PowerShell; the application itself uses a limited
-user token authenticated by the local pipe.
+place. Run from an elevated PowerShell. Limited is the default application token;
+Administrator explicitly preserves the elevated interactive user's rights.
 #>
 [CmdletBinding()]
 param(
@@ -12,6 +12,9 @@ param(
     [string]$DataDir = '',
     [string]$AgentRunsDir = '',
     [int]$Port = 8000,
+    [ValidateSet('limited', 'administrator')]
+    [string]$ApplicationTokenMode = 'limited',
+    [switch]$ValidateOnly,
     [switch]$Start
 )
 $ErrorActionPreference = 'Stop'
@@ -88,6 +91,9 @@ $DataDir = Resolve-UserStore $DataDir 'ELIRA_DATA_DIR' 'data'
 $AgentRunsDir = Resolve-UserStore $AgentRunsDir 'ELIRA_AGENT_RUNS_DIR' '.agent\runs'
 if ($Port -lt 1024 -or $Port -gt 65535) { throw 'Port must be between 1024 and 65535.' }
 $proof = $ServiceName -eq 'EliraFoundationProof'
+if ($proof -and $ApplicationTokenMode -ne 'limited') {
+    throw 'The fixed proof service validates limited tokens only.'
+}
 if ($proof -and ($Port -eq 8000 -or $Platform -eq (Split-Path -Parent $PSScriptRoot))) {
     throw 'Proof installation requires an explicit isolated test Platform and a port other than 8000.'
 }
@@ -114,6 +120,20 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the trusted Python runtime.' }
 $runtimeInfo = $runtimeInfo | ConvertFrom-Json
 if ($runtimeInfo.bits -ne 64 -or $runtimeInfo.version[0] -ne 3 -or $runtimeInfo.version[1] -ne 10) {
     throw 'This installer is validated for the existing 64-bit CPython 3.10 runtime.'
+}
+if ($ValidateOnly) {
+    [pscustomobject]@{
+        validated = $true
+        service = $ServiceName
+        platform = $Platform
+        data = $DataDir
+        journals = $AgentRunsDir
+        application_token_mode = $ApplicationTokenMode
+        install_root = $installRoot
+        state_root = $stateRoot
+        changes_applied = $false
+    } | ConvertTo-Json -Depth 4
+    return
 }
 
 # New directories get protected ownership before any executable/config is copied.
@@ -155,7 +175,7 @@ $startMode = if ($proof) { 'demand' } else { 'auto' }
 Invoke-Sc @('create', $ServiceName, 'binPath=', $imagePath, 'start=', $startMode, 'obj=', 'NT AUTHORITY\LocalService', 'DisplayName=', $ServiceName)
 Invoke-Sc @('sidtype', $ServiceName, 'unrestricted')
 Invoke-Sc @('privs', $ServiceName, 'SeChangeNotifyPrivilege/SeImpersonatePrivilege/SeAssignPrimaryTokenPrivilege/SeIncreaseQuotaPrivilege')
-Invoke-Sc @('description', $ServiceName, 'Elira release state and recovery; application code runs under the authenticated unelevated user.')
+Invoke-Sc @('description', $ServiceName, "Elira release state and recovery; authenticated interactive application token: $ApplicationTokenMode.")
 # Ordinary users may query only. Application close/start uses authenticated IPC.
 Invoke-Sc @('sdset', $ServiceName, 'D:P(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCRC;;;BU)')
 Invoke-Sc @('failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/15000/restart/60000')
@@ -181,6 +201,7 @@ $config = [ordered]@{
     python = $privatePython
     port = $Port
     diagnostic = $proof
+    application_token_mode = $ApplicationTokenMode
 }
 Write-Utf8 $configPath (($config | ConvertTo-Json -Depth 4) + "`n")
 if ($proof) {
@@ -209,6 +230,18 @@ $registry = 'HKLM:\SOFTWARE\Elira\' + $ServiceName
 $null = New-Item -Path $registry -Force
 $null = New-ItemProperty -LiteralPath $registry -Name InstallRoot -Value $installRoot -PropertyType String -Force
 $null = New-ItemProperty -LiteralPath $registry -Name ServiceName -Value $ServiceName -PropertyType String -Force
+$null = New-ItemProperty -LiteralPath $registry -Name ApplicationTokenMode -Value $ApplicationTokenMode -PropertyType String -Force
+$null = New-ItemProperty -LiteralPath $registry -Name Platform -Value $Platform -PropertyType String -Force
+$null = New-ItemProperty -LiteralPath $registry -Name Port -Value $Port -PropertyType DWord -Force
+foreach ($binding in @{
+    StateRoot = $stateRoot
+    Candidates = $config.candidates
+    Published = $published
+    Data = $DataDir
+    Journals = $AgentRunsDir
+}.GetEnumerator()) {
+    $null = New-ItemProperty -LiteralPath $registry -Name $binding.Key -Value $binding.Value -PropertyType String -Force
+}
 $registryAcl = [Security.AccessControl.RegistrySecurity]::new()
 $registryAcl.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)')
 # Registry provider's Set-Acl requires -Path (the exact key has no wildcards).
@@ -223,5 +256,6 @@ if ($Start) { Start-Service -Name $ServiceName }
     state_root = $stateRoot
     running = [bool]$Start
     application_data_migrated = $false
+    application_token_mode = $ApplicationTokenMode
     runtime_probe = ($probe | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 4

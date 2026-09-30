@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { TaskLedgerEntry } from "../api/codeAgent";
 import type { Turn } from "./types";
-import { taskHistoryItems } from "./taskHistory";
+import { latestUserTaskLabel, taskHistoryItems } from "./taskHistory";
 
 describe("taskHistoryItems", () => {
+  it("keeps a steering update inside its original task", () => {
+    const turns: Turn[] = [
+      { kind: "user", id: "u", text: "Исходная задача" },
+      { kind: "user", id: "update", text: "Сохрани данные", steering: { requestId: "a", runId: "run", state: "applied" } },
+    ];
+    expect(latestUserTaskLabel(turns)).toBe("Исходная задача");
+    expect(taskHistoryItems([{ timestamp: 1, type: "final", action: "answer", result: "completed" }], turns)[0].label).toBe("Исходная задача");
+  });
   it("restores task labels from chat turns for legacy terminal ledger rows", () => {
     const turns: Turn[] = [
       { kind: "user", id: "u1", text: "Сделай лендинг" },

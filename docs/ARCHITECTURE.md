@@ -43,6 +43,45 @@ The disconnected `domain/agents` V8 graph runtime and `application/project_brain
 chat/LLM chain were removed after a caller audit. The UI's `use_orchestrator`
 option still selects a Workflow planning step; it does not refer to V8.
 
+## Agent loop module boundaries
+
+`application/code_agent/agent_loop.py` remains the single coordinator and public
+entry point. Its `stream_code_agent` journal adapter and `run_code_agent` sync
+collector preserve the existing callers and event/result contracts. Seven leaf
+modules own narrower parts of that run; none imports `agent_loop` or starts a
+second agent, executor, provider registry or persistence layer.
+
+| Module in `application/code_agent/` | Responsibility |
+|---|---|
+| `run_control.py` | Live-run registration, upstream cancellation, cleanup and Workflow response rendezvous |
+| `model_turn.py` | One model exchange, stream/non-stream events, reasoning and heartbeat |
+| `runtime_activation.py` | Per-run integration/group visibility and schemas from the existing registry |
+| `turn_context.py` | Initial/history messages, loaded skills, live user inputs, pinned guidance and packing through the existing compactor |
+| `tool_execution.py` | One selected call through the existing executor and its Workflow branches |
+| `run_observations.py` | One instance each of the existing evidence, outcome, command-recovery and criterion owners |
+| `answer_acceptance.py` | Ordered final-answer checks and one-time correction state; the coordinator schedules any next model turn |
+
+The coordinator retains the observable boundaries. Verification captures the
+pre-dispatch state and refreshes it after an approval wait before retrying the
+executor. Canonical evidence, input epoch, outcome/recovery snapshots and criterion
+invalidation precede result yields; the late criterion verdict and tool-message
+append follow them. A consumer closing at that yield must not run the later
+stage. `code_input_epoch`, `project_epoch` and `criteria_epoch` keep their distinct
+meanings and journal keys. Runtime Workflow pauses retain their separate branch.
+
+Workflow waits observe both a response and Stop. The `ask_user` branch preserves
+an accepted `workflow_input` before reporting a simultaneous cancellation;
+approval and other branches retain their cancellation-first behavior. Session
+Stop between delivery slices stays with `delivery_session`; live cancellation
+tries every cleanup stage and reports surviving resources before acknowledging
+Stop. This split adds no run deadline, permissions or new stored format.
+
+Stream adapters explicitly close their owned iterators: the journal adapter
+closes the core before finishing its journal, structured delivery closes each
+slice, and the Workflow SSE projection closes on terminal output as well as
+interruption. Cleanup does not rely on garbage collection or request Stop for
+a successfully completed run.
+
 ## Runtime invariants
 
 - One agent core: `application/code_agent/agent_loop.py`.
@@ -126,6 +165,16 @@ option still selects a Workflow planning step; it does not refer to V8.
   of transport. Generated guidance messages use the existing compactor's pinned
   IDs; both summarization and its fallback preserve them and count them against
   the context budget. They never become a second system prefix.
+  Work/project guidance distinguishes immediately usable data, published durable
+  skill/MCP packages, and application candidates. It is rebuilt before Resume
+  inference: verify against copied data, request a durable installation proposal,
+  then finish the run. Only the user's explicit confirmation makes it pending;
+  deferral, idle and restart never confirm it. The agent cannot confirm its own
+  proposal or simulate the user's click. Confirmed installation waits for drain,
+  then activates on current shared DATA; startup rollback precedes admission and
+  needs no additional confirmation.
+  Build/verification alone never establishes installation, and active application
+  environments are not dependency-install targets.
 - Web fetching keeps HTTP status, final URL and truncation separate from page
   text. Short fields and requested anchor sections survive extraction; failed
   HTTP responses cannot become successful excerpts through browser fallback.
@@ -172,9 +221,14 @@ option still selects a Workflow planning step; it does not refer to V8.
   user message after history. It is excluded from the stable persona/system
   prefix so a mood change does not invalidate cached instructions and schemas.
 - No tool/path/asset/LAN authorization scope, internal ApprovalStore,
-  feature dispatch gate, max steps, run deadline or no-progress self-stop.
+  feature dispatch gate, max steps or run deadline.
 - Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
   protocol and physical context-window failures remain real errors.
+- Three identical terminal command results for unchanged inputs require new
+  diagnostic evidence before another execution. Two unchanged recovery probes
+  or two ignored recovery requests end the run as resumable `blocked`. The
+  existing journal preserves this state through Resume. Polling an existing job
+  is not another execution; changed inputs or results allow work to continue.
 - Command-only SSH calls use OpenSSH `-n`: accidental remote stdin reads receive
   EOF instead of hanging the workflow. IT Ops reuses the same SSH argument
   builder; SSH file writes explicitly forward stdin.
@@ -251,10 +305,12 @@ The Workflow run owns one mode:
 
 - `ask`: read-only calls run; mutations ask in Workflow UI.
 - `accept_edits`: ordinary local mutations run; high/unknown-impact calls ask.
-- `bypass`: no product-level approval request.
+- `bypass`: no Workflow approval request for tool execution.
 
 `impact_policy.py` classifies calls only for this UI decision. It never blocks a
 call independently. `bypass` does not create a Windows administrator token.
+Application installation still requires the user's explicit confirmation of the
+specific verified release proposal; Workflow mode does not supply that consent.
 
 ## Workflow requests
 

@@ -132,10 +132,16 @@ def test_external_work_receives_verification_guidance(tool):
 @pytest.mark.parametrize("summary_ok", [True, False])
 def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summary_ok):
     from app.application.code_agent import agent_loop, loop_helpers
+    from app.application.code_agent.task_guidance import task_guidance_blocks
 
     original_prepare = agent_loop._prepare_messages_for_llm
+    guidance = task_guidance_blocks({"read_file"})
 
     def force_compaction(messages, **kwargs):
+        for text in guidance.values():
+            owner = [message for message in messages if text in message.get("content", "")]
+            assert len(owner) == 1
+            assert owner[0]["_msg_id"] in kwargs["pinned_message_ids"]
         kwargs["context_profile"] = {
             **kwargs["context_profile"],
             "compaction_thresholds": {
@@ -171,8 +177,57 @@ def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summ
     assert any(e["type"] == "context_compacted" for e in events)
     assert len(calls) == 6
     for messages in calls[1:]:
-        assert "Сделай минимальный патч" in str(messages)
+        for text in guidance.values():
+            assert sum(text in message.get("content", "") for message in messages) == 1
     assert all(messages[0] == calls[0][0] for messages in calls)
+
+
+def test_user_confirmation_guidance_is_pinned_before_work_and_restored_on_resume(tmp_path, monkeypatch):
+    from app.application.code_agent.agent_loop import request_cancel
+    from app.application.code_agent.delivery_session import build_continuation_kwargs
+    from app.application.code_agent.task_guidance import task_guidance_blocks
+
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    (tmp_path / "state.txt").write_text("observed-before-stop", encoding="utf-8")
+    calls = []
+
+    def chat(**kwargs):
+        calls.append(deepcopy(kwargs["messages"]))
+        instructions = [message for message in kwargs["messages"]
+                        if ":guidance:" in message.get("_msg_id", "")]
+        assert len(instructions) == 1
+        content = instructions[0]["content"]
+        assert "«Установить сейчас» или «Позже»" in content
+        assert "Не вызывай confirm за пользователя и не имитируй его нажатие" in content
+        assert "проверено, ожидает пользователя" in content
+        assert "без нового диалога" in content
+        return {"message": {"content": "Прочитано." if len(calls) > 1 else "", "tool_calls": [] if len(calls) > 1 else [{
+            "id": "read-before-stop", "function": {"name": "read_file", "arguments": {"path": "state.txt"}},
+        }]}}
+
+    run_id = "update-guidance-resume"
+    initial = []
+    for event in stream_code_agent(
+        user_message="Прочитай состояние перед обновлением Elira.", project_root=tmp_path,
+        run_id=run_id, chat_fn=chat, base_tools=["read_file"], auto_remember=False,
+        permission_mode="bypass",
+    ):
+        initial.append(event)
+        if event["type"] == "tool_call" and event.get("tool") == "read_file":
+            assert event["ok"]
+            assert "observed-before-stop" in str(event.get("result"))
+            assert request_cancel(run_id)
+    assert initial[-1]["stop_reason"] == "cancelled"
+    resumed = list(stream_code_agent(**build_continuation_kwargs(run_id, chat_fn=chat)))
+    assert resumed[-1]["ok"] and len(calls) == 2
+    assert calls[0][0] == calls[1][0]
+    for text in task_guidance_blocks({"read_file"}).values():
+        for messages in calls:
+            owner = [message for message in messages if text in message.get("content", "")]
+            assert len(owner) == 1 and owner[0]["role"] == "user"
+            assert ":guidance:" in owner[0]["_msg_id"]
+    assert any(event["type"] == "run_resumed" and event["from_step"] == 1 for event in resumed)
+    assert not any(event["type"] == "tool_started" for event in resumed)
 
 
 def test_web_work_loads_project_instructions_outside_stable_prefix(tmp_path):

@@ -15,74 +15,60 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
-import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from app.application.code_agent.run_control import (  # public facade and shared-owner aliases
+    _CANCEL_REGISTRY, _UPSTREAM_HANDLE_REGISTRY, _REGISTRY_LOCK,
+    _WORKFLOW_RESPONSES, _WORKFLOW_RESPONSE_LOCK,
+    _register_run, _cancel_handle_for, _unregister_run,
+    request_cancel, submit_workflow_response,
+)
+from app.application.code_agent.model_turn import (
+    _ANTI_REPEAT_SAMPLING, _normalize_reasoning_effort, _thinking_template_kwargs,
+    _effective_temperature, _chat_events, _local_chat_stream, stream_model_turn,
+    decode_response, recover_tool_calls, _DRY_WINDOW_TOKENS,
+)
+
 from app.application.tool_providers import (
     ToolRegistry,
     build_runtime_tool_registry,
 )
-from app.application.tool_providers.mcp_provider import (
-    creative_workflow_prompt,
-)
 from app.application.code_agent.capabilities import (
-    ALL_BUILTIN_TOOLS,
-    builtin_tools_for_groups,
-    normalize_capability_groups,
-    route_request_capabilities,
-    is_local_tabular_catalog_probe,
-    should_require_local_catalog_search,
-    should_require_web_catalog_fallback,
-    should_escalate_web_after_failure,
-    should_escalate_web_from_answer,
+    ALL_BUILTIN_TOOLS, normalize_capability_groups, route_request_capabilities,
+    is_local_tabular_catalog_probe, should_escalate_web_after_failure,
 )
+from app.application.code_agent.runtime_activation import (
+    RuntimeActivation, _load_runtime_activation_state,
+)
+from app.application.code_agent.turn_context import (
+    build_initial_turn, TurnContext, SkillRestoreError, _load_planning_state, _bounded_planning_recon,
+)
+from app.application.code_agent.run_observations import (
+    RunObservations, _record_criterion_verdict,
+)
+from app.application.code_agent.tool_execution import (
+    _exec_with_heartbeat, run_tool, run_ask_user, run_workflow_request,
+    run_runtime_workflow, RUNTIME_WORKFLOW_STATUSES,
+)
+from app.application.code_agent.answer_acceptance import AnswerAcceptance
 from app.application.code_agent.answer_media import merge_answer_media
-from app.application.code_agent.answer_contracts import (
-    infer_quote_word_limit, normalize_quote_word_counts,
-    quote_word_limit_correction, quote_word_limit_violations,
-    web_cadence_citation_correction, web_cadence_citation_violations,
-)
-from app.application.code_agent.document_validation import infer_expected_page_count
+from app.application.code_agent.answer_contracts import infer_quote_word_limit
 from app.application.code_agent.planning import (
-    PlanArtifact,
-    build_planning_messages,
-    parse_plan_from_text,
-    plan_artifact_from_dict,
-    plan_context_block,
+    PlanArtifact, build_planning_messages, parse_plan_from_text, plan_context_block,
     planner_limits,
 )
-from app.application.code_agent.taskspec import (
-    CriteriaTracker,
-    derive_task_spec,
-    is_continuation_message,
-    taskspec_context,
-    taskspec_report,
-)
-from app.application.code_agent.run_evidence import (
-    EvidenceKind,
-    RunEvidence,
-)
+from app.application.code_agent.taskspec import taskspec_context, taskspec_report
+from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
-    ToolExecutionRequest,
-    ToolExecutionResult,
-    execute_tool as _kernel_exec,
-    permission_mode_auto_approves,
-    tool_args_sha256,
+    ToolExecutionRequest, ToolExecutionResult, execute_tool as _kernel_exec,
     workflow_approval_matches,
 )
 from app.application.monitoring.inference import extract_llm_usage, record_inference_telemetry
-from app.infrastructure.llm.openai_compatible import (
-    LLMStreamCancelHandle,
-    chat_completion_event_stream,
-    is_local_llm_model,
-    local_llm_config,
-)
 # Project indexing/RAG was extracted to .indexing; re-exported here so existing
 # importers (file_watcher, code_agent_routes, tests) keep importing these names
 # from agent_loop unchanged.
@@ -120,13 +106,8 @@ from app.application.code_agent.prompts import (  # noqa: F401
     _PROJECT_CONNECTED_BLOCK,
     _is_scratch_workspace,
 )
-from app.application.persona.service import mode_temperature
 from app.core.persona_defaults import DEFAULT_PROFILE
-from app.application.code_agent.task_guidance import DELIVERY_GUIDANCE, task_guidance_blocks
-from app.application.code_agent.task_skills import (
-    ADVISOR_CONTEXT_ID, CATALOG_ID, CONTEXT_ID, SkillContext, advisor_context,
-    catalog_context, insert_skill_context, learn_from_run,
-)
+from app.application.code_agent.task_skills import learn_from_run
 from app.core.redaction import redact_secrets
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
@@ -155,207 +136,6 @@ from app.application.code_agent.project_prompt import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-# Per-request DRY sampler params (llama.cpp accepts them in the request body —
-# verified against the live server). DRY penalises repeated token sequences at
-# sampling time, so the model can't lock into a degenerate "same paragraph
-# forever" loop. Originally think-only; extended to ALL runs after a live
-# non-think run produced a paragraph repeated ×20 in the ANSWER channel (the
-# content path had no anti-repeat protection at all). Safe for codegen: DRY's
-# default sequence breakers ("\n" etc.) reset matching at line boundaries, so
-# legitimate repeated code structure isn't penalised the way run-on prose is.
-# Bound the lookback; it can still include recent HISTORY on short replies.
-# Allow short repeated facts/names: length=2 made Qwen mutate Elira after three
-# identity questions. In a fixed-history/seed live A/B, length=12 preserved the
-# exact name with thinking both off and low, while keeping DRY for long prose.
-_DRY_WINDOW_TOKENS = 1024
-_ANTI_REPEAT_SAMPLING = {
-    "dry_multiplier": 0.8,
-    "dry_base": 1.75,
-    "dry_allowed_length": 12,
-    "dry_penalty_last_n": _DRY_WINDOW_TOKENS,
-    # Reset DRY matching at these separators so LEGITIMATELY-repeated IPs / MACs /
-    # numbers / versions / paths (192.168.88.1, 2C-C8-1B, /24, v1.0) are not seen as
-    # a penalizable repeat. Without "." DRY penalised the repeated octets of an IP,
-    # and the model MUTATED them to dodge the penalty (live: 192.168→192.169→192.166
-    # →192.170… during a network scan, plus a walk through 8.8.8.8/9.9.9.9/6.6.6.6).
-    # Keeps the llama.cpp defaults (\n : " *) so repeated PROSE — the ×20-paragraph
-    # runaway — is still caught (a repeated sentence resets only at its own period).
-    # File-path delimiters are breakers too: without "_" / "\\", copying a long
-    # path verbatim from glob into read_file is treated as repetition and Qwen
-    # abbreviates or mutates the tool argument.
-    # Digits are breakers too: a repeated number/model-code (RTX 5090 in every table
-    # row, a price repeated down a column) was DRY-penalised and the model dropped a
-    # digit to dodge it (live: "5090"→"509"/"090"). A digit resets the match, so
-    # numbers survive verbatim; word-based degeneration (no digits) is still caught.
-    "dry_sequence_breakers": [
-        "\n", ":", "\"", "*", ".", "-", "/", "\\", "_", ",", ";", "=",
-        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    ],
-}
-
-
-_REASONING_EFFORTS = frozenset({"none", "low", "medium", "xhigh"})
-
-
-def _normalize_reasoning_effort(value: Any, *, thinking: bool = False) -> str:
-    """Normalize the public effort selector while preserving the legacy bool."""
-    effort = str(value or "").strip().lower()
-    if effort in _REASONING_EFFORTS:
-        return effort
-    return "xhigh" if thinking else "none"
-
-
-def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
-    """Build Qwen's reasoning contract; ``none`` fully disables thinking."""
-    normalized = _normalize_reasoning_effort(
-        None if isinstance(effort, bool) else effort,
-        thinking=bool(effort) if isinstance(effort, bool) else False,
-    )
-    if normalized != "none":
-        return {
-            "enable_thinking": True,
-            "reasoning_effort": normalized,
-        }
-    return {
-        "enable_thinking": False,
-        "reasoning_effort": "none",
-    }
-
-
-# Completion is model-owned: evidence is recorded for observability, but the
-# runtime never forces extra turns, rewrites the answer, or auto-runs verification.
-_LLM_HEARTBEAT_EVERY = 10.0
-_LLM_CANCEL_POLL_SECONDS = 0.1
-def _effective_temperature(profile_name: str, role: str | None) -> float:
-    """Compatibility arguments never switch the single personality's sampling."""
-    return float(mode_temperature(profile_name))
-
-
-def _chat_events(
-    *,
-    chat_fn: Callable[..., dict[str, Any]],
-    chat_stream_fn: Callable[..., Any] | None,
-    kwargs: dict[str, Any],
-    cancel_event: "threading.Event | None" = None,
-    cancel_handle: LLMStreamCancelHandle | None = None,
-) -> Iterator[dict[str, Any]]:
-    """Run a blocking provider call without leaving the SSE stream silent.
-
-    When ``cancel_event`` is set mid-stream the worker stops pulling tokens
-    and closes the underlying generator (which closes the upstream HTTP
-    response), so pressing Stop actually frees the server instead of letting
-    it generate the full answer into a queue nobody reads.
-    """
-    events: queue.Queue[tuple[str, Any]] = queue.Queue()
-    upstream_handle = cancel_handle or LLMStreamCancelHandle()
-    worker_kwargs = dict(kwargs)
-    worker_options = dict(worker_kwargs.get("options") or {})
-    worker_options["_stream_cancel_handle"] = upstream_handle
-    worker_kwargs["options"] = worker_options
-
-    def worker() -> None:
-        stream = None
-        try:
-            if chat_stream_fn is None:
-                events.put(("response", chat_fn(**worker_kwargs)))
-                return
-            final_response: dict[str, Any] | None = None
-            collected: list[str] = []
-            stream = chat_stream_fn(**worker_kwargs)
-            for item in stream:
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                if isinstance(item, str):
-                    collected.append(item)
-                    events.put(("delta", item))
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                item_type = str(item.get("type") or "")
-                if item_type == "delta":
-                    text = str(item.get("content") or item.get("text") or "")
-                    if text:
-                        collected.append(text)
-                        events.put(("delta", text))
-                elif item_type == "reasoning":
-                    # Thinking tokens — relayed on their own channel, never
-                    # folded into `collected` (which becomes the answer).
-                    rtext = str(item.get("content") or item.get("text") or "")
-                    if rtext:
-                        events.put(("reasoning", rtext))
-                elif item_type == "message":
-                    response = item.get("response")
-                    if isinstance(response, dict):
-                        final_response = response
-            if final_response is None:
-                final_response = {
-                    "message": {"content": "".join(collected), "tool_calls": []},
-                }
-            events.put(("response", final_response))
-        except Exception as exc:  # propagated in the caller thread
-            events.put(("error", exc))
-        finally:
-            # Closing the generator triggers its `finally`, which calls
-            # response.close() and frees the upstream llama.cpp connection.
-            close = getattr(stream, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
-            events.put(("done", None))
-
-    threading.Thread(target=worker, name="elira-code-agent-llm", daemon=True).start()
-    done = False
-    next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
-    try:
-        while not done:
-            try:
-                timeout = max(
-                    0.001,
-                    min(_LLM_CANCEL_POLL_SECONDS, next_heartbeat - time.monotonic()),
-                )
-                kind, value = events.get(timeout=timeout)
-            except queue.Empty:
-                if cancel_event is not None and cancel_event.is_set():
-                    return
-                if time.monotonic() >= next_heartbeat:
-                    next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
-                    yield {"type": "heartbeat"}
-                continue
-            if kind == "done":
-                done = True
-            elif kind == "error":
-                raise value
-            else:
-                yield {"type": kind, "value": value}
-    finally:
-        # The run owns the shared handle across planning, compaction and normal
-        # generation. Only cancellation makes it permanently closed; normal
-        # completion merely releases the provider response for the next call.
-        if cancel_event is not None and cancel_event.is_set():
-            upstream_handle.close()
-
-
-def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
-    model = str(kwargs.get("model") or "")
-    if not is_local_llm_model(model):
-        expected = local_llm_config().model
-        raise RuntimeError(f"Local llama-server provider expects model '{expected}', got '{model}'.")
-    yield from chat_completion_event_stream(
-        model=model,
-        messages=list(kwargs.get("messages") or []),
-        tools=kwargs.get("tools"),
-        options=kwargs.get("options"),
-    )
-
-
-# Global registry of active cancel events so an external HTTP route can flip
-# the flag mid-stream. Keys are run_ids handed back to the client.
-_CANCEL_REGISTRY: dict[str, threading.Event] = {}
-_UPSTREAM_HANDLE_REGISTRY: dict[int, LLMStreamCancelHandle] = {}
-_REGISTRY_LOCK = threading.Lock()
-
 def _server_url_alive(url: str) -> bool:
     """R2 liveness gate: the remembered dev-server URL is backed by a tracked
     process that is alive AND listening. Module-level so tests patch it."""
@@ -373,211 +153,6 @@ def _run_owned_servers(run_id: str) -> list[dict]:
         return run_owned_servers(run_id)
     except Exception:
         return []
-
-
-def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
-                              text_result: str, tool_ok: bool, auto: bool = False) -> bool:
-    """Feed one executed tool call into the observational criterion tracker.
-
-    A verifier tool records structured evidence; ``run_bash`` records real
-    stdout/stderr and exit code. The tracker never forces another model turn.
-    ``auto`` remains only for compatibility with persisted historical reports.
-    """
-    if not criteria.items:
-        return False
-    if tool_meta.get("verifier"):
-        return criteria.record(tool_name=name, args=args, ok=tool_ok,
-                               evidence=str(tool_meta.get("evidence") or ""),
-                               meta=tool_meta, auto=auto)
-    if name == "runtime_control" and args.get("operation") == "result_verify":
-        return criteria.record(tool_name=name, args=args, ok=tool_ok,
-                               evidence=text_result, meta=tool_meta, auto=auto)
-    if name == "run_bash":
-        return criteria.record(tool_name=name, args=args, ok=tool_ok,
-                               evidence=text_result, meta=tool_meta, auto=auto)
-    return False
-
-
-def _exec_with_heartbeat(thunk, step, cancel_event: threading.Event | None = None):
-    """Run a blocking tool call (thunk) in a daemon thread, yielding `heartbeat`
-    events every _LLM_HEARTBEAT_EVERY seconds while it runs. This keeps progress
-    observable during a long network scan, build or test without imposing a
-    product deadline. The FINAL yielded item is
-    {'__result__': <ToolExecutionResult>}; the caller passes heartbeats through
-    and unwraps the result."""
-    box: dict[str, Any] = {}
-    finished = threading.Event()
-
-    def _run() -> None:
-        try:
-            box["r"] = thunk()
-        except BaseException as exc:  # noqa: BLE001 — re-raised in the generator
-            box["e"] = exc
-        finally:
-            finished.set()
-
-    threading.Thread(target=_run, daemon=True).start()
-    # Poll finer than the heartbeat interval, else a tool that finishes between
-    # polls (or a small interval) never triggers the elapsed-time check.
-    _poll = min(1.0, max(0.02, _LLM_HEARTBEAT_EVERY / 2.0))
-    _last = time.monotonic()
-    while not finished.wait(timeout=_poll):
-        if cancel_event is not None and cancel_event.is_set():
-            yield {
-                "__result__": ToolExecutionResult(
-                    status="error",
-                    output={
-                        "ok": False,
-                        "text": "Выполнение остановлено пользователем.",
-                        "error": "cancelled_by_user",
-                    },
-                    error="cancelled_by_user",
-                )
-            }
-            return
-        _now = time.monotonic()
-        if _now - _last >= _LLM_HEARTBEAT_EVERY:
-            yield {"type": "heartbeat", "step": step}
-            _last = _now
-    if "e" in box:
-        raise box["e"]
-    yield {"__result__": box["r"]}
-
-# Live direct-stream Workflow requests. Durable request metadata lives in the
-# Workflow store; this in-memory rendezvous only wakes the currently running
-# code-agent generator after the UI resolves that durable request.
-_WORKFLOW_RESPONSES: dict[str, dict[str, Any] | None] = {}
-_WORKFLOW_RESPONSE_LOCK = threading.Lock()
-
-
-def submit_workflow_response(
-    response_id: str,
-    action: str,
-    values: dict[str, Any] | None = None,
-) -> bool:
-    """Deliver a Workflow UI resolution to a live direct code-agent request."""
-    with _WORKFLOW_RESPONSE_LOCK:
-        if response_id not in _WORKFLOW_RESPONSES:
-            return False
-        _WORKFLOW_RESPONSES[response_id] = {
-            "action": str(action or "accept"),
-            "values": dict(values) if isinstance(values, dict) else {},
-        }
-    return True
-
-
-def request_cancel(run_id: str) -> bool:
-    """Flip the cancel event for `run_id`. Returns True if the run was
-    known, False otherwise. Raises when owned live resources cannot be stopped,
-    so callers never acknowledge an incomplete cancellation.
-
-    Beyond setting the flag (read between steps), this also KILLS any live
-    shell process the run launched. A blocking tool runs in a daemon worker
-    thread that never reads the event until it returns, so killing the OS
-    process is what makes Stop abort a hung command immediately instead of
-    waiting out the shell timeout.
-    """
-    # Cancel inference first. Shell/server cleanup can involve OS process-tree
-    # work and must not delay closing a hot llama.cpp connection.
-    with _REGISTRY_LOCK:
-        ev = _CANCEL_REGISTRY.get(run_id)
-        upstream_handle = (
-            _UPSTREAM_HANDLE_REGISTRY.get(id(ev)) if ev is not None else None
-        )
-    if ev is not None:
-        ev.set()
-    cleanup_errors: list[Exception] = []
-    if upstream_handle is not None:
-        # Do not acknowledge /cancel until the provider's HTTP response is
-        # closed. The UI may safely abort its SSE reader after this returns.
-        try:
-            upstream_handle.close()
-        except Exception as exc:
-            cleanup_errors.append(exc)
-
-    # Attempt every cleanup stage even if an earlier one failed. The caller is
-    # told about any surviving transport/process only after all owners had a
-    # chance to stop.
-    try:
-        from app.application.code_agent.tools import kill_run_processes
-
-        kill_run_processes(run_id)
-    except Exception as exc:
-        cleanup_errors.append(exc)
-    try:
-        from app.application.code_agent.tools import cancel_run_callbacks
-
-        cancel_run_callbacks(run_id)
-    except Exception as exc:
-        cleanup_errors.append(exc)
-    try:
-        from app.application.code_agent.tools._run import (
-            run_owned_servers,
-            stop_run_servers,
-        )
-
-        stopped_servers = stop_run_servers(run_id)
-        failed_remote_cleanup = [
-            item
-            for item in stopped_servers
-            if item.get("remote_cleanup_status")
-            not in {None, "stopped", "already_stopped"}
-        ]
-        remaining_servers = run_owned_servers(run_id)
-        if failed_remote_cleanup or remaining_servers:
-            raise RuntimeError(
-                "background process cleanup incomplete"
-                f" (remote_failures={len(failed_remote_cleanup)},"
-                f" remaining={len(remaining_servers)})"
-            )
-    except Exception as exc:
-        cleanup_errors.append(exc)
-    if cleanup_errors:
-        raise RuntimeError(
-            f"live cleanup failed for run {run_id}: {cleanup_errors[0]}"
-        ) from cleanup_errors[0]
-    return ev is not None
-
-
-def _register_run(run_id: str) -> threading.Event:
-    from app.core.release_runtime import begin_agent_run
-
-    try:
-        from app.application.code_agent.tools._shell import clear_run_stop_marker
-
-        clear_run_stop_marker(run_id)
-    except Exception:
-        logger.warning("failed to clear stale Stop marker for run %s", run_id, exc_info=True)
-    ev = threading.Event()
-    with _REGISTRY_LOCK:
-        if run_id in _CANCEL_REGISTRY:
-            raise RuntimeError(f"run is already active: {run_id}")
-        begin_agent_run(run_id)
-        _CANCEL_REGISTRY[run_id] = ev
-        _UPSTREAM_HANDLE_REGISTRY[id(ev)] = LLMStreamCancelHandle()
-    return ev
-
-
-def _cancel_handle_for(cancel_event: threading.Event) -> LLMStreamCancelHandle:
-    with _REGISTRY_LOCK:
-        handle = _UPSTREAM_HANDLE_REGISTRY.get(id(cancel_event))
-    if handle is None:
-        raise RuntimeError("run cancellation handle is not registered")
-    return handle
-
-
-def _unregister_run(run_id: str) -> None:
-    from app.core.release_runtime import end_agent_run
-
-    with _REGISTRY_LOCK:
-        ev = _CANCEL_REGISTRY.pop(run_id, None)
-        upstream_handle = (
-            _UPSTREAM_HANDLE_REGISTRY.pop(id(ev), None) if ev is not None else None
-        )
-        if ev is not None:
-            end_agent_run(run_id)
-    if upstream_handle is not None:
-        upstream_handle.close()
 
 
 # Text/format, Workflow-request, context-window, RAG and telemetry helpers
@@ -602,6 +177,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     build_task_state_block,
     format_checklist_state,
     session_cancel_requested,
+    take_session_inputs,
     tool_state_changed,
     upsert_task_state_message,
     _flatten_for_summary,
@@ -615,64 +191,6 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _truncate_for_llm,
     _try_remember_turn,
 )
-
-
-def _load_planning_state(run_id: str) -> "tuple[PlanArtifact | None, bool]":
-    """(reusable plan, planner_already_attempted) from the RunJournal — for
-    Resume / auto-continuation. A valid stored plan is REUSED; if the planner
-    already ran once but produced no plan (planning_fallback), the attempt flag
-    is True so the caller skips a second planner call (bounded, no re-plan
-    loop). Any read failure → (None, False), a safe fresh start."""
-    try:
-        from app.application.code_agent.run_journal import RunJournal
-
-        state = RunJournal.load(run_id).state
-    except Exception:
-        return None, False
-    stored = state.get("plan")
-    plan = plan_artifact_from_dict(stored) if isinstance(stored, dict) else None
-    return plan, bool(state.get("planning_attempted"))
-
-
-def _load_runtime_activation_state(
-    run_id: str,
-) -> tuple[set[str], set[str], dict[str, str], bool, bool, set[str]]:
-    """Restore run-scoped integration and built-in schema visibility."""
-    try:
-        from app.application.code_agent.run_journal import RunJournal
-
-        stored = RunJournal.load(run_id).state.get("runtime_activation") or {}
-    except Exception:
-        stored = {}
-    if not isinstance(stored, dict):
-        stored = {}
-    return (
-        {str(value) for value in stored.get("mcp_server_ids") or [] if str(value)},
-        {str(value) for value in stored.get("lsp_server_ids") or [] if str(value)},
-        {
-            str(key): str(value)
-            for key, value in (stored.get("mcp_schema_queries") or {}).items()
-            if str(key) and str(value)
-        }
-        if isinstance(stored.get("mcp_schema_queries"), dict)
-        else {},
-        bool(stored.get("ssh")),
-        bool(stored.get("itops")),
-        set(normalize_capability_groups(stored.get("capability_groups"))),
-    )
-
-
-def _bounded_planning_recon(registry, *, char_cap: int) -> str:
-    """Deterministic, READ-ONLY recon handed to the planner: a bounded project
-    map. Uses the SAME registry (no second executor) and only a read-only tool,
-    so planning can never mutate anything. Best-effort — an empty string on any
-    failure keeps planning bounded and non-blocking."""
-    try:
-        result = registry.dispatch_raw("project_map", {"max_depth": 2})
-        text = str((result or {}).get("text") or "")
-        return text[:max(1, int(char_cap))]
-    except Exception:
-        return ""
 
 
 def _stream_code_agent_core(
@@ -783,16 +301,10 @@ def _stream_code_agent_core(
         safe_num_ctx = int(context_profile["ctx_size"])
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
         raw_user_message = user_message if memory_query is None else memory_query
-        # Hidden integrations are activated per run through runtime_control.
-        # New requests must not serialize every globally running MCP schema.
-        (
-            active_mcp_server_ids,
-            active_lsp_server_ids,
-            active_mcp_schema_queries,
-            ssh_tools_active,
-            itops_tools_active,
-            active_capability_groups,
-        ) = _load_runtime_activation_state(rid)
+        activation = RuntimeActivation.for_run(
+            root, rid, base_tools, restored_state=_load_runtime_activation_state(rid),
+            registry_builder=build_runtime_tool_registry,
+        )
         # Compatibility domain labels supply task/evidence requirements only.
         # The public entrypoints preserve raw user text in memory_query.
         # Library/attachment contents are evidence, not download or SSH intent.
@@ -802,39 +314,6 @@ def _stream_code_agent_core(
             conversation_history=conversation_history,
         )
         # Domain/evidence hints never preload schemas or change the persona.
-
-        requested_builtin_tools = {
-            str(name).strip()
-            for name in (base_tools or ())
-            if str(name).strip() in ALL_BUILTIN_TOOLS
-        }
-
-        def rebuild_registry() -> ToolRegistry:
-            builtin_names = set(builtin_tools_for_groups(active_capability_groups))
-            # Search mode and attachment/resource routing arrive through
-            # base_tools. Preserve those targeted schema additions instead of
-            # merely journalling and then discarding them.
-            builtin_names.update(requested_builtin_tools)
-            return build_runtime_tool_registry(
-                root,
-                include_builtin=True,
-                builtin_tool_names=builtin_names,
-                mcp_server_ids=active_mcp_server_ids,
-                mcp_schema_queries=active_mcp_schema_queries,
-                lsp_server_ids=active_lsp_server_ids,
-                include_ssh=ssh_tools_active,
-                include_itops=itops_tools_active,
-            )
-
-        def runtime_activation_snapshot() -> dict[str, Any]:
-            return {
-                "mcp_server_ids": sorted(active_mcp_server_ids),
-                "lsp_server_ids": sorted(active_lsp_server_ids),
-                "mcp_schema_queries": dict(sorted(active_mcp_schema_queries.items())),
-                "ssh": ssh_tools_active,
-                "itops": itops_tools_active,
-                "capability_groups": sorted(active_capability_groups),
-            }
 
         # Aggregate the default work tools into one registry. The agent loop only
         # talks to the registry from here on.
@@ -849,76 +328,26 @@ def _stream_code_agent_core(
         from app.application.tool_registry.runtime import seed_builtin_tools
 
         seed_builtin_tools()
-        registry = rebuild_registry()
-        all_schemas = registry.collect_schemas()
+        schema_update = activation.rebuild()
+        registry, all_schemas = schema_update.registry, schema_update.schemas
         # Ordinary work tools are visible from the first step. Specialist
         # built-ins and integrations appear after explicit model calls.
-        initial_tools = tuple(dict.fromkeys(
-            name for schema in all_schemas
-            if (name := _schema_tool_name(schema))
-        ))
         chat = chat_fn or _local_chat
         stream_chat = chat_stream_fn
         if chat_fn is None and stream_chat is None:
             stream_chat = _local_chat_stream
 
-        system_prompt = _build_system_prompt(root, model_name=model, profile_name=profile_name)
-        request_context = _build_turn_context(
-            root, working_dir=working_dir, active_tools=initial_tools,
-            model_name=model, profile_name=profile_name, task_text=raw_user_message,
-            memory_query=memory_query or "", resource_refs=resource_refs,
+        initial_turn = build_initial_turn(
+            root=root, working_dir=working_dir, user_message=user_message,
+            raw_user_message=raw_user_message, memory_query=memory_query,
+            model=model, profile_name=profile_name, conversation_history=conversation_history,
+            resource_refs=resource_refs, active_schemas=all_schemas,
+            system_prompt_builder=_build_system_prompt, turn_context_builder=_build_turn_context,
         )
-        _creative_context = [str(user_message or "")]
-        for _turn in list(conversation_history or [])[-8:]:
-            if isinstance(_turn, dict) and isinstance(_turn.get("content"), str):
-                _creative_context.append(str(_turn["content"])[:4000])
-        if re.search(
-            r"(?:\bblender\b|\bunity\b|блендер|юнити|сцен\w*|scene\w*|"
-            r"префаб\w*|prefab\w*|террейн\w*|terrain\w*|\b3d\b)",
-            "\n".join(_creative_context),
-            re.IGNORECASE,
-        ):
-            _creative_prompt = creative_workflow_prompt({
-                _schema_tool_name(schema) for schema in all_schemas
-                if _schema_tool_name(schema)
-            })
-            if _creative_prompt:
-                request_context += "\n\n" + _creative_prompt
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        messages.extend(_coerce_history(conversation_history))
-        # Keep the current request last in this mutable turn. Finishing on
-        # persona/context instructions encourages the model to recite them.
-        effective_user_message = ""
-        if request_context:
-            effective_user_message = "[Контекст текущего запроса]\n" + request_context
-        # TaskSpec (Phase 6): on a STRUCTURED task, derive goal + success criteria +
-        # verifiers and keep them in focus. None for simple/conversational tasks —
-        # so nothing is injected there (zero tokens, canaries untouched).
-        task_spec = derive_task_spec(user_message, project_root=root)
-        task_spec_source = "current_message" if task_spec is not None else "none"
-        document_page_count_contract = infer_expected_page_count(user_message)
-        if task_spec is None and is_continuation_message(user_message):
-            # FIX-8: ONLY on an explicit continuation ("делай"/"продолжай"/"да") —
-            # restore the most recent STRUCTURED TaskSpec from the user's history so
-            # the verifier-gate/criteria don't silently switch off. A NEW question
-            # after a structured task must NOT drag the old task's criteria back.
-            for _m in reversed(conversation_history or []):
-                if isinstance(_m, dict) and _m.get("role") == "user":
-                    _hist_spec = derive_task_spec(str(_m.get("content") or ""), project_root=root)
-                    if _hist_spec is not None:
-                        task_spec = _hist_spec
-                        task_spec_source = "conversation_history"
-                        break
-        if document_page_count_contract is None and is_continuation_message(user_message):
-            for _m in reversed(conversation_history or []):
-                if isinstance(_m, dict) and _m.get("role") == "user":
-                    document_page_count_contract = infer_expected_page_count(
-                        str(_m.get("content") or "")
-                    )
-                    if document_page_count_contract is not None:
-                        break
-        if task_spec is not None:
-            effective_user_message = f"{taskspec_context(task_spec)}\n\n{effective_user_message}"
+        task_spec, task_spec_source = initial_turn.task_spec, initial_turn.task_spec_source
+        document_page_count_contract = initial_turn.document_page_count_contract
+        turn_context = TurnContext(messages=initial_turn.messages, raw_user_message=raw_user_message,
+                                   root=root, working_dir=working_dir, run_id=rid)
         # Bind the completion contract to THIS run's spec/source so every terminal
         # done event carries uniform task-state (FIX-1/8).
         def _completion_fields(crit, *, terminated_incomplete: bool = False) -> dict:
@@ -931,19 +360,6 @@ def _stream_code_agent_core(
                 "task_spec": taskspec_report(task_spec) if task_spec else None,
                 "task_spec_source": task_spec_source,
             }
-        # Capture tone once per run at the tail. Changing it must not rewrite
-        # the system/schema/history prefix cached by the inference server.
-        try:
-            from app.application.persona.mood import mood_overlay_line
-
-            effective_user_message += "\n\n[Текущий тон Elira]\n" + mood_overlay_line()
-        except Exception:
-            logger.debug("transient persona tone unavailable", exc_info=True)
-        effective_user_message = (
-            effective_user_message.strip() + "\n\n[Текущее сообщение пользователя]\n" + user_message
-        ).lstrip()
-        messages.append({"role": "user", "content": effective_user_message})
-
         yield {
             "type": "run_started",
             "run_id": rid,
@@ -952,7 +368,7 @@ def _stream_code_agent_core(
             "domain_policies": list(request_route.domain_policies),
             "evidence_reasons": list(request_route.evidence_reasons),
             "preflight": request_route.preflight,
-            "runtime_activation": runtime_activation_snapshot(),
+            "runtime_activation": activation.snapshot(),
         }
         yield {
             "type": "context_resolved",
@@ -987,21 +403,9 @@ def _stream_code_agent_core(
         # One run-local evidence ledger owns mutation, verification, artifact,
         # remote-observation and external-source truth. A mutation advances its
         # project epoch, making older verification receipts stale.
-        run_evidence = RunEvidence(sources=initial_sources or [])
         _last_failure: dict[str, str] = {}  # for the deterministic stop summary
         _failure_counts: dict[str, int] = {}
-        _download_delivery_correction_sent = False
-        _evidence_answer_correction_sent = False
-        _local_tabular_catalog_probe_seen = False
-        _library_search_seen = False
-        _local_catalog_correction_sent = False
-        _web_catalog_fallback_correction_sent = False
-        _catalog_web_fallback_required = False
-        _catalog_web_fetch_seen = False
-        _catalog_web_fetch_correction_sent = False
-        _bom_snapshot: dict[str, Any] | None = None
-        _bom_validation_selected = False
-        _bom_validation_correction_sent = False
+        acceptance = AnswerAcceptance()
         _last_glob_matches: tuple[str, ...] = ()
         _read_file_failures: dict[str, int] = {}
         pending_redirected_jobs: set[int] = set()
@@ -1011,7 +415,6 @@ def _stream_code_agent_core(
         # verifier passed) / failed (matching verifier red). completion_status is a
         # deterministic function of this — kept SEPARATE from runtime `ok`. We never
         # burn an extra LLM turn to nag; unconfirmed criteria are reported at finalize.
-        criteria = CriteriaTracker.from_spec(task_spec)
         _last_server_url = ""
         touched_files: list[str] = []  # every file the run mutated (for the report)
         durable_state: dict[str, Any] = {}
@@ -1021,34 +424,19 @@ def _stream_code_agent_core(
             durable_state = RunJournal.load(rid).state
         except Exception:
             durable_state = {}
-        from app.application.code_agent.command_progress import CommandProgress
-        from app.application.code_agent.task_outcomes import TaskOutcome
-
-        task_outcome = TaskOutcome(durable_state.get("task_outcome"))
-        command_progress = CommandProgress.from_snapshot(durable_state.get("command_progress"))
-        code_input_epoch = int(durable_state.get("code_input_epoch") or 0)
-        _bom_validation_selected = bool(durable_state.get("bom_validation_selected"))
-        for verification in task_outcome.current_verifications(code_input_epoch):
-            run_evidence.record_tool_result(
-                tool_name="runtime_control", arguments={"operation": "result_verify"},
-                execution_status="ok", output={"ok": verification.get("status") == "passed",
-                    "operation": "result_verify", "result": {"verification": verification}},
-                text_result="", state_changed=False,
-            )
-        mutated_files: list[str] = list(durable_state.get("mutated_files") or [])
-        verification_log: list[str] = list(durable_state.get("verifications") or [])
-        durable_failures: list[str] = list(durable_state.get("failed_attempts") or [])
+        observations = RunObservations(task_spec=task_spec, durable_state=durable_state,
+                                       resume=resume, initial_sources=initial_sources)
+        run_evidence, criteria = observations.evidence, observations.criteria
+        task_outcome, command_progress = observations.outcome, observations.commands
+        mutated_files, verification_log = observations.mutated_files, observations.verifications
+        durable_failures = observations.failed_attempts
+        acceptance.bom_validation_selected = bool(durable_state.get("bom_validation_selected"))
         quote_word_limit = infer_quote_word_limit(raw_user_message)
         saved_quote_word_limit = durable_state.get("quote_word_limit")
         if resume and type(saved_quote_word_limit) is int and 0 < saved_quote_word_limit < 10_000:
             quote_word_limit = saved_quote_word_limit
-        quote_correction_sent = bool(durable_state.get("quote_word_limit_correction_sent"))
-        cadence_correction_sent = bool(durable_state.get("web_cadence_correction_sent"))
-        durable_project_epoch = int(durable_state.get("project_epoch") or 0)
-        durable_criteria_epoch = int(durable_state.get("criteria_epoch") or 0)
-        if resume and durable_criteria_epoch == durable_project_epoch:
-            criteria.restore_report(list(durable_state.get("criteria") or []))
-
+        acceptance.quote_correction_sent = bool(durable_state.get("quote_word_limit_correction_sent"))
+        acceptance.cadence_correction_sent = bool(durable_state.get("web_cadence_correction_sent"))
         # ── Structured planning preflight ────────────────────────────────────
         # On a structured task the selected reasoning mode is used for a planning
         # call and then remains active for every execution/verification model call.
@@ -1148,16 +536,16 @@ def _stream_code_agent_core(
         # execution still goes through the canonical registry/executor.
         if plan is not None:
             planned_groups = set(normalize_capability_groups(plan.capability_groups))
-            new_groups = planned_groups - active_capability_groups
+            new_groups = planned_groups - activation.capability_groups
             if new_groups:
-                active_capability_groups.update(new_groups)
-                registry = rebuild_registry()
-                all_schemas = registry.collect_schemas()
+                activation.activate_groups(new_groups)
+                schema_update = activation.rebuild()
+                registry, all_schemas = schema_update.registry, schema_update.schemas
                 yield {
                     "type": "runtime_activation_changed",
                     "run_id": rid,
                     "source": "planner",
-                    "runtime_activation": runtime_activation_snapshot(),
+                    "runtime_activation": activation.snapshot(),
                 }
 
         # Structural event ONLY when a planning preflight actually engaged. A
@@ -1189,30 +577,16 @@ def _stream_code_agent_core(
             # Keep it in a normal user turn so it cannot elevate project-derived
             # text into the system role and does not create assistant→assistant
             # message ordering before the first execution call.
-            messages.append({"role": "user", "content": plan_context_block(plan)})
+            turn_context.messages.append({"role": "user", "content": plan_context_block(plan)})
         step = 0
-        sent_guidance: set[str] = set()
-        guidance_message_ids: set[str] = set()
-        skill_context = SkillContext()
-        if resume:
-            try:
-                skill_context.restore(rid)
-            except (OSError, ValueError) as exc:
-                yield {"type": "done", "ok": False, "steps": 0, "stop_reason": "error",
-                       "error_code": "skill_restore_failed", "error": str(exc), "resumable": False}
-                return
-        skill_catalog = catalog_context()
-        if skill_catalog:
-            messages = insert_skill_context(messages, skill_catalog, CATALOG_ID)
-            guidance_message_ids.add(CATALOG_ID)
-        advisor_text, advisor_state = advisor_context(raw_user_message)
-        if advisor_text:
-            messages = insert_skill_context(messages, advisor_text, ADVISOR_CONTEXT_ID)
-            guidance_message_ids.add(ADVISOR_CONTEXT_ID)
-        yield {"type": "skill_advisor_consulted", "skill_advisor": advisor_state}
-        skill_reminder_pending = False
-        skill_reminder_sent = False
-        refresh_task_state = True
+        try:
+            turn_context.initialize_skills(resume=resume)
+        except SkillRestoreError as exc:
+            yield {"type": "done", "ok": False, "steps": 0, "stop_reason": "error",
+                   "error_code": "skill_restore_failed", "error": str(exc), "resumable": False}
+            return
+        yield {"type": "skill_advisor_consulted", "skill_advisor": turn_context.advisor_state}
+
         while True:
             step += 1
             if cancel_event.is_set():
@@ -1227,21 +601,11 @@ def _stream_code_agent_core(
                 return
 
             yield {"type": "step_started", "step": step}
+            pending_inputs = take_session_inputs(rid)
+            if pending_inputs:
+                yield from turn_context.apply_user_inputs(pending_inputs, step=step)
 
-            if skill_reminder_pending and not skill_reminder_sent and not skill_context.snapshots():
-                # A bounded reminder after actual project/tool discovery. This
-                # uses the next existing inference turn, never blocks tools and
-                # never assigns a domain/persona from user keywords.
-                messages = insert_skill_context(messages, (
-                    "[Рабочее напоминание Elira] Ты начала работу с проектом или системой. "
-                    "Проверь каталог навыков выше и перед дальнейшей профильной работой "
-                    "загрузи подходящие инструкции через runtime_control(operation='skill_load', "
-                    "name=имя, query=причина). Для кода обычно нужен навык языка и code-change; "
-                    "для поиска причины сбоя — diagnostics. Выбери сама по текущей задаче. "
-                    "Если подходящего навыка нет или задача не требует профильной инструкции, "
-                    "продолжай доступными инструментами."
-                ), "elira-skill-reminder")
-                skill_reminder_sent = True
+            turn_context.add_skill_reminder()
 
             checklist_items: list[dict] = []
             try:
@@ -1253,92 +617,35 @@ def _stream_code_agent_core(
                     )
             except Exception:
                 checklist_items = []
-            if (task_spec is not None or checklist_items) and refresh_task_state:
-                messages = upsert_task_state_message(
-                    messages,
-                    build_task_state_block(
-                        goal=str(getattr(task_spec, "goal", "")),
-                        constraints=list(
-                            getattr(task_spec, "constraints", None) or []
-                        ),
-                        criteria_rows=criteria.report(),
-                        checklist_items=checklist_items,
-                        mutated_files=mutated_files,
-                        verifications=verification_log,
-                        failed_attempts=[
-                            *durable_failures,
-                            *(call for call in call_log if call.endswith("error")),
-                        ],
-                        next_step="",
-                    ),
-                )
-                refresh_task_state = False
+            turn_context.update_task_state(
+                task_spec=task_spec, criteria_rows=criteria.report(), checklist_items=checklist_items,
+                mutated_files=mutated_files, verifications=verification_log,
+                failed_attempts=[*durable_failures, *(call for call in call_log if call.endswith("error"))],
+            )
 
             # Context accounting must include the exact JSON schemas sent this
             # step. Previously the UI could report ~11% while MCP schemas filled
             # almost the complete 128K server window.
             step_schemas = list(all_schemas)
             step_schemas.append(_ASK_USER_SCHEMA)
-            if active_capability_groups or requested_builtin_tools or active_mcp_server_ids or active_lsp_server_ids or ssh_tools_active or itops_tools_active:
+            if activation.has_optional_tools:
                 step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
-            guidance = task_guidance_blocks(
-                {_schema_tool_name(schema) for schema in all_schemas},
-                domain_policies=request_route.domain_policies,
-            )
-            if request_route.download_requested or "resources" in guidance:
-                guidance["file_delivery"] = DELIVERY_GUIDANCE
-            if task_instructions:
-                guidance["delivery"] = task_instructions
-            if "work" in guidance and "work" not in sent_guidance:
-                guidance["work"] += "\n" + _build_project_context(root, working_dir)
-            if "project" in guidance and "project" not in sent_guidance:
-                guidance["project"] += "\n" + _shell_guidance()
-                guidance["project"] += (
-                    _NO_PROJECT_BLOCK if _is_scratch_workspace(root) else _PROJECT_CONNECTED_BLOCK
-                )
-            new_guidance = [text for key, text in guidance.items() if key not in sent_guidance]
-            if new_guidance:
-                block = "[Инструкции текущей задачи]\n" + "\n\n".join(new_guidance)
-                message_id = f"{rid}:guidance:{step}"
-                guidance_message = {"role": "user", "content": block, "_msg_id": message_id}
-                if step == 1:
-                    # Put initial work instructions before the current request,
-                    # so the model answers the user rather than the instructions.
-                    messages.insert(len(messages) - 1, guidance_message)
-                else:
-                    messages.append(guidance_message)
-                guidance_message_ids.add(message_id)
-                sent_guidance.update(guidance)
-            active_skill_text = skill_context.context()
-            if active_skill_text:
-                messages = insert_skill_context(messages, active_skill_text, CONTEXT_ID)
-                guidance_message_ids.add(CONTEXT_ID)
+            turn_context.add_guidance(schemas=all_schemas, request_route=request_route,
+                                      task_instructions=task_instructions, step=step)
             if task_outcome.refresh_deliveries():
                 yield {"type": "task_outcome_changed", "step": step,
                        "task_outcome": task_outcome.snapshot()}
-            outcome_context = task_outcome.context(code_input_epoch)
+            outcome_context = task_outcome.context(observations.code_input_epoch)
             if outcome_context:
-                outcome_context_id = f"{rid}:task-outcome"
-                messages = insert_skill_context(messages, outcome_context, outcome_context_id)
-                guidance_message_ids.add(outcome_context_id)
-            command_progress.observe("", {}, {}, epoch=task_outcome.version(code_input_epoch))
-            recovery_context_id = f"{rid}:command-recovery"
-            messages = insert_skill_context(messages, command_progress.context(), recovery_context_id)
-            guidance_message_ids.add(recovery_context_id)
+                turn_context.pin_outcome_context(outcome_context)
+            command_progress.observe("", {}, {}, epoch=task_outcome.version(observations.code_input_epoch))
+            turn_context.pin_recovery_context(command_progress.context())
             try:
-                messages, _compacted, context_usage = _prepare_messages_for_llm(
-                    messages,
-                    num_ctx=safe_num_ctx,
-                    model=model,
-                    chat_fn=chat,
-                    context_profile=context_profile,
-                    tool_schemas=step_schemas,
-                    cancel_handle=upstream_cancel_handle,
-                    audit_sink=compaction_audit_sink,
-                    pinned_message_ids=guidance_message_ids | {"web-source-context"},
-                    restore_messages=lambda packed, *, compacted: run_evidence.restore_source_context(
-                        packed, compacted=compacted, max_chars=min(7000, safe_num_ctx),
-                    ),
+                _compacted, context_usage = turn_context.prepare(
+                    prepare_fn=_prepare_messages_for_llm, num_ctx=safe_num_ctx, model=model,
+                    chat_fn=chat, context_profile=context_profile, tool_schemas=step_schemas,
+                    cancel_handle=upstream_cancel_handle, audit_sink=compaction_audit_sink,
+                    restore_source_context=run_evidence.restore_source_context,
                 )
             except ContextBudgetError as exc:
                 if cancel_event.is_set():
@@ -1385,10 +692,10 @@ def _stream_code_agent_core(
                 compaction_count += 1
                 # Compaction creates a new prompt prefix anyway. Refresh the
                 # task snapshot on the next step, then keep it stable again.
-                refresh_task_state = True
+                turn_context.refresh_task_state = True
                 from app.application.context.compaction import extract_rolling_summary
 
-                rolling_summary = extract_rolling_summary(messages)
+                rolling_summary = extract_rolling_summary(turn_context.messages)
                 yield {
                     "type": "context_compacted",
                     "step": step,
@@ -1413,15 +720,12 @@ def _stream_code_agent_core(
                 if step_schemas
                 else 0
             )
-            llm_prompt_chars = _messages_char_count(messages) + schema_chars
-            run_evidence.mark_sources_presented(messages)
+            llm_prompt_chars = _messages_char_count(turn_context.messages) + schema_chars
+            run_evidence.mark_sources_presented(turn_context.messages)
             if run_evidence.sources:
                 yield {"type": "source_evidence", "step": step, "sources": run_evidence.sources}
             llm_start = time.monotonic()
             try:
-                response: dict[str, Any] = {}
-                pending_delta = ""
-                suppress_deltas = False
                 llm_options: dict[str, Any] = {
                     "num_ctx": safe_num_ctx,
                     "active_context_limit": safe_num_ctx,
@@ -1443,48 +747,15 @@ def _stream_code_agent_core(
                 )
                 llm_kwargs = {
                     "model": model,
-                    "messages": messages,
+                    "messages": turn_context.messages,
                     "tools": step_schemas,
                     "options": llm_options,
                 }
-                for llm_event in _chat_events(
-                    chat_fn=chat,
-                    chat_stream_fn=stream_chat,
-                    kwargs=llm_kwargs,
-                    cancel_event=cancel_event,
-                    cancel_handle=upstream_cancel_handle,
-                ):
-                    if cancel_event.is_set():
-                        break
-                    if llm_event["type"] == "heartbeat":
-                        yield {"type": "heartbeat", "step": step}
-                        continue
-                    if llm_event["type"] == "response":
-                        response = dict(llm_event["value"] or {})
-                        continue
-                    if llm_event["type"] == "reasoning":
-                        # Surface thinking tokens on their own SSE event so the UI
-                        # can show them in a separate, collapsible block. Kept out
-                        # of the answer stream and out of message history.
-                        rtext = str(llm_event["value"] or "")
-                        if rtext:
-                            yield {"type": "reasoning_delta", "step": step, "text": rtext}
-                        continue
-                    if llm_event["type"] != "delta":
-                        continue
-                    pending_delta += str(llm_event["value"] or "")
-                    marker_text = pending_delta.lower()
-                    if "<tool" in marker_text or "<function=" in marker_text:
-                        suppress_deltas = True
-                        pending_delta = ""
-                        continue
-                    if not suppress_deltas and len(pending_delta) > 32:
-                        visible, pending_delta = pending_delta[:-32], pending_delta[-32:]
-                        if visible:
-                            yield {"type": "delta", "step": step, "text": visible, "answer_state": "draft"}
-                response_content = str(((response.get("message") or {}).get("content") or ""))
-                if not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
-                    yield {"type": "delta", "step": step, "text": pending_delta, "answer_state": "draft"}
+                response = yield from stream_model_turn(
+                    chat=chat, stream_chat=stream_chat, kwargs=llm_kwargs,
+                    cancel_event=cancel_event, upstream_cancel_handle=upstream_cancel_handle,
+                    step=step,
+                )
             except Exception as exc:
                 if cancel_event.is_set():
                     yield {
@@ -1540,14 +811,11 @@ def _stream_code_agent_core(
                 }
                 return
 
-            message = (response or {}).get("message") or {}
             # Safety net: reasoning/content separation relies on the SERVER's
             # template parsing. If that ever breaks (model swap, llama.cpp
             # update), raw <think> blocks would flow into content → history →
             # the model keeps reasoning as content. Strip them client-side too.
-            content = _strip_think_blocks(message.get("content") or "").strip()
-            tool_calls = message.get("tool_calls") or []
-            step_usage = extract_llm_usage(response)
+            content, tool_calls, step_usage = decode_response(response)
             record_inference_telemetry(
                 agent_id=effective_agent_id,
                 run_id=rid,
@@ -1593,15 +861,23 @@ def _stream_code_agent_core(
             # Some local tool-calling models emit tool calls as JSON in
             # content instead of structured tool_calls. Recover them so the
             # loop still works.
-            inline_calls: list[dict[str, Any]] = []
-            if not tool_calls and content:
-                inline_calls = _extract_inline_tool_calls(content, _inline_tool_names)
-                if inline_calls:
-                    tool_calls = inline_calls
-                    content = ""  # JSON was the tool call, not a text reply
+            content, tool_calls = recover_tool_calls(content, tool_calls, _inline_tool_names)
+
+            # Reconsider a generated proposal before starting any of its tools.
+            # Existing tool batches finish normally; no second executor or
+            # concurrent model response is started for a user update.
+            pending_inputs = take_session_inputs(rid)
+            if pending_inputs:
+                yield from turn_context.apply_user_inputs(pending_inputs, step=step)
+                continue
+            if turn_context.awaiting_input_replies and content:
+                reply = content.split("\n\n", 1)[0][:600]
+                yield {"type": "user_input_reply", "step": step, "run_id": rid,
+                       "request_ids": list(turn_context.awaiting_input_replies), "text": reply}
+                turn_context.awaiting_input_replies.clear()
 
             if not tool_calls and _contains_tool_trace(content):
-                messages.append({
+                turn_context.messages.append({
                     "role": "user",
                     "content": (
                         "[internal correction] Tool trace was malformed or unavailable. "
@@ -1617,322 +893,35 @@ def _stream_code_agent_core(
 
             if not tool_calls:
                 final_text = _strip_tool_call_markup(content or last_text)
-                if pending_redirected_jobs:
-                    pending_list = ", ".join(
-                        str(pid) for pid in sorted(pending_redirected_jobs)
-                    )
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal background-job correction] Задачу нельзя "
-                            "завершать, пока автоматически перенесённая SSH job не "
-                            "получила terminal status. Вызови "
-                            "run_server(action='logs', kind='job', pid=...) для каждого PID: "
-                            f"{pending_list}. Если status=running — опроси позже; "
-                            "если completed/failed/cancelled — учти результат и "
-                            "только затем отвечай пользователю."
-                        ),
-                    })
-                    call_log.append(
-                        "completion blocked by redirected SSH job: " + pending_list
-                    )
-                    continue
-                if (
-                    not _local_catalog_correction_sent
-                    and should_require_local_catalog_search(
-                        final_text,
-                        local_tabular_probe_seen=_local_tabular_catalog_probe_seen,
-                        library_search_seen=_library_search_seen,
-                    )
-                ):
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal local-catalog correction] Нельзя считать нулевой "
-                            "exact-match или показанные head()/первые N строк доказательством "
-                            "отсутствия позиции в локальном прайсе. Выполни "
-                            "runtime_control(operation='library_search', query=...) с "
-                            "несколькими независимыми токенами назначения, категории и, если "
-                            "известны, бренда/модели. Если документ не находится в Library, "
-                            "повтори локальный поиск по отдельным токенам без жёсткой фразы. "
-                            "Только после этой проверки можно подтвердить отсутствие или "
-                            "искать внешнюю альтернативу. Эта коррекция одноразовая."
-                        ),
-                    })
-                    _local_catalog_correction_sent = True
-                    call_log.append("completion blocked by unverified local-catalog absence")
-                    continue
-                if (
-                    not _web_catalog_fallback_correction_sent
-                    and should_require_web_catalog_fallback(
-                        final_text,
-                        bom_validation_selected=_bom_validation_selected,
-                        library_search_seen=_library_search_seen,
-                        external_source_seen=run_evidence.has_external_source,
-                    )
-                ):
-                    _web_was_activated = "web" not in active_capability_groups
-                    if _web_was_activated:
-                        active_capability_groups.add("web")
-                        registry = rebuild_registry()
-                        all_schemas = registry.collect_schemas()
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal catalog Web fallback] Обязательный компонент "
-                            "сборки не подтверждён после полного локального Library-поиска. "
-                            "Нельзя завершать неполный BOM: вызови web_search, затем "
-                            "web_fetch для первичного/магазинного источника и предложи "
-                            "совместимую внешнюю альтернативу с подтверждёнными моделью, "
-                            "ценой/наличием и URL. Локальные позиции не заменяй внешними, "
-                            "если они уже подтверждены."
-                        ),
-                    })
-                    _web_catalog_fallback_correction_sent = True
-                    _catalog_web_fallback_required = True
-                    call_log.append("completion blocked by missing catalog Web fallback")
-                    if _web_was_activated:
-                        yield {
-                            "type": "runtime_activation_changed",
-                            "run_id": rid,
-                            "step": step,
-                            "source": "catalog_absence_fallback",
-                            "runtime_activation": runtime_activation_snapshot(),
-                        }
-                    continue
-                if (
-                    _catalog_web_fallback_required
-                    and not _catalog_web_fetch_seen
-                    and not _catalog_web_fetch_correction_sent
-                ):
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal catalog source correction] Одного web_search "
-                            "недостаточно. Вызови web_fetch для выбранного результата и "
-                            "подтверди на странице точную модель, совместимость и цену/наличие."
-                        ),
-                    })
-                    _catalog_web_fetch_correction_sent = True
-                    call_log.append("completion blocked until catalog source fetch")
-                    continue
-                if (
-                    "web" not in active_capability_groups
-                    and not _evidence_answer_correction_sent
-                    and should_escalate_web_from_answer(final_text, raw_user_message)
-                ):
-                    active_capability_groups.add("web")
-                    registry = rebuild_registry()
-                    all_schemas = registry.collect_schemas()
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal evidence correction] Ответ не проверен инструментами. "
-                            "Web tools доступны: отсутствие актуальных знаний модели не "
-                            "означает отсутствие доступа к источникам. Самостоятельно выполни "
-                            "нужный поиск и прочитай первичные источники, затем ответь на исходный "
-                            "вопрос; не спрашивай, выполнять ли поиск или загружать инструменты. "
-                            "Явные ограничения пользователя сохраняются. Локальное состояние "
-                            "по-прежнему проверяй локальными tools."
-                        ),
-                    })
-                    _evidence_answer_correction_sent = True
-                    yield {
-                        "type": "runtime_activation_changed",
-                        "run_id": rid,
-                        "step": step,
-                        "source": "evidence_uncertain_answer",
-                        "runtime_activation": runtime_activation_snapshot(),
-                    }
-                    continue
-                outcome_pending = task_outcome.pending()
-                outcome_targets = task_outcome.decision.get("targets") or []
-                if not outcome_pending and outcome_targets:
-                    unverified_targets = set(task_outcome.unverified_targets(outcome_targets, code_input_epoch))
-                    pending_targets = [target for target in outcome_targets if target in unverified_targets
-                                       or not run_evidence.has_passing_result_verification([target])]
-                    if pending_targets:
-                        outcome_pending = (
-                            "Не имеют актуальной проверки следующие заявленные результаты задачи: "
-                            + json.dumps(pending_targets, ensure_ascii=False)
-                            + ". task_decide.config.targets задаёт результаты всей задачи; "
-                            "result_verify.config.targets задаёт только файлы отдельной проверки "
-                            "и не изменяет решение task_decide. Если служебный отчёт проверки ошибочно "
-                            "включён в результаты задачи, явно обнови task_decide по исходному запросу "
-                            "пользователя. Если это действительно нужный дополнительный результат, "
-                            "проверь его отдельно. Затем выполни result_verify для текущих результатов: "
-                            "config.command читает их и записывает свежий JSON "
-                            "{checks:[{name,passed:true/false}]} в report_path, отдельный от проверяемых "
-                            "targets. При несовпадении исправь решение и проверь снова."
-                        )
-                if outcome_pending and task_outcome.correction != outcome_pending:
-                    task_outcome.correction = outcome_pending
-                    if "runtime" not in active_capability_groups:
-                        active_capability_groups.add("runtime")
-                        registry = rebuild_registry()
-                        all_schemas = registry.collect_schemas()
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({"role": "user", "content": outcome_pending})
-                    yield {"type": "task_outcome_changed", "step": step,
-                           "task_outcome": task_outcome.snapshot(),
-                           "runtime_activation": runtime_activation_snapshot()}
-                    continue
-                if outcome_pending:
-                    final_text += "\n\nНе подтверждено: " + outcome_pending
-                if (
-                    _bom_validation_selected
-                    and _bom_snapshot is None
-                    and not _bom_validation_correction_sent
-                ):
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal BOM correction] Нельзя завершать локальную "
-                            "спецификацию/КП с арифметикой модели. Вызови bom_validate "
-                            "по исходному XLSX/CSV: передай точные колонки, выбранные коды "
-                            "и количества, остаток, наценку, НДС и услуги. Используй только "
-                            "подтверждённые rows/total из результата. Если ok=false — исправь "
-                            "подбор; не создавай и не публикуй финальный документ до ok=true."
-                        ),
-                    })
-                    _bom_validation_correction_sent = True
-                    call_log.append("completion blocked by missing deterministic BOM validation")
-                    continue
-                missing_downloads = task_outcome.missing_deliveries()
-                unbacked_downloads = task_outcome.unbacked_download_links(final_text)
-                delivery_problems = {"targets": missing_downloads, "links": unbacked_downloads}
-                if (missing_downloads or unbacked_downloads) and not _download_delivery_correction_sent:
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[internal delivery correction] Для объявленных или фактически "
-                            "запрошенных через resource_publish файлов либо выданных ссылок нет подтверждённой "
-                            "публикации текущих байтов: "
-                            + json.dumps(delivery_problems, ensure_ascii=False)
-                            + ". Проверь файлы и опубликуй через resource_publish; используй только "
-                            "ссылку из успешного результата. Удали выдуманную ссылку, если файл не создан. "
-                            "Если объявленный delivery contract неверно отражает задачу, "
-                            "исправь его явно через task_decide с reason; пропуск поля "
-                            "delivery сохраняет прежний контракт. Не объявляй неудачную "
-                            "попытку публикации успешной: при невозможности восстановить "
-                            "файл объясни конкретную проблему, сохранив остальной результат."
-                        ),
-                    })
-                    _download_delivery_correction_sent = True
-                    call_log.append("declared/attempted file delivery lacks current publication")
-                    yield {"type": "task_outcome_changed", "step": step,
-                           "task_outcome": task_outcome.snapshot()}
-                    continue
-                download_delivery_failed = bool(missing_downloads or unbacked_downloads)
-                bom_validation_failed = bool(
-                    _bom_validation_selected
-                    and _bom_snapshot is None
+                answer_decision = acceptance.evaluate(
+                    final_text=final_text, raw_user_message=turn_context.raw_user_message,
+                    pending_redirected_jobs=pending_redirected_jobs,
+                    active_capability_groups=activation.capability_groups,
+                    task_outcome=task_outcome, run_evidence=run_evidence,
+                    code_input_epoch=observations.code_input_epoch,
+                    quote_word_limit=quote_word_limit, durable_task=str(durable_state.get("task") or ""),
+                    step=step, run_id=rid,
                 )
-                catalog_web_failed = bool(
-                    _catalog_web_fallback_required
-                    and not _catalog_web_fetch_seen
-                )
-                if bom_validation_failed:
-                    final_text = (
-                        "BOM не завершён: детерминированная проверка кодов, остатков, "
-                        "цен, НДС и итогов не получила статус ok=true. Непроверенные "
-                        "позиции и суммы не публикуются."
-                    )
-                elif catalog_web_failed:
-                    final_text = (
-                        "BOM не завершён: внешняя альтернатива не подтверждена чтением "
-                        "источника. Результат Web-поиска без web_fetch не считается "
-                        "проверкой модели, совместимости и наличия."
-                    )
-                elif _bom_validation_selected and _bom_snapshot is not None:
-                    artifact_note = (
-                        " Финальный файл опубликован."
-                        if not download_delivery_failed and run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
-                        else ""
-                    )
-                    final_text = (
-                        "BOM детерминированно проверен по локальному каталогу. "
-                        f"Канонический итог: {_bom_snapshot['total']}."
-                        f"{artifact_note} Receipt: "
-                        f"{_bom_snapshot['receipt_sha256']}."
-                    )
-                if download_delivery_failed:
-                    final_text = task_outcome.mark_unbacked_download_links(final_text, unbacked_downloads)
-                    final_text = final_text.rstrip() + (
-                        "\n\nПубликация для скачивания не подтверждена для текущих файлов или ссылок: "
-                        + json.dumps(delivery_problems, ensure_ascii=False)
-                        + ". Успешного подтверждения доставки этих байтов нет."
-                    )
-                unverified_document_qa_claim = (
-                    run_evidence.has_unverified_document_qa_claim(final_text)
-                )
-                if unverified_document_qa_claim:
-                    final_text = run_evidence.document_qa_backstop()
-                if quote_word_limit is not None:
-                    final_text = normalize_quote_word_counts(final_text)
-                quote_violations = quote_word_limit_violations(final_text, max_words=quote_word_limit)
-                if quote_violations and not quote_correction_sent:
-                    quote_correction_sent = True
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({"role": "user", "content": quote_word_limit_correction(quote_violations)})
-                    call_log.append("corrected explicit quote word limit")
-                    yield {"type": "answer_format_correction", "step": step,
-                           "contract": "quote_word_limit", "limit": quote_word_limit,
-                           "word_counts": [item.word_count for item in quote_violations]}
+                if answer_decision.action == "retry":
+                    if answer_decision.outcome_correction is not None:
+                        task_outcome.correction = answer_decision.outcome_correction
+                    if answer_decision.activate_groups:
+                        activation.activate_groups(answer_decision.activate_groups)
+                        schema_update = activation.rebuild()
+                        registry, all_schemas = schema_update.registry, schema_update.schemas
+                    turn_context.messages.extend(answer_decision.messages)
+                    acceptance.commit(answer_decision)
+                    if answer_decision.log_note is not None:
+                        call_log.append(answer_decision.log_note)
+                    if answer_decision.event is not None:
+                        correction_event = dict(answer_decision.event)
+                        if answer_decision.event_task_outcome:
+                            correction_event["task_outcome"] = task_outcome.snapshot()
+                        if answer_decision.event_runtime_activation:
+                            correction_event["runtime_activation"] = activation.snapshot()
+                        yield correction_event
                     continue
-                quote_format_failed = bool(quote_violations)
-                if quote_format_failed:
-                    final_text = (
-                        "Не удалось выполнить условие цитирования: превышен лимит "
-                        f"{quote_word_limit} слов или неверно указано число слов в цитате. "
-                        "Ответ не прошёл проверку этого условия."
-                    )
-                cadence_violations = ()
-                presented_sources = run_evidence.presented_sources
-                source_request = raw_user_message or str(durable_state.get("task") or "")
-                if presented_sources and run_evidence.requires_external_source(source_request, final_text):
-                    cadence_violations = web_cadence_citation_violations(
-                        final_text,
-                        matched_source_ids={source["id"] for source in presented_sources},
-                        read_source_urls={source["url"] for source in presented_sources},
-                        read_sources=presented_sources,
-                    )
-                if cadence_violations and not cadence_correction_sent:
-                    cadence_correction_sent = True
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({"role": "user", "content": web_cadence_citation_correction(cadence_violations)})
-                    call_log.append("requested local source binding for update cadence")
-                    yield {"type": "answer_format_correction", "step": step,
-                           "contract": "web_cadence_citation",
-                           "quantities": [item.quantity for item in cadence_violations]}
-                    continue
-                cadence_format_failed = bool(cadence_violations)
-                if cadence_format_failed:
-                    final_text = (
-                        "Не удалось подкрепить указанный период обновлений ссылкой "
-                        "на прочитанный источник для того же объекта. "
-                        "Ответ не прошёл проверку ссылок."
-                    )
-                answer_status = (
-                    "degraded"
-                    if (
-                        download_delivery_failed
-                        or bool(outcome_pending)
-                        or bom_validation_failed
-                        or catalog_web_failed
-                        or unverified_document_qa_claim
-                        or quote_format_failed
-                        or cadence_format_failed
-                    )
-                    else "complete"
-                )
+                final_text, answer_status = answer_decision.text, answer_decision.answer_status
                 # Evidence remains structured in the done event for observability,
                 # but it cannot block finalization or rewrite the model's answer.
                 criteria.finalize_conditionals()
@@ -1961,6 +950,10 @@ def _stream_code_agent_core(
                     "unresolved" if any(item["status"] != "matched" for item in citations)
                     else "matched" if citations else "none"
                 )
+                pending_inputs = take_session_inputs(rid, finishing=True)
+                if pending_inputs:
+                    yield from turn_context.apply_user_inputs(pending_inputs, step=step)
+                    continue
                 yield {
                     "type": "final_response", "step": step, "text": final_text,
                     "answer_state": "accepted",
@@ -2009,7 +1002,7 @@ def _stream_code_agent_core(
                 }
                 return
 
-            messages.append({
+            turn_context.messages.append({
                 "role": "assistant",
                 "content": content,
                 "tool_calls": tool_calls,
@@ -2065,261 +1058,24 @@ def _stream_code_agent_core(
                         parsed_args["_runtime_refuse_reason"] = (
                             "Сначала используй glob, ResourceRef или другой подтверждённый путь."
                         )
-                if name == "ask_user":
-                    _question = str(parsed_args.get("question") or "").strip()
-                    _raw_opts = parsed_args.get("options")
-                    _options = [str(o) for o in _raw_opts][:8] if isinstance(_raw_opts, list) else []
-                    _input_rule: dict[str, Any] = {
-                        "type": "string",
-                        "title": _question or "Ответ",
-                    }
-                    if _options:
-                        _input_rule["enum"] = _options
-                    _request = {
-                        "kind": "input",
-                        "message": _question,
-                        "schema": {
-                            "type": "object",
-                            "properties": {"answer": _input_rule},
-                            "required": ["answer"],
-                            "additionalProperties": False,
-                        },
-                        "sensitive": False,
-                    }
-                    if pause_for_workflow_request:
-                        yield {
-                            "type": "workflow_request",
-                            "step": step,
-                            "status": "needs_input",
-                            "request": _request,
-                        }
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "workflow_request",
-                            "status": "needs_input",
-                            "request": _request,
-                            "error": None,
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    _qid = uuid.uuid4().hex
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES[_qid] = None
-                    yield {
-                        "type": "workflow_request",
-                        "step": step,
-                        "status": "needs_input",
-                        "response_id": _qid,
-                        "request": _request,
-                    }
-                    _wait_started = time.monotonic()
-                    _last_keepalive = _wait_started
-                    _response: dict[str, Any] | None = None
-                    while True:
-                        with _WORKFLOW_RESPONSE_LOCK:
-                            _stored = _WORKFLOW_RESPONSES.get(_qid)
-                        if _stored is not None:
-                            _response = dict(_stored)
-                            break
-                        if cancel_event.is_set():
-                            break
-                        _now = time.monotonic()
-                        if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
-                            yield {
-                                "type": "workflow_request_wait",
-                                "step": step,
-                                "response_id": _qid,
-                                "waited_s": int(_now - _wait_started),
-                            }
-                            _last_keepalive = _now
-                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        # A response accepted just before Stop still belongs to
-                        # the user and must survive Resume / the next chat turn.
-                        _stored = _WORKFLOW_RESPONSES.pop(_qid, None)
-                        if _stored is not None:
-                            _response = dict(_stored)
-                    if cancel_event.is_set() and _response is None:
-                        yield {
-                            "type": "done", "ok": False, "steps": step,
-                            "stop_reason": "cancelled", "error": "Cancelled by user",
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    _ans_text = (
-                        "Workflow UI response: "
-                        + json.dumps(_response or {}, ensure_ascii=False)
+                if name in {"ask_user", "workflow_request"}:
+                    workflow_runner = run_ask_user if name == "ask_user" else run_workflow_request
+                    workflow_result = yield from workflow_runner(
+                        parsed_args, step=step, cancel_event=cancel_event,
+                        pause_for_workflow_request=pause_for_workflow_request,
                     )
-                    _accepted = str((_response or {}).get("action") or "") == "accept"
-                    _values = (_response or {}).get("values")
-                    _answer = _values.get("answer") if isinstance(_values, dict) else None
-                    _workflow_input = (
-                        redact_secrets({"request_id": _qid, "question": _question, "answer": _answer})
-                        if _accepted and isinstance(_answer, str) and _answer.strip()
-                        else None
-                    )
-                    yield {
-                        "type": "tool_call", "step": step, "tool": name,
-                        "arguments": redact_secrets(parsed_args), "result": _ans_text,
-                        "ok": _accepted,
-                        **({"workflow_input": _workflow_input} if _workflow_input is not None else {}),
-                    }
-                    if cancel_event.is_set():
-                        yield {
-                            "type": "done", "ok": False, "steps": step,
-                            "stop_reason": "cancelled", "error": "Cancelled by user",
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
+                    if workflow_result.terminal is not None:
+                        yield {**workflow_result.terminal,
+                               **_completion_fields(criteria, terminated_incomplete=True)}
                         return
-                    messages.append({"role": "tool", "content": _ans_text, "name": name})
+                    turn_context.messages.append({"role": "tool", "content": workflow_result.tool_text, "name": name})
                     tool_round_trips += 1
-                    call_log.append(f"ask_user({(_question[:40] or '?')})")
-                    continue
-                if name == "workflow_request":
-                    _kind = str(parsed_args.get("kind") or "").strip().lower()
-                    _message = str(parsed_args.get("message") or "").strip()
-                    if _kind not in {"input", "secret", "elevation"}:
-                        _request_error = "workflow_request kind must be input, secret or elevation"
-                        yield {
-                            "type": "tool_call",
-                            "step": step,
-                            "tool": name,
-                            "arguments": redact_secrets(parsed_args),
-                            "result": _request_error,
-                            "ok": False,
-                        }
-                        messages.append({
-                            "role": "tool",
-                            "content": _request_error,
-                            "name": name,
-                        })
-                        tool_round_trips += 1
-                        continue
-                    _request_schema = parsed_args.get("schema")
-                    if not isinstance(_request_schema, dict):
-                        _request_schema = {}
-                    if _kind == "elevation":
-                        _program = str(parsed_args.get("program") or "").strip()
-                        _raw_args = parsed_args.get("args")
-                        _elevation_args = (
-                            [str(value) for value in _raw_args]
-                            if isinstance(_raw_args, list)
-                            else []
-                        )
-                        if not _program:
-                            _request_error = "elevation request requires program"
-                            yield {
-                                "type": "tool_call",
-                                "step": step,
-                                "tool": name,
-                                "arguments": redact_secrets(parsed_args),
-                                "result": _request_error,
-                                "ok": False,
-                            }
-                            messages.append({
-                                "role": "tool",
-                                "content": _request_error,
-                                "name": name,
-                            })
-                            tool_round_trips += 1
-                            continue
-                        _native_spec: dict[str, Any] = {
-                            "program": _program,
-                            "args": _elevation_args,
-                        }
-                        _cwd = str(parsed_args.get("cwd") or "").strip()
-                        if _cwd:
-                            _native_spec["cwd"] = _cwd
-                        _request_schema = {"x-elira-elevation": _native_spec}
-                    _request = {
-                        "kind": _kind,
-                        "message": _message,
-                        "schema": _request_schema,
-                        "sensitive": _kind == "secret",
-                    }
-                    _request_status = f"needs_{_kind}"
-                    if pause_for_workflow_request:
-                        yield {
-                            "type": "workflow_request",
-                            "step": step,
-                            "status": _request_status,
-                            "request": _request,
-                        }
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "workflow_request",
-                            "status": _request_status,
-                            "request": _request,
-                            "error": None,
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    _response_id = uuid.uuid4().hex
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES[_response_id] = None
-                    yield {
-                        "type": "workflow_request",
-                        "step": step,
-                        "status": _request_status,
-                        "response_id": _response_id,
-                        "request": _request,
-                    }
-                    _wait_started = time.monotonic()
-                    _last_keepalive = _wait_started
-                    _response: dict[str, Any] | None = None
-                    while True:
-                        if cancel_event.is_set():
-                            break
-                        with _WORKFLOW_RESPONSE_LOCK:
-                            _stored = _WORKFLOW_RESPONSES.get(_response_id)
-                        if _stored is not None:
-                            _response = dict(_stored)
-                            break
-                        _now = time.monotonic()
-                        if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
-                            yield {
-                                "type": "workflow_request_wait",
-                                "step": step,
-                                "response_id": _response_id,
-                                "waited_s": int(_now - _wait_started),
-                            }
-                            _last_keepalive = _now
-                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES.pop(_response_id, None)
-                    if cancel_event.is_set():
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "cancelled",
-                            "error": "Cancelled by user",
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    _response_text = (
-                        "Workflow UI response: "
-                        + json.dumps(_response or {}, ensure_ascii=False)
-                    )
-                    yield {
-                        "type": "tool_call",
-                        "step": step,
-                        "tool": name,
-                        "arguments": redact_secrets(parsed_args),
-                        "result": _response_text,
-                        "ok": str((_response or {}).get("action") or "") == "accept",
-                    }
-                    messages.append({
-                        "role": "tool",
-                        "content": _response_text,
-                        "name": name,
-                    })
-                    tool_round_trips += 1
-                    call_log.append(f"workflow_request({_kind})")
+                    if name == "ask_user":
+                        question = str(parsed_args.get("question") or "").strip()
+                        call_log.append(f"ask_user({(question[:40] or '?')})")
+                    elif workflow_result.response is not None:
+                        kind = str(parsed_args.get("kind") or "").strip().lower()
+                        call_log.append(f"workflow_request({kind})")
                     continue
                 if name == "todo_update":
                     # P12.1: checklist mutations are bound to the current run.
@@ -2337,14 +1093,14 @@ def _stream_code_agent_core(
                     # Bind document-QA retry accounting to this run. The schema does
                     # not expose run_id, so the model cannot choose or reuse it.
                     parsed_args["run_id"] = rid
-                    if _bom_validation_selected:
-                        if _bom_snapshot is None:
+                    if acceptance.bom_validation_selected:
+                        if acceptance.bom_snapshot is None:
                             parsed_args["_runtime_refuse_reason"] = (
                                 "Сначала вызови bom_validate и получи ok=true; затем "
                                 "создавай финальный BOM-документ."
                             )
                         elif name == "file_gen":
-                            parsed_args["_runtime_bom_snapshot"] = dict(_bom_snapshot)
+                            parsed_args["_runtime_bom_snapshot"] = dict(acceptance.bom_snapshot)
                         else:
                             parsed_args["_runtime_refuse_reason"] = (
                                 "Произвольный файл нельзя связать с BOM receipt. "
@@ -2371,6 +1127,31 @@ def _stream_code_agent_core(
                     _phase_event = _enter_verification_phase()
                     if _phase_event is not None:
                         yield _phase_event
+                recovery = observations.before_dispatch(name, parsed_args, root=root)
+                if recovery is not None:
+                    # Successful exit/output repetition is not a failed business
+                    # result. Enforce a different observation before executing the
+                    # same command again, even if the model ignores the advice.
+                    yield {"type": "command_recovery", "step": step, **recovery,
+                           "command_progress": command_progress.snapshot()}
+                    turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                     "name": name, "content": json.dumps(recovery, ensure_ascii=False)})
+                    yield {"type": "tool_call", "step": step, "tool": name,
+                           "arguments": redact_secrets(parsed_args), "result": recovery["text"],
+                           "ok": False, "error": recovery["reason"], "dispatched": False,
+                           "state_changed": False, "execution_status": "rejected",
+                           "command_progress": command_progress.snapshot()}
+                    if recovery["status"] == "blocked":
+                        yield {"type": "final_response", "step": step, "text": recovery["text"],
+                               "answer_state": "accepted", "answer_status": "degraded",
+                               "task_outcome": task_outcome.snapshot()}
+                        yield {"type": "done", "ok": False, "steps": step,
+                               "stop_reason": "blocked", "resumable": True,
+                               "answer_status": "degraded", "error": recovery["reason"],
+                               "command_progress": command_progress.snapshot(),
+                               **_completion_fields(criteria, terminated_incomplete=True)}
+                        return
+                    continue
                 _request = ToolExecutionRequest(
                     run_id=rid,
                     agent_id=effective_agent_id,
@@ -2387,370 +1168,44 @@ def _stream_code_agent_core(
                 )
                 if _request.workflow_approved:
                     pending_workflow_approval = {}
-                _delay_tool_started = not (
-                    _request.workflow_approved
-                    or permission_mode_auto_approves(_request)
+                execution = yield from run_tool(
+                    _request, dispatch_fn=registry.dispatch_raw, executor=_kernel_exec,
+                    step=step, cancel_event=cancel_event,
+                    pause_for_workflow_request=pause_for_workflow_request,
+                    capture_verification=(
+                        lambda: observations.capture_verification(name, parsed_args)
+                    ) if name == "runtime_control" and parsed_args.get("operation") == "result_verify" else None,
                 )
-                if not _delay_tool_started:
-                    yield {
-                        "type": "tool_started",
-                        "step": step,
-                        "tool": name,
-                        "arguments": redact_secrets(parsed_args),
-                    }
-                _exec_result = None
-                _verification_before = (
-                    task_outcome.verification_context(code_input_epoch)
-                    if name == "runtime_control" and parsed_args.get("operation") == "result_verify"
-                    else None
+                if execution.terminal is not None:
+                    yield {**execution.terminal,
+                           **_completion_fields(criteria, terminated_incomplete=True)}
+                    return
+                _exec_result = execution.result
+                tool_meta = observations.bind_verification(_exec_result.output, execution.verification_binding)
+                tool_meta, _skill_snapshot_changed, _skill_receipt = turn_context.activate_skill_result(
+                    name=name, args=parsed_args, tool_meta=tool_meta, status=_exec_result.status,
                 )
-                for _hb in _exec_with_heartbeat(
-                    lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw),
-                    step,
-                    cancel_event,
-                ):
-                    if "__result__" in _hb:
-                        _exec_result = _hb["__result__"]
-                    else:
-                        yield _hb
-                if _exec_result.status == "waiting_approval":
-                    raw_request = (_exec_result.output or {}).get("request")
-                    _display_args = redact_secrets(parsed_args)
-                    _workflow_request = (
-                        dict(raw_request) if isinstance(raw_request, dict) else {
-                            "kind": "approval",
-                            "message": (
-                                f"Подтвердить действие {name} с аргументами: "
-                                f"{json.dumps(_display_args, ensure_ascii=False)}"
-                            ),
-                            "schema": {
-                                "x-elira-tool": {
-                                    "name": name,
-                                    "arguments": _display_args,
-                                    "args_sha256": tool_args_sha256(parsed_args),
-                                },
-                            },
-                            "sensitive": False,
-                        }
-                    )
-                    _response_id = uuid.uuid4().hex
-                    if pause_for_workflow_request:
-                        yield {
-                            "type": "workflow_request",
-                            "step": step,
-                            "status": "waiting_approval",
-                            "response_id": _response_id,
-                            "request": _workflow_request,
-                        }
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "workflow_request",
-                            "status": "waiting_approval",
-                            "response_id": _response_id,
-                            "request": _workflow_request,
-                            "error": None,
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES[_response_id] = None
-                    yield {
-                        "type": "workflow_request",
-                        "step": step,
-                        "status": "waiting_approval",
-                        "response_id": _response_id,
-                        "request": _workflow_request,
-                    }
-                    _wait_started = time.monotonic()
-                    _last_keepalive = _wait_started
-                    _response: dict[str, Any] | None = None
-                    while True:
-                        if cancel_event.is_set():
-                            break
-                        with _WORKFLOW_RESPONSE_LOCK:
-                            stored_response = _WORKFLOW_RESPONSES.get(_response_id)
-                        if stored_response is not None:
-                            _response = dict(stored_response)
-                            break
-                        _now = time.monotonic()
-                        if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
-                            yield {
-                                "type": "workflow_request_wait",
-                                "step": step,
-                                "response_id": _response_id,
-                                "waited_s": int(_now - _wait_started),
-                            }
-                            _last_keepalive = _now
-                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES.pop(_response_id, None)
-                    if cancel_event.is_set():
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "cancelled",
-                            "error": "Cancelled by user",
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    if str((_response or {}).get("action") or "") == "accept":
-                        # The accepted Workflow request authorizes this exact
-                        # tool+arguments pair once; no internal approval store.
-                        _request.workflow_approved = True
-                        if _delay_tool_started:
-                            yield {
-                                "type": "tool_started",
-                                "step": step,
-                                "tool": name,
-                                "arguments": redact_secrets(parsed_args),
-                            }
-                        if _verification_before is not None:
-                            _verification_before = task_outcome.verification_context(code_input_epoch)
-                        for _hb in _exec_with_heartbeat(
-                            lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw),
-                            step,
-                            cancel_event,
-                        ):
-                            if "__result__" in _hb:
-                                _exec_result = _hb["__result__"]
-                            else:
-                                yield _hb
-                    else:
-                        _exec_result = ToolExecutionResult(
-                            status="rejected",
-                            output={
-                                "ok": False,
-                                "text": (
-                                    "Пользователь отклонил это действие. Не повторяй "
-                                    "вызов; скорректируй подход или заверши ход."
-                                ),
-                                "error": "workflow_request_declined",
-                            },
-                            error="workflow_request_declined",
-                        )
-                tool_meta = _exec_result.output
-                if _verification_before is not None:
-                    tool_meta = task_outcome.bind_verification(
-                        tool_meta, _verification_before, code_input_epoch,
-                    )
-                _skill_snapshot_changed = False
-                _skill_receipt = None
-                if (name == "runtime_control" and str(parsed_args.get("operation") or "").strip().lower() == "skill_load"
-                        and _exec_result.status == "ok" and tool_meta.get("ok")):
-                    try:
-                        skill_result = tool_meta.get("result", {})
-                        _skill_snapshot_changed = skill_context.activate(
-                            skill_result["skill"], skill_result.get("reason", ""),
-                            refresh=True,
-                        )
-                        selected = next(item for item in skill_context.snapshots()
-                                        if item["name"] == skill_result["skill"]["name"])
-                        _skill_receipt = {key: selected[key] for key in ("name", "title", "sha256", "reason")}
-                        _skill_receipt.update({key: selected[key] for key in
-                            ("candidate_id", "revision", "package_sha256", "directory") if key in selected})
-                        _skill_receipt["already_loaded"] = not _skill_snapshot_changed
-                        # The full instruction has one pinned owner. Tool history
-                        # and UI receive a receipt, not a duplicate instruction.
-                        tool_meta = {"ok": True, "status": "completed",
-                            "result": {"skill": _skill_receipt}, "text": json.dumps({
-                            "skill": _skill_receipt,
-                            "message": "Skill instructions are active in the current task context.",
-                        }, ensure_ascii=False)}
-                    except (KeyError, TypeError, OSError, ValueError) as exc:
-                        tool_meta = {"ok": False, "error": "skill_activation_failed", "text": str(exc)}
                 _runtime_activation_snapshot: dict[str, Any] | None = None
-                _runtime_request_status = str(
-                    tool_meta.get("status") or ""
-                ).strip()
-                if (
-                    name == "runtime_control"
-                    and _runtime_request_status
-                    in {
-                        "needs_input",
-                        "needs_secret",
-                        "needs_elevation",
-                        "waiting_approval",
-                    }
-                ):
-                    _raw_runtime_request = tool_meta.get("request")
-                    _runtime_request = (
-                        dict(_raw_runtime_request)
-                        if isinstance(_raw_runtime_request, dict)
-                        else {}
+                if name == "runtime_control" and str(tool_meta.get("status") or "").strip() in RUNTIME_WORKFLOW_STATUSES:
+                    workflow_result = yield from run_runtime_workflow(
+                        parsed_args, tool_meta, step=step, cancel_event=cancel_event,
+                        pause_for_workflow_request=pause_for_workflow_request,
                     )
-                    _runtime_kind = str(
-                        _runtime_request.get("kind")
-                        or {
-                            "needs_input": "input",
-                            "needs_secret": "secret",
-                            "needs_elevation": "elevation",
-                            "waiting_approval": "approval",
-                        }[_runtime_request_status]
-                    ).strip()
-                    _runtime_request.update({
-                        "kind": _runtime_kind,
-                        "message": str(
-                            _runtime_request.get("message")
-                            or "Runtime требует данные для продолжения."
-                        ),
-                        "schema": (
-                            dict(_runtime_request.get("schema"))
-                            if isinstance(_runtime_request.get("schema"), dict)
-                            else {}
-                        ),
-                        "sensitive": _runtime_kind == "secret"
-                        or bool(_runtime_request.get("sensitive", False)),
-                    })
-                    _runtime_response_id = uuid.uuid4().hex
-                    yield {
-                        "type": "tool_call",
-                        "step": step,
-                        "tool": name,
-                        "arguments": redact_secrets(parsed_args),
-                        "result": _truncate(str(tool_meta.get("text") or "")),
-                        "ok": False,
-                        "state_changed": False,
-                    }
-                    if pause_for_workflow_request:
-                        yield {
-                            "type": "workflow_request",
-                            "step": step,
-                            "status": _runtime_request_status,
-                            "response_id": _runtime_response_id,
-                            "request": _runtime_request,
-                        }
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "workflow_request",
-                            "status": _runtime_request_status,
-                            "response_id": _runtime_response_id,
-                            "request": _runtime_request,
-                            "error": None,
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
+                    if workflow_result.terminal is not None:
+                        yield {**workflow_result.terminal,
+                               **_completion_fields(criteria, terminated_incomplete=True)}
                         return
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES[_runtime_response_id] = None
-                    yield {
-                        "type": "workflow_request",
-                        "step": step,
-                        "status": _runtime_request_status,
-                        "response_id": _runtime_response_id,
-                        "request": _runtime_request,
-                    }
-                    _runtime_wait_started = time.monotonic()
-                    _runtime_last_keepalive = _runtime_wait_started
-                    _runtime_response: dict[str, Any] | None = None
-                    while True:
-                        if cancel_event.is_set():
-                            break
-                        with _WORKFLOW_RESPONSE_LOCK:
-                            _stored_runtime_response = _WORKFLOW_RESPONSES.get(
-                                _runtime_response_id
-                            )
-                        if _stored_runtime_response is not None:
-                            _runtime_response = dict(_stored_runtime_response)
-                            break
-                        _now = time.monotonic()
-                        if (
-                            _now - _runtime_last_keepalive
-                            >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY
-                        ):
-                            yield {
-                                "type": "workflow_request_wait",
-                                "step": step,
-                                "response_id": _runtime_response_id,
-                                "waited_s": int(_now - _runtime_wait_started),
-                            }
-                            _runtime_last_keepalive = _now
-                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
-                    with _WORKFLOW_RESPONSE_LOCK:
-                        _WORKFLOW_RESPONSES.pop(_runtime_response_id, None)
-                    if cancel_event.is_set():
-                        yield {
-                            "type": "done",
-                            "ok": False,
-                            "steps": step,
-                            "stop_reason": "cancelled",
-                            "error": "Cancelled by user",
-                            **_completion_fields(criteria, terminated_incomplete=True),
-                        }
-                        return
-                    _runtime_response_text = (
-                        "Workflow UI response for runtime_control: "
-                        + json.dumps(_runtime_response or {}, ensure_ascii=False)
-                    )
-                    messages.append({
-                        "role": "tool",
-                        "content": _runtime_response_text,
-                        "name": name,
-                    })
+                    turn_context.messages.append({"role": "tool", "content": workflow_result.tool_text, "name": name})
                     tool_round_trips += 1
-                    call_log.append(f"runtime_control({_runtime_request_status})")
+                    call_log.append(f"runtime_control({str(tool_meta.get('status') or '').strip()})")
                     continue
-                if (
-                    name == "capability_load"
-                    and _exec_result.status == "ok"
-                    and bool(tool_meta.get("ok", True))
-                ):
-                    _capability_group = str(
-                        tool_meta.get("capability_group")
-                        or parsed_args.get("group")
-                        or ""
-                    ).strip().lower()
-                    if _capability_group in normalize_capability_groups(
-                        (_capability_group,)
-                    ):
-                        active_capability_groups.add(_capability_group)
-                        registry = rebuild_registry()
-                        all_schemas = registry.collect_schemas()
-                        _runtime_activation_snapshot = runtime_activation_snapshot()
-                if (
-                    name == "runtime_control"
-                    and _exec_result.status == "ok"
-                    and bool(tool_meta.get("ok", True))
-                ):
-                    # Reveal only the provider explicitly selected in THIS run.
-                    # Other configured/running integrations remain behind the
-                    # compact runtime_control surface and add zero prompt tokens.
-                    _runtime_operation = str(
-                        parsed_args.get("operation") or ""
-                    ).strip().lower()
-                    _runtime_config = parsed_args.get("config")
-                    _runtime_server_id = str(
-                        tool_meta.get("server_id")
-                        or parsed_args.get("server_id")
-                        or (
-                            _runtime_config.get("id")
-                            if isinstance(_runtime_config, dict)
-                            else ""
-                        )
-                        or ""
-                    ).strip()
-                    if _runtime_operation in {"mcp_start", "mcp_restart", "mcp_tools"} and _runtime_server_id:
-                        active_mcp_server_ids.add(_runtime_server_id)
-                        active_mcp_schema_queries[_runtime_server_id] = str(
-                            parsed_args.get("query") or user_message
-                        ).strip()
-                    elif _runtime_operation in {"mcp_stop", "mcp_remove"}:
-                        active_mcp_server_ids.discard(_runtime_server_id)
-                        active_mcp_schema_queries.pop(_runtime_server_id, None)
-                    elif _runtime_operation in {"lsp_start", "lsp_restart"} and _runtime_server_id:
-                        active_lsp_server_ids.add(_runtime_server_id)
-                    elif _runtime_operation in {"lsp_stop", "lsp_remove"}:
-                        active_lsp_server_ids.discard(_runtime_server_id)
-                    elif _runtime_operation in {"ssh_hosts", "ssh_set_hosts"}:
-                        ssh_tools_active = True
-                    elif _runtime_operation.startswith("itops_"):
-                        itops_tools_active = True
-                    registry = rebuild_registry()
-                    all_schemas = registry.collect_schemas()
-                    _runtime_activation_snapshot = runtime_activation_snapshot()
+                schema_update = activation.apply_tool_result(
+                    name, parsed_args, tool_meta, status=_exec_result.status,
+                    user_message=user_message,
+                )
+                if schema_update is not None:
+                    registry, all_schemas = schema_update.registry, schema_update.schemas
+                    _runtime_activation_snapshot = schema_update.snapshot
                 if name == "run_server":
                     _rs_act = str(parsed_args.get("action") or "start").lower()
                     if tool_meta.get("actual_url"):
@@ -2799,13 +1254,13 @@ def _stream_code_agent_core(
                             _read_file_failures.get(_read_requested_path, 0) + 1
                         )
                 if name == "bom_validate":
-                    _bom_validation_selected = True
-                    _bom_snapshot = None
+                    acceptance.bom_validation_selected = True
+                    acceptance.bom_snapshot = None
                     if _tool_ok:
                         from app.application.code_agent.tools._bom import make_bom_snapshot
 
-                        _bom_snapshot = make_bom_snapshot(tool_meta)
-                        if _bom_snapshot is None:
+                        acceptance.bom_snapshot = make_bom_snapshot(tool_meta)
+                        if acceptance.bom_snapshot is None:
                             _tool_ok = False
                             tool_meta.update({
                                 "ok": False,
@@ -2827,7 +1282,7 @@ def _stream_code_agent_core(
                     tool_meta["recovered_from"] = _read_recovered_from
                     tool_meta["recovered_path"] = str(parsed_args.get("path") or "")
                 if _tool_ok and is_local_tabular_catalog_probe(name, parsed_args):
-                    _local_tabular_catalog_probe_seen = True
+                    acceptance.local_tabular_catalog_probe_seen = True
                 if (
                     _tool_ok
                     and name == "runtime_control"
@@ -2835,13 +1290,13 @@ def _stream_code_agent_core(
                     == "library_search"
                     and str(parsed_args.get("query") or "").strip()
                 ):
-                    _library_search_seen = True
+                    acceptance.library_search_seen = True
                 if (
                     _tool_ok
                     and name == "web_fetch"
-                    and _catalog_web_fallback_required
+                    and acceptance.catalog_web_fallback_required
                 ):
-                    _catalog_web_fetch_seen = True
+                    acceptance.catalog_web_fetch_seen = True
                 _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
                 _evidence_web_activated = False
                 if _failed_call:
@@ -2851,7 +1306,7 @@ def _stream_code_agent_core(
                         tool_meta.get("error") or text_result.split("\n", 1)[0]
                     )[:500]
                     if (
-                        "web" not in active_capability_groups
+                        "web" not in activation.capability_groups
                         and should_escalate_web_after_failure(
                             tool_name=name,
                             error=_failure_error,
@@ -2859,10 +1314,10 @@ def _stream_code_agent_core(
                             arguments=parsed_args,
                         )
                     ):
-                        active_capability_groups.add("web")
-                        registry = rebuild_registry()
-                        all_schemas = registry.collect_schemas()
-                        _runtime_activation_snapshot = runtime_activation_snapshot()
+                        activation.activate_groups(("web",))
+                        schema_update = activation.rebuild()
+                        registry, all_schemas = schema_update.registry, schema_update.schemas
+                        _runtime_activation_snapshot = activation.snapshot()
                         _evidence_web_activated = True
                 _state_changed = tool_state_changed(
                     name,
@@ -2892,10 +1347,10 @@ def _stream_code_agent_core(
                     event["runtime_activation"] = _runtime_activation_snapshot
                 if _skill_receipt is not None:
                     event["skill"] = _skill_receipt
-                if skill_catalog and (name in {"read_file", "project_map", "glob", "grep", "run_bash", "write_file", "edit_file"}
+                if turn_context.catalog and (name in {"read_file", "project_map", "glob", "grep", "run_bash", "write_file", "edit_file"}
                         or name.startswith(("itops_", "ssh_", "lsp_"))
                         or (name == "runtime_control" and str(parsed_args.get("operation") or "").startswith(("itops_", "ssh_", "lsp_")))):
-                    skill_reminder_pending = True
+                    turn_context.skill_reminder_pending = True
                 task_state_verification = ""
                 if (
                     name == "run_bash"
@@ -2941,34 +1396,16 @@ def _stream_code_agent_core(
                             event[opt] = val[:40000] + "\n[... truncated]"
                         else:
                             event[opt] = val
-                run_evidence.record_tool_result(
-                    tool_name=name,
-                    arguments=parsed_args,
-                    execution_status=_exec_result.status,
-                    output=tool_meta,
-                    text_result=text_result,
-                    state_changed=_state_changed,
+                observed_fields = observations.observe_result(
+                    name=name, args=parsed_args, output=tool_meta, status=_exec_result.status,
+                    text=text_result, state_changed=_state_changed, root=root,
+                    bom_selected=acceptance.bom_validation_selected,
                 )
-                if _state_changed:
-                    code_input_epoch += 1
-                task_outcome.observe(name, parsed_args, tool_meta, project_root=root,
-                                     input_epoch=code_input_epoch, execution_status=_exec_result.status)
-                recovery_context = command_progress.observe(
-                    name, parsed_args, tool_meta, execution_status=_exec_result.status,
-                    epoch=task_outcome.version(code_input_epoch), cwd=str(root),
-                )
-                event["task_outcome"] = task_outcome.snapshot()
-                event["command_progress"] = command_progress.snapshot()
-                event["code_input_epoch"] = code_input_epoch
-                event["bom_validation_selected"] = _bom_validation_selected
-                if recovery_context:
-                    event["recovery_context"] = recovery_context
-                if _state_changed:
-                    criteria.invalidate_after_mutation()
-                    verification_log.clear()
+                event.update(observed_fields)
+                recovery_context = observed_fields.get("recovery_context", "")
                 if _skill_snapshot_changed:
                     yield {"type": "skills_changed", "step": step,
-                           "active_skills": skill_context.snapshots()}
+                           "active_skills": turn_context.skills.snapshots()}
                 yield event
                 if _evidence_web_activated:
                     yield {
@@ -2977,7 +1414,7 @@ def _stream_code_agent_core(
                         "step": step,
                         "source": "evidence_failure",
                         "trigger_tool": name,
-                        "runtime_activation": runtime_activation_snapshot(),
+                        "runtime_activation": activation.snapshot(),
                     }
                 tool_round_trips += 1
                 _hint = _short_arg_hint(parsed_args)
@@ -3014,33 +1451,12 @@ def _stream_code_agent_core(
                 )
                 if tool_meta.get("touched_path"):
                     touched_files.append(str(tool_meta.get("touched_path")))
-                    if _state_changed:
-                        mutated = str(tool_meta.get("touched_path"))
-                        if mutated not in mutated_files:
-                            mutated_files.append(mutated)
-                if task_state_verification:
-                    verification_log.append(task_state_verification)
-                # Per-criterion state (Ph7.4): feed verifier verdicts BEFORE the
-                # next model turn, so the completion report remains honest.
-                # A verifier tool (verifier=True) confirms/fails a matching criterion;
-                # a coding test/verify that went GREEN (exit 0) is a passing check too.
-                # A verifier tool records structured evidence; run_bash records real
-                # stdout/stderr + exit_code (command_output / command_check). ONLY a
-                # call that actually RAN (kernel status ok) is a verdict: a rejected
-                # call never executed, and its {ok:False} output
-                # must not hard-fail a criterion (a
-                # tool's own red result, e.g. assert-miss or exit!=0, still ships with
-                # status ok and records honestly).
-                _executed_result_check = (
-                    name == "runtime_control" and parsed_args.get("operation") == "result_verify"
-                    and _exec_result.status in {"error", "cancelled"}
-                    and isinstance(tool_meta.get("result"), dict)
-                    and isinstance(tool_meta["result"].get("verification"), dict)
+                observations.complete_result(
+                    name=name, args=parsed_args, output=tool_meta, status=_exec_result.status,
+                    text=text_result, ok=_tool_ok, state_changed=_state_changed,
+                    verification=task_state_verification,
                 )
-                if _exec_result.status == "ok" or _executed_result_check:
-                    _record_criterion_verdict(
-                        criteria, name, parsed_args, tool_meta, text_result, _tool_ok)
-                messages.append({
+                turn_context.messages.append({
                     "role": "tool",
                     "content": _tool_content,
                     "name": name,
@@ -3124,6 +1540,7 @@ def stream_code_agent(
         "source_run_ids": list(source_run_ids or [])[-8:],
     }
     terminal = False
+    core_stream = None
     answer_media = merge_answer_media(
         [],
         journal.state.get("answer_media") if resume else [],
@@ -3150,7 +1567,7 @@ def stream_code_agent(
         def audit_sink(payload: dict[str, Any]) -> None:
             journal.append_event({"type": "compaction_audit", **payload})
 
-        for raw_event in _stream_code_agent_core(
+        core_stream = _stream_code_agent_core(
             user_message=user_message,
             memory_query=memory_query,
             task_instructions=task_instructions,
@@ -3178,7 +1595,8 @@ def stream_code_agent(
                 list(journal.state.get("web_sources") or []) if resume
                 else related_sources(session_id, list(source_run_ids or []), list(conversation_history or []))
             ),
-        ):
+        )
+        for raw_event in core_stream:
             # Display/persistence only: keep canonical tool output and approval
             # digests inside the executor unchanged.
             event = sanitize_event(raw_event)
@@ -3272,7 +1690,14 @@ def stream_code_agent(
         terminal = True
         yield event
     finally:
-        journal.finish(interrupted=not terminal)
+        try:
+            # This adapter owns the iterator even when another reference keeps
+            # it alive. Close before finishing the journal so upstream transport
+            # and live-run accounting do not depend on garbage collection.
+            if core_stream is not None:
+                core_stream.close()
+        finally:
+            journal.finish(interrupted=not terminal)
 
 
 def run_code_agent(
