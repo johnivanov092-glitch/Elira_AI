@@ -6,11 +6,13 @@ and ToolExecutor. It does not execute tools or call models itself.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,13 @@ from typing import Any
 
 from app.core.redaction import redact_text
 from app.application.web_evidence.receipts import merge_sources, source_ids
+
+logger = logging.getLogger(__name__)
+# Потоковый текст модели уже лежит в events.jsonl, а снимок state.json от него не меняется
+# (кроме updated_at). Перезапись снимка на каждый токен (~1000 за прогон) держала файл в
+# постоянной замене, и любой посторонний читатель (Dr.Web, индексатор, наблюдатель) ловил
+# WinError 5 у os.replace. Решение Джона 2026-10-05: снимок на потоковых кусках не пишется.
+_STREAM_ONLY_EVENTS = frozenset({"delta", "reasoning_delta"})
 
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -171,6 +180,7 @@ class RunJournal:
         self._agent_locked = False
         self._agent_lease: _AgentLockLease | None = None
         self._stale_lock: dict[str, Any] | None = None
+        self._state_dirty = False  # последняя запись снимка не удалась — повторить
         self._state: dict[str, Any] = {}
 
     @classmethod
@@ -542,6 +552,8 @@ class RunJournal:
             })
             self._state["current_phase"] = "terminal"
         self._state["updated_at"] = _utc_now()
+        if event_type in _STREAM_ONLY_EVENTS and not self._state_dirty:
+            return
         self._write_state()
 
     def append_external_event(self, event: dict[str, Any]) -> None:
@@ -565,6 +577,7 @@ class RunJournal:
         self._acquire_run_lock()
         try:
             self.append_event(event)
+            self._flush_state()
             self._write_health(str(self._state.get("status") or "unknown"))
         finally:
             self.release()
@@ -583,6 +596,7 @@ class RunJournal:
                 "updated_at": _utc_now(),
             })
             self._write_state()
+        self._flush_state()
         self._write_health(str(self._state.get("status") or "unknown"))
         self.release()
 
@@ -622,7 +636,25 @@ class RunJournal:
             os.fsync(handle.fileno())
 
     def _write_state(self) -> None:
-        _atomic_json(self.state_path, self._state)
+        """Снимок прогона. Сбой замены (чужой открытый дескриптор → WinError 5) не обрывает
+        прогон: остаётся прежний снимок, повтор — на следующем событии (решение Джона 2026-10-05)."""
+        try:
+            _atomic_json(self.state_path, self._state)
+        except PermissionError as exc:
+            self._state_dirty = True
+            logger.warning("run %s: state.json not replaced (%s); previous snapshot kept, retry on next event",
+                           self.run_id, exc)
+            return
+        self._state_dirty = False
+
+    def _flush_state(self, attempts: int = 5) -> None:
+        """Итоговый снимок не должен потеряться: после него событий уже не будет."""
+        for attempt in range(attempts):
+            if not self._state_dirty:
+                return
+            if attempt:
+                time.sleep(0.05 * attempt)
+            self._write_state()
 
     def _write_health(self, status: str) -> None:
         _atomic_json(

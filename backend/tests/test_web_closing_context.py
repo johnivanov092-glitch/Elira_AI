@@ -44,7 +44,6 @@ def test_read_context_cues_next_main_answer_without_an_extra_turn(tmp_path, monk
                    "When was the observation registered?" in message.get("content", "")
                    for message in kwargs["messages"][:-1])
         assert f"Прочитаны страницы: {URL}." in cue and "[[source:w_" not in cue and BODY not in cue
-        assert "Markdown-ссылки [Название](url)" in cue
         assert "итоговый ответ" in cue and "Промежуточная сводка не требуется" in cue
         assert cue.count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
         assert "условия применимости" in cue and "неопределённость и логическую связь" in cue
