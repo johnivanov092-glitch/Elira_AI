@@ -65,6 +65,22 @@ class PathFilteringTest(unittest.TestCase):
         p.write_text("ref: refs/heads/main\n", encoding="utf-8")
         self.assertFalse(self.handler._should_handle(str(p)))
 
+    def test_project_living_under_a_skipped_directory_name_is_watched(self) -> None:
+        # Review defect 1f399e53d0fd: D:/data/site or <repo>/data/agent_workspace was never reindexed,
+        # because every part of the ABSOLUTE path was checked against the skip list.
+        from app.application.code_agent.file_watcher import DebouncedHandler
+
+        project = self.root / "data" / "site"
+        (project / "src").mkdir(parents=True)
+        (project / "Node_Modules").mkdir()
+        handler = DebouncedHandler(project)
+        source = project / "src" / "app.py"
+        source.write_text("x=1\n", encoding="utf-8")
+        dependency = project / "Node_Modules" / "lib.js"
+        dependency.write_text("module.exports = 1", encoding="utf-8")
+        self.assertTrue(handler._should_handle(str(source)))
+        self.assertFalse(handler._should_handle(str(dependency)))  # case-insensitive, like the indexer
+
     def test_file_outside_project_root_rejected(self) -> None:
         # A file in some completely unrelated directory must not pass.
         outside = Path(self._tmp.name).parent / "other_outside.py"

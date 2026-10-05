@@ -37,10 +37,13 @@ from watchdog.observers import Observer
 
 from app.application.code_agent.agent_loop import (
     DEFAULT_INDEX_PATTERNS,
-    INDEX_SKIP_DIRS,
     reindex_file,
     unindex_file,
 )
+# The indexer's own rule: directories RELATIVE to the project root, case-insensitive.
+# Checking every part of the absolute path dropped whole projects living under
+# D:/data/site or C:/build/app (review defect 1f399e53d0fd).
+from app.application.code_agent.indexing import _path_in_skip_dir
 
 
 logger = logging.getLogger(__name__)
@@ -59,10 +62,6 @@ MAX_FILE_BYTES = 200_000
 
 def _matches_any(rel_path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(rel_path, p) or fnmatch.fnmatch(rel_path, p.replace("**/", "")) for p in patterns)
-
-
-def _path_in_skip_dir(path: Path) -> bool:
-    return any(part in INDEX_SKIP_DIRS for part in path.parts)
 
 
 @dataclass
@@ -101,7 +100,7 @@ class DebouncedHandler(FileSystemEventHandler):
             target = Path(path_str).resolve()
         except Exception:
             return False
-        if _path_in_skip_dir(target):
+        if _path_in_skip_dir(target, self.project_root):
             return False
         try:
             rel = str(target.relative_to(self.project_root)).replace("\\", "/")
