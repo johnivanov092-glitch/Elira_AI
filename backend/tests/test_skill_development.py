@@ -571,3 +571,39 @@ def test_recovery_rejects_invalid_identity_redirect_and_copy_race_and_reports_mi
     assert sorted((development.ROOT / "receipts").iterdir()) == receipts_before
     assert active_path.read_bytes() == active_before
     assert not task_skills.skill_control("skill_load", name)["ok"]
+
+
+def test_verified_digest_skips_reread_only_while_the_tree_is_unchanged(tmp_path, monkeypatch):
+    # Review defect 6525c2e96257: the full .venv was re-hashed for every skill on every turn.
+    import time
+
+    directory = tmp_path / "package"
+    (directory / ".venv").mkdir(parents=True)
+    (directory / "SKILL.md").write_text("skill\n", encoding="utf-8", newline="\n")
+    dependency = directory / ".venv" / "dependency.dat"
+    dependency.write_bytes(b"verified dependency\0")
+    past = time.time() - 60
+    for path in [directory, *directory.rglob("*")]:
+        os.utime(path, (past, past))
+    verified = development._digest(directory)
+    hashed: list[Path] = []
+    real_digest = development._digest
+    monkeypatch.setattr(development, "_digest", lambda path, **kw: hashed.append(path) or real_digest(path, **kw))
+
+    assert development._verified_digest(directory, verified) == verified
+    assert development._verified_digest(directory, verified) == verified
+    assert len(hashed) == 1  # unchanged tree: content read once
+
+    # A same-size rewrite with the old timestamp keeps the stat signature; the TTL bounds that window.
+    dependency.write_bytes(b"modified dependency\0")
+    os.utime(dependency, (past, past))
+    monkeypatch.setattr(development, "_DIGEST_CACHE_TTL", 0.0)
+    assert development._verified_digest(directory, verified) != verified
+    monkeypatch.setattr(development, "_DIGEST_CACHE_TTL", 3600.0)
+
+    # An ordinary edit changes the signature (and is within the racy window): always re-hashed.
+    dependency.write_bytes(b"verified dependency\0")
+    before = len(hashed)
+    assert development._verified_digest(directory, verified) == verified
+    assert development._verified_digest(directory, verified) == verified
+    assert len(hashed) == before + 2  # fresh files are never trusted from the cache
