@@ -215,6 +215,52 @@ def _strip_tool_call_markup(text: str) -> str:
     return t.strip()
 
 
+_PATH_LIKE_KEYS = re.compile(
+    r"(?i)(?:^|_)(?:path|paths|file|filename|dir|directory|cwd|root|folder|target|destination|source|command|cmd)$"
+)
+_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'"}
+
+
+def _unescape_literal(inner: str, *, path_like: bool) -> str:
+    """Decode a quoted pseudo-call literal without `unicode_escape`.
+
+    `unicode_escape` decodes UTF-8 bytes as Latin-1 (Cyrillic → mojibake) and
+    raises on Windows paths such as ``C:\\Users`` (truncated ``\\U``), which ended
+    the whole run. In path-like arguments a backslash is a separator: only a
+    doubled backslash and escaped quotes collapse. Elsewhere the usual
+    ``\\n \\t \\r \\uXXXX`` escapes apply; unknown escapes stay literal.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(inner):
+        char = inner[index]
+        following = inner[index + 1] if index + 1 < len(inner) else ""
+        if char != "\\" or not following:
+            out.append(char)
+            index += 1
+            continue
+        if path_like:
+            if following in ("\\", '"', "'"):
+                out.append(following)
+                index += 2
+            else:
+                out.append(char)
+                index += 1
+            continue
+        if following in _SIMPLE_ESCAPES:
+            out.append(_SIMPLE_ESCAPES[following])
+            index += 2
+            continue
+        code = inner[index + 2:index + 6]
+        if following == "u" and len(code) == 4 and all(c in "0123456789abcdefABCDEF" for c in code):
+            out.append(chr(int(code, 16)))
+            index += 6
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _parse_call_expr_args(arg_str: str) -> dict[str, Any]:
     """Parse `key="value", key2='v2', key3=123, key4=true` from a call
     expression. Best-effort: respects quotes, falls back to bare tokens."""
@@ -227,7 +273,8 @@ def _parse_call_expr_args(arg_str: str) -> dict[str, Any]:
         raw = m.group(2).strip()
         if (raw[:1], raw[-1:]) in (('"', '"'), ("'", "'")):
             inner = raw[1:-1]
-            value: Any = inner.encode().decode("unicode_escape") if "\\" in inner else inner
+            value: Any = (_unescape_literal(inner, path_like=bool(_PATH_LIKE_KEYS.search(key)))
+                          if "\\" in inner else inner)
         else:
             low = raw.lower()
             if low in ("true", "false"):
