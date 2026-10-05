@@ -524,6 +524,9 @@ def tool_edit_file(
     }
 
 
+_GLOB_SHOWN = 200
+
+
 def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
     root = project_root.resolve()
     normalized = str(pattern or "").strip()
@@ -546,7 +549,17 @@ def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
     matches.sort()
     if not matches:
         return {"ok": True, "text": f"No files match '{pattern}'"}
-    return {"ok": True, "text": "\n".join(matches[:200])}
+    if len(matches) <= _GLOB_SHOWN:
+        return {"ok": True, "text": "\n".join(matches), "total": len(matches)}
+    # The list is NOT complete: say so in the text itself, which is what the model
+    # and the established-facts digest read (a silent cut looked like "file absent").
+    return {
+        "ok": True, "truncated": True, "total": len(matches),
+        "text": "\n".join(matches[:_GLOB_SHOWN]) + (
+            f"\n… показано {_GLOB_SHOWN} из {len(matches)} совпадений — список НЕ полный; "
+            "уточни шаблон (подкаталог или расширение), прежде чем делать вывод об отсутствии файла."
+        ),
+    }
 
 
 def tool_path_exists(project_root: Path, *, path: str) -> dict[str, Any]:
