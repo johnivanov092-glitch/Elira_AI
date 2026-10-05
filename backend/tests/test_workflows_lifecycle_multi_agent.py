@@ -513,6 +513,41 @@ class BuildFileContextTest(unittest.TestCase):
         self.assertIn("src/auth.py", out)
         self.assertNotIn("node_modules", out)
 
+    def test_secret_files_logs_and_large_files_never_enter_the_prompt(self) -> None:
+        # Review defect 0886ddc7f772: backend/.env.local scored on "token/server" and went into the prompt.
+        root = self._make_project(
+            {
+                "backend/.env.local": b"ELIRA_SERVER_TOKEN=supersecretvalue123\n",
+                ".env.example": b"ELIRA_SERVER_TOKEN=\n",
+                "keys/server.pem": b"-----BEGIN PRIVATE KEY----- server token\n",
+                "logs/backend.log": b"server token=abc123secret\n",
+                "huge_server.py": b"server = 1\n" + b"#" * (300 * 1024),
+                "src/server.py": b"SERVER_URL = 'x'\npassword = 'inline-secret-999'\n",
+            }
+        )
+        out = _build_file_context_from_root(str(root), "server token")
+        self.assertIn("src/server.py", out)
+        self.assertIn(".env.example", out)
+        for leaked in ("supersecretvalue123", ".env.local", "server.pem", "backend.log", "huge_server.py",
+                       "inline-secret-999"):
+            self.assertNotIn(leaked, out)
+
+    def test_cp1251_file_keeps_russian_text(self) -> None:
+        root = self._make_project({"notes.txt": "сервер авторизации".encode("cp1251")})
+        self.assertIn("сервер авторизации", _build_file_context_from_root(str(root), "сервер"))
+
+    def test_project_overview_does_not_walk_blocked_directories(self) -> None:
+        # Review defect ab3fd9cb479a: sorted(rglob)[:50] listed node_modules/.git first and dropped real files.
+        from app.application.workflows.multi_agent import _build_project_context_from_root
+
+        files = {f"node_modules/pkg{i}/index.js": b"x" for i in range(80)}
+        files.update({"src/app.py": b"x", "README.md": b"x"})
+        root = self._make_project(files)
+        out = _build_project_context_from_root(str(root))
+        self.assertIn("README.md", out)
+        self.assertIn("app.py", out)
+        self.assertNotIn("node_modules", out)
+
     def test_respects_max_files(self) -> None:
         files = {f"auth_{i}.py": b"auth = %d\n" % i for i in range(10)}
         root = self._make_project(files)
