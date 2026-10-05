@@ -83,3 +83,27 @@ def test_in_process_client_reaches_protected_route():
     with TestClient(app) as client:
         resp = client.get("/api/agent-os/runs")
         assert resp.status_code != 401
+
+
+# ── Browser Origin on a loopback request (review defect 16cfc1b41311) ───────
+
+def test_loopback_request_from_the_app_itself_stays_trusted():
+    for origin in (None, "", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost",
+                   "http://127.0.0.1:5173", "http://localhost:1420", "http://[::1]:5173"):
+        assert auth.is_authorized("127.0.0.1", None, token=TOKEN, origin=origin) is True, origin
+
+
+def test_loopback_request_from_a_foreign_page_needs_the_token():
+    # The user's browser reaches 127.0.0.1 even when the page is a router/NAS UI on the LAN.
+    for origin in ("http://192.168.1.1", "http://10.0.0.5:8080", "https://evil.example", "null",
+                   "http://127.0.0.1.evil.example", "file://"):
+        assert auth.is_authorized("127.0.0.1", None, token=TOKEN, origin=origin) is False, origin
+        assert auth.is_authorized("127.0.0.1", f"Bearer {TOKEN}", token=TOKEN, origin=origin) is True
+
+
+def test_middleware_rejects_foreign_origin_but_allows_app_origin():
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/api/agent-os/runs", headers={"Origin": "http://192.168.1.1"}).status_code == 401
+        assert client.get("/api/agent-os/runs", headers={"Origin": "http://tauri.localhost"}).status_code != 401
