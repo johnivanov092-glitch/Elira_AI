@@ -34,7 +34,7 @@ import re
 from collections.abc import Collection
 from typing import Any
 
-from app.application.agent_kernel.impact_policy import record_mcp_read_only_tools, tool_call_is_change
+from app.application.agent_kernel.impact_policy import tool_call_is_change
 from app.application.code_agent.tools._shell import (
     register_run_cancel_callback,
     unregister_run_cancel_callback,
@@ -472,7 +472,6 @@ class McpToolProvider:
             self._owned = set()
             self._qualified_to_original = {}
             self._populated = True
-            record_mcp_read_only_tools(self._server_id, ())
             return
         try:
             tools = client.list_tools()
@@ -486,15 +485,11 @@ class McpToolProvider:
 
         schemas: list[dict[str, Any]] = []
         mapping: dict[str, str] = {}
-        read_only: set[str] = set()
         for tool in tools:
             original_name = tool.get("name")
             if not isinstance(original_name, str) or not original_name:
                 continue
             qualified = _qualify(self._server_id, original_name)
-            annotations = tool.get("annotations")
-            if isinstance(annotations, dict) and annotations.get("readOnlyHint") is True:
-                read_only.add(qualified)
             description = _augment_creative_description(
                 self._server_id,
                 original_name,
@@ -523,7 +518,6 @@ class McpToolProvider:
         self._owned = set(mapping.keys())
         self._qualified_to_original = mapping
         self._populated = True
-        record_mcp_read_only_tools(self._server_id, read_only)
 
 
 def _mcp_noop_handler(args: dict[str, Any]) -> dict[str, Any]:

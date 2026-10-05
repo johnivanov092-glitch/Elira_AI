@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from collections.abc import Iterable
 from typing import Any
 
 
@@ -178,18 +177,6 @@ _UNITY_CAMERA_READ_ACTIONS = frozenset({
     "ping", "get_brain_status", "list_cameras", "screenshot", "screenshot_multiview",
 })
 BROWSER_CHANGE_ACTIONS = frozenset({"fill", "select", "check", "uncheck", "click"})
-# MCP-инструменты, которые сам сервер пометил readOnlyHint=true (решение Джона 2026-10-05:
-# чтение — без карточки одобрения и в режиме ask). Заполняет провайдер MCP по tools/list.
-_MCP_READ_ONLY_TOOLS: dict[str, frozenset[str]] = {}
-
-
-def record_mcp_read_only_tools(server_id: str, qualified_names: Iterable[str]) -> None:
-    """Заменить набор читающих инструментов сервера (пустой — сервер остановлен)."""
-    _MCP_READ_ONLY_TOOLS[str(server_id)] = frozenset(str(name) for name in qualified_names)
-
-
-def _mcp_read_only(tool_name: str) -> bool:
-    return any(tool_name in names for names in list(_MCP_READ_ONLY_TOOLS.values()))
 
 
 def _creative_mcp_parts(tool_name: str) -> tuple[str, str] | None:
@@ -222,7 +209,7 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
     """Call-level read/change classification for mixed tool surfaces.
 
     Unknown actions and MCP tools remain changes and therefore fail closed to
-    approval — except MCP tools their server marks readOnlyHint=true.
+    approval.
     """
     payload = args if isinstance(args, dict) else {}
     name = str(tool_name or "").strip()
@@ -259,8 +246,6 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
             "library_search", "library_context", "project_status", "library_read",
             "mcp_tools", "telegram_messages", "itops_mikrotik_list",
         }
-    if _mcp_read_only(name):
-        return False
     parts = _creative_mcp_parts(name)
     if parts is None:
         return True
