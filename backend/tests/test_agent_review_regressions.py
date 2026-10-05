@@ -160,3 +160,24 @@ def test_read_file_secrets_are_redacted_in_sse_and_both_logs(tmp_path, monkeypat
         assert "Visible output" in surface
         assert all(canary not in surface for canary in canaries), [e for e in events if any(c in json.dumps(e) for c in canaries)]
     assert events[-1]["ok"] is True
+
+
+@pytest.mark.parametrize("question", [
+    "Сравни три фреймворка:\n- React\n- Vue\n- Svelte",
+    "Подскажи рецепт, у меня есть:\n- яйца\n- мука\n- молоко",
+    "Ответь на вопросы:\n1. Что такое DNS?\n2. Что такое DHCP?",
+])
+def test_list_in_a_question_is_not_a_readiness_contract(question):
+    # Review defect 707fc6262fbd: list items of an ordinary question became criteria,
+    # and the correct answer was replaced by "Не удалось подтвердить: React (unconfirmed)".
+    assert derive_task_spec(question) is None
+
+
+def test_build_task_bullets_and_stated_requirements_stay_criteria():
+    build = derive_task_spec("Сделай сайт:\n- index.html с формой\n- кнопка отправки")
+    assert build is not None and build.success_criteria == ["index.html с формой", "кнопка отправки"]
+    mixed = derive_task_spec("Какие сервисы должны работать?\n- nginx должен слушать порт 80\n- redis")
+    assert mixed is not None and mixed.success_criteria == ["nginx должен слушать порт 80"]
+    assert mixed.details == ["redis"]
+    asked = derive_task_spec("Настрой сервер:\n- nginx слушает порт 80\n- Какой порт у redis?")
+    assert asked is not None and asked.success_criteria == ["nginx слушает порт 80"]
