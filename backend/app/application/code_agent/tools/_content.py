@@ -377,6 +377,17 @@ def tool_file_gen(
             "error": "invalid_download_name",
             "text": "ERROR: filename must be a plain safe filename.",
         }
+    from app.core.config import GENERATED_DIR as _published_dir
+
+    if (Path(_published_dir) / fname).exists():
+        # Shared, never-overwritten download namespace: refuse BEFORE rendering and
+        # document QA, not after them (publish_copy still re-checks atomically).
+        return {
+            "ok": False,
+            "error": "destination_exists",
+            "text": (f"ERROR: a download named {fname} already exists; choose another filename "
+                     "(for example add a version suffix)."),
+        }
     extension = Path(fname).suffix.lower()
     stage_name = f".elira-stage-{uuid.uuid4().hex}{extension}"
     if fmt in ("word", "docx"):
