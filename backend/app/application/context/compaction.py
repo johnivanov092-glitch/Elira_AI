@@ -47,6 +47,8 @@ TASK_STATE_PREFIX = (
 )
 TASK_STATE_MARKER_KEY = "_elira_internal_kind"
 TASK_STATE_MARKER_VALUE = "task_state_v1"
+TASK_CONTRACT_PREFIX = "[ТЕКУЩИЙ КОНТРАКТ ЗАДАЧИ — ДАННЫЕ RUNTIME]\n"
+TASK_CONTRACT_MARKER_VALUE = "task_contract_v1"
 _MESSAGE_EXCERPT_CHARS = 300
 
 SummarizeFn = Callable[..., dict[str, Any]]
@@ -93,8 +95,10 @@ def _emit_audit(
 def _is_state_message(message: dict[str, Any]) -> bool:
     return (
         message.get("role") == "assistant"
-        and message.get(TASK_STATE_MARKER_KEY) == TASK_STATE_MARKER_VALUE
-        and str(message.get("content") or "").startswith(TASK_STATE_PREFIX)
+        and ((message.get(TASK_STATE_MARKER_KEY) == TASK_STATE_MARKER_VALUE
+              and str(message.get("content") or "").startswith(TASK_STATE_PREFIX))
+             or (message.get(TASK_STATE_MARKER_KEY) == TASK_CONTRACT_MARKER_VALUE
+                 and str(message.get("content") or "").startswith(TASK_CONTRACT_PREFIX)))
     )
 
 
@@ -280,7 +284,8 @@ def maybe_compact(
         and not _is_summary_message(m)
         and not _is_state_message(m)
     ]
-    state_msgs = [m for m in messages if _is_state_message(m)][-1:]
+    states = {m[TASK_STATE_MARKER_KEY]: m for m in messages if _is_state_message(m)}
+    state_msgs = list(states.values())
     # Exclude the rolling summary (now an assistant message) from the compactable
     # pool — it is carried via previous_summaries and re-emitted fresh, never
     # re-summarized.

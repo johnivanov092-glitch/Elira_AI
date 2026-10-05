@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from app.application.code_agent.agent_loop import stream_code_agent
+from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
 from app.application.code_agent.delivery_session import build_continuation_kwargs
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.run_journal import RunJournal, related_sources
@@ -217,10 +218,18 @@ def test_web_tool_history_keeps_exact_wire_prefix_without_duplicate_excerpts(tmp
     assert len(captures) == 4
     assert not any(event["type"] == "context_compacted" for event in events)
     for previous, current in zip(captures, captures[1:]):
-        before = _normalize_messages_for_request(previous["messages"])
+        # The single trailing closing cue is refreshed after each result batch;
+        # every earlier instruction and tool receipt must retain its wire prefix.
+        previous_messages = previous["messages"]
+        if previous_messages[-1].get("_msg_id") == "web-closing-context":
+            previous_messages = previous_messages[:-1]
+        before = _normalize_messages_for_request(previous_messages)
         after = _normalize_messages_for_request(current["messages"])
         assert previous["tools"] == current["tools"]
         assert before == after[:len(before)]
+        assert current["messages"][-1].get("_msg_id") == "web-closing-context"
+        assert sum(message.get("_msg_id") == "web-closing-context"
+                   for message in current["messages"]) == 1
     assert not any(message.get("_msg_id") == "web-source-context" for call in captures for message in call["messages"])
     final = next(event for event in events if event["type"] == "final_response")
     assert final["source_status"] == "matched"
@@ -235,12 +244,13 @@ def test_loop_restores_exact_excerpts_missing_from_truncated_tool_output(tmp_pat
         calls.append(deepcopy(kwargs["messages"]))
         if len(calls) == 1:
             return {"message": {"content": "", "tool_calls": [{"id": "long-web-call", "function": {
-                "name": "web_fetch", "arguments": {"url": "https://example.org/long", "max_chars": 18000},
+                "name": "web_fetch", "arguments": {"url": "https://example.org/long", "max_chars": 200000},
             }}]}}
         sources = next(event["sources"] for event in events if event["type"] == "tool_call")
         tool_text = "\n".join(message["content"] for message in kwargs["messages"] if message["role"] == "tool")
         restored_text = "\n".join(message["content"] for message in kwargs["messages"] if message.get("_msg_id") == "web-source-context")
         omitted = [source for source in sources if source["quote"] not in tool_text]
+        assert omitted, "fixture must exceed the canonical web tool text budget"
         restored = next(source for source in omitted if source["quote"] in restored_text)
         assert len(restored_text) <= 7000
         from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
@@ -250,8 +260,20 @@ def test_loop_restores_exact_excerpts_missing_from_truncated_tool_output(tmp_pat
         assert wire[-1]["role"] != "assistant"
         return {"message": {"content": f"Recovered exact excerpt. [[source:{restored['id']}]]", "tool_calls": []}}
 
-    body = "".join((f"Section {index}. " + str(index) * 1500)[:1500] for index in range(12))
-    monkeypatch.setattr(_web, "_fetch_one", lambda url, limit: PageFetchResult(text=body, final_url=url, status_code=200))
+    body = "".join((f"Section {index}. " + "Natural fixture prose with words and spaces. " * 40)[:1500]
+                   for index in range(100))
+
+    def oversized_fetch(*, url, max_chars):
+        # Native fetch now fits receipts before returning them. Exercise the
+        # canonical restoration boundary with a legacy/provider-sized packet.
+        assert len(body) < max_chars
+        text, sources = _web._fetch_receipts(url, PageFetchResult(
+            text=body, final_url=url, status_code=200,
+        ))
+        assert len(text) > WEB_TOOL_RESULT_LLM_LIMIT
+        return {"ok": True, "text": text, "sources": sources}
+
+    monkeypatch.setattr("app.application.code_agent.tools._dispatch.tool_web_fetch", oversized_fetch)
     for event in stream_code_agent(
         user_message="Read the fixture page and state its facts.", project_root=tmp_path,
         chat_fn=chat, model="test-model", num_ctx=131072, base_tools=["web_fetch"], auto_remember=False,
@@ -306,3 +328,86 @@ def test_loop_restores_used_excerpt_after_real_compaction(tmp_path, monkeypatch)
     final = next(event for event in events if event["type"] == "final_response")
     assert final["source_status"] == "matched"
     assert final["citations"][0]["claim_support"] == "not_assessed"
+
+
+def test_repeated_read_restores_missing_excerpt_after_compaction_without_network(tmp_path, monkeypatch):
+    from app.application.code_agent import agent_loop, loop_helpers
+
+    captures, events, fetched, missing = [], [], [], []
+    original_prepare = agent_loop._prepare_messages_for_llm
+
+    def prepare(messages, **kwargs):
+        if len(captures) == 4:
+            kwargs["context_profile"] = {**kwargs["context_profile"], "compaction_thresholds": {
+                "auto": {"percent": 0.001}, "strong": {"percent": 0.001}, "critical": {"percent": 100},
+            }}
+        return original_prepare(messages, **kwargs)
+
+    def fetch(url, limit):
+        fetched.append(url)
+        return PageFetchResult(text="".join(f"Fact {i:04d}. " for i in range(720)),
+                               final_url=url, status_code=200)
+
+    monkeypatch.setattr(agent_loop, "_prepare_messages_for_llm", prepare)
+    monkeypatch.setattr(loop_helpers, "summarize_history", lambda **kwargs: {"ok": True, "summary": "Page read earlier."})
+    monkeypatch.setattr(_web, "_fetch_one", fetch)
+    url = "https://example.org/long-article"
+
+    def chat(**kwargs):
+        captures.append(deepcopy(kwargs["messages"]))
+        turn = len(captures)
+        assert turn <= 6
+        if turn in {1, 5}:
+            if turn == 5:
+                sources = next(event["sources"] for event in events if event.get("type") == "tool_call"
+                               and event.get("tool") == "web_fetch")
+                visible = "\n".join(m.get("content", "") for m in kwargs["messages"])
+                missing.extend(s for s in sources if s["quote"] not in visible)
+                assert missing, "Real compaction must remove at least one earlier excerpt"
+            return {"message": {"tool_calls": [{"id": str(turn), "function": {
+                "name": "web_fetch", "arguments": {"url": url, "max_chars": 9000},
+            }}]}}
+        if turn < 5:
+            return {"message": {"tool_calls": [{"id": str(turn), "function": {
+                "name": "capability_load", "arguments": {"group": "web"},
+            }}]}}
+        tool_text = "\n".join(m.get("content", "") for m in kwargs["messages"] if m["role"] == "tool")
+        assert all(source["quote"] in tool_text for source in missing)
+        return {"message": {"content": "The earlier page is available. " + f'[[source:{missing[0]["id"]}]]'}}
+
+    for event in stream_code_agent(user_message="Read the page and explain its facts.", project_root=tmp_path,
+            chat_fn=chat, model="test-model", num_ctx=131072,
+            base_tools=["capability_load", "web_fetch"], auto_remember=False):
+        events.append(event)
+    assert fetched == [url]
+    assert any(event["type"] == "context_compacted" for event in events)
+    final = next(event for event in events if event["type"] == "final_response")
+    assert final["source_status"] == "matched"
+
+
+def test_resume_delivers_cached_excerpts_without_consuming_recovery_attempts():
+    from app.application.code_agent.command_progress import CommandProgress
+
+    sources = [make_source(run_id="original", tool="web_fetch", url="https://example.org/page",
+               status="excerpt", quote=f"Excerpt {i}: " + "x" * 1400,
+               offset=1500 * i, quote_verified=True) for i in range(8)]
+    evidence = RunEvidence(sources=sources)
+    evidence.mark_sources_presented([{"role": "tool", "content": "\n".join(map(format_source, sources))}])
+    args = {"url": "https://example.org/page"}
+    commands = CommandProgress()
+    commands.observe("web_fetch", args, {"ok": True, "sources": sources})
+    for _ in range(5):
+        # Reconstruct both durable owners, then lose part of the source text.
+        evidence = RunEvidence(sources=evidence.sources, operations_complete=False)
+        commands = CommandProgress.from_snapshot(commands.snapshot())
+        packed = evidence.restore_source_context([])
+        evidence.mark_sources_presented(packed)
+        assert len(evidence.presented_sources) < len(sources)
+        cached = evidence.repeated_read_context(commands.cached_source_ids("web_fetch", args, epoch=0), max_chars=12000)
+        assert cached
+        evidence.mark_sources_presented([*packed, {"role": "tool", "content": cached}])
+        assert len(evidence.presented_sources) == len(sources)
+        assert all(row["refusals"] == 0 for row in commands.snapshot()["web_repeats"].values())
+    # With all text present, actual repetition still takes the normal path.
+    assert evidence.repeated_read_context(commands.cached_source_ids("web_fetch", args, epoch=0), max_chars=12000) == ""
+    assert commands.before_dispatch("web_fetch", args, cwd="")["status"] == "recovery_required"

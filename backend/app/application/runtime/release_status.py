@@ -33,6 +33,26 @@ def _platform() -> Path:
     return Path(os.getenv("ELIRA_PLATFORM_ROOT") or Path(__file__).resolve().parents[4]).resolve()
 
 
+def _owner_response(command: list[str], *, platform: Path, timeout: int) -> subprocess.CompletedProcess:
+    # -I ignores PYTHONIOENCODING; the interpreter flag also fixes older installed clients.
+    if command[1:3] != ["-X", "utf8"]:
+        command = [command[0], "-X", "utf8", *command[1:]]
+    return subprocess.run(command, cwd=platform, capture_output=True, timeout=timeout,
+                          check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _response_json(response: subprocess.CompletedProcess) -> dict:
+    if not isinstance(response.stdout, bytes) or not response.stdout.strip():
+        raise ValueError("Release owner returned empty or invalid stdout")
+    try:
+        result = json.loads(response.stdout.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Release owner stdout is not UTF-8 at byte {exc.start}") from exc
+    if not isinstance(result, dict):
+        raise ValueError("Release owner returned a non-object JSON response")
+    return result
+
+
 def confirm_release(*, request_id: str, port: int) -> None:
     """The owner rechecks the proposal nonce and seal; UI data grants no trust."""
     if not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{32}", request_id):
@@ -47,16 +67,14 @@ def confirm_release(*, request_id: str, port: int) -> None:
             command = [sys.executable, "-I", "-B",
                        str(Path(__file__).resolve().parents[4] / "scripts/elira_release.py"),
                        "--platform", str(platform), "--port", str(port), "confirm", request_id]
-        response = subprocess.run(command, cwd=platform, capture_output=True, text=True,
-                                  encoding="utf-8", timeout=130, check=False,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        response = _owner_response(command, platform=platform, timeout=130)
         if response.returncode == 2:
             raise ReleaseConfirmationError("Подтверждение ещё обрабатывается. Проверяем состояние установки.", 504)
         if response.returncode != 0:
             LOG.warning("Release confirmation was refused by owner (exit %s)", response.returncode)
             raise ReleaseConfirmationError("Не удалось подтвердить это предложение. Обновите состояние: версия могла измениться или выполняется другая операция.", 409)
-        result = json.loads(response.stdout)
-        if not isinstance(result, dict) or (foundation and result.get("status") != "completed"):
+        result = _response_json(response)
+        if foundation and result.get("status") != "completed":
             raise ValueError("Invalid release confirmation response")
     except subprocess.TimeoutExpired as exc:
         raise ReleaseConfirmationError("Ответ не получен: подтверждение могло быть принято. Проверяем состояние установки.", 504) from exc
@@ -104,14 +122,13 @@ def rollback_release(*, active_release_id: str, previous_release_id: str, port: 
                    "--expected-previous", previous_release_id, "--confirm"]
         if foundation:
             command.extend(["--wait", "--timeout", "120"])
-        response = subprocess.run(command, cwd=platform, capture_output=True, text=True, encoding="utf-8",
-                                  timeout=130, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        response = _owner_response(command, platform=platform, timeout=130)
         if response.returncode == 2:
             raise ReleaseConfirmationError("Откат ещё обрабатывается. Проверяем состояние.", 504)
         if response.returncode != 0:
             raise ReleaseConfirmationError("Откат не подтверждён: выбранная версия изменилась или выполняется другая операция.", 409)
-        result = json.loads(response.stdout)
-        if not isinstance(result, dict) or (foundation and result.get("status") != "completed"):
+        result = _response_json(response)
+        if foundation and result.get("status") != "completed":
             raise ValueError("Invalid rollback response")
     except subprocess.TimeoutExpired as exc:
         raise ReleaseConfirmationError("Ответ не получен: откат мог быть принят. Проверьте состояние.", 504) from exc
@@ -240,13 +257,11 @@ def _read_status(platform: Path, port: int) -> dict:
         command = module._foundation_client_command(platform=platform, port=port)
         if command is not None:
             mode = "foundation"
-            response = subprocess.run(
-                [*command, "status"], cwd=platform, capture_output=True, text=True,
-                encoding="utf-8", timeout=4, check=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            state = json.loads(response.stdout)
-            if not isinstance(state, dict) or not isinstance(state.get("progress"), dict):
+            response = _owner_response([*command, "status"], platform=platform, timeout=4)
+            if response.returncode != 0:
+                raise ValueError(f"Release owner status process exited with code {response.returncode}")
+            state = _response_json(response)
+            if not isinstance(state.get("progress"), dict):
                 raise ValueError("Installed Foundation does not report release progress")
             progress = state["progress"]
         else:
@@ -269,7 +284,7 @@ def _read_status(platform: Path, port: int) -> dict:
                 "previous_release_id": None, "rollback_available": False,
                 "target_release_id": None, "operation_id": None, "updated_at": None,
                 "step": None, "confirmation": None,
-                "error": "Не удалось прочитать состояние обновления. Рабочая версия не изменялась этим запросом."}
+                "error": "Не удалось прочитать состояние обновления: " + str(exc)[:500]}
 
 
 def get_release_status(*, port: int) -> dict:

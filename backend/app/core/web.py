@@ -18,9 +18,7 @@ from .web_engines import (
     extract_domain as _extract_domain,
     get_web_engine_status,
     resolve_search_engines,
-    search_duckduckgo as _search_duckduckgo,
     search_searxng as _search_searxng,
-    search_wikipedia as _search_wikipedia,
 )
 from .web_runtime import (
     count_preferred_domain_hits,
@@ -38,8 +36,6 @@ logger = logging.getLogger(__name__)
 
 ENGINE_FUNCS = {
     "searxng": _search_searxng,
-    "duckduckgo": _search_duckduckgo,
-    "wikipedia": _search_wikipedia,
 }
 
 

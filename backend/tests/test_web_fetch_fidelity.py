@@ -18,7 +18,7 @@ def _response(html, *, status=200, url="https://example.org/page", headers=None)
 
 def _browser(monkeypatch, *, text, status=200, url="https://example.org/page", html=None):
     page = SimpleNamespace(
-        goto=AsyncMock(return_value=SimpleNamespace(status=status)),
+        goto=AsyncMock(return_value=SimpleNamespace(status=status, headers={})),
         title=AsyncMock(return_value="Example"), url=url,
         inner_text=AsyncMock(return_value=text),
         content=AsyncMock(return_value=html or f"<main>{text}</main>"),
@@ -45,6 +45,50 @@ def test_web_fetch_preserves_short_dates_prices_and_table_values(monkeypatch):
     result = _web.tool_web_fetch(url="https://example.org/page")
     assert result["ok"] is True
     assert all(value in result["text"] for value in ("3.14.7", "2026-09-19", "USD", "485.20"))
+
+
+def test_raw_plain_text_code_retains_indentation_and_angle_brackets(monkeypatch):
+    code = 'def keep(engine):\n    if engine < 3:\n        return "<tag>"\n\n    return None\n'
+    monkeypatch.setattr("requests.get", lambda *a, **k: _response(code, headers={"Content-Type": "text/plain; charset=utf-8"}))
+    monkeypatch.setattr(_web, "_render_fallback", lambda *a: pytest.fail("Plain text does not need a browser"))
+    result = _web.tool_web_fetch(url="https://example.org/raw.py")
+    assert result["ok"] and result["pages"][0]["mime"] == "text/plain"
+    assert result["sources"][0]["quote"] == code
+
+
+@pytest.mark.parametrize("phrase,found", [("NOT recommended", True), ("no such phrase", False)])
+def test_find_preserves_context_offsets_and_never_fakes_a_missing_match(monkeypatch, phrase, found):
+    text = "Unrelated details. " * 4000 + "Treatment is NOT\nrecommended for this population.\n" + "Appendix. " * 4000
+    monkeypatch.setattr("requests.get", lambda *a, **k: _response(text, headers={"Content-Type": "text/plain"}))
+    result = _web.tool_web_fetch(url="https://example.org/reference.txt", find=phrase, max_chars=50000)
+    assert result["ok"] is found
+    assert len(result["text"]) <= 12000
+    if found:
+        assert "Treatment is NOT\nrecommended" in result["text"]
+        for source in result["sources"]:
+            assert source["quote"] == text[source["offset"]:source["offset"] + len(source["quote"])]
+        assert result["pages"][0]["text_offset"] > 60000
+    else:
+        assert "find phrase not found" in result["text"]
+        assert all(source["status"] == "failed" and not source["quote_verified"] for source in result["sources"])
+
+
+@pytest.mark.parametrize("options", [{"find": []}, {"find": "x" * 201}, {"find": "result", "store": True},
+                                     {"find": "result", "urls": ["https://example.org/a"]}])
+def test_invalid_find_request_is_rejected_before_network(monkeypatch, options):
+    monkeypatch.setattr("requests.get", lambda *a, **k: pytest.fail("Invalid request must not access network"))
+    assert not _web.tool_web_fetch(url="https://example.org/a", **options)["ok"]
+
+
+@pytest.mark.parametrize("viewport,wait_until", [(None, "domcontentloaded"), ("mobile", "networkidle")])
+def test_passive_browser_does_not_wait_for_ad_network_idle(monkeypatch, viewport, wait_until):
+    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    page, _ = _browser(monkeypatch, text="Actual readable source text.")
+    if viewport:
+        page.evaluate = AsyncMock(return_value={"sw": 375, "cw": 375})
+    result = _web.tool_browser(url="https://example.org/page", viewport=viewport)
+    assert result["ok"]
+    assert page.goto.call_args.kwargs["wait_until"] == wait_until
 
 
 @pytest.mark.parametrize("anchor", ["<h2 id='prices'>Prices</h2>", "<a name='prices'></a><h2>Prices</h2>"])

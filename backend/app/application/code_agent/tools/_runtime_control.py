@@ -7,6 +7,7 @@ Every operation returns JSON-safe status. Secrets enter only as opaque
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 from typing import Any
 
@@ -547,6 +548,11 @@ def tool_runtime_control(
     """Manage hidden integration runtimes through one Workflow-facing tool."""
     op = str(operation or "").strip().lower()
     try:
+        # Some compatible models encode this nested object twice. task_decide
+        # is a declaration only; never apply post-policy coercion to operations
+        # that execute commands or mutate external state.
+        if op == "task_decide" and isinstance(config, str):
+            config = json.loads(config)
         if config is not None and not isinstance(config, dict):
             raise ValueError("config must be an object")
         settings = config or {}

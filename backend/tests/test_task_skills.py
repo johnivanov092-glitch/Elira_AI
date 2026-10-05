@@ -16,9 +16,10 @@ def _encoded_content(snapshot):
     return json.dumps(snapshot["content"], ensure_ascii=False)[1:-1]
 
 
-def test_installed_catalog_is_metadata_only_and_all_twelve_skills_load(tmp_path):
+def test_installed_catalog_is_metadata_only_and_all_skills_load(tmp_path):
     catalog = skills.discover_skills()
-    assert len(catalog["skills"]) == 12
+    assert len(catalog["skills"]) == 14
+    assert {"code-change", "code-review", "refactor"} <= {row["name"] for row in catalog["skills"]}
     assert catalog["errors"] == []
     assert len(skills.catalog_context()) < 5000
     for row in catalog["skills"]:
@@ -35,7 +36,7 @@ def test_invalid_name_has_discovery_recovery_without_reading_arbitrary_paths(tmp
     assert result["ok"] is False
     assert "skill_list" in result["error"]["message"]
     full = tool_runtime_control(tmp_path, operation="skill_list", query="wrong initial routing")
-    assert len(full["result"]["skills"]) == 12
+    assert len(full["result"]["skills"]) == 14
 
 
 def test_connected_project_cannot_install_or_override_skills(tmp_path):
@@ -63,10 +64,11 @@ def test_invalid_installed_packages_are_reported_and_symlink_escape_is_rejected(
 
 
 @pytest.mark.parametrize("summary_ok", [True, False])
-def test_snapshots_deduplicate_validate_and_survive_repeated_compaction(summary_ok):
+@pytest.mark.parametrize("skill_name", ["python", "code-change", "code-review", "refactor"])
+def test_snapshots_deduplicate_validate_and_survive_repeated_compaction(summary_ok, skill_name):
     from app.application.context.compaction import maybe_compact
 
-    skill = skills.skill_control("skill_load", "python")["skill"]
+    skill = skills.skill_control("skill_load", skill_name)["skill"]
     context = skills.SkillContext()
     assert context.activate(skill)
     assert context.activate(skill) is False
@@ -92,15 +94,16 @@ def _chat_reply(tool=None, arguments=None):
         [{"id": "selected", "function": {"name": tool, "arguments": arguments or {}}}] if tool else []}}
 
 
-def test_real_loop_loads_recovers_deduplicates_and_resumes_only_this_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize("skill_name", ["python", "code-review", "refactor"])
+def test_real_loop_loads_recovers_deduplicates_and_resumes_only_this_run(tmp_path, monkeypatch, skill_name):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     seen = []
     sequence = [
         ("capability_load", {"group": "runtime"}),
         ("runtime_control", {"operation": "skill_load", "name": "wrong"}),
         ("runtime_control", {"operation": "skill_list"}),
-        ("runtime_control", {"operation": "skill_load", "name": "python", "query": "Исправление Python"}),
-        ("runtime_control", {"operation": "skill_load", "name": "python"}),
+        ("runtime_control", {"operation": "skill_load", "name": skill_name, "query": "Выбранный способ работы"}),
+        ("runtime_control", {"operation": "skill_load", "name": skill_name}),
     ]
     def chat(**kwargs):
         if not kwargs.get("tools"):
@@ -119,7 +122,7 @@ def test_real_loop_loads_recovers_deduplicates_and_resumes_only_this_run(tmp_pat
     assert [event["skill"]["already_loaded"] for event in loaded] == [False, True]
     assert all(event["state_changed"] is False for event in loaded)
     snapshot = RunJournal.load("skills-run").state["active_skills"][0]
-    assert snapshot["name"] == "python"
+    assert snapshot["name"] == skill_name
     assert snapshot["content"] not in json.dumps(seen[0], ensure_ascii=False)
     assert sum(_encoded_content(snapshot) in message.get("content", "") for message in seen[-1]) == 1
     assert all(messages[0] == seen[0][0] for messages in seen)
@@ -282,16 +285,19 @@ def test_success_receipt_is_already_durable_when_consumer_stops(tmp_path, monkey
         stream.close()
 
 
-def test_work_reminder_is_once_and_never_blocks_tools(tmp_path, monkeypatch):
+@pytest.mark.parametrize("discovery_tool", ["read_file", "project_map"])
+def test_work_reminder_is_once_after_project_discovery_and_never_blocks_tools(tmp_path, monkeypatch, discovery_tool):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     (tmp_path / "data.txt").write_text("data", encoding="utf-8")
     captured = []
     def chat(**kwargs):
         captured.append(deepcopy(kwargs["messages"]))
-        return _chat_reply("read_file", {"path": "data.txt"}) if len(captured) <= 2 else _chat_reply()
+        if len(captured) == 1:
+            return _chat_reply(discovery_tool, {"path": "data.txt"} if discovery_tool == "read_file" else {})
+        return _chat_reply("read_file", {"path": "data.txt"}) if len(captured) == 2 else _chat_reply()
     events = list(agent_loop.stream_code_agent(user_message="Read the file", project_root=tmp_path,
-        chat_fn=chat, base_tools=["read_file"], auto_remember=False))
+        chat_fn=chat, base_tools=["read_file", "project_map"], auto_remember=False))
     assert events[-1]["stop_reason"] == "answer"
     assert len(captured) == 3
-    assert sum("[Рабочее напоминание Elira]" in m.get("content", "") for m in captured[-1]) == 1
+    assert sum("[Рабочее напоминание Elira]" in m.get("content", "") for m in captured[-1]) == int(discovery_tool == "project_map")
     assert not any(e["type"] == "skills_changed" for e in events)

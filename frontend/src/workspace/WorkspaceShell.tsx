@@ -221,6 +221,7 @@ export default function WorkspaceShell() {
     // works out of the box. Picking a folder targets a specific project.
     const msg = text.trim();
     if (!msg) return false;
+    if (run.runControlState === "stopping" || run.runControlState === "cancel_failed") return false;
     // FIX-3: refuse to send into a chat whose history failed to load — persisting
     // this run would overwrite the intact server turns with a blank transcript.
     if (loadFailedKeys.current.has(activeKey)) {
@@ -424,7 +425,7 @@ export default function WorkspaceShell() {
 
         <WorkflowRequestTray connected={connected} />
 
-        <Composer key={activeKey} value={input} onChange={setInput} sessionId={activeKey} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(controls) => { attachControls.current = controls; }} />
+        <Composer key={activeKey} value={input} onChange={setInput} sessionId={activeKey} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} runControlState={run.runControlState} cancelError={run.cancelError} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(controls) => { attachControls.current = controls; }} />
 
         {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => attachControls.current?.openFilePicker()} />}
       </section>

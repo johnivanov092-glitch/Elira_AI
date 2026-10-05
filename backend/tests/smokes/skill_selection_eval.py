@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parents[3]
 CASES = [
     ("conversation", "Привет, как настроение?", []),
     ("diagnostics", "Приложение стало зависать после обновления. Начни диагностику причины регрессии.", ["diagnostics"]),
-    ("code-change", "Проведи ревью изменений в подключённом репозитории и найди ошибки контрактов.", ["code-change"]),
+    ("code-change", "Реализуй требуемое изменение кода в подключённом репозитории с сохранением контрактов и проверками.", ["code-change"]),
+    ("code-review", "Проведи ревью текущих незакоммиченных изменений в подключённом репозитории и найди ошибки контрактов, без исправлений.", ["code-review"]),
+    ("refactor", "Выполни рефакторинг дублирующей логики в подключённом проекте, сохрани внешнее поведение и проверь совместимость.", ["refactor"]),
     ("git-release", "Проверь состояние git и подготовь merge текущей ветки в main; пока только подготовка без push.", ["git-release"]),
     ("windows-admin", "На Windows служба приложения падает при запуске. Начни диагностику службы и событий, пока без изменений.", ["windows-admin", "diagnostics"]),
     ("linux-admin", "На Linux сервере приложение не стартует как служба. Начни диагностику через сохранённое SSH подключение, пока без изменений.", ["linux-admin", "diagnostics"]),
@@ -56,7 +58,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--cases", help="Comma-separated IDs; default all 13")
+    parser.add_argument("--cases", help=f"Comma-separated IDs; default all {len(CASES)}")
     parser.add_argument("--seed", type=int, default=41)
     args = parser.parse_args()
     output = args.output.resolve()

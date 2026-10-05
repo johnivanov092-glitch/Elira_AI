@@ -5,14 +5,11 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable, Dict, Iterable, List
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup
 
-try:
-    from ddgs import DDGS
-except ImportError:  # pragma: no cover - compatibility fallback
-    from duckduckgo_search import DDGS
+from app.application.web_evidence.analyzer import tokenize
 
 from .files import truncate_text
 from .web_engines import (
@@ -24,6 +21,9 @@ from .web_engines import (
     domain_matches,
     extract_domain,
     session,
+    search_searxng,
+    SearchResults,
+    search_warning_text,
 )
 
 
@@ -60,7 +60,41 @@ REPUTABLE_DOMAINS = (
 FRESH_WINDOW_DAYS = 45
 SEARCH_ENGINE_DIVERSITY_SCORE_WINDOW = 20
 
-_SEARCH_TOKEN_RE = re.compile(r"[0-9a-zа-яё]{2,}", re.IGNORECASE)
+_SEARCH_SITE_RE = re.compile(r'''(?<![\w-])-?site:[^\s"'()]+''', re.IGNORECASE)
+_SEARCH_MONTH_TOKENS = frozenset(tokenize(
+    "январь января февраль февраля март марта апрель апреля май мая июнь июня "
+    "июль июля август августа сентябрь сентября октябрь октября ноябрь ноября декабрь декабря "
+    "january february march april may june july august september october november december "
+    "jan feb mar apr jun jul aug sep sept oct nov dec"
+))
+_SEARCH_CONTEXT_TOKENS = frozenset(tokenize("новости news latest"))
+_SEARCH_NUMERIC_DATE_RE = re.compile(
+    r"(?<!\w)(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[/.]\d{1,2}[/.]\d{4})(?!\w)"
+)
+
+
+def _ranking_tokens(text: str) -> list[str]:
+    return [token for token in tokenize(text) if len(token) > 1 or token.isdigit()]
+
+
+def _query_ranking_tokens(query: str) -> tuple[set[str], set[str]]:
+    """Separate calendar and generic news wording from the query's subject."""
+    query = _SEARCH_SITE_RE.sub("", query or "")
+    tokens = _ranking_tokens(query)
+    calendar: set[str] = set()
+    for index, token in enumerate(tokens):
+        if token not in _SEARCH_MONTH_TOKENS:
+            continue
+        adjacent = tokens[max(0, index - 1):index] + tokens[index + 1:index + 3]
+        date_numbers = {value for value in adjacent if value.isdigit() and len(value) in (1, 2, 4)
+                        and (1 <= int(value) <= 31 or 1000 <= int(value) <= 2999)}
+        if date_numbers:
+            calendar.add(token)
+            calendar.update(date_numbers)
+    for match in _SEARCH_NUMERIC_DATE_RE.finditer(query):
+        calendar.update(_ranking_tokens(match.group(0)))
+    context = calendar | (set(tokens) & _SEARCH_CONTEXT_TOKENS)
+    return set(tokens) - context, context
 
 CONFIDENCE_LABELS: Dict[str, str] = {
     "verified": "✅ проверено/актуально",
@@ -152,19 +186,23 @@ def result_score(
     haystack = f"{title} {body}".strip()
     score = 0
 
-    query_tokens = set(_SEARCH_TOKEN_RE.findall((query or "").casefold()))
+    query_tokens, context_tokens = _query_ranking_tokens(query)
+    title_tokens = set(_ranking_tokens(title))
+    body_tokens = set(_ranking_tokens(body))
+    url_tokens = set(_ranking_tokens(unquote(href)))
     if query_tokens:
-        title_tokens = set(_SEARCH_TOKEN_RE.findall(title))
-        body_tokens = set(_SEARCH_TOKEN_RE.findall(body))
-        matched = query_tokens & (title_tokens | body_tokens)
+        matched = query_tokens & (title_tokens | body_tokens | url_tokens)
         title_matched = query_tokens & title_tokens
         coverage = len(matched) / len(query_tokens)
         score += round(coverage * 80)
         score += len(title_matched) * 8
         score += len((query_tokens & body_tokens) - title_matched) * 2
-        normalized_query = " ".join(_SEARCH_TOKEN_RE.findall((query or "").casefold()))
-        if normalized_query and normalized_query in " ".join(_SEARCH_TOKEN_RE.findall(haystack)):
+        normalized_query = " ".join(_ranking_tokens(_SEARCH_SITE_RE.sub("", query or "")))
+        if normalized_query and normalized_query in " ".join(_ranking_tokens(haystack)):
             score += 40
+    if context_tokens:
+        context_matched = context_tokens & (title_tokens | body_tokens)
+        score += round(len(context_matched) / len(context_tokens) * 8)
 
     if preferred and domain_matches(domain, preferred):
         score += 120
@@ -222,7 +260,6 @@ def rerank_results(
                 preferred_domains=preferred_domains,
             ),
             ENGINE_PRIORITY.get(str(item.get("engine", "")).strip(), 99),
-            str(item.get("title", "")).strip().lower(),
         ),
     )
 
@@ -349,9 +386,10 @@ def filter_site_results(query: str, results: List[Dict[str, str]]) -> List[Dict[
         return any(domain_matches(host, (domain,)) and parsed.path.startswith(path)
                    for domain, path in constraints)
 
-    return [row for row in results
-            if (not included or matches(row.get("href", ""), included))
-            and not matches(row.get("href", ""), excluded)]
+    return SearchResults([row for row in results
+                          if (not included or matches(row.get("href", ""), included))
+                          and not matches(row.get("href", ""), excluded)],
+                         engine_warnings=getattr(results, "engine_warnings", []))
 
 
 def search_news(
@@ -362,38 +400,21 @@ def search_news(
     geo_scope: str = "",
     local_first: bool = False,
     preferred_domains: Iterable[str] | None = None,
-    raise_errors: bool = False,
+    raise_errors: bool = True,
 ) -> List[Dict[str, str]]:
-    results: list[Dict[str, str]] = []
-    try:
-        with DDGS() as ddgs:
-            for item in ddgs.news(query, max_results=max_results):
-                href = item.get("url") or item.get("href") or ""
-                if not href.startswith("http"):
-                    continue
-                results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "href": href,
-                        "body": item.get("body", ""),
-                        "date": item.get("date", ""),
-                        "source": item.get("source", ""),
-                        "engine": "ddg-news",
-                    }
-                )
-    except Exception:
-        if raise_errors:
-            raise
-        return []
+    # Compatibility callers may still pass raise_errors; search failures always
+    # propagate instead of becoming a successful empty news result.
+    results = search_searxng(query, max_results=max_results, categories="news")
     deduped = dedupe_results(results, max_results=None)
     reranked = rerank_results(
         deduped,
+        query=query,
         intent_kind=intent_kind,
         geo_scope=geo_scope,
         local_first=local_first,
         preferred_domains=preferred_domains,
     )
-    return reranked[:max_results]
+    return SearchResults(reranked[:max_results], engine_warnings=getattr(results, "engine_warnings", []))
 
 
 def search_web_runtime(
@@ -412,12 +433,13 @@ def search_web_runtime(
     time_range: str | None = None,
     categories: str | None = None,
 ) -> List[Dict[str, str]]:
-    engine_list = list(resolve_search_engines_func(engines))
+    engine_list = [engine for engine in resolve_search_engines_func(engines) if engine == "searxng"]
+    if not engine_list:
+        raise RuntimeError("SearXNG search adapter is unavailable")
     per_engine = per_engine or max(3, max_results)
     combined: list[Dict[str, str]] = []
-    # SearXNG accepts time_range / categories; DuckDuckGo and Wikipedia do not,
-    # so the extras are passed ONLY to SearXNG and ONLY when set (a no-arg engine
-    # mock in tests is never handed kwargs it cannot take).
+    engine_warnings: list[Dict[str, str]] = []
+    # Keep optional SearXNG targeting absent when not requested.
     searxng_extra = {
         k: v for k, v in (("time_range", time_range), ("categories", categories)) if v
     }
@@ -425,15 +447,14 @@ def search_web_runtime(
     for engine in engine_list:
         search_fn = engine_funcs.get(engine)
         if not search_fn:
-            continue
+            raise RuntimeError("SearXNG search adapter is unavailable")
         try:
             if engine == "searxng" and searxng_extra:
-                combined.extend(search_fn(query, max_results=per_engine, **searxng_extra))
-            elif engine in {"duckduckgo", "wikipedia"} and categories == "images":
-                combined.extend({**row, "filter_categories": "images"} for row in
-                                search_fn(query, max_results=per_engine, categories="images"))
+                results = search_fn(query, max_results=per_engine, **searxng_extra)
             else:
-                combined.extend(search_fn(query, max_results=per_engine))
+                results = search_fn(query, max_results=per_engine)
+            combined.extend(results)
+            engine_warnings.extend(getattr(results, "engine_warnings", []))
         except Exception as exc:
             logger_obj.warning(
                 "web search engine '%s' failed for query %r: %s",
@@ -441,6 +462,7 @@ def search_web_runtime(
                 query,
                 exc,
             )
+            raise
 
     dedupe_limit = max(max_results, per_engine * max(1, len(engine_list)))
     merged = dedupe_results(filter_site_results(query, combined), max_results=dedupe_limit)
@@ -452,7 +474,7 @@ def search_web_runtime(
         local_first=local_first,
         preferred_domains=preferred_domains,
     )
-    return _select_diverse_results(
+    selected = _select_diverse_results(
         reranked,
         max_results=max_results,
         query=query,
@@ -461,17 +483,20 @@ def search_web_runtime(
         local_first=local_first,
         preferred_domains=preferred_domains,
     )
+    return SearchResults(selected, engine_warnings=engine_warnings)
 
 
 def format_search_results(results: List[Dict[str, str]]) -> str:
     materialized = list(results)
-    return "\n\n".join(
+    text = "\n\n".join(
         f"[{index}] {item.get('title', '')}  — {CONFIDENCE_LABELS[classify_confidence(item, all_results=materialized)]}\n"
         f"Поисковик: {ENGINE_LABELS.get(item.get('engine', ''), item.get('engine', '') or '-')}\n"
         f"Ссылка: {item.get('href', '')}\n"
         f"Описание: {item.get('body', '')}"
         for index, item in enumerate(materialized, start=1)
     )
+    warning = search_warning_text(getattr(results, "engine_warnings", []))
+    return warning + ("\n\n" + text if text else "") if warning else text
 
 
 def fetch_page_text(url: str) -> str:

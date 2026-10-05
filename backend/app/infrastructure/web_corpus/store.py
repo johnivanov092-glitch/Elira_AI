@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from typing import Any
 
 from app.application.web_evidence.analyzer import ANALYZER_VERSION
@@ -85,6 +86,13 @@ def _connect():
                 FOREIGN KEY (run_id, doc_id) REFERENCES documents(run_id, doc_id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_docs_hash ON documents(run_id, content_hash);
+            CREATE TABLE IF NOT EXISTS site_availability (
+                target_key TEXT PRIMARY KEY, host TEXT NOT NULL,
+                failures INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+                retry_at REAL NOT NULL DEFAULT 0, stopped INTEGER NOT NULL DEFAULT 0,
+                checked_at REAL NOT NULL DEFAULT 0,
+                probe_token TEXT NOT NULL DEFAULT '', probe_until REAL NOT NULL DEFAULT 0
+            );
             """
         )
         return conn
@@ -180,6 +188,91 @@ def store_document(*, run_id: str, doc: dict[str, Any], chunks: list[dict]) -> d
         conn.commit()
         return {"doc_id": doc["doc_id"], "deduped": False}
     return _wrap(op)
+
+
+def site_access_rows(keys: list[str]) -> dict[str, dict[str, Any]]:
+    def op(conn):
+        if not keys:
+            return {}
+        rows = conn.execute(
+            "SELECT target_key,failures,reason,retry_at,stopped,checked_at,probe_until "
+            "FROM site_availability WHERE target_key IN (" + ",".join("?" for _ in keys) + ")", keys,
+        ).fetchall()
+        return {r[0]: dict(zip(("failures", "reason", "retry_at", "stopped", "checked_at", "probe_until"), r[1:]))
+                for r in rows}
+    return _wrap(op)
+
+
+def begin_site_access(target_key: str, origin_key: str, host: str, *, force: bool = False) -> dict[str, Any]:
+    """Claim one due probe atomically; a lookup never increments failure history."""
+    def op(conn):
+        now = _now()
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT target_key,failures,reason,retry_at,stopped,probe_until FROM site_availability "
+            "WHERE target_key IN (?,?)", (target_key, origin_key),
+        ).fetchall()
+        for row in rows:
+            if row[5] > now or (not force and (row[4] or row[3] > now)):
+                conn.commit()
+                return {"allowed": False, "reason": row[2], "retry_at": row[3],
+                        "stopped": bool(row[4]), "probing": row[5] > now}
+        # A failed origin is rechecked through the requested URL, never via a
+        # scheduled background crawl. Successful reading clears that origin.
+        key = next((r[0] for r in rows if r[0] == origin_key and r[1]), target_key)
+        token = uuid.uuid4().hex
+        conn.execute("INSERT OR IGNORE INTO site_availability(target_key,host) VALUES (?,?)", (key, host))
+        conn.execute("UPDATE site_availability SET probe_token=?,probe_until=? WHERE target_key=?",
+                     (token, now + 300, key))
+        conn.commit()
+        return {"allowed": True, "key": key, "target_key": target_key,
+                "origin_key": origin_key, "token": token, "host": host, "started_at": now}
+    return _wrap(op)
+
+
+def finish_site_access(probe: dict[str, Any], *, success: bool, reason: str = "",
+                       origin_failure: bool = False, retry_after: float = 0) -> None:
+    """Keep bounded diagnostic metadata, independent of the seven-day text cache."""
+    def op(conn):
+        now = _now()
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("SELECT probe_token FROM site_availability WHERE target_key=?",
+                               (probe["key"],)).fetchone()
+        if not current or current[0] != probe["token"]:
+            conn.commit()
+            return  # Late completion must not overwrite a newer probe.
+        conn.execute("UPDATE site_availability SET probe_token='',probe_until=0 WHERE target_key=?", (probe["key"],))
+        key = probe["origin_key"] if origin_failure else probe["target_key"]
+        if success or (reason.startswith("http_") and not origin_failure):
+            # An HTTP response proves the origin is reachable. A missing path
+            # after DNS recovery must never quarantine the entire origin.
+            conn.execute("UPDATE site_availability SET failures=0,reason='',retry_at=0,stopped=0,checked_at=? "
+                         "WHERE target_key=? AND (? OR reason IN ('dns_failure','connection_failure'))",
+                         (now, probe["origin_key"], int(success)))
+        if success:
+            conn.execute("UPDATE site_availability SET failures=0,reason='',retry_at=0,stopped=0,checked_at=? "
+                         "WHERE target_key=?", (now, key))
+        elif reason:
+            conn.execute("INSERT OR IGNORE INTO site_availability(target_key,host) VALUES (?,?)", (key, probe["host"]))
+            row = conn.execute("SELECT failures,retry_at,stopped,reason,probe_until,checked_at "
+                               "FROM site_availability WHERE target_key=?", (key,)).fetchone()
+            # Concurrent failures from different URLs cannot jump through weeks
+            # of backoff while an origin is already in its cooldown.
+            if key == probe["key"] or not (row[1] > now or row[2] or row[4] > now
+                                           or row[5] >= probe["started_at"]):
+                previous = int(row[0]) if (reason == "http_429") == (row[3] == "http_429") else 0
+                failures = min(5, previous + 1)
+                pause = (60, 7 * 86400, 14 * 86400, 28 * 86400, 0)[failures - 1]
+                stopped = failures >= 5 and reason != "http_429"
+                if reason == "http_429":
+                    # Rate limiting is not a dead site; use its declared deadline.
+                    pause = max(60, retry_after) if retry_after > 0 else 3600
+                conn.execute("UPDATE site_availability SET failures=?,reason=?,retry_at=?,stopped=?,checked_at=? "
+                             "WHERE target_key=?", (failures, reason, now + pause, int(stopped), now, key))
+        conn.execute("DELETE FROM site_availability WHERE target_key IN (SELECT target_key FROM site_availability "
+                     "WHERE probe_until <= ? ORDER BY checked_at DESC LIMIT -1 OFFSET 10000)", (now,))
+        conn.commit()
+    _wrap(op)
 
 
 def list_documents(run_id: str) -> list[dict[str, Any]]:

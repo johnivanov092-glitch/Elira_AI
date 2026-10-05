@@ -15,9 +15,11 @@ touching the rest of the layer.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -29,6 +31,66 @@ class TaskSpec:
     verifiers: list[str] = field(default_factory=list)        # concrete checks to run
     stop_conditions: list[str] = field(default_factory=list)
     details: list[str] = field(default_factory=list)          # spec/behaviour — NOT criteria
+    criterion_contracts: dict[str, dict] = field(default_factory=dict)
+
+
+def requirement_id(text: str) -> str:
+    return "req-" + hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()[:12]
+
+
+def task_requirements(spec: TaskSpec | None) -> list[dict]:
+    if spec is None:
+        return []
+    return [{"id": spec.criterion_contracts.get(text, {}).get("requirement_id") or requirement_id(text),
+             "text": text, "mandatory": not _is_conditional(text),
+             "lifecycle": spec.criterion_contracts.get(text, {}).get("lifecycle") or _criterion_lifecycle(text)}
+            for text in spec.success_criteria]
+
+
+def merge_task_spec(spec: TaskSpec | None, text: str, project_root=None) -> TaskSpec | None:
+    """Preserve the goal; explicit requirement IDs are the only replacement path."""
+    incoming = derive_task_spec(text, project_root=project_root)
+    if spec is None:
+        return incoming
+    replacements: dict[str, str] = {}
+    remaining: list[str] = []
+    for line in text.splitlines():
+        match = re.match(
+            r"\s*(?:замени|измени|replace|update)\s+(?:критерий|requirement|criterion)\s+"
+            r"\[?([\w-]+)\]?\s*:\s*(.+)", line, re.IGNORECASE,
+        )
+        if match:
+            replacements[match.group(1)] = match.group(2).strip()
+        else:
+            remaining.append(line)
+    if replacements:
+        incoming = derive_task_spec("\n".join(remaining), project_root=project_root)
+    criteria: list[str] = []
+    contracts: dict[str, dict] = {}
+    for old in spec.success_criteria:
+        metadata = dict(spec.criterion_contracts.get(old) or {})
+        identity = metadata.get("requirement_id") or requirement_id(old)
+        updated = replacements.get(identity, old)
+        if updated != old:
+            metadata = {"requirement_id": identity,
+                        "host": _criterion_host(updated) or str(metadata.get("host") or "")}
+        criteria.append(updated)
+        metadata["requirement_id"] = identity
+        contracts[updated] = metadata
+    if incoming:
+        criteria.extend(incoming.success_criteria)
+        for criterion, metadata in incoming.criterion_contracts.items():
+            contracts.setdefault(criterion, dict(metadata))
+    return TaskSpec(
+        goal=spec.goal or (incoming.goal if incoming else ""),
+        scope=_dedupe(spec.scope + (incoming.scope if incoming else [])),
+        constraints=_dedupe(spec.constraints + (incoming.constraints if incoming else [])),
+        success_criteria=_dedupe(criteria),
+        verifiers=_dedupe(spec.verifiers + (incoming.verifiers if incoming else [])),
+        stop_conditions=_dedupe(spec.stop_conditions + (incoming.stop_conditions if incoming else [])),
+        details=_dedupe(spec.details + (incoming.details if incoming else [])),
+        criterion_contracts=contracts,
+    )
 
 
 # Section headers (case-insensitive, exact match on the pre-colon token).
@@ -219,7 +281,7 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
                 section = "details"
         _route(section, line, goal_lines, criteria, constraints, stop, details)
 
-    goal = " ".join(goal_lines).strip()[:300]
+    goal = " ".join(goal_lines).strip()
 
     # Artifacts → concrete verifiers (strong signals only; a bare file mention is
     # NOT enough to conjure a verifier or a spec).
@@ -259,6 +321,13 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
     # earns partial credit — instead of one all-or-nothing criterion (FIX #4).
     criteria = [part for c in criteria for part in _split_multi_target(c)]
 
+    read_targets = _dedupe(_SALIENT_RE_FILE.findall(goal))
+    contracts = {
+        criterion: {"target": read_targets[0]}
+        for criterion in criteria
+        if _criterion_intent(criterion) == "file_read" and not _read_criterion_target(criterion)
+        and len(read_targets) == 1
+    }
     return TaskSpec(
         goal=goal,
         constraints=_dedupe(constraints),
@@ -266,6 +335,7 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
         verifiers=_dedupe(verifiers),
         stop_conditions=_dedupe(stop),
         details=_dedupe(details),
+        criterion_contracts=contracts,
     )
 
 
@@ -332,11 +402,11 @@ def taskspec_context(spec: TaskSpec) -> str:
         parts.extend(f"- {d}" for d in spec.details[:12])
     if spec.success_criteria:
         parts.append("Критерии готовности (докажи verifier'ом, НЕ словами):")
-        parts.extend(f"- {c}" for c in spec.success_criteria[:10])
+        parts.extend(f"- [{r['id']}] {r['text']}" for r in task_requirements(spec))
     if spec.verifiers:
         parts.append("Чем проверять: " + "; ".join(spec.verifiers[:8]))
     if spec.constraints:
-        parts.append("Ограничения: " + "; ".join(spec.constraints[:8]))
+        parts.append("Ограничения: " + "; ".join(spec.constraints))
     _intents = {_criterion_intent(c) for c in spec.success_criteria}
     if _intents & {"file_exists", "file_not_exists"}:
         parts.append(
@@ -361,9 +431,39 @@ def taskspec_report(spec: TaskSpec) -> dict:
     """Serialisable task-state for the done event / UI panel."""
     return {
         "goal": spec.goal,
-        "success_criteria": spec.success_criteria[:10],
-        "verifiers": spec.verifiers[:8],
+        "scope": spec.scope,
+        "constraints": spec.constraints,
+        "success_criteria": spec.success_criteria,
+        "criterion_contracts": spec.criterion_contracts,
+        "verifiers": spec.verifiers,
+        "stop_conditions": spec.stop_conditions,
+        "details": spec.details,
     }
+
+
+def task_spec_from_report(saved: dict | None) -> TaskSpec | None:
+    """Restore the exact durable contract, rejecting malformed journal fields."""
+    if not isinstance(saved, dict) or not isinstance(saved.get("goal"), str):
+        return None
+    fields = {}
+    for name in ("scope", "constraints", "success_criteria", "verifiers", "stop_conditions", "details"):
+        value = saved.get(name, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            return None
+        fields[name] = list(value)
+    contracts = saved.get("criterion_contracts", {})
+    if not isinstance(contracts, dict):
+        return None
+    cleaned = {}
+    for text, metadata in contracts.items():
+        if not isinstance(text, str) or not isinstance(metadata, dict):
+            return None
+        if any(not isinstance(value, str) for value in metadata.values()):
+            return None
+        if metadata.get("lifecycle", "current") not in {"historical", "current"}:
+            return None
+        cleaned[text] = dict(metadata)
+    return TaskSpec(goal=saved["goal"], criterion_contracts=cleaned, **fields)
 
 
 # ── per-criterion state (Ph7.4/7.5) ─────────────────────────────
@@ -419,6 +519,82 @@ def _path_tokens_from_arg(path: str) -> set[str]:
     if not p:
         return set()
     return {p, p.split("/")[-1]}
+
+
+def _criterion_lifecycle(text: str) -> str:
+    historical = re.search(
+        r"\b(?:при|во время|during|at)\s+(?:setup|настройк\w*|создани\w*)\b|"
+        r"\b(?:до|before)\s+cleanup\b", text, re.IGNORECASE,
+    )
+    return "historical" if historical else "current"
+
+
+def _normalized_host(host: str) -> str:
+    from app.application.tool_providers.ssh_acl import resolve_allowed_host
+
+    return str(resolve_allowed_host(host) or host).strip().casefold()
+
+
+def _normalized_target(path: str) -> str:
+    normalized = path.replace("\\", "/").rstrip("/")
+    return normalized.casefold() if re.match(r"^[a-z]:/|^//", normalized, re.IGNORECASE) else normalized
+
+
+def _criterion_target(text: str) -> str:
+    paths = re.findall(r"[A-Za-z]:[\\/][^\s`'\"<>|]+|(?:/[^\s`'\"<>|/]+)+", text)
+    if paths:
+        return paths[0].rstrip(".,;:!?)»")
+    return next((token for token in _QUOTED_RE.findall(text)
+                 if _QUOTED_NAME_RE.fullmatch(token) and any(ch in token for ch in "./\\-")), "")
+
+
+def _criterion_host(text: str) -> str:
+    match = re.search(r"(?:на\s+хосте|on\s+host|\bhost\s*[:=])\s*[`'\"]?([\w.@-]+)", text, re.IGNORECASE)
+    return _normalized_host(match.group(1)) if match else ""
+
+
+def _read_criterion_target(text: str) -> str:
+    return _criterion_target(text) or next(iter(_SALIENT_RE_FILE.findall(text)), "")
+
+
+def _criterion_pattern(text: str) -> str:
+    if _criterion_intent(text) not in {"content_contains", "content_not_contains"}:
+        return ""
+    target = _normalized_target(_criterion_target(text))
+    tokens = [token for token in _QUOTED_RE.findall(text)
+              if _normalized_target(token) != target]
+    return tokens[-1] if len(tokens) == 1 else ""
+
+
+def executed_ssh_verification(tool_name: str, args: dict, meta: dict) -> dict | None:
+    """Validate the narrow receipt which may cross an executor error boundary."""
+    conditions = {"ssh_exists": "exists", "ssh_not_exists": "not_exists", "ssh_read": "exists",
+                  "ssh_assert_contains": "contains", "ssh_assert_not_contains": "not_contains",
+                  "ssh_port_check": "listening"}
+    condition = conditions.get(tool_name)
+    receipt = meta.get("ssh_verification")
+    if condition is None or not isinstance(receipt, dict) or meta.get("verifier") is not True:
+        return None
+    if (receipt.get("executed") is not True or type(receipt.get("exit_code")) is not int
+            or receipt["exit_code"] != 0 or type(receipt.get("observed")) is not bool
+            or type(receipt.get("passed")) is not bool or type(meta.get("ok")) is not bool
+            or receipt["passed"] != meta["ok"] or receipt.get("condition") != condition):
+        return None
+    host = args.get("host")
+    target = str(args.get("port")) if tool_name == "ssh_port_check" else args.get("path")
+    if (not isinstance(host, str) or not host.strip() or not isinstance(target, str) or not target.strip()
+            or not isinstance(receipt.get("host"), str) or not isinstance(receipt.get("target"), str)
+            or _normalized_host(host) != _normalized_host(receipt["host"])
+            or _normalized_target(target) != _normalized_target(receipt["target"])):
+        return None
+    negative = condition in {"not_exists", "not_contains"}
+    if receipt["passed"] != (not receipt["observed"] if negative else receipt["observed"]):
+        return None
+    if condition in {"contains", "not_contains"} and receipt.get("pattern") != args.get("pattern"):
+        return None
+    if tool_name == "ssh_read" and receipt["passed"] is not True:
+        return None
+    return receipt
 
 
 # ── generic verifier contract (Ph7.9) ───────────────────────────
@@ -769,7 +945,7 @@ _BROWSER_CTX = ("browser", "браузер", "страниц", "rendered", "dom"
 _ABSENT_STRONG = ("удал", "removed", "deleted", "не существует", "not exist",
                   "больше нет", "gone", "стёрт", "стерт", "снесён", "снесен")
 _ABSENT_WEAK = ("cleanup", "очищ")
-_EXIST_CTX = ("существует", "создан", "создана", "создать", "exists", "присутству", "появил",
+_EXIST_CTX = ("существ", "создан", "создана", "создать", "exists", "присутству", "появил",
               "есть файл", "папк", "директор", "directory", "внутри", "находится в",
               "находится именно", "расположен", "лежит в")
 # Scope/safety RULES — not verifiable outcomes. They may sit inside a "Критерии
@@ -1036,6 +1212,14 @@ def _criterion_intent(text: str) -> str:
     """Domain-agnostic intent from the criterion's TARGET CONTEXT (page/file/server/
     command), not from a product name and not from a bare verb."""
     low = (text or "").lower()
+    if re.fullmatch(
+        r"\s*(?:(?:source|file|document)(?:\s+.+)?\s+(?:is|was|has been)\s+read"
+        r"(?:\s+(?:successfully|completely))?|"
+        r"(?:файл|документ|источник)(?:\s+.+)?\s+прочитан(?:\s+полностью)?|"
+        r"прочитан(?:\s+полностью)?\s+(?:файл|документ|источник)(?:\s+.+)?)\s*[.!]?\s*",
+        low,
+    ):
+        return "file_read"
     if _has(low, ("в отчёт", "в отчет", "в финальном отч", "какие команды", "какие файлы",
                   "что создано", "что было создано", "перечисл", "report-only",
                   "описан в отч", "описать в отч", "команды очистки опис")):
@@ -1186,6 +1370,16 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
     — NEVER from a shared path/text alone or the model's words."""
     a = args or {}
     m = meta or {}
+    ssh_identity = {}
+    if tool_name in {"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
+                     "ssh_exists", "ssh_not_exists", "ssh_read"}:
+        # Missing meta is retained for old direct internal tracker callers. Every
+        # provider/executor path supplies metadata and must have a valid receipt.
+        receipt = executed_ssh_verification(tool_name, a, m)
+        if meta is not None and receipt is None:
+            return None
+        ssh_identity = {"host": _normalized_host(str(a.get("host") or "")),
+                        "target": _normalized_target(str(a.get("path") or a.get("port") or ""))}
     if tool_name == "runtime_control" and a.get("operation") == "result_verify":
         from app.application.code_agent.run_evidence import _result_verification
 
@@ -1196,6 +1390,7 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
         if not isinstance(checks, list):
             return None
         named: dict[str, bool] = {}
+        identities: dict[str, bool] = {}
         for check in checks:
             if not (isinstance(check, dict) and isinstance(check.get("name"), str)
                     and type(check.get("passed")) is bool):
@@ -1204,33 +1399,57 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
             if not name or name in named:
                 return None
             named[name] = check["passed"]
+            identity = check.get("requirement_id")
+            if isinstance(identity, str) and identity:
+                if identity in identities:
+                    return None
+                identities[identity] = check["passed"]
         if not named:
             return None
         return {
-            "intents": {"result_check"}, "checks": named,
+            "intents": {"result_check"}, "checks": named, "requirement_checks": identities,
             "status": receipt["status"], "exit_code": receipt.get("exit_code"),
             "targets": [item["path"].replace("\\", "/").casefold()
                         for item in receipt["targets"]],
         }
     if tool_name == "ssh_assert_contains":
-        return {"intents": {"content_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+        return {**ssh_identity, "intents": {"content_contains"}, "files": _file_tokens(str(a.get("path", ""))),
+                "pattern": str(a.get("pattern", "")).lower(), "literal_pattern": str(a.get("pattern", ""))}
     if tool_name == "ssh_assert_not_contains":
-        return {"intents": {"content_not_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+        return {**ssh_identity, "intents": {"content_not_contains"}, "files": _file_tokens(str(a.get("path", ""))),
+                "pattern": str(a.get("pattern", "")).lower(), "literal_pattern": str(a.get("pattern", ""))}
     if tool_name == "ssh_port_check":
-        return {"intents": {"server_started"}, "port": str(a.get("port", "")), "files": set()}
+        return {**ssh_identity, "intents": {"server_started"}, "port": str(a.get("port", "")), "files": set()}
     if tool_name == "ssh_exists":  # present(ok)→file_exists, absent(not ok)→file_not_exists
-        return {"intents": {"file_exists", "file_not_exists"},
+        return {**ssh_identity, "intents": {"file_exists", "file_not_exists"},
                 "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
     if tool_name == "path_exists":  # LOCAL existence probe — same contract as ssh_exists
         return {"intents": {"file_exists", "file_not_exists"},
                 "files": _path_tokens_from_arg(str(a.get("path", ""))), "present_when_ok": True}
     if tool_name == "ssh_not_exists":  # EXPLICIT cleanup assertion: absent (ok) proves
         # file_not_exists, and a still-present path is a real FAIL (asserts="absent").
-        return {"intents": {"file_not_exists"}, "files": _file_tokens(str(a.get("path", ""))),
+        return {**ssh_identity, "intents": {"file_exists", "file_not_exists"}, "files": _file_tokens(str(a.get("path", ""))),
                 "present_when_ok": False, "asserts": "absent"}
     if tool_name == "ssh_read":  # a successful read proves the file EXISTS (never absence)
-        return {"intents": {"file_exists"},
+        return {**ssh_identity, "intents": {"file_exists"},
                 "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
+    if tool_name == "read_file":
+        target = m.get("touched_path")
+        if (m.get("ok") is not True or not isinstance(target, str) or not target
+                or _normalized_target(target) != _normalized_target(str(a.get("path") or ""))
+                or not isinstance(m.get("text"), str)):
+            return None
+        try:
+            offset = int(a.get("offset") or 0)
+        except (TypeError, ValueError):
+            return None
+        root = str(m.get("_runtime_read_root") or "")
+        if root:
+            path = Path(target)
+            target = str((path if path.is_absolute() else Path(root) / path).resolve())
+        return {"intents": {"file_read"}, "target": _normalized_target(target), "read_root": root,
+                "complete": offset <= 0 and "[... truncated at line " not in m["text"],
+                "files": set()}
     if tool_name == "run_bash":
         cmd = str(a.get("command", ""))
         low = cmd.lower()
@@ -1273,6 +1492,28 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
     it = item["intent"]
     if it not in intents:
         return False
+    if it == "file_read":
+        target = item.get("bound_target") or item.get("target")
+        if target and v.get("read_root"):
+            path = Path(target)
+            target = str((path if path.is_absolute() else Path(v["read_root"]) / path).resolve())
+        if not target or _normalized_target(target) != v.get("target"):
+            return False
+        needs_complete = bool(re.search(r"\b(?:полностью|completely)\b", item["text"], re.IGNORECASE))
+        return not needs_complete or v.get("complete") is True
+    if v.get("host"):
+        expected_host = item.get("host") or item.get("bound_host")
+        if expected_host and expected_host != v["host"]:
+            return False
+        expected_target = item.get("bound_target") or item.get("target")
+        if expected_target:
+            expected_target = _normalized_target(expected_target)
+            actual_target = v.get("target") or ""
+            absolute = expected_target.startswith("/") or bool(re.match(r"^[a-z]:/", expected_target, re.IGNORECASE))
+            if actual_target != expected_target and (absolute or not actual_target.endswith("/" + expected_target)):
+                return False
+        if item.get("condition") and item["condition"] != it:
+            return False
     if it == "server_started":
         cp, vp = item.get("port"), v.get("port")
         return (cp == vp) if cp else True   # named port must match; else any server
@@ -1347,30 +1588,28 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
             return False
         return True
     if it in ("content_contains", "content_not_contains"):
+        if item.get("pattern"):
+            return item["pattern"] == v.get("literal_pattern")
         if item["files"] and v.get("files") and not (item["files"] & v["files"]):
             return False
         pat = v.get("pattern", "")
         return bool(pat) and pat in item["text_low"]
     if it in ("file_exists", "file_not_exists"):
+        if v.get("host") and item.get("target"):
+            return True  # The exact target was already compared above.
         return bool(item["files"] and v.get("files") and (item["files"] & v["files"]))
     return False
 
 
 def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
-    """'confirm' / 'fail' / None for a criterion given a matching verdict and its ok.
-
-    Existence intents (file_exists / file_not_exists) are CONFIRM-ONLY, keyed on the
-    OBSERVED presence — never on a phase we can't see. A post-cleanup absence must not
-    FAIL a setup 'file exists' criterion (it existed during setup; it's gone now on
-    purpose), and a pre-cleanup presence must not fail a 'file removed' criterion. So
-    an existence check only ever confirms the matching state; a mismatch is neutral
-    (stays unconfirmed → honest partial), never a hard failure. Every other intent
-    takes the tool's ok as the criterion's pass/fail."""
+    """Apply a matched observation to a current condition or historical fact."""
     if "result_check" in v.get("intents", set()):
         # Explicit check names map to exact user criteria, never a keyword or
         # generic exit=0. File-bearing criteria also need every named target.
         name = " ".join(item["text"].split()).casefold()
-        if name not in v["checks"]:
+        identity = item.get("requirement_id")
+        identified = identity in v.get("requirement_checks", {})
+        if not identified and name not in v["checks"]:
             return None
         targets = v["targets"]
         for token in item.get("files") or ():
@@ -1388,7 +1627,8 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
                 return None
         if v["status"] == "unverified":
             return "unverified"
-        if v["checks"][name] is False:
+        passed = v["requirement_checks"][identity] if identified else v["checks"][name]
+        if passed is False:
             return "fail"
         if ok and v["status"] == "passed" and type(v.get("exit_code")) is int and v["exit_code"] == 0:
             return "confirm"
@@ -1398,16 +1638,10 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
         if not _verdict_target_matches(item, v):
             return None
         present = ok if v.get("present_when_ok", True) else (not ok)
-        if it == "file_exists":
-            # A PASSIVE existence probe: presence confirms; absence is neutral (never
-            # fail — the file may be legitimately gone post-cleanup).
-            return "confirm" if present else None
-        # file_not_exists: absence confirms; presence only FAILS for an EXPLICIT
-        # cleanup assertion (ssh_not_exists) — a passive ssh_exists that happens to
-        # see the file (e.g. a pre-cleanup check) leaves it unconfirmed, not failed.
-        if not present:
+        satisfied = present if it == "file_exists" else not present
+        if satisfied:
             return "confirm"
-        return "fail" if v.get("asserts") == "absent" else None
+        return None if item.get("lifecycle") == "historical" else "fail"
     if it == "command_output":
         if not _verdict_target_matches(item, v):
             return None
@@ -1455,8 +1689,9 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
     return "confirm" if ok else "fail"
 
 
-def _criterion_item(text: str) -> dict:
+def _criterion_item(text: str, contract: dict | None = None) -> dict:
     low = (text or "").lower()
+    metadata = contract or {}
     ports = _SALIENT_RE_NUM.findall(text or "")
     cmd = command_spec(text)
     return {
@@ -1468,6 +1703,15 @@ def _criterion_item(text: str) -> dict:
         "expect_nonzero": cmd["expect_nonzero"], "output_absent": cmd["output_absent"],
         "viewport_width": _viewport_target(text),
         "behavior_requirements": _behavior_requirements(text),
+        "requirement_id": metadata.get("requirement_id") or requirement_id(text),
+        "lifecycle": metadata.get("lifecycle") if metadata.get("lifecycle") in {"current", "historical"}
+                     else _criterion_lifecycle(text),
+        "host": _normalized_host(str(metadata.get("host") or "")) or _criterion_host(text),
+        "target": str(metadata.get("target") or "") or (
+            _read_criterion_target(text) if _criterion_intent(text) == "file_read" else _criterion_target(text)),
+        "condition": str(metadata.get("condition") or "") or _criterion_intent(text),
+        "pattern": _criterion_pattern(text),
+        "bound_host": "", "bound_target": "",
     }
 
 
@@ -1484,7 +1728,12 @@ class CriteriaTracker:
     @classmethod
     def from_spec(cls, spec: TaskSpec | None) -> "CriteriaTracker":
         crits = spec.success_criteria if spec else []
-        return cls(items=[_criterion_item(c) for c in crits])
+        return cls(items=[_criterion_item(c, spec.criterion_contracts.get(c)) for c in crits])
+
+    def reconcile(self, spec: TaskSpec | None) -> None:
+        previous = self.report()
+        self.items = self.from_spec(spec).items
+        self.restore_report(previous)
 
     def restore_report(self, rows: list[dict] | None) -> None:
         """Restore durable verifier results for the exact same criteria."""
@@ -1495,6 +1744,9 @@ class CriteriaTracker:
                     index
                     for index, row in enumerate(remaining)
                     if row.get("text") == item["text"]
+                    and (not row.get("requirement_id") or row["requirement_id"] == item["requirement_id"])
+                    and all(row.get(key, item[key]) == item[key]
+                            for key in ("lifecycle", "host", "target", "condition"))
                 ),
                 None,
             )
@@ -1511,6 +1763,8 @@ class CriteriaTracker:
                 verifier=verifier if isinstance(verifier, str) else None,
                 evidence=evidence if isinstance(evidence, str) else None,
                 auto_verified=bool(row.get("auto_verified")),
+                bound_host=str(row.get("bound_host") or ""),
+                bound_target=str(row.get("bound_target") or ""),
             )
 
     def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str,
@@ -1531,12 +1785,18 @@ class CriteriaTracker:
         transitioned = False
         for it in self.items:
             outcome = _verdict_outcome(it, v, ok)
+            if it.get("lifecycle") == "historical" and it["status"] == "confirmed":
+                continue
+            if outcome is not None and v.get("host"):
+                it["bound_host"] = v["host"]
+                it["bound_target"] = v.get("target") or ""
+            elif outcome is not None and v.get("read_root"):
+                it["bound_target"] = v.get("target") or ""
             if outcome == "confirm" and it["status"] != "confirmed":
                 it.update(status="confirmed", verifier=tool_name, evidence=evidence or None,
                           auto_verified=auto)
                 transitioned = True
-            elif (outcome == "fail" and it["status"] != "failed" and not it.get("conditional")
-                    and (it["status"] == "unconfirmed" or "result_check" in v["intents"])):
+            elif outcome == "fail" and it["status"] != "failed" and not it.get("conditional"):
                 # A conditional criterion never hard-FAILS — e.g. `npm run typecheck`
                 # exiting non-zero because the script is absent must not fail the task;
                 # it stays unconfirmed and finalize_conditionals() marks it skipped.
@@ -1569,6 +1829,8 @@ class CriteriaTracker:
         """Invalidate verifier verdicts captured before a later state change."""
         invalidated = 0
         for item in self.items:
+            if item.get("lifecycle") == "historical":
+                continue
             if item["status"] not in ("confirmed", "failed"):
                 continue
             item.update(
@@ -1590,5 +1852,7 @@ class CriteriaTracker:
 
     def report(self) -> list[dict]:
         return [{"text": it["text"], "status": it["status"], "verifier": it["verifier"],
-                 "evidence": it["evidence"], "auto_verified": bool(it.get("auto_verified"))}
+                 "evidence": it["evidence"], "auto_verified": bool(it.get("auto_verified")),
+                 **{key: it[key] for key in ("requirement_id", "lifecycle", "host", "target", "condition",
+                                           "bound_host", "bound_target", "conditional")}}
                 for it in self.items]

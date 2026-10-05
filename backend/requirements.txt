@@ -17,7 +17,6 @@ python-multipart>=0.0.12
 numpy>=1.26,<3
 
 # Search + lightweight parsing
-ddgs>=7.0
 requests>=2.32
 beautifulsoup4>=4.12
 pypdf>=5.0

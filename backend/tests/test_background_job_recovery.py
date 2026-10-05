@@ -309,13 +309,19 @@ def test_background_job_captures_and_persists_remote_pid(tmp_path: Path) -> None
         )
         try:
             assert started["ok"] is True
-            assert started["remote_pid"] == 7312
             assert started["remote_cleanup_supported"] is True
-            tracked = next(
-                item
-                for item in _run.tracked_background_processes()
-                if item["pid"] == started["pid"]
-            )
+            if started["remote_pid"] is None:
+                assert started["remote_pid_pending"] is True
+            deadline = time.monotonic() + 5.0
+            while True:
+                tracked = next(
+                    item
+                    for item in _run.tracked_background_processes()
+                    if item["pid"] == started["pid"]
+                )
+                if tracked["remote_pid"] == 7312 or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
             assert tracked["remote_pid"] == 7312
             logs = _run.tool_run_server(
                 tmp_path,

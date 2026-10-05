@@ -337,10 +337,10 @@ class GetChatRelLabelTest(unittest.TestCase):
 
 class WebEngineConstantsTest(unittest.TestCase):
     def test_supported_engines_is_tuple_or_collection(self) -> None:
-        self.assertIn("duckduckgo", SUPPORTED_SEARCH_ENGINES)
+        self.assertEqual(SUPPORTED_SEARCH_ENGINES, ("searxng",))
 
-    def test_supported_engines_has_wikipedia(self) -> None:
-        self.assertIn("wikipedia", SUPPORTED_SEARCH_ENGINES)
+    def test_retired_engine_is_not_supported(self) -> None:
+        self.assertNotIn("wikipedia", SUPPORTED_SEARCH_ENGINES)
 
     def test_supported_engines_has_searxng(self) -> None:
         self.assertIn("searxng", SUPPORTED_SEARCH_ENGINES)
@@ -365,7 +365,7 @@ class WebEngineConstantsTest(unittest.TestCase):
         self.assertEqual(ENGINE_PRIORITY["searxng"], 0)
 
     def test_current_world_engines_is_set_like(self) -> None:
-        self.assertIn("duckduckgo", CURRENT_WORLD_ENGINES)
+        self.assertEqual(CURRENT_WORLD_ENGINES, {"searxng"})
 
     def test_kz_local_news_domains_nonempty(self) -> None:
         self.assertGreater(len(KZ_LOCAL_NEWS_DOMAINS), 0)
@@ -520,11 +520,11 @@ class EngineAvailableTest(unittest.TestCase):
     def test_returns_bool(self) -> None:
         self.assertIsInstance(engine_available("duckduckgo"), bool)
 
-    def test_duckduckgo_always_available(self) -> None:
-        self.assertTrue(engine_available("duckduckgo"))
+    def test_duckduckgo_is_unavailable(self) -> None:
+        self.assertFalse(engine_available("duckduckgo"))
 
-    def test_wikipedia_always_available(self) -> None:
-        self.assertTrue(engine_available("wikipedia"))
+    def test_wikipedia_is_unavailable(self) -> None:
+        self.assertFalse(engine_available("wikipedia"))
 
     def test_searxng_false_without_url(self) -> None:
         # Remove URL if present to test the False branch
@@ -559,17 +559,17 @@ class ResolveSearchEnginesTest(unittest.TestCase):
         finally:
             self._restore(old)
 
-    def test_always_includes_duckduckgo(self) -> None:
+    def test_routes_only_to_searxng(self) -> None:
         old = self._no_searxng()
         try:
-            self.assertIn("duckduckgo", resolve_search_engines())
+            self.assertEqual(resolve_search_engines(), ("searxng",))
         finally:
             self._restore(old)
 
-    def test_always_includes_wikipedia(self) -> None:
+    def test_retired_adapter_not_resolved(self) -> None:
         old = self._no_searxng()
         try:
-            self.assertIn("wikipedia", resolve_search_engines())
+            self.assertNotIn("wikipedia", resolve_search_engines())
         finally:
             self._restore(old)
 
@@ -589,11 +589,11 @@ class ResolveSearchEnginesTest(unittest.TestCase):
         finally:
             self._restore(old)
 
-    def test_explicit_engines_subset_used(self) -> None:
+    def test_legacy_preferences_route_to_sole_backend(self) -> None:
         old = self._no_searxng()
         try:
             result = resolve_search_engines(["wikipedia"])
-            self.assertIn("wikipedia", result)
+            self.assertEqual(result, ("searxng",))
         finally:
             self._restore(old)
 

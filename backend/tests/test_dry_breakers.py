@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
@@ -52,8 +53,10 @@ class DryBreakersTest(unittest.TestCase):
         self.assertIn("dry_sequence_breakers", _SAMPLING_EXTRA_KEYS)
 
     def test_breakers_reach_the_request_body(self):
+        from app.infrastructure.llm import openai_compatible as provider
         payload: dict = {}
-        _apply_sampling_extra(payload, {"sampling": dict(_ANTI_REPEAT_SAMPLING)})
+        with patch.dict(provider._sampling_backends, {provider.local_llm_config().base_url: "llama.cpp"}, clear=True):
+            _apply_sampling_extra(payload, {"sampling": dict(_ANTI_REPEAT_SAMPLING)})
         self.assertIn("dry_sequence_breakers", payload)
         self.assertIn(".", payload["dry_sequence_breakers"])
         # the core DRY params still pass through

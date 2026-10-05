@@ -1,7 +1,7 @@
 """Deterministic checks for narrowly stated answer-format requirements.
 
-This is not a factual or quotation-authenticity judge. Quote limits are read
-only from the user's request; citation coverage retains provenance-only meaning.
+This is not a factual judge. Quote limits are read only from the user's request;
+citation coverage and source-first rendering retain provenance-only meaning.
 Unrecognised/ambiguous wording establishes no inferred semantic contract.
 """
 from __future__ import annotations
@@ -9,15 +9,213 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+import json
 import re
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urldefrag
+
+from app.application.web_evidence.receipts import valid_source
 
 
-_FENCED_CODE = re.compile(r"```[^\n]*\n.*?```|~~~[^\n]*\n.*?~~~", re.DOTALL)
+_LITERAL_RENDER_UNSAFE = re.compile(r"```|</?think>")
+_SOURCE_PARAGRAPH_BREAK = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
+_SOURCE_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+
+@dataclass(frozen=True)
+class SourceFirstAnswer:
+    """Quote membership only; neither entailment nor translation is certified."""
+
+    status: Literal["ready", "degraded", "need_more", "invalid"]
+    text: str
+    issues: tuple[str, ...]
+    needs_more_reading: bool
+
+
+def source_first_response_format(source_ids: Collection[str]) -> dict[str, Any]:
+    """Constrain the ordinary writing turn's format and current source handles."""
+    if not source_ids or any(not isinstance(identifier, str) or re.fullmatch(
+            r"[a-zA-Z0-9_-]{1,80}", identifier) is None for identifier in source_ids):
+        raise ValueError("source-first writing requires valid presented source IDs")
+    identifiers = sorted(set(source_ids))
+    return {"type": "json_schema", "json_schema": {
+        "name": "read_source_answer", "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "facts": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "source_id": {"type": "string", "enum": identifiers},
+                        "quote": {"type": "string"},
+                        "translation": {"type": "string"},
+                    },
+                    "required": ["source_id", "quote", "translation"],
+                }},
+                "needs_more_reading": {"type": "boolean"},
+            },
+            "required": ["facts", "needs_more_reading"],
+        },
+    }}
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> Any:
+    raise ValueError("nonfinite_json_value")
+
+
+def _source_quote_span(quote: str, excerpt: str) -> tuple[str, str] | None:
+    """Retain complete source lines, or paragraph/sentence context for fragments."""
+    words = quote.split()
+    if not words:
+        return None
+    match = re.search(r"\s+".join(re.escape(word) for word in words), excerpt)
+    if match is None:
+        return None
+    line_start = excerpt.rfind("\n", 0, match.start()) + 1
+    line_end = excerpt.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(excerpt)
+    begins_line = not excerpt[line_start:match.start()].strip()
+    if begins_line and not excerpt[match.end():line_end].strip():
+        # Complete literal lines may be headlines, dates or reference blocks;
+        # their lack of sentence punctuation must not pull in the entire feed.
+        return match.group(), match.group()
+    start, end = 0, len(excerpt)
+    if _SOURCE_PARAGRAPH_BREAK.search(excerpt):
+        for boundary in _SOURCE_PARAGRAPH_BREAK.finditer(excerpt):
+            if boundary.end() <= match.start():
+                start = boundary.end()
+            elif boundary.start() >= match.end():
+                end = boundary.start()
+                break
+    else:
+        if begins_line:
+            start = match.start()
+        # A single newline may wrap a condition within the same sentence.
+        # Decimal points do not match because the next character is a digit.
+        for boundary in _SOURCE_SENTENCE_END.finditer(excerpt):
+            if boundary.end() <= match.start():
+                start = max(start, boundary.end())
+            elif boundary.end() >= match.end():
+                end = boundary.end()
+                break
+    return match.group(), excerpt[start:end].strip()
+
+
+def parse_source_first_answer(
+    raw: str, *, presented_sources: Collection[Mapping[str, Any]],
+    quote_word_limit: int | None = None,
+) -> SourceFirstAnswer:
+    """Parse an ordinary writer's quote selection against its current excerpts.
+
+    The caller supplies only sources presented in the latest model context.
+    Invalid JSON/schema rejects the envelope; an unavailable quote drops only
+    that fact. Complete source-line blocks stay literal. Other selections expand
+    to their read paragraphs, or complete sentences when extraction has no
+    blank-line structure; a source-line start bounds preceding metadata. These
+    structural units retain local text without certifying semantic support.
+    Explicit word limits apply before
+    literal rendering; an overlong span is omitted, never clipped.
+    Expanded selections discard their model-authored translations.
+    Non-Latin/mixed quotes keep only the original; optional Latin-text
+    translations remain visible beside the original and are not authenticated.
+    """
+    if quote_word_limit is not None and (type(quote_word_limit) is not int or quote_word_limit < 1):
+        raise ValueError("quote_word_limit must be a positive integer or None")
+    try:
+        if not isinstance(raw, str):
+            raise ValueError("invalid_json_type")
+        payload = json.loads(raw, object_pairs_hook=_unique_json_object,
+                             parse_constant=_reject_json_constant)
+    except (ValueError, TypeError, RecursionError) as error:
+        issue = str(error) if str(error) in {
+            "duplicate_json_key", "nonfinite_json_value", "invalid_json_type",
+        } else "invalid_json"
+        return SourceFirstAnswer("invalid", "", (issue,), False)
+    if (not isinstance(payload, dict) or set(payload) != {"facts", "needs_more_reading"}
+            or not isinstance(payload["facts"], list)
+            or type(payload["needs_more_reading"]) is not bool):
+        return SourceFirstAnswer("invalid", "", ("invalid_answer_schema",), False)
+    facts = payload["facts"]
+    for index, fact in enumerate(facts, 1):
+        if (not isinstance(fact, dict) or set(fact) != {"source_id", "quote", "translation"}
+                or not all(isinstance(value, str) for value in fact.values())
+                or re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", fact["source_id"]) is None):
+            return SourceFirstAnswer("invalid", "", (f"fact:{index}:invalid_schema",), False)
+
+    sources = {
+        source["id"]: source for source in presented_sources
+        if isinstance(source, Mapping) and valid_source(dict(source))
+        and source.get("status") == "excerpt" and source.get("quote_verified") is True
+    }
+    blocks: list[str] = []
+    issues: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for index, fact in enumerate(facts, 1):
+        source_id = fact["source_id"]
+        source = sources.get(source_id)
+        selection = _source_quote_span(fact["quote"], source["quote"]) if source else None
+        if selection is None:
+            issues.append(f"fact:{index}:quote_not_in_presented_source")
+            continue
+        selected, span = selection
+        expanded = span != selected
+        if expanded:
+            issues.append(f"fact:{index}:quote_expanded")
+        if _LITERAL_RENDER_UNSAFE.search(span):
+            # The UI strips think tags even across fenced blocks; reject either
+            # tag so another fact cannot complete a pair around literal text.
+            issues.append(f"fact:{index}:unrenderable_quote")
+            continue
+        if quote_word_limit is not None and _quote_word_count(span) > quote_word_limit:
+            issues.append(f"fact:{index}:quote_word_limit_exceeded")
+            continue
+        identity = (source_id, span)
+        if identity in seen:
+            issues.append(f"fact:{index}:duplicate_quote")
+            continue
+        seen.add(identity)
+        translation = fact["translation"].strip()
+        quote = f"```text\n{span}\n```\n\n[[source:{source_id}]]"
+        if translation:
+            # Script is used only to suppress rewriting non-Latin source text;
+            # it cannot establish that a source is English or a translation faithful.
+            latin_only = all(not char.isalpha() or char.isascii() for char in span)
+            if expanded:
+                issues.append(f"fact:{index}:translation_ignored_after_expansion")
+            elif not latin_only or not any(char.isalpha() for char in span):
+                issues.append(f"fact:{index}:translation_ignored")
+            elif _LITERAL_RENDER_UNSAFE.search(translation):
+                issues.append(f"fact:{index}:unrenderable_translation")
+            elif quote_word_limit is not None and _quote_word_count(translation) > quote_word_limit:
+                issues.append(f"fact:{index}:translation_quote_word_limit_exceeded")
+            else:
+                quote = f"Перевод цитаты:\n\n```text\n{translation}\n```\n\nОригинал:\n\n{quote}"
+        blocks.append(quote)
+
+    needs_more = payload["needs_more_reading"]
+    if not blocks:
+        return SourceFirstAnswer("need_more" if needs_more else "invalid", "",
+                                 tuple(issues or ["no_supported_facts"]), needs_more)
+    status = "degraded" if issues or needs_more else "ready"
+    return SourceFirstAnswer(status, "Из прочитанных источников:\n\n" + "\n\n".join(blocks),
+                             tuple(issues), needs_more)
+
+
+_FENCED_CODE = re.compile(r"```[^\n]*\n.*?(?:```|\Z)|~~~[^\n]*\n.*?(?:~~~|\Z)", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _PAIRED_QUOTE = re.compile(r'"([^"\n]+)"|«([^»]+)»|“([^”]+)”')
 _LIMIT = re.compile(
-    r"\b(?:цитат[ауые]|quote|quotation)\s*(?:[:—-]\s*)?"
+    r"\b(?:цитат[ауые](?:-предложение)?|quote|quotation)(?:\s+длиной)?\s*(?:[:—-]\s*)?"
     r"(?:до|не\s+более|максимум|up\s+to|at\s+most|no\s+more\s+than)\s+"
     r"([1-9]\d{0,3})\s+(?:слов(?:а|о)?|words?)\b",
     re.IGNORECASE,
@@ -34,6 +232,81 @@ _NEGATED_DIRECTIVE = re.compile(
     r"(?:don't|do\s+not)\s+(?:give|include|provide|limit))\b",
     re.IGNORECASE,
 )
+
+
+def explicit_web_answer_constraints(request: str) -> dict[str, Any]:
+    """Recognise narrow, direct limits; model-provided quotes cannot grant them.
+
+    Unrecognised prose is not converted to a numerical budget. This shares the
+    format-check owner's deliberately limited scope, not semantic acceptance.
+    """
+    prose = _BLOCK.sub("", _INLINE_CODE.sub("", _FENCED_CODE.sub("", request or "")))
+    numbers = {word: value for value, words in enumerate((
+        "ноль нуля zero", "один одного одной одну one", "два двух две two",
+        "три трёх трех three", "четыре четырёх четырех four", "пять пяти five",
+        "шесть шести six", "семь семи seven", "восемь восьми eight", "девять девяти nine", "десять десяти ten",
+    )) for word in words.split()}
+    number = r"(\d{1,5}|" + "|".join(numbers) + r")"
+    units = {
+        "max_search_queries": r"(?:поисков\w*\s+запрос\w*|search\s+quer(?:y|ies))",
+        "max_read_urls": r"(?:страниц\w*|pages?|urls?)",
+        "max_chars": r"(?:символ\w*|characters?|chars?)",
+    }
+    result: dict[str, Any] = {}
+
+    def negated(prefix: str) -> bool:
+        return bool(re.search(r"\b(?:не\s+(?:используй|делай|ограничивай|включи|включай|добавь|добавляй|напиши|пиши)"
+                              r"|(?:do\s+not|don't)\s+(?:use|include|contain|limit))\b", prefix, re.I))
+
+    for clause in re.split(r"[.!?;\n]", _PAIRED_QUOTE.sub("", prose)):
+        directive = re.search(r"\b(?:не\s+(?:более|длиннее)|максимум|только|достаточно|используй|сделай|"
+                              r"at\s+most|no\s+more\s+than|only|use)\s+", clause, re.I)
+        if not directive or negated(clause[:directive.end()]):
+            continue
+        limit_text = clause[directive.end():]
+        for field, unit in units.items():
+            values = set()
+            for match in re.finditer(number + r"\s+" + unit + r"\b", limit_text, re.I):
+                raw = match[1].casefold()
+                values.add(int(raw) if raw.isdecimal() else numbers[raw])
+            if len(values) == 1:
+                # A later direct clarification replaces an earlier stated cap.
+                result[field] = values.pop()
+    literals = []
+    for match in _PAIRED_QUOTE.finditer(prose):
+        prefix = re.split(r"[.!?;\n]", prose[max(0, match.start() - 100):match.start()])[-1]
+        if not negated(prefix) and re.search(r"(?:включи|добавь|напиши|содержать|include|contain)\s+"
+                     r"(?:(?:буквально|точно|слово|строку|фразу|exactly|the\s+words?)\s+)*$", prefix, re.I):
+            literals.append(next(group for group in match.groups() if group is not None))
+    if literals:
+        result["contains"] = literals
+    tool_clause = re.search(r"(?:используй\s+только|use\s+only|only\s+use)\s+"
+                            r"((?:web_search|web_fetch|web_query|web_sitemap)\b[^.!?;\n]*)", prose, re.I)
+    if tool_clause and not negated(re.split(r"[.!?;\n]", prose[:tool_clause.end()])[-1]):
+        result["allowed"] = re.findall(r"\b(?:web_search|web_fetch|web_query|web_sitemap)\b", tool_clause[1])
+    return result
+
+
+def explicit_web_check_requested(request: str) -> bool:
+    """Only direct source-check instructions, excluding examples and negations."""
+    prose = _PAIRED_QUOTE.sub("", _BLOCK.sub("", _INLINE_CODE.sub("", _FENCED_CODE.sub("", request or ""))))
+    if re.search(r"\b(?:без\s+интернет\w*|без\s+сети|не\s+(?:используй|ищи|проверяй|надо|нужно)"
+                 r"[^.!?;\n]{0,50}(?:интернет\w*|веб|сеть)|(?:without|offline|don't|do\s+not)"
+                 r"[^.!?;\n]{0,50}(?:web|internet|online))\b", prose, re.I):
+        return False
+    local_documents = bool(re.search(r"\b(?:локальн\w*|приложенн\w*|приложен|README|репозитор\w*|"
+                                     r"документаци\w*\s+проекта|local|attached|repository)\b|docs/", prose, re.I))
+    for clause in re.split(r"[.!?;\n]", prose):
+        if re.search(r"\b(?:не\s+(?:надо|нужно|проверяй|ищи|читай|используй)|don't|do\s+not|without)\b", clause, re.I):
+            continue
+        if local_documents and not re.search(r"\b(?:интернет\w*|веб|сайт\w*|web|online|internet)\b", clause, re.I):
+            continue
+        if re.search(r"\b(?:проверь|перепроверь|сверь|найди|поищи|посмотри|изучи|прочитай|"
+                     r"check|verify|search|find|read|look\s+up)\b.{0,120}\b"
+                     r"(?:интернет\w*|веб\w*|сайт\w*|внешн\w+\s+источник\w*|"
+                     r"официальн\w+\s+документаци\w*|web|online|internet|official\s+documentation)\b", clause, re.I):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -95,6 +368,27 @@ def _quote_word_count(body: str) -> int:
     body = re.sub(r"\[\[source:[^\]\n]+\]\]", "", body)
     body = re.sub(r"\[([^\]]*)\]\([^\n)]*\)", r"\1", body)
     return len(_WORD.findall(body))
+
+
+_QUOTE_REQUEST = re.compile(r"цитат|дословн|\bquot|\bverbatim", re.IGNORECASE)
+_NAME_MAX_WORDS = 6
+
+
+def explicit_quote_request(user_message: str) -> bool:
+    """Whether the user asked for quotations (then every quoted span must bind)."""
+    text = _INLINE_CODE.sub("", _FENCED_CODE.sub("", user_message or ""))
+    return bool(_QUOTE_REQUEST.search(text))
+
+
+def is_name_like_quote(body: str) -> bool:
+    """Russian typography puts names and titles in «…»; they are not quotations.
+
+    A short single-line span without sentence-final punctuation is treated as
+    a name. Real quotations are sentences or longer fragments.
+    """
+    body = (body or "").strip()
+    return (bool(body) and "\n" not in body and not re.search(r"[.!?…]$", body)
+            and _quote_word_count(body) <= _NAME_MAX_WORDS)
 
 
 def normalize_quote_word_counts(answer_text: str) -> str:
@@ -234,6 +528,102 @@ def _citation_blocks(text: str) -> Iterator[str]:
             pending.append(line)
     if pending:
         yield "\n".join(pending)
+
+
+@dataclass(frozen=True)
+class WebSourceCitationViolation:
+    block_index: int
+    url: str
+    reason: str
+
+
+_MARKDOWN_WEB_LINK_START = re.compile(r"(?<!!)\[[^\]\n]*\]\(\s*(<?https?://)", re.IGNORECASE)
+_MARKDOWN_LINK_END = re.compile(r"[ \t]*(?:\"[^\"\n]*\"|'[^'\n]*')?[ \t]*\)")
+_DISCOVERY_ONLY = re.compile(
+    r"^\s*(?:[-+*]|\d+[.)])?\s*"
+    r"(?:(?:(?:другой|новый|этот|изменённый|измененный)\s+запрос\s+наш[её]л\s+)?"
+    r"(?:найден[аоы]?\s+)?(?:документаци[яю]|ссылки|источники?|страницы|материалы)"
+    r"(?:\s+для\s+проверки)?(?:\s*\(не\s+прочитаны\))?"
+    r"|(?:(?:the\s+)?(?:other|new|changed|another)\s+query\s+found\s+)?"
+    r"(?:(?:found|discovered)\s+)?(?:documentation|sources?|links|pages|materials)"
+    r"(?:\s+for\s+verification)?)"
+    r"(?:[.:;,\s()-]*(?:(?:содержимое(?:\s+страницы)?|текст(?:\s+страницы)?|страниц[аы])"
+    r"\s+(?:пока\s+|ещ[её]\s+)?не\s+(?:проверен[аоы]?|прочитан[аоы]?)"
+    r"|(?:page\s+)?(?:contents?|text)\s+(?:has\s+)?not\s+(?:been\s+)?(?:read|verified)))?"
+    r"[.:;,\s()-]*$", re.IGNORECASE,
+)
+
+
+def _markdown_web_links(text: str) -> Iterator[tuple[int, int, str]]:
+    """Read inline Markdown targets, including balanced URL parentheses."""
+    for match in _MARKDOWN_WEB_LINK_START.finditer(text):
+        start = match.start(1)
+        angled = text[start] == "<"
+        start += int(angled)
+        end = start
+        depth = 0
+        while end < len(text) and not text[end].isspace():
+            char = text[end]
+            if angled and char == ">":
+                break
+            if not angled:
+                if char == "\\" and end + 1 < len(text) and text[end + 1] in "()":
+                    end += 2
+                    continue
+                if char == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif char == "(":
+                    depth += 1
+            end += 1
+        if angled and (end == len(text) or text[end] != ">"):
+            continue
+        closing = _MARKDOWN_LINK_END.match(text, end + int(angled))
+        if closing is not None:
+            yield match.start(), closing.end(), re.sub(r"\\([()])", r"\1", text[start:end])
+
+
+def _web_source_url_key(url: str) -> str:
+    try:
+        return urldefrag(url)[0]
+    except ValueError:
+        # Malformed model output is an unknown citation, not a parser crash.
+        return url
+
+
+def web_source_citation_violations(
+    answer_text: str, *, read_source_urls: Collection[str], known_source_urls: Collection[str],
+) -> tuple[WebSourceCitationViolation, ...]:
+    """Reject unread Markdown citations, without pretending to check entailment.
+
+    A neutral pointer to a discovered page may remain when its block contains
+    no content claim. Adding an unread-source disclaimer to a factual claim
+    does not turn that claim into a discovery-only pointer.
+    """
+    read = {_web_source_url_key(url) for url in read_source_urls}
+    known = {_web_source_url_key(url) for url in known_source_urls}
+    problems = []
+    for index, block in enumerate(_citation_blocks(answer_text or ""), 1):
+        prose = _INLINE_CODE.sub("", block)
+        links = list(_markdown_web_links(prose))
+        pointer = prose
+        for start, end, _ in reversed(links):
+            pointer = pointer[:start] + pointer[end:]
+        pointer = pointer.replace("**", "").replace("__", "")
+        discovery_only = bool(_DISCOVERY_ONLY.fullmatch(pointer))
+        seen = set()
+        for _, _, url in links:
+            target = _web_source_url_key(url)
+            if target in read or target in seen:
+                continue
+            seen.add(target)
+            if discovery_only and target in known:
+                continue
+            problems.append(WebSourceCitationViolation(
+                index, url, "unread_source" if target in known else "unknown_source",
+            ))
+    return tuple(problems)
 
 
 def _cadence_quantity_key(match: re.Match[str]) -> tuple[str, str, str]:

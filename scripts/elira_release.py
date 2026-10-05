@@ -1475,7 +1475,7 @@ def _foundation_client_command(*, platform: Path, port: int) -> list[str] | None
     python, client = root / "python/python.exe", root / "host/foundation_client.py"
     if not python.is_file() or not client.is_file():
         raise RuntimeError("Foundation installation is incomplete; local supervisor fallback is disabled")
-    return [str(python), "-I", "-S", "-B", str(client), "--service", service]
+    return [str(python), "-X", "utf8", "-I", "-S", "-B", str(client), "--service", service]
 
 
 def _load_application_environment(config_root: Path) -> None:
@@ -1490,6 +1490,9 @@ def _load_application_environment(config_root: Path) -> None:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="strict")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", type=Path,
                         default=Path(os.getenv("ELIRA_PLATFORM_ROOT") or Path(__file__).resolve().parents[1]))
@@ -1544,8 +1547,12 @@ def main() -> int:
             arguments.extend(["--expected-active", args.expected_active,
                               "--expected-previous", args.expected_previous, "--confirm"])
         arguments.append("--wait")
-        return subprocess.run(arguments, check=False,
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode
+        response = subprocess.run(arguments, check=False, capture_output=True,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # Explicit pipes also work when the parent has no Windows console handles.
+        sys.stdout.write((response.stdout or b"").decode("utf-8", errors="strict").replace("\r\n", "\n"))
+        sys.stderr.write((response.stderr or b"").decode("utf-8", errors="strict").replace("\r\n", "\n"))
+        return response.returncode
     manager = ReleaseManager(args.platform, port=args.port, startup_timeout=args.startup_timeout)
     if args.command == "run":
         manager.run()

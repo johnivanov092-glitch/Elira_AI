@@ -17,7 +17,7 @@ from app.core.redaction import redact_text
 from app.application.web_evidence.tiers import TIERS
 
 SOURCE_PATTERN = re.compile(r"\[\[source:([a-zA-Z0-9_-]{1,80})\]\]")
-MAX_SOURCES = 128
+MAX_SOURCES = 1024
 EXCERPT_CHARS = 1500
 _STATUSES = frozenset({"discovered", "fetched", "excerpt", "failed"})
 
@@ -154,10 +154,11 @@ def format_source(source: dict[str, Any]) -> str:
     return f"{header}\nНайдено поиском; страница ещё не прочитана."
 
 
-def excerpt_sources(*, run_id: str, tool: str, url: str, text: str, fetched_at: float) -> list[dict[str, Any]]:
+def excerpt_sources(*, run_id: str, tool: str, url: str, text: str, fetched_at: float,
+                    offset_base: int = 0) -> list[dict[str, Any]]:
     body_hash = digest(text)
     return [record for start in range(0, len(text), EXCERPT_CHARS) if (record := make_source(
         run_id=run_id, tool=tool, url=url, status="excerpt", fetched_at=fetched_at,
         content_hash=body_hash, quote=text[start:start + EXCERPT_CHARS],
-        offset=start, quote_verified=True,
+        offset=offset_base + start, quote_verified=True,
     ))][:MAX_SOURCES]

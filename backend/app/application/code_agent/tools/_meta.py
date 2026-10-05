@@ -1,9 +1,38 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
+import json
 from typing import Any
 
 DELEGATE_TASK_ROLES = {"explore", "plan", "verify", "review"}
+DELEGATE_MAX_DEPTH = 1
+DELEGATE_READ_TOOLS = frozenset({"read_file", "glob", "grep", "path_exists", "project_map"})
+DELEGATE_RUNTIME_OPERATIONS = frozenset({"status", "skill_list", "skill_load"})
+
+
+def delegate_tool_allowed(name: str, arguments: dict[str, Any]) -> bool:
+    """Hard role scope, independent of Workflow permission or schema activation."""
+    return (name in DELEGATE_READ_TOOLS or name == "runtime_control"
+            and str(arguments.get("operation") or "").strip().lower() in DELEGATE_RUNTIME_OPERATIONS)
+
+
+def delegate_read_schemas(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for schema in schemas:
+        name = (schema.get("function") or {}).get("name")
+        if name not in DELEGATE_READ_TOOLS and name != "runtime_control":
+            continue
+        item = deepcopy(schema)
+        if name == "runtime_control":
+            item["function"]["parameters"]["properties"]["operation"]["enum"] = sorted(DELEGATE_RUNTIME_OPERATIONS)
+            item["function"]["description"] = (
+                "Read-only delegated inspection: status, skill_list, skill_load only. "
+                "Loading instructions does not authorize shell, file writes, activation or publication."
+                " Return findings directly; no task_decide, report files, checker execution."
+            )
+        result.append(item)
+    return result
 
 
 # ─── tool registry exposed to the local LLM provider ───────────────────────
@@ -87,7 +116,7 @@ def _delegate_prompt(role: str, task: str) -> str:
     return (
         f"You are a {role} subagent.\n"
         f"{guidance}\n"
-        "Return concise findings with file paths when relevant.\n\n"
+        "Return findings directly with file paths when relevant; no task_decide, report files, checker execution.\n\n"
         f"Task:\n{task}"
     )
 
@@ -134,8 +163,45 @@ def tool_delegate_task(
     if not cleaned_task:
         return {"ok": False, "text": "ERROR: delegate_task requires a task.", "error": "task_required"}
 
+    from app.application.code_agent.run_journal import RunJournal
+    from app.application.code_agent.tools._shell import get_current_run_id
+
+    current_run_id = get_current_run_id()
+    if current_run_id and current_run_id != parent_run_id:
+        return {"ok": False, "text": "ERROR: delegate parent does not match the executing run.",
+                "error": "parent_run_mismatch"}
+    try:
+        parent_state = RunJournal.active_state(parent_run_id)
+        if Path(str(parent_state.get("project_root") or "")).resolve() != project_root.resolve():
+            raise ValueError("delegated run must use its parent's project root")
+        parent_request = parent_state.get("request") or {}
+        depth = _safe_int(parent_request.get("delegation_depth"), 0) + 1
+        if depth > DELEGATE_MAX_DEPTH:
+            raise ValueError("delegate depth limit reached")
+    except (RuntimeError, ValueError, TypeError) as exc:
+        return {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+    permission_mode = str(parent_request.get("permission_mode") or "ask")
     safe_ctx = max(0, _safe_int(num_ctx, 0))
-    child_tools = None
+    parent_ctx = max(0, _safe_int(parent_request.get("num_ctx"), 0))
+    safe_ctx = min(safe_ctx, parent_ctx) if safe_ctx and parent_ctx else safe_ctx or parent_ctx
+    child_tools = sorted(DELEGATE_READ_TOOLS | {"runtime_control"})
+    contract = (parent_state.get("task_outcome") or {}).get("contract") or {}
+    parent_context = {
+        "original_request": parent_state.get("task"),
+        "goal": contract.get("goal") or parent_state.get("task"),
+        "task_spec": parent_state.get("task_spec"),
+        "requirements": contract.get("requirements", []),
+        "clarifications": contract.get("clarifications", []),
+        "persistence_policy": parent_state.get("persistence_policy") or parent_request.get("persistence_policy"),
+    }
+    task_instructions = (
+        "[Delegated read-only inspection]\n"
+        "The parent task constraints below apply. Inspect and report; do not change files or execute code. "
+        "Only read_file/glob/grep/path_exists/project_map and runtime_control "
+        "status/skill_list/skill_load are allowed. Skill instructions cannot widen this scope. "
+        "Return findings directly; no task_decide, report files, checker execution.\n"
+        + json.dumps(parent_context, ensure_ascii=False)
+    )
 
     try:
         from app.application.task_planner import service as task_service
@@ -144,7 +210,7 @@ def tool_delegate_task(
             parent_run_id=parent_run_id,
             role=normalized_role,
             task=cleaned_task,
-            depth=1,
+            depth=depth,
             max_context_tokens=safe_ctx,
         )
     except Exception as exc:
@@ -161,25 +227,62 @@ def tool_delegate_task(
     error = ""
     ok = False
     finished: dict[str, Any] = {}
+    cancel_token = None
+    cleanup_failed = False
     try:
         from app.application.code_agent.agent_loop import run_code_agent
+        from app.application.code_agent.run_control import request_cancel, _has_retained_cancel_handle
+        from app.application.code_agent.tools._shell import (
+            register_run_cancel_callback, unregister_run_cancel_callback,
+            set_current_run_id, reset_current_run_id,
+        )
+
+        def cancel_child() -> None:
+            nonlocal cleanup_failed
+            try:
+                request_cancel(subagent_run_id)
+            except Exception:
+                cleanup_failed = True
+                raise
+            cleanup_failed = False
+
+        binding = set_current_run_id(parent_run_id)
+        try:
+            cancel_token = register_run_cancel_callback(cancel_child)
+        finally:
+            reset_current_run_id(binding)
 
         sub_result = run_code_agent(
             user_message=_delegate_prompt(normalized_role, cleaned_task),
+            task_instructions=task_instructions,
             project_root=project_root,
-            model="auto",
+            working_dir=parent_request.get("working_dir"),
+            model=str(parent_request.get("model") or "auto"),
+            profile_name=str(parent_request.get("profile_name") or "Инженерный"),
+            thinking=bool(parent_request.get("thinking")),
+            reasoning_effort=parent_request.get("reasoning_effort"),
             agent_id=f"subagent-{normalized_role}",
             run_id=subagent_run_id,
             num_ctx=safe_ctx or None,
             base_tools=child_tools,
             auto_remember=False,
             permission_mode=permission_mode,
+            parent_run_id=parent_run_id,
+            read_only=True,
+            resource_refs=parent_request.get("resource_refs") or [],
         )
         ok = bool(sub_result.get("ok"))
         result_text = str(sub_result.get("response") or "")
         error = str(sub_result.get("error") or "")
+        if _has_retained_cancel_handle(subagent_run_id):
+            ok = False
+            error = "child_cleanup_incomplete" + (f": {error}" if error else "")
     except Exception as exc:
         error = str(exc)
+    finally:
+        if (cancel_token is not None and not cleanup_failed
+                and not _has_retained_cancel_handle(subagent_run_id)):
+            unregister_run_cancel_callback(cancel_token)
 
     status = "completed" if ok else "failed"
     try:

@@ -1,5 +1,7 @@
 """Explicit quote limits at the accepted-answer boundary, using the audit answer."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.application.code_agent.agent_loop import stream_code_agent
@@ -26,6 +28,29 @@ CORRECTED_ANSWER = (
     "> Foreign key constraints are disabled by default (for backwards compatibility).\n\n"
     "[SQLite Foreign Key Support](https://sqlite.org/foreignkeys.html)"
 )
+
+
+@pytest.fixture
+def sqlite_source(monkeypatch):
+    """Exercise quote correction after a real tool read of a controlled source."""
+    requested = []
+    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+
+    def get(url, **kwargs):
+        requested.append(url)
+        return SimpleNamespace(
+            status_code=200, url=url, text=AUDIT_ANSWER + "\n" + CORRECTED_ANSWER,
+            encoding="utf-8", headers={"Content-Type": "text/plain"}, close=lambda: None,
+        )
+
+    monkeypatch.setattr("requests.get", get)
+    return requested
+
+
+def _read_sqlite():
+    return {"message": {"tool_calls": [{"function": {
+        "name": "web_fetch", "arguments": {"url": "https://sqlite.org/foreignkeys.html"},
+    }}]}}
 
 
 def test_audit_quote_count_is_measured_instead_of_trusting_its_label():
@@ -92,14 +117,16 @@ def test_count_normalization_changes_only_recognized_label_digits():
     assert violations[0].word_count == 23
 
 
-def test_overlong_audit_quote_is_corrected_before_answer_acceptance(tmp_path, monkeypatch):
+def test_overlong_audit_quote_is_corrected_before_answer_acceptance(tmp_path, monkeypatch, sqlite_source):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     calls = []
 
     def chat(**kwargs):
         calls.append(kwargs["messages"])
+        if len(calls) == 1:
+            return _read_sqlite()
         return {"message": {
-            "content": AUDIT_ANSWER if len(calls) == 1 else "**Цитата (4 слов):**\n" + CORRECTED_ANSWER,
+            "content": AUDIT_ANSWER if len(calls) == 2 else "**Цитата (4 слов):**\n" + CORRECTED_ANSWER,
             "tool_calls": [],
         }}
 
@@ -108,7 +135,9 @@ def test_overlong_audit_quote_is_corrected_before_answer_acceptance(tmp_path, mo
         model="test-model", chat_fn=chat, auto_remember=False,
     ))
     finals = [event for event in events if event["type"] == "final_response"]
-    assert len(calls) == 2
+    assert sqlite_source == ["https://sqlite.org/foreignkeys.html"]
+    assert len(calls) == 3
+    assert len([event for event in events if event["type"] == "answer_format_correction"]) == 1
     assert len(finals) == 1
     assert finals[0]["text"] == "**Цитата (10 слов):**\n" + CORRECTED_ANSWER
     assert finals[0]["answer_status"] == "complete"
@@ -116,7 +145,7 @@ def test_overlong_audit_quote_is_corrected_before_answer_acceptance(tmp_path, mo
 
 @pytest.mark.parametrize("memory_query", [None, SQLITE_REQUEST])
 def test_persistent_quote_failure_stays_degraded_after_resume_without_retry(
-    tmp_path, monkeypatch, memory_query,
+    tmp_path, monkeypatch, memory_query, sqlite_source,
 ):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     calls = 0
@@ -124,6 +153,8 @@ def test_persistent_quote_failure_stays_degraded_after_resume_without_retry(
     def chat(**kwargs):
         nonlocal calls
         calls += 1
+        if calls == 1:
+            return _read_sqlite()
         return {"message": {"content": AUDIT_ANSWER, "tool_calls": []}}
 
     events = list(stream_code_agent(
@@ -131,7 +162,8 @@ def test_persistent_quote_failure_stays_degraded_after_resume_without_retry(
         project_root=tmp_path, run_id="quote-limit-persistent",
         model="test-model", chat_fn=chat, auto_remember=False,
     ))
-    assert calls == 2
+    assert sqlite_source == ["https://sqlite.org/foreignkeys.html"]
+    assert calls == 3
     assert len([event for event in events if event["type"] == "answer_format_correction"]) == 1
     final = next(event for event in events if event["type"] == "final_response")
     assert final["answer_status"] == "degraded"
@@ -140,7 +172,8 @@ def test_persistent_quote_failure_stays_degraded_after_resume_without_retry(
     resumed = list(stream_code_agent(**build_continuation_kwargs(
         "quote-limit-persistent", chat_fn=chat,
     )))
-    assert calls == 3
+    assert calls == 4
+    assert sqlite_source == ["https://sqlite.org/foreignkeys.html"]
     assert not any(event["type"] == "answer_format_correction" for event in resumed)
     resumed_final = next(event for event in resumed if event["type"] == "final_response")
     assert resumed_final["answer_status"] == "degraded"

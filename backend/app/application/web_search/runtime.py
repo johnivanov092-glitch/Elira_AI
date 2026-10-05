@@ -9,16 +9,14 @@ from app.infrastructure.search.multisearch import (
     news_search as news_search_impl,
 )
 
-DEFAULT_ENGINES = ("searxng", "duckduckgo", "wikipedia")
+DEFAULT_ENGINES = ("searxng",)
 ENGINE_ITEMS = [
     {"id": "searxng", "name": "SearXNG", "type": "metasearch", "status": "active"},
-    {"id": "duckduckgo", "name": "DuckDuckGo", "type": "search", "status": "active"},
-    {"id": "wikipedia", "name": "Wikipedia", "type": "encyclopedia", "status": "active"},
 ]
 
 
 def normalize_engines(engines: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
-    return tuple(engines) if engines else DEFAULT_ENGINES
+    return DEFAULT_ENGINES
 
 
 def search(query: str, *, engines: list[str] | tuple[str, ...] | None = None, max_results: int = 10) -> dict[str, Any]:

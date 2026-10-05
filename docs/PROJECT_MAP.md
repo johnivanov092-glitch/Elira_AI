@@ -33,7 +33,7 @@ move Elira's backend state or tools into that repository.
 | Live-run control, upstream cancel and Workflow rendezvous | `backend/app/application/code_agent/run_control.py` |
 | One model exchange and heartbeat | `backend/app/application/code_agent/model_turn.py` |
 | Run-local tool activation and schema visibility | `backend/app/application/code_agent/runtime_activation.py` |
-| Turn messages, skill/input context and pinned packing | `backend/app/application/code_agent/turn_context.py` |
+| Turn messages, work-phase guidance, skill/input context and pinned packing | `backend/app/application/code_agent/turn_context.py` |
 | Selected tool call and Workflow execution branches | `backend/app/application/code_agent/tool_execution.py` |
 | Ordered evidence/outcome/recovery/criteria accounting | `backend/app/application/code_agent/run_observations.py` |
 | Final-answer acceptance and correction state | `backend/app/application/code_agent/answer_acceptance.py` |

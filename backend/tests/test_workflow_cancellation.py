@@ -111,6 +111,7 @@ def test_cancelled_background_tool_run_cannot_complete(
     current = store.get_workflow_run(db_path=isolated_workflow_db, run_id=run_id)
     assert current is not None
     assert current["status"] == "cancelled"
+
     completed_events, _ = event_bus.list_events(
         event_type="workflow.run.completed",
         limit=100,
@@ -159,6 +160,13 @@ def test_workflow_cancel_is_committed_but_error_surfaces_when_live_cleanup_fails
     current = store.get_workflow_run(db_path=isolated_workflow_db, run_id=run_id)
     assert current is not None
     assert current["status"] == "cancelled"
+
+    with mock.patch("app.application.code_agent.agent_loop.request_cancel") as retry:
+        retried = runtime.cancel_workflow_run(run_id, db_path=isolated_workflow_db)
+    assert retried["status"] == "cancelled"
+    assert retry.call_args_list[0] == mock.call(run_id)
+    assert len(retry.call_args_list) == 2
+    assert retry.call_args_list[1].args[0].startswith("wf-")
 
 
 def test_request_cancel_surfaces_provider_callback_failure() -> None:

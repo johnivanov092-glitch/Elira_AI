@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -41,6 +43,9 @@ class PageFetchResult:
     links: tuple[tuple[str, str], ...] = ()
     links_truncated: bool = False
     rendered: bool = False
+    retry_after: str = ""
+    mime: str = "text/html"
+    text_offset: int = 0
 
     @property
     def ok(self) -> bool:
@@ -101,6 +106,14 @@ def _fragment_content(soup: Any, fragment: str) -> str | None:
 
 
 def _readable_container(soup: Any) -> Any:
+    # A news index may use <article> for every card. Reading just its first
+    # card discards the other headlines and forces additional searches.
+    main = soup.select_one("main, [role='main']")
+    if main is not None:
+        articles = [node for node in main.find_all("article")
+                    if node.find_parent("article") is None]
+        if len(articles) > 1:
+            return main
     content_selectors = [
         "article",
         "main",
@@ -136,18 +149,39 @@ def _extract_readable_text(soup: Any, max_chars: int | None, *, fragment: str = 
     ):
         element.decompose()
 
+    # Syntax highlighters split code into spans. Joining them with newlines and
+    # stripping each line destroys Python/YAML semantics. Preserve complete pre
+    # blocks through prose cleanup and fragment extraction, before truncation.
+    container = _readable_container(soup)
+    preserved = {}
+    visible = soup.get_text()
+    fragment_block = None
+    fragment_target = (soup.find(id=fragment) or soup.find("a", attrs={"name": fragment})) if fragment else None
+    fragment_pre = (fragment_target if fragment_target.name == "pre" else fragment_target.find_parent("pre")) if fragment_target else None
+    for index, element in enumerate(soup.find_all("pre")):
+        marker = f"__ELIRA_PREFORMATTED_{index}__"
+        while marker in visible:
+            marker += "_"
+        for br in element.find_all("br"):
+            br.replace_with("\n")
+        code = element.get_text(separator="", strip=False).replace("\r\n", "\n").replace("\r", "\n")
+        fence = "`" * max(3, max((len(run) + 1 for run in re.findall(r"`+", code)), default=3))
+        preserved[marker] = f"{fence}text\n{code.rstrip(chr(10))}\n{fence}"
+        if element is fragment_pre:
+            fragment_block = marker
+        element.clear()
+        element.append(marker)
+
     if fragment:
-        text = _fragment_content(soup, fragment)
+        text = fragment_block or _fragment_content(soup, fragment)
         if text is None:
             raise ValueError(f"URL fragment #{fragment} not found")
-        return text[:max_chars] if max_chars is not None else text
-
-    text = _readable_container(soup).get_text(separator="\n", strip=True)
-
-    # DOM cleanup removes navigation/noise. Length is not a relevance filter:
-    # dates, prices, release versions and individual table cells are often short.
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    text = "\n".join(lines)
+    else:
+        text = container.get_text(separator="\n", strip=True)
+        # Short dates, prices, versions and table cells must survive cleanup.
+        text = "\n".join(line.strip() for line in text.split("\n") if line.strip())
+    for marker, block in preserved.items():
+        text = text.replace(marker, block)
     return text[:max_chars] if max_chars is not None else text
 
 
@@ -237,9 +271,31 @@ def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
                     parsed = urlsplit(final)
                     final = urlunsplit(parsed._replace(fragment=urlsplit(current).fragment))
                 if not 200 <= status < 300:
-                    return PageFetchResult(final_url=final, status_code=status, error=f"HTTP {status}")
+                    return PageFetchResult(final_url=final, status_code=status, error=f"HTTP {status}",
+                                           retry_after=str(resp.headers.get("Retry-After", ""))[:128])
+                content_type = str(resp.headers.get("Content-Type", "")).split(";", 1)[0].lower()
+                body = getattr(resp, "content", b"")
+                if content_type == "application/pdf" or (isinstance(body, bytes) and body.lstrip().startswith(b"%PDF-")):
+                    from app.application.file_extract.runtime import extract_file, is_extract_error
+
+                    fragment = urlsplit(final).fragment
+                    final = urlunsplit(urlsplit(final)._replace(fragment=""))
+                    if not isinstance(body, bytes) or len(body) > 8 * 1024 * 1024:
+                        return PageFetchResult(final_url=final, status_code=status, mime="application/pdf", error="PDF exceeds the 8 MiB web extraction limit")
+                    extracted = extract_file("web.pdf", body, max_chars=max_chars + 1)
+                    text = str(extracted.get("text") or "").strip()
+                    if not text or is_extract_error(text):
+                        return PageFetchResult(final_url=final, status_code=status, mime="application/pdf", error="PDF text extraction failed")
+                    return PageFetchResult(text=text[:max_chars], final_url=final, status_code=status, mime="application/pdf",
+                        fragment_found=False if fragment else None,
+                        truncated=len(text) > max_chars or bool(extracted.get("document", {}).get("truncated")))
                 if resp.encoding and resp.encoding.lower() != "utf-8":
                     resp.encoding = resp.apparent_encoding or "utf-8"
+                if content_type == "text/plain":
+                    # Raw source files are not HTML: preserve indentation and <...> literals.
+                    text = resp.text
+                    return PageFetchResult(text=text[:max_chars], final_url=final, status_code=status,
+                                           mime="text/plain", truncated=len(text) > max_chars)
                 fragment = unquote(urlsplit(final).fragment)
                 soup = BeautifulSoup(resp.text, "html.parser")
                 try:
@@ -328,28 +384,10 @@ def _normalize_core_news_results(
                     "snippet": item.get("body", ""),
                     "date": item.get("date", ""),
                     "source": item.get("source", ""),
-                    "engine": item.get("engine", "ddg-news"),
+                    "engine": item.get("engine", "searxng"),
                 }
             )
     return news_results
-
-
-def _normalize_duckduckgo_text_results(
-    raw_results: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    search_results: list[dict[str, Any]] = []
-    for result in raw_results:
-        url = result.get("href") or result.get("url") or ""
-        if url:
-            search_results.append(
-                {
-                    "title": result.get("title", ""),
-                    "url": url,
-                    "snippet": result.get("body", ""),
-                    "engine": "duckduckgo",
-                }
-            )
-    return search_results
 
 
 def _normalize_legacy_news_results(
@@ -467,10 +505,8 @@ def _has_weak_subquery_coverage(
     )
 
 
-def _select_deep_search_engines(intent_kind: str) -> tuple[str, str, str]:
-    if intent_kind == "historical":
-        return ("wikipedia", "searxng", "duckduckgo")
-    return ("searxng", "duckduckgo", "wikipedia")
+def _select_deep_search_engines(intent_kind: str) -> tuple[str, ...]:
+    return ("searxng",)
 
 
 def _collect_subquery_engines(
@@ -638,29 +674,24 @@ def do_web_search_legacy(
         )
     except Exception as exc:
         logger.warning("Web search failed: %s", exc)
-
-    if not search_results:
-        try:
-            try:
-                from ddgs import DDGS
-            except ImportError:
-                from duckduckgo_search import DDGS
-
-            with DDGS() as ddgs:
-                raw = list(ddgs.text(search_query, max_results=8))
-            search_results.extend(_normalize_duckduckgo_text_results(raw))
-            engines_used = ["duckduckgo"]
-        except Exception as exc:
-            logger.warning("DDG fallback also failed: %s", exc)
+        _tl(timeline, "tool_web", "Веб-поиск", "error", str(exc))
+        tool_results.append({"tool": "web_search", "result": {"ok": False, "count": 0, "error": str(exc)}})
+        return f"[Веб-поиск недоступен: {exc}]"
 
     news_results: list[dict[str, Any]] = []
+    news_error: str | None = None
     try:
         news_raw = core_search_news(search_query, max_results=5)  # type: ignore[possibly-undefined]
         news_results = _normalize_legacy_news_results(news_raw)
-        if news_results and "ddg-news" not in engines_used:
-            engines_used.append("ddg-news")
-    except Exception:
-        pass
+        if news_results and "searxng" not in engines_used:
+            engines_used.append("searxng")
+    except Exception as exc:
+        logger.warning("SearXNG news search failed: %s", exc)
+        news_error = str(exc)
+        if not search_results:
+            _tl(timeline, "tool_web", "Веб-поиск", "error", str(exc))
+            tool_results.append({"tool": "web_search", "result": {"ok": False, "count": 0, "error": str(exc)}})
+            return f"[Веб-поиск недоступен: {exc}]"
 
     if not search_results and not news_results:
         _tl(timeline, "tool_web", "Веб-поиск", "error", "Нет результатов")
@@ -690,6 +721,7 @@ def do_web_search_legacy(
                 "news": len(news_results),
                 "fetched_pages": fetched_count,
                 "engines": engines_used,
+                **({"partial": True, "error": news_error} if news_error else {}),
             },
         }
     )
@@ -698,10 +730,13 @@ def do_web_search_legacy(
         "tool_web",
         "Веб-поиск",
         "done",
-        f"{len(search_results)} найдено ({engines_str}), {fetched_count} страниц загружено, {len(news_results)} новостей",
+        f"{len(search_results)} найдено ({engines_str}), {fetched_count} страниц загружено, {len(news_results)} новостей"
+        + (f"; новостной поиск недоступен: {news_error}" if news_error else ""),
     )
 
     parts: list[str] = []
+    if news_error:
+        parts.append(f"[Частичный результат: новостной поиск недоступен: {news_error}]")
     if deep_content:
         parts.append("══ СОДЕРЖИМОЕ ВЕБ-СТРАНИЦ (ИСПОЛЬЗУЙ ЭТИ ДАННЫЕ!) ══\n\n" + "\n\n".join(deep_content))
 

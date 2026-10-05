@@ -143,11 +143,15 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "skill_advisor_rollback(config={version}) restores a saved model version. "
                     "skill_discard(name,config={candidate_id}) removes a selected inactive candidate. "
                     "For work that creates code, record task_decide(config={disposition:'one_off'|'reuse'|'develop', "
-                    "reason,skill_name,inputs:[paths],targets:[result paths]}). Qwen chooses whether "
+                    "reason,skill_name,inputs:[paths],targets:[result paths],requirements:[{id,text,mandatory:true}]}). "
+                    "Keep the complete current task contract and stable requirement IDs. Qwen chooses whether "
                     "a useful recurring capability should be saved; this decision is not a permission. "
                     "Verify actual files with result_verify(config={command,targets:[paths],report_path}). "
-                    "The checker must freshly write JSON {checks:[{name,passed:boolean}]} to report_path "
-                    "and exit nonzero on a failed assertion. Printing False or process exit0 alone "
+                    "Targets must already exist and remain unchanged during the checker; exclude its generated reports. "
+                    "The checker must freshly write JSON {checks:[{name,requirement_id,passed:boolean}]} to report_path. "
+                    "A successfully executed checker exits0 even when a requirement has passed:false; "
+                    "nonzero indicates execution failure. Cover every mandatory requirement with current files. "
+                    "Printing False or process exit0 alone "
                     "does not verify results. Reuse/update skills for recurring tasks, then verify their output. "
                     "Manage integration runtimes hidden behind Workflow UI. For long-term "
                     "user memory, use memory_search first and memory_list when search has no "
@@ -232,15 +236,37 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                                 "Runtime config. "
                                 "task_decide: disposition one_off|reuse|develop, reason, skill_name "
                                 "(for reuse/develop), inputs and targets local file paths, not URLs. "
+                                "requirements=[{id,text,mandatory:boolean}] declares every result requirement; "
+                                "omitting requirements preserves the current contract. "
+                                "Read-only web chat requirements may each declare verification={checks:[...]}. "
+                                "Bind checks after search/read, using the executed query and actual returned URL, never a guessed URL. "
+                                "Only listed fields are accepted. Typed checks: {kind:'web_search',query,url} (executed query/discovered URL); "
+                                "{kind:'source_read',url,contains?:literal} (presented verified excerpt); "
+                                "{kind:'answer_format',contains?:[literals],max_chars?:int,language?:'ru'|'en',markdown_url?:actual HTTP(S) URL string, not boolean,user_quote?:str}; "
+                                "{kind:'cited_quote',url,count,max_words} has no text field: quote text comes from the final answer/cited excerpt. "
+                                "{kind:'tool_policy',allowed:[tool names or 'runtime_control:task_decide'],"
+                                "max_search_queries?:int,max_read_urls?:int,user_quote?:str}. "
+                                "Literal/length/tool restrictions need user_quote copied from the matching direct-user constraint; do not invent budgets. "
+                                "{kind:'no_persistence'} requires runtime policy rag/direct_memory/learning all false. "
+                                "Runtime checks the actual final answer and current-run facts, without commands/files. "
+                                "This path requires one_off, empty inputs/targets, delivery none, no writes or store=true; "
+                                "it never replaces file/artifact verification or proves uncheckable semantics. "
+                                "To amend an existing ID after a user clarification, set source_clarification "
+                                "(1-based index) and copy its exact amendment or addition clause as text. "
+                                "Only neutral preambles 'Ещё поправка:' and 'Уточнение к текущей задаче:' may be omitted. "
+                                "The clause must name the old condition or its exact filename; "
+                                "the original text and unrelated requirements remain mandatory. "
                                 "Optional delivery={mode:'none'|'chat_download',targets:[local paths]} "
                                 "declares files to deliver in this chat, not a download feature to implement. "
-                                "chat_download needs nonempty paths; none needs empty targets and an explained reason. "
+                                "chat_download needs nonempty paths; none needs empty targets. Explain the reason "
+                                "in config.reason; delivery has only mode and targets. "
                                 "Omitting delivery preserves the previous contract. Actual resource_publish attempts "
                                 "also require factual delivery evidence; none cannot turn their failure into success. "
                                 "Keep URLs in source evidence/SOURCES.md; save a response/document "
                                 "locally to bind its content as an input. report_path is also a local file path. "
                                 "result_verify: command, nonempty targets, report_path; checker writes "
-                                "fresh JSON {checks:[{name,passed:boolean}]} separately from targets. "
+                                "fresh JSON {checks:[{name,requirement_id,passed:boolean}]} separately from targets. "
+                                "Use current requirement IDs; unnamed coverage does not prove the full contract. "
                                 "Skill development takes candidate_id from skill_create; skill_check "
                                 "also takes command (a real shell verification in the candidate directory). "
                                 "skill_create optionally takes environment:'python' for a permanent candidate-local .venv. "
@@ -723,9 +749,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "queries": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Several queries to run in parallel in one call (up to 6). Prefer this over many sequential web_search calls.",
+                            "maxItems": 10,
+                            "description": "Several queries in one call (up to 10; at most 5 requests concurrently). Long batches return a fair summary within 12000 characters, with omitted counts; full source metadata is retained.",
                         },
-                        "top_k": {"type": "integer", "description": "Max results per query (default 5, max 10)."},
+                        "top_k": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5,
+                                  "description": "Max results per query (default 5, max 10). Read complete pages via web_fetch(store=true) and web_query."},
                         "categories": {
                             "type": "string",
                             "enum": ["general", "news", "it", "science", "images", "videos", "map", "music", "files"],
@@ -752,7 +780,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "pages, not just snippets. Pass `urls` (a list) to fetch "
                     "SEVERAL pages in PARALLEL in one call (far faster than one "
                     "at a time); otherwise pass a single `url`. Plain text up to "
-                    "max_chars per page."
+                    "max_chars per page. Model-facing text is fitted within 12000 characters; "
+                    "Use find to read the passage around a known phrase in HTML, plain text or PDF without persistent storage; do not increase max_chars repeatedly or guess PDF #page anchors. "
+                    "For complete large pages use store=true then web_query only when task persistence permits."
                 ),
                 "parameters": {
                     "type": "object",
@@ -761,9 +791,14 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Several http(s) URLs to fetch in parallel in one call (up to 6). Prefer this over many sequential web_fetch calls.",
+                            "maxItems": 10,
+                            "description": "Several http(s) URLs in one call (up to 10; at most 5 concurrent fetches). store=true ingests sequentially. Batch text shares a 12000-character budget; use store=true then web_query for full pages.",
                         },
-                        "max_chars": {"type": "integer", "description": "Truncate each page to this many chars (default 8000, max 50000)."},
+                        "max_chars": {"type": "integer", "minimum": 500, "maximum": 50000, "default": 8000,
+                                      "description": "Extract up to this many chars per page (default 8000, max 50000); model-facing excerpts share the 12000-character response budget."},
+                        "force_refresh": {"type": "boolean", "description": "Recheck a paused source only when the user explicitly requests a new availability check. Otherwise respect its next-probe date and use another source."},
+                        "find": {"type": "string", "maxLength": 200,
+                                 "description": "Read the passage around the first match of this phrase (case-insensitive, flexible whitespace), scanning up to 200000 extracted characters. Use words in the source language, not a question. Single url only; works without memory; requires store=false. Missing match is reported explicitly."},
                     },
                     "required": [],
                 },
@@ -788,6 +823,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "url": {"type": "string", "description": "Full http(s) URL."},
                         "wait_selector": {"type": "string", "description": "Optional CSS selector to wait for before reading."},
+                        "force_refresh": {"type": "boolean", "description": "Recheck a paused source only on an explicit user request; use alternatives during its cooldown."},
                         "max_chars": {"type": "integer", "description": "Truncate body text to this many chars (default 8000, max 50000)."},
                         "actions": {
                             "type": "array",

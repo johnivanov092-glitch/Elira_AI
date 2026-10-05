@@ -180,10 +180,65 @@ a successfully completed run.
   HTTP responses cannot become successful excerpts through browser fallback.
   Corpus queries with no lexical matches return `no_results`, not arbitrary
   chunks. Publication/modification metadata is separate from retrieval time.
-  The DDGS adapter selects general web engines explicitly; encyclopedia search
-  remains a separate provider. Batch fetches divide the existing tool-message
-  budget between pages before packing, keeping an excerpt and actual link
-  targets for each page instead of dropping entire middle pages.
+  Web search uses only the configured SearXNG endpoint, including news and
+  encyclopedia queries; SearXNG owns upstream engine selection. Missing
+  configuration and transport failures are explicit errors. Partial query
+  batches retain successful results and expose the failed queries.
+  A bounded candidate pool is filtered by explicit site constraints and ranked
+  before the requested result cap; category fallback uses the same ranking.
+  Sparse or failing first-page news results get one general-category attempt
+  through the same SearXNG endpoint with the same query and time range. Engine
+  warnings survive both successful and failed batches through answer acceptance.
+  Search mode starts with `capability_load`, `web_search`, and `web_fetch`;
+  other capabilities load on demand. Work guidance follows actual project
+  discovery, mutations, code sources or an artifact contract, not visible schemas.
+  Plain web/file/API answers do not require `task_decide`, including full-machine.
+  Missing excerpts after compaction/Resume can be restored from the evidence
+  ledger without another request or a recovery refusal. Another diagnostic can
+  permit a bounded retry of a failed operation, not an already successful search
+  or read. Distinct arguments/inputs remain available. After complete result
+  groups, one input-side cue anchors the ordinary answer to the original goal
+  and the excerpts still present in the packed context; it adds no model call,
+  mandatory summary or tool restriction. File/action goals continue to delivery.
+  Passive failed browser reads are guarded individually;
+  interactive browser access remains visible.
+  Source availability uses the existing web-corpus SQLite store, separately
+  from training labels and answer evidence. A transient failure pauses for one
+  minute; confirmed failures defer demand-driven probes for 1, 2, and 4 weeks,
+  then suspend automatic retries. Success resets the history. No background
+  crawler is scheduled. HTTP and browser histories are separate; missing paths
+  do not block a domain, and cross-origin redirect failures remain path scoped.
+  Rate limits respect Retry-After and never classify a site as permanently dead.
+  Per-source probe leases prevent concurrent escalation; explicit force_refresh
+  permits a requested recheck. Stored metadata is bounded to 10,000 host/hash
+  records, contains no page/query text, and respects task memory permissions.
+  Repeated identical web results trigger local recovery for that operation.
+  A short notice points to the previous result; other queries and sources stay
+  available through the same tools. Recovery requires no intermediate model
+  summary. JSON-encoded query/URL arrays are normalized before repeat checks
+  and execution; invalid batch formats receive an explicit format error.
+  Recovery notices count model decisions,
+  not duplicate calls within one batch; independent later calls remain available.
+  Four ignored notices for the identical operation leave the task resumable
+  and explicitly incomplete, with the collected sources preserved. Repeat state
+  survives Resume and model task-plan changes. There is no global step or time
+  limit, and search recovery never marks an artifact task complete.
+  Search/fetch batches accept up to 30 items with at most five workers; search
+  allows up to 30 results per query. Fetch extraction defaults to 16000
+  characters per page and caps at 80000. Search/fetch tool messages have a
+  120000-character presentation ceiling in native tools, executor registry and
+  model messages; the existing context budget can reduce oversized messages.
+  Batch fetches divide space between pages,
+  keeping exact excerpts and link targets. Complete stored pages remain
+  available through the existing web corpus and `web_query` when task memory
+  policy permits the seven-day cache. Verified snippets, not stored passports,
+  prove reading. The source registry holds 1024 receipts for 30×30 search batches.
+  Per-query source bindings and upstream engine warnings survive the facade,
+  native tools and SSE journal. A failed engine does not discard usable results;
+  no results with upstream failures is an explicit failure. Actual engine errors
+  also produce a deterministic technical notice in the final answer before
+  length/language/outcome verification and answer hashing, including failures
+  with no results. It adds no discovery receipts or new correction budget.
 - Exact source receipts already in tool history are not duplicated. Missing
   excerpts are appended within a 7000-character restoration budget; compaction
   rebuilds that snapshot before context-budget accounting. This preserves the
@@ -195,6 +250,13 @@ a successfully completed run.
   Recognised numeric update periods also require a local citation and the same
   quantity/unit in its presented excerpt. One correction persists across Resume;
   repeated failure is degraded. This is not semantic entailment validation.
+- Ordinary read-only Web answers also check Markdown links against presented
+  excerpts. A factual paragraph cannot call a discovered or failed page verified;
+  one correction persists across Resume and repeated failure removes that body.
+  The production completion path adds no private model review: provenance checks
+  do not prove topic relevance or factual entailment. Those are independently
+  assessed against the actual read excerpts during acceptance; the same model's
+  assessment cannot certify factual truth or replace a valid answer with a refusal.
 - Task skills use the same runtime_control/registry/executor path: skill_list
   returns all installed metadata; skill_load loads the model-selected package
   from Elira's trusted skills/ directory. One pinned block preserves exact
@@ -213,10 +275,13 @@ a successfully completed run.
   Exact download and BOM delivery contracts remain deterministic; they do not
   grant permissions. The rejected Laya experiment is retained only in Git and
   `research/LAYA_CPU_EVALUATION_RU.md`. Embeddings retain their existing model.
-- DRY sampling uses a bounded 1024-token lookback and permits 12-token repeats.
+- Confirmed llama.cpp backends use DRY sampling with a bounded 1024-token lookback and permit 12-token repeats.
   Short replies can still overlap history; the old 2-token allowance caused
   repeated identity answers to mutate the name. Long prose repetition retains
   DRY protection without a conversation-specific sampler or phrase exceptions.
+  vLLM receives only its supported explicitly configured sampling parameters;
+  DRY and llama.cpp repeat settings are omitted and logged, never translated into
+  a different penalty. Unknown backends do not receive backend-specific extras.
 - Transient persona mood is captured once per run and appended to the current
   user message after history. It is excluded from the stable persona/system
   prefix so a mood change does not invalidate cached instructions and schemas.

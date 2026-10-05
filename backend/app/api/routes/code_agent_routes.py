@@ -62,7 +62,9 @@ _ANSWER_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 
 def _base_tools_for_mode(mode: CodeAgentMode) -> tuple[str, ...] | None:
     if mode == "search":
-        return tuple(dict.fromkeys((*_CODE_AGENT_BASE_TOOLS, "web_search", "web_fetch")))
+        # Start with retrieval; mixed tasks load project/resources through the
+        # same capability registry when they need to create a result.
+        return ("capability_load", "web_search", "web_fetch")
     return None
 
 
@@ -669,6 +671,13 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
         user_input=payload.message,
     )
 
+    from app.application.code_agent.run_control import prepare_run
+
+    try:
+        prepare_run(run_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     def gen():
         try:
             # Delivery: structural and simple tasks share one user-controlled
@@ -782,6 +791,13 @@ def resume_run(run_id: str) -> StreamingResponse:
         user_input=str(request_data.get("user_message") or ""),
     )
 
+    from app.application.code_agent.run_control import prepare_run
+
+    try:
+        prepare_run(run_id, resume=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     def gen():
         # Delivery: manual Resume is one user action — it gets the enriched
         # server-owned continuation context (checklist completed/open items,
@@ -824,8 +840,12 @@ def resume_run(run_id: str) -> StreamingResponse:
 def cancel(payload: CodeAgentCancelRequest) -> dict[str, Any]:
     # Delivery: a Stop must terminate the WHOLE session (all remaining slices),
     # not just the live slice — the session flag covers the between-slice gap.
-    found = _cancel_live_run(payload.run_id)
-    return {"ok": True, "found": found, "run_id": payload.run_id}
+    try:
+        found = _cancel_live_run(payload.run_id)
+    except Exception as exc:
+        logger.warning("run cancellation cleanup failed for %s", payload.run_id, exc_info=True)
+        return {"ok": False, "state": "cancel_failed", "run_id": payload.run_id, "error": str(exc)}
+    return {"ok": True, "found": found, "state": "stopped", "run_id": payload.run_id}
 
 
 @router.get("/context-profile")

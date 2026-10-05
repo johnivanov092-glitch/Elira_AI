@@ -67,7 +67,9 @@ def test_memory_and_project_context_do_not_change_system(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "resolve_relevant_facts", facts)
     a = capture(tmp_path, "Кто такая Лолита?", profile_name="Личный")
     b = capture(tmp_path, "Проверь файл", profile_name="Инженерный", base_tools=["read_file"])
-    assert a["messages"][0] == b["messages"][0]
+    from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE
+    source_contract = "\n\n[Контракт ответа по прочитанным источникам]\n" + WEB_SOURCE_FIDELITY_GUIDANCE
+    assert a["messages"][0]["content"] == b["messages"][0]["content"] + source_contract
     assert "Лолита" not in a["messages"][0]["content"]
     assert "Лолита — жена пользователя." in str(a["messages"][1:])
     assert "Лолита — жена пользователя." not in str(b["messages"])
@@ -120,7 +122,7 @@ def test_discovery_loads_project_in_same_loop_and_reads_file(tmp_path):
     assert events[-1]["ok"]
 
 
-@pytest.mark.parametrize("tool", ["web_search", "mcp__test__change_server"])
+@pytest.mark.parametrize("tool", ["write_file", "mcp__test__change_server", "file_gen"])
 def test_external_work_receives_verification_guidance(tool):
     from app.application.code_agent.task_guidance import task_guidance_blocks
 
@@ -129,16 +131,31 @@ def test_external_work_receives_verification_guidance(tool):
     assert "проверь результат" in blocks["work"]
 
 
+def test_search_starts_with_retrieval_and_loads_work_contract_only_when_needed():
+    from app.api.routes.code_agent_routes import _base_tools_for_mode
+    from app.application.code_agent.task_guidance import task_guidance_blocks
+
+    tools = set(_base_tools_for_mode("search"))
+    assert tools == {"capability_load", "web_search", "web_fetch"}
+    assert set(task_guidance_blocks(tools)) == {"web"}
+    assert set(task_guidance_blocks(tools | {"browser", "web_query", "http_api"})) == {"web"}
+    assert "work" in task_guidance_blocks(tools | {"write_file"})
+    assert _base_tools_for_mode("code") is None
+
+
 @pytest.mark.parametrize("summary_ok", [True, False])
-def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summary_ok):
+@pytest.mark.parametrize("work_started", [True, False])
+def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summary_ok, work_started):
     from app.application.code_agent import agent_loop, loop_helpers
     from app.application.code_agent.task_guidance import task_guidance_blocks
 
     original_prepare = agent_loop._prepare_messages_for_llm
     guidance = task_guidance_blocks({"read_file"})
+    work_guidance = guidance.pop("work")
 
     def force_compaction(messages, **kwargs):
-        for text in guidance.values():
+        texts = [*guidance.values(), *([work_guidance] if work_started and calls else [])]
+        for text in texts:
             owner = [message for message in messages if text in message.get("content", "")]
             assert len(owner) == 1
             assert owner[0]["_msg_id"] in kwargs["pinned_message_ids"]
@@ -163,7 +180,8 @@ def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summ
         calls.append(deepcopy(kwargs["messages"]))
         index = len(calls) - 1
         function = (
-            {"name": "capability_load", "arguments": {"group": "project"}} if index == 0
+            ({"name": "project_map", "arguments": {}} if work_started else
+             {"name": "capability_load", "arguments": {"group": "project"}}) if index == 0
             else {"name": "read_file", "arguments": {"path": f"file{index - 1}.txt"}}
         )
         return {"message": {"content": "Готово." if index == 5 else "", "tool_calls": [] if index == 5 else [
@@ -179,6 +197,7 @@ def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summ
     for messages in calls[1:]:
         for text in guidance.values():
             assert sum(text in message.get("content", "") for message in messages) == 1
+        assert sum(work_guidance in message.get("content", "") for message in messages) == int(work_started)
     assert all(messages[0] == calls[0][0] for messages in calls)
 
 
@@ -221,7 +240,10 @@ def test_user_confirmation_guidance_is_pinned_before_work_and_restored_on_resume
     resumed = list(stream_code_agent(**build_continuation_kwargs(run_id, chat_fn=chat)))
     assert resumed[-1]["ok"] and len(calls) == 2
     assert calls[0][0] == calls[1][0]
-    for text in task_guidance_blocks({"read_file"}).values():
+    guidance = task_guidance_blocks({"read_file"})
+    work_guidance = guidance.pop("work")
+    assert all(work_guidance not in str(messages) for messages in calls)
+    for text in guidance.values():
         for messages in calls:
             owner = [message for message in messages if text in message.get("content", "")]
             assert len(owner) == 1 and owner[0]["role"] == "user"
@@ -264,3 +286,78 @@ def test_wrong_initial_capability_can_recover_and_execute(tmp_path):
     assert all("capability_load" in names(call) for call in calls)
     assert any(m.get("role") == "tool" and "verified recovery" in m.get("content", "") for m in calls[-1]["messages"])
     assert events[-1]["ok"]
+
+
+def test_late_web_activation_promotes_only_runtime_contract_to_first_system(tmp_path, monkeypatch):
+    import re
+
+    from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE
+    from app.application.code_agent.tools import _web
+    from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
+    from app.infrastructure.search.web_runtime import PageFetchResult
+
+    url = "https://example.org/report"
+    user_marker = "USER_REQUEST_NOT_SYSTEM"
+    history_marker = "ASSISTANT_HISTORY_NOT_SYSTEM"
+    excerpt = "The report measured 17 observations. EXCERPT_NOT_SYSTEM."
+    suffix = "\n\n[Контракт ответа по прочитанным источникам]\n" + WEB_SOURCE_FIDELITY_GUIDANCE
+    calls, reads = [], []
+
+    def fetch(actual_url, limit):
+        reads.append(actual_url)
+        return PageFetchResult(text=excerpt, final_url=actual_url)
+
+    monkeypatch.setattr(_web, "_fetch_one", fetch)
+
+    def chat(**kwargs):
+        snapshot = deepcopy({key: kwargs[key] for key in ("messages", "tools")})
+        # The transport injects a lock-bearing cancellation handle per request;
+        # sampling/template options remain the values compared across turns.
+        snapshot["options"] = deepcopy({key: value for key, value in kwargs["options"].items()
+                                        if key != "_stream_cancel_handle"})
+        calls.append(snapshot)
+        index = len(calls)
+        assert sum(message.get("role") == "system" for message in kwargs["messages"]) == 1
+        system = kwargs["messages"][0]
+        assert system["role"] == "system"
+        assert not any(value in system["content"] for value in (user_marker, history_marker, excerpt))
+        if index == 1:
+            assert "capability_load" in names(calls[-1])
+            assert not {"web_search", "web_fetch"} & names(calls[-1])
+            assert WEB_SOURCE_FIDELITY_GUIDANCE not in system["content"]
+            function = {"name": "capability_load", "arguments": {"group": "web"}}
+            call_id = "web-activate"
+        else:
+            assert system["content"] == calls[0]["messages"][0]["content"] + suffix
+            assert system["content"].count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
+            assert {"capability_load", "web_search", "web_fetch"} <= names(calls[-1])
+            if index == 2:
+                function = {"name": "web_fetch", "arguments": {"url": url}}
+                call_id = "web-read"
+            else:
+                assert index == 3
+                read = next(message["content"] for message in kwargs["messages"]
+                            if message.get("role") == "tool" and message.get("name") == "web_fetch")
+                assert excerpt in read
+                marker = re.search(r"\[\[source:[^\]]+\]\]", read).group()
+                return {"message": {"content": "В отчёте зарегистрированы 17 наблюдений. " + marker}}
+        return {"message": {"content": "", "tool_calls": [{"id": call_id, "function": function}]}}
+
+    events = list(stream_code_agent(user_message=f"Прочитай {url} и объясни результат. {user_marker}",
+        conversation_history=[{"role": "user", "content": "Предыдущий вопрос."},
+                              {"role": "assistant", "content": history_marker}],
+        project_root=tmp_path, chat_fn=chat, base_tools=["capability_load"],
+        num_ctx=65536, permission_mode="bypass", auto_remember=False))
+    assert len(calls) == 3 and reads == [url]
+    assert calls[1]["messages"][0] == calls[2]["messages"][0]
+    assert calls[1]["tools"] == calls[2]["tools"]
+    assert calls[0]["options"] == calls[1]["options"] == calls[2]["options"]
+    assert all(any(message.get("content") == history_marker for message in call["messages"])
+               for call in calls)
+    wire = _normalize_messages_for_request(calls[2]["messages"])
+    assert wire[0]["role"] == "system" and sum(message["role"] == "system" for message in wire) == 1
+    assert [call["id"] for message in wire for call in message.get("tool_calls", [])] == ["web-activate", "web-read"]
+    assert [message["tool_call_id"] for message in wire if message["role"] == "tool"] == ["web-activate", "web-read"]
+    assert [event["tool"] for event in events if event["type"] == "tool_call"] == ["capability_load", "web_fetch"]
+    assert next(event for event in events if event["type"] == "final_response")["source_status"] == "matched"
+    assert events[-1]["stop_reason"] == "answer" and events[-1]["ok"]

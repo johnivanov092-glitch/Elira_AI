@@ -19,7 +19,7 @@ from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, _rera
 from app.main import app  # noqa: E402
 
 
-EXPECTED = ("searxng", "duckduckgo", "wikipedia")
+EXPECTED = ("searxng",)
 
 
 class WebEngineStackTest(unittest.TestCase):
@@ -27,14 +27,15 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(tuple(SUPPORTED_SEARCH_ENGINES), EXPECTED)
         self.assertEqual(tuple(DEFAULT_SEARCH_ENGINES), EXPECTED)
 
-    def test_runtime_falls_back_to_duckduckgo_without_searxng(self) -> None:
+    def test_runtime_is_unavailable_without_searxng(self) -> None:
         with patch.dict(os.environ, {"SEARXNG_URL": ""}, clear=False):
             status = get_web_engine_status()
 
-        self.assertEqual(status["primary_engine"], "duckduckgo")
+        self.assertEqual(status["primary_engine"], "searxng")
         self.assertTrue(status["degraded_mode"])
-        self.assertIn("duckduckgo", status["available_engines"])
-        self.assertIn("wikipedia", status["available_engines"])
+        self.assertEqual(status["available_engines"], [])
+        self.assertEqual(status["fallback_engines"], [])
+        self.assertIn("SEARXNG_URL", status["warnings"][0])
         self.assertFalse(status["api_keys_present"]["searxng"])
 
     def test_runtime_prefers_searxng_when_url_set(self) -> None:
@@ -44,37 +45,55 @@ class WebEngineStackTest(unittest.TestCase):
 
         self.assertEqual(tuple(engines), EXPECTED)
         self.assertEqual(status["primary_engine"], "searxng")
-        self.assertIn("duckduckgo", status["fallback_engines"])
+        self.assertEqual(status["fallback_engines"], [])
         self.assertFalse(status["degraded_mode"])
 
-    def test_searxng_failure_falls_back_without_leaking_error_rows(self) -> None:
-        def _raise_searxng(*args, **kwargs):
-            raise RuntimeError("503 simulated")
+    def test_searxng_failure_propagates_without_calling_retired_adapters(self) -> None:
+        from unittest.mock import Mock
+        retired = Mock(side_effect=AssertionError("retired adapter executed"))
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}), patch.dict(
+            "app.core.web.ENGINE_FUNCS",
+            {"searxng": Mock(side_effect=RuntimeError("503 simulated")),
+             "duckduckgo": retired, "wikipedia": retired}, clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "503 simulated"):
+                search_web("current release", engines=("duckduckgo", "wikipedia"))
+        retired.assert_not_called()
 
-        duck_results = [
-            {
-                "title": "Duck result",
-                "href": "https://example.com/result",
-                "body": "fallback works",
-                "engine": "duckduckgo",
-            }
-        ]
+    def test_missing_url_fails_general_news_and_wrappers_without_egress(self) -> None:
+        from app.core.web import search_news
+        from app.core import web_engines
+        from app.infrastructure.search.multisearch import multi_search, news_search, news_multi_search
+        with patch.dict(os.environ, {"SEARXNG_URL": ""}), patch.object(web_engines, "session") as client:
+            for operation in (search_web, search_news):
+                with self.subTest(operation=operation.__name__), self.assertRaisesRegex(RuntimeError, "SEARXNG_URL"):
+                    operation("current release")
+            for operation in (multi_search, news_search, news_multi_search):
+                result = operation("current release")
+                self.assertIs(result["ok"], False)
+                self.assertIn("SEARXNG_URL", result["error"])
+            client.assert_not_called()
 
-        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}, clear=False):
-            with patch.dict(
-                "app.core.web.ENGINE_FUNCS",
-                {
-                    "searxng": _raise_searxng,
-                    "duckduckgo": lambda query, max_results=5: duck_results,
-                    "wikipedia": lambda query, max_results=5: [],
-                },
-                clear=True,
-            ):
-                results = search_web("новости за сегодня", max_results=5)
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["engine"], "duckduckgo")
-        self.assertEqual(results[0]["href"], "https://example.com/result")
+    def test_empty_searxng_response_is_distinct_from_known_upstream_failure(self) -> None:
+        from unittest.mock import MagicMock
+        from app.core import web_engines
+        from app.infrastructure.search.web_search import search_web as facade
+        client = MagicMock()
+        response = client.get.return_value
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://search.local"}), patch.object(
+            web_engines, "session", return_value=client,
+        ):
+            response.json.return_value = {"results": []}
+            result = facade("release")
+            self.assertIs(result["ok"], True)
+            self.assertEqual(result["sources"], [])
+            self.assertEqual([link["name"] for link in result["engine_links"]], ["SearXNG"])
+            response.json.return_value = {"results": [], "unresponsive_engines": [["yep", "access denied"]]}
+            with self.assertRaisesRegex(RuntimeError, "access denied"):
+                facade("release")
+            response.json.return_value = {"results": None}
+            with self.assertRaisesRegex(RuntimeError, "Invalid SearXNG response"):
+                facade("release")
 
     def test_searxng_query_params_auto_language_and_filters(self) -> None:
         from unittest.mock import MagicMock
@@ -83,6 +102,7 @@ class WebEngineStackTest(unittest.TestCase):
         captured: dict = {}
 
         def fake_get(url, params=None, timeout=None):
+            captured.setdefault("calls", []).append(params)
             captured["params"] = params
             resp = MagicMock()
             resp.json.return_value = {"results": []}
@@ -97,7 +117,9 @@ class WebEngineStackTest(unittest.TestCase):
             # Cyrillic query → auto language=ru; news category + time_range passed through.
             we.search_searxng("курс доллара", categories="news", time_range="week")
             self.assertEqual(captured["params"]["language"], "ru")
-            self.assertEqual(captured["params"]["categories"], "news")
+            self.assertEqual([item["categories"] for item in captured["calls"]], ["news", "general"])
+            self.assertTrue(all(item["time_range"] == "week" and item["language"] == "ru"
+                                for item in captured["calls"]))
             self.assertEqual(captured["params"]["time_range"], "week")
             # English query → SearXNG default (no forced language); bad time_range dropped.
             captured.clear()
@@ -130,67 +152,31 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(results[0]["img_src"], "https://cdn.example.com/pangu.jpg")
         self.assertEqual(results[0]["thumbnail_src"], "https://cdn.example.com/pangu-thumb.jpg")
 
-    def test_duckduckgo_image_mode_uses_existing_image_search(self) -> None:
-        import app.core.web_engines as we
+    def test_retired_adapters_are_not_executable(self) -> None:
+        from app.core import web_engines
+        self.assertFalse(hasattr(web_engines, "search_duckduckgo"))
+        self.assertFalse(hasattr(web_engines, "search_wikipedia"))
+        self.assertFalse(hasattr(web_engines, "DDGS"))
 
-        class FakeDDGS:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def images(self, query, max_results=5):
-                return [{
-                    "title": "Pangu",
-                    "url": "https://example.com/pangu",
-                    "image": "https://cdn.example.com/pangu.jpg",
-                    "thumbnail": "https://cdn.example.com/pangu-thumb.jpg",
-                }]
-
-            def text(self, *_args, **_kwargs):
-                raise AssertionError("text search must not run for categories=images")
-
-        with patch.object(we, "DDGS", return_value=FakeDDGS()):
-            results = we.search_duckduckgo("Паньгу", categories="images")
-
-        self.assertEqual(results[0]["href"], "https://example.com/pangu")
-        self.assertEqual(results[0]["img_src"], "https://cdn.example.com/pangu.jpg")
-        self.assertEqual(results[0]["thumbnail_src"], "https://cdn.example.com/pangu-thumb.jpg")
-
-    def test_wikipedia_image_mode_uses_commons_imageinfo(self) -> None:
+    def test_sparse_news_uses_one_general_recovery_and_preserves_dates(self) -> None:
         from unittest.mock import MagicMock
-        import app.core.web_engines as we
-
-        response = MagicMock()
-        response.json.return_value = {
-            "query": {
-                "pages": {
-                    "1": {
-                        "title": "File:Pangu.jpg",
-                        "imageinfo": [{
-                            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Pangu.jpg",
-                            "url": "https://upload.wikimedia.org/pangu.jpg",
-                            "thumburl": "https://upload.wikimedia.org/pangu-thumb.jpg",
-                        }],
-                    },
-                },
-            },
-        }
-        response.raise_for_status.return_value = None
-        fake_session = MagicMock()
-        fake_session.get.return_value = response
-
-        with patch.object(we, "session", return_value=fake_session):
-            results = we.search_wikipedia("Pangu", max_results=1, categories="images")
-
-        params = fake_session.get.call_args.kwargs["params"]
-        self.assertEqual(params["generator"], "search")
-        self.assertEqual(params["prop"], "imageinfo")
-        self.assertEqual(params["gsrnamespace"], 6)
-        self.assertEqual(results[0]["href"], "https://commons.wikimedia.org/wiki/File:Pangu.jpg")
-        self.assertEqual(results[0]["img_src"], "https://upload.wikimedia.org/pangu.jpg")
-        self.assertEqual(results[0]["thumbnail_src"], "https://upload.wikimedia.org/pangu-thumb.jpg")
+        from app.core import web_engines
+        from app.core.web import search_news
+        client = MagicMock()
+        client.get.return_value.json.return_value = {"results": [{
+            "title": "Current release", "url": "https://example.org/current", "content": "Release notes",
+            "publishedDate": "2026-10-01T08:00:00Z",
+        }]}
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://search.local"}), patch.object(
+            web_engines, "session", return_value=client,
+        ):
+            results = search_news("current release", max_results=30)
+        self.assertEqual(client.get.call_count, 2)
+        self.assertEqual(client.get.call_args.args[0], "http://search.local/search")
+        self.assertEqual([call.kwargs["params"]["categories"] for call in client.get.call_args_list],
+                         ["news", "general"])
+        self.assertEqual(results[0]["engine"], "searxng")
+        self.assertEqual(results[0]["date"], "2026-10-01T08:00:00Z")
 
     def test_tool_web_search_threads_targeting_to_searxng(self) -> None:
         import app.core.web as core_web

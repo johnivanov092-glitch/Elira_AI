@@ -66,5 +66,66 @@ class ContextWindowFromPropsTest(unittest.TestCase):
         self.assertEqual(prof["limiting_source"], "server")
 
 
+class ServerContextWindowVllmFallbackTest(unittest.TestCase):
+    """vLLM (Paiton) has no /props; its /v1/models max_model_len is the window."""
+
+    def _response(self, status: int, payload: object) -> mock.Mock:
+        resp = mock.Mock()
+        resp.status_code = status
+        resp.json.return_value = payload
+        if status >= 400:
+            import requests
+
+            resp.raise_for_status.side_effect = requests.HTTPError(f"{status}")
+        else:
+            resp.raise_for_status.return_value = None
+        return resp
+
+    def _window(self, routes: dict[str, mock.Mock]) -> int | None:
+        from app.infrastructure.llm import openai_compatible as oc
+
+        def fake_get(url: str, **_kw: object) -> mock.Mock:
+            for suffix, resp in routes.items():
+                if url.endswith(suffix):
+                    return resp
+            raise AssertionError(f"unexpected url {url}")
+
+        env = {
+            "LLAMA_SERVER_ENABLED": "true",
+            "LLAMA_SERVER_BASE_URL": "http://srv:8011/v1",
+            "LLAMA_SERVER_MODEL": "local-model",
+            "LLAMA_SERVER_CONTEXT_WINDOW": "65536",
+        }
+        with mock.patch.dict("os.environ", env), mock.patch.object(
+            oc.requests, "get", side_effect=fake_get
+        ):
+            return oc.server_context_window(fresh=True)
+
+    def test_vllm_max_model_len_used_when_props_missing(self):
+        window = self._window({
+            "/props": self._response(404, {}),
+            "/v1/models": self._response(200, {"data": [
+                {"id": "local-model", "root": "/models/target", "max_model_len": 131072},
+            ]}),
+        })
+        self.assertEqual(window, 131072)
+
+    def test_llama_props_still_wins(self):
+        window = self._window({
+            "/props": self._response(200, {"default_generation_settings": {"n_ctx": 65536}}),
+            "/v1/models": self._response(200, {"data": [{"id": "local-model", "max_model_len": 1}]}),
+        })
+        self.assertEqual(window, 65536)
+
+    def test_llama_models_without_window_never_falls_back_to_config(self):
+        window = self._window({
+            "/props": self._response(503, {}),
+            "/v1/models": self._response(200, {"data": [
+                {"id": "local-model", "meta": {"n_ctx_train": 262144}},
+            ]}),
+        })
+        self.assertIsNone(window)
+
+
 if __name__ == "__main__":
     unittest.main()

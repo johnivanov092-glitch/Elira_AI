@@ -10,6 +10,7 @@ import json
 import logging
 import queue
 import threading
+import uuid
 from typing import Literal
 
 from app.application.advanced import runtime as project_runtime
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 class MultiAgentRequest(BaseModel):
     query: str
+    run_id: str | None = None
     model_name: str = "local-model"
     context: str = ""
     agents: list[str] = ["researcher", "programmer", "analyst"]
@@ -72,6 +74,12 @@ def run_multi_stream(payload: MultiAgentRequest):
     The sync /multi-agent route stays intact for non-streaming callers.
     """
     from app.application.workflows.multi_agent import run_multi_agent_workflow
+    from app.application.code_agent import run_control
+    from app.application.code_agent.tools import _shell
+    from app.application.workflows.runtime import cancel_workflow_run
+
+    cancellation_id = payload.run_id or uuid.uuid4().hex
+    run_control.prepare_run(cancellation_id)
 
     events: "queue.Queue[dict]" = queue.Queue()
     _SENTINEL: dict = {"__end__": True}
@@ -87,9 +95,20 @@ def run_multi_stream(payload: MultiAgentRequest):
 
     def _on_run_created(run_id: str) -> None:
         run_id_box["run_id"] = run_id
+        if cancel_event.is_set():
+            cancel_workflow_run(run_id)
+
+    def _cancel_workflow() -> None:
+        cancel_event.set()
+        run_id = run_id_box.get("run_id")
+        if run_id:
+            cancel_workflow_run(run_id)
 
     def _worker() -> None:
         try:
+            if cancel_event.is_set():
+                events.put({"type": "done", "ok": False, "error": "Cancelled by user"})
+                return
             result = run_multi_agent_workflow(
                 query=payload.query,
                 model_name=payload.model_name,
@@ -117,6 +136,14 @@ def run_multi_stream(payload: MultiAgentRequest):
             events.put(_SENTINEL)
 
     def _generate():
+        owner = run_control._register_run(cancellation_id)
+        if owner.is_set():
+            cancel_event.set()
+        context_token = _shell.set_current_run_id(cancellation_id)
+        try:
+            callback_token = _shell.register_run_cancel_callback(_cancel_workflow)
+        finally:
+            _shell.reset_current_run_id(context_token)
         worker = threading.Thread(target=_worker, daemon=True)
         worker.start()
         try:
@@ -135,18 +162,16 @@ def run_multi_stream(payload: MultiAgentRequest):
             # Client disconnected (Stop). Signal the worker to stop between
             # steps; it owns the same SQLite lifecycle and will mark the run
             # cancelled. Re-raise so the StreamingResponse closes cleanly.
-            cancel_event.set()
-            run_id = run_id_box.get("run_id", "")
-            if run_id:
-                try:
-                    from app.application.workflows.runtime import cancel_workflow_run
-
-                    cancel_workflow_run(run_id)
-                except (RuntimeError, ValueError):
-                    pass
+            run_control.request_cancel(cancellation_id)
             raise
+        finally:
+            # Failed callbacks remain registered for /cancel retry even when
+            # the stream ends concurrently. Successful Stop removes its hook.
+            if not cancel_event.is_set():
+                _shell.unregister_run_cancel_callback(callback_token)
+            run_control._unregister_run(cancellation_id)
 
-    return StreamingResponse(_generate(), media_type="text/event-stream")
+    return StreamingResponse(_generate(), media_type="text/event-stream", headers={"X-Run-Id": cancellation_id})
 
 
 # ═══════════════════════════════════════════════════════════════

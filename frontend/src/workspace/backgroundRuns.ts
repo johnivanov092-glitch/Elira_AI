@@ -18,7 +18,7 @@ import {
 } from "../api/codeAgent";
 import { toWireResource, type ResourceAttachment } from "../api/resources";
 import { streamAdvancedMultiAgent } from "../api/project";
-import type { AgentTurnData, FileEntry, Turn } from "./types";
+import type { AgentTurnData, FileEntry, RunControlState, Turn } from "./types";
 import { latestUserTaskLabel } from "./taskHistory";
 import { isAcceptedAnswer } from "./answerLifecycle";
 
@@ -47,6 +47,8 @@ const nid = () => `t${++_seq}`;
 export type RunSnapshot = {
   turns: Turn[];
   running: boolean;
+  runControlState: RunControlState;
+  cancelError: string | null;
   taskLedger: TaskLedgerEntry[];
   contextUsage: ContextUsage | null;
   contextState: ContextState | null;
@@ -65,6 +67,9 @@ type RunEntry = {
   snapshot: RunSnapshot;
   abort: AbortController | null;
   runId: string | null;
+  runReady?: boolean;
+  resuming?: boolean;
+  startError?: Error;
   /** Agent turn id currently being streamed into. */
   activeAgentId: string | null;
   listeners: Set<Listener>;
@@ -74,6 +79,7 @@ type RunEntry = {
   /** Mode of the in-flight run. */
   lastMode: CodeAgentMode | null;
   pendingInput?: { runId: string; requestId: string; text: string };
+  cancellation?: Promise<void>;
 };
 
 type CodeAgentDoneEvent = Extract<CodeAgentStreamEvent, { type: "done" }>;
@@ -155,6 +161,8 @@ function emptySnapshot(state: ContextState | null = null): RunSnapshot {
   return {
     turns: [],
     running: false,
+    runControlState: "idle",
+    cancelError: null,
     taskLedger: [],
     contextUsage,
     contextState: state,
@@ -222,7 +230,12 @@ export function subscribe(sessionId: string, listener: Listener): () => void {
 }
 
 export function isRunning(sessionId: string): boolean {
-  return _runs.get(sessionId)?.snapshot.running ?? false;
+  const snapshot = _runs.get(sessionId)?.snapshot;
+  return Boolean(snapshot && (snapshot.running || stopUnconfirmed(snapshot)));
+}
+
+function stopUnconfirmed(snapshot: RunSnapshot): boolean {
+  return snapshot.runControlState === "stopping" || snapshot.runControlState === "cancel_failed";
 }
 
 /** Register where a finished run should be persisted. Re-set whenever the
@@ -242,18 +255,22 @@ export function seed(
   state: ContextState | null = null,
 ): void {
   const entry = ensureEntry(sessionId);
-  if (entry.snapshot.running) return; // background run owns the snapshot
+  if (entry.snapshot.running || stopUnconfirmed(entry.snapshot)) return;
+  const pendingStop = turns.find((t): t is AgentTurnData => t.kind === "agent"
+    && Boolean(t.runId) && (t.runControlState === "stopping" || t.runControlState === "cancel_failed"));
   const contextUsage = contextUsageFromState(state);
   entry.snapshot = {
     turns,
     running: false,
+    runControlState: pendingStop ? "cancel_failed" : "idle",
+    cancelError: pendingStop ? pendingStop.cancelError || "Остановка не подтверждена. Повтори Stop." : null,
     taskLedger: ledger,
     contextUsage,
     contextState: state,
     usageSeeded: contextUsage != null,
   };
-  entry.runId = null;
-  entry.activeAgentId = null;
+  entry.runId = pendingStop?.runId || null;
+  entry.activeAgentId = pendingStop?.id || null;
   notify(entry);
 }
 
@@ -286,10 +303,11 @@ function wire(
     onRunId: (id) => {
       if (!ownsRun()) return;
       entry.runId = id;
+      entry.runReady = true;
       patch((a) => ({ ...a, runId: id }));
     },
     onEvent: (e: CodeAgentStreamEvent) => {
-      if (!ownsRun()) {
+      if (!ownsRun() || stopUnconfirmed(entry.snapshot)) {
         if (e.type === "user_input_applied") {
           const turn = entry.snapshot.turns.find(t => t.kind === "agent" && t.id === agentId);
           if (turn?.kind === "agent" && !turn.running && turn.answerState === "interrupted" && turn.runId === e.run_id) {
@@ -315,6 +333,7 @@ function wire(
       }
       if (e.type === "run_started" || e.type === "run_resumed") {
         entry.runId = e.run_id;
+        entry.runReady = true;
         patch((a) => ({ ...a, runId: e.run_id }));
       }
       if (e.type === "planning_started") patch((a) => ({ ...a, brainPhase: "planning" }));
@@ -438,7 +457,7 @@ function wire(
           resumable: Boolean(e.resumable),
           runId: e.run_id || a.runId,
         }));
-        update(entry, (s) => ({ ...s, running: false }));
+        update(entry, (s) => ({ ...s, running: false, runControlState: "idle", cancelError: null }));
         entry.runId = null;
         entry.activeAgentId = null;
         entry.abort = null;
@@ -450,8 +469,16 @@ function wire(
     },
     onError: (err) => {
       if (!ownsRun()) return;
+      if (stopUnconfirmed(entry.snapshot)) {
+        if (entry.resuming && !entry.runReady) {
+          entry.startError = err;
+          entry.resuming = false;
+          notify(entry);
+        }
+        return;
+      }
       patch((a) => a.answerState === "accepted" ? a : ({ ...a, running: false, answerState: "interrupted", activeTool: undefined, brainPhase: undefined, error: err.message, resumable: Boolean(a.runId) }));
-      update(entry, (s) => ({ ...s, running: false }));
+      update(entry, (s) => ({ ...s, running: false, runControlState: "idle", cancelError: null }));
       entry.runId = null;
       entry.activeAgentId = null;
       entry.abort = null;
@@ -489,7 +516,7 @@ export async function steer(sessionId: string, text: string): Promise<void> {
   if (!entry.snapshot.running || !agentId || entry.lastMode === null) {
     throw new Error("Уточнение пока недоступно для этого прогона. Текст сохранён.");
   }
-  if (!entry.runId) {
+  if (!entry.runReady) {
     // Send may follow the initial click before SSE supplies the run identity.
     // Wait on the existing owner; Stop/error/new run reject without losing text.
     await new Promise<void>((resolve, reject) => {
@@ -497,7 +524,7 @@ export async function steer(sessionId: string, text: string): Promise<void> {
         if (!entry.snapshot.running || entry.activeAgentId !== agentId) {
           entry.listeners.delete(ready);
           reject(new Error("Задача остановлена или завершилась. Текст сохранён."));
-        } else if (entry.runId) {
+        } else if (entry.runReady && entry.runId) {
           entry.listeners.delete(ready);
           resolve();
         }
@@ -546,7 +573,7 @@ export function send(args: SendArgs): void {
   const { sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, reasoningEffort } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
-  if (!msg || entry.snapshot.running) return;
+  if (!msg || entry.snapshot.running || stopUnconfirmed(entry.snapshot)) return;
 
   const history: ConversationMessage[] = [];
   const seenWorkflowInputs = new Set<string>();
@@ -598,7 +625,10 @@ export function send(args: SendArgs): void {
     });
   }
   const agentId = nid();
-  entry.runId = null;
+  entry.runId = crypto.randomUUID().replace(/-/g, "");
+  entry.runReady = false;
+  entry.resuming = false;
+  entry.startError = undefined;
   entry.lastMode = mode;
   const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
   // Per-message resources: surface a file chip in the transcript so the user
@@ -614,20 +644,22 @@ export function send(args: SendArgs): void {
   update(entry, (s) => ({
     ...s,
     running: true,
+    runControlState: "running",
+    cancelError: null,
     turns: [
       ...s.turns,
       ...(fileEntries.length ? [{ kind: "files" as const, id: nid(), files: fileEntries }] : []),
       { kind: "user", id: nid(), text: msg,
         ...(readyResources.length ? { resources: readyResources.map(toWireResource) } : {}),
       },
-      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true, answerState: "draft" },
+      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true, answerState: "draft", runId: entry.runId || undefined },
     ],
   }));
   // One stream invoker for every mode. Ready resources ride along as ResourceRefs
   // (resource_id only); the agent reads their content via resource_process. The
   // session id retains provenance; historical IDs stay on their original turns.
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort,
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort, runId: entry.runId || undefined,
       sourceRunIds: entry.snapshot.turns.filter((t): t is AgentTurnData => t.kind === "agent" && isAcceptedAnswer(t) && Boolean(t.citations?.length && t.runId)).map(t => t.runId!).slice(-8),
       ...handlers }));
 }
@@ -646,34 +678,39 @@ export function sendMultiAgent(
   const { sessionId, text, useOrchestrator, useReflection, projectRoot, permissionMode, reasoningEffort } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
-  if (!msg || entry.snapshot.running) return;
+  if (!msg || entry.snapshot.running || stopUnconfirmed(entry.snapshot)) return;
 
   const agentId = nid();
-  entry.runId = null;
+  entry.runId = crypto.randomUUID().replace(/-/g, "");
+  entry.resuming = false;
+  entry.startError = undefined;
+  entry.lastMode = null;
   entry.persistedAtDone = false;
-  // AbortController so Stop genuinely tears down the SSE connection. When the
-  // fetch aborts, the backend generator gets GeneratorExit and cancels the
-  // pipeline between steps. stop() calls entry.abort?.abort().
+  // The existing cancellation endpoint confirms Workflow child cleanup before
+  // Stop tears down this reader; the ID is known before the first stream event.
   const ctrl = new AbortController();
   entry.abort = ctrl;
   entry.activeAgentId = agentId;
   // After a stop, a late event (a `done` already in flight) must not overwrite
   // the turn or re-flip persistence. stop() aborts the controller and clears
   // activeAgentId, so either guard catches a stale callback.
-  const stopped = () => ctrl.signal.aborted || entry.activeAgentId !== agentId;
+  const stopped = () => ctrl.signal.aborted || entry.activeAgentId !== agentId || stopUnconfirmed(entry.snapshot);
   update(entry, (s) => ({
     ...s,
     running: true,
+    runControlState: "running",
+    cancelError: null,
     turns: [
       ...s.turns,
       { kind: "user", id: nid(), text: msg },
-      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
+      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true, runId: entry.runId || undefined },
     ],
   }));
 
   void streamAdvancedMultiAgent(
     {
       query: msg,
+      run_id: entry.runId || undefined,
       use_orchestrator: useOrchestrator,
       use_reflection: useReflection,
       permission_mode: permissionMode ?? "bypass",
@@ -681,6 +718,11 @@ export function sendMultiAgent(
       ...(projectRoot ? { project_root: projectRoot } : {}),
     },
     {
+      onRunId: (runId) => {
+        if (entry.abort !== ctrl) return;
+        entry.runId = runId;
+        patchAgent(entry, agentId, a => ({ ...a, runId }));
+      },
       onStep: (index, total, label) => {
         if (stopped()) return;
         patchAgent(entry, agentId, (a) => ({
@@ -713,10 +755,11 @@ export function sendMultiAgent(
     },
     ctrl.signal,
   ).finally(() => {
-    if (entry.abort === ctrl) entry.abort = null;
     if (stopped()) return; // Stop already reset running/turn state.
+    if (entry.abort === ctrl) entry.abort = null;
+    entry.runId = null;
     entry.activeAgentId = null;
-    update(entry, (s) => ({ ...s, running: false }));
+    update(entry, (s) => ({ ...s, running: false, runControlState: "idle" }));
     if (!entry.persistedAtDone) {
       entry.persistedAtDone = true;
       entry.persist?.(entry.snapshot);
@@ -727,44 +770,95 @@ export function sendMultiAgent(
 /** Resume a persisted interrupted/partial run for a session's agent turn. */
 export function resume(sessionId: string, agentId: string, runId: string): void {
   const entry = ensureEntry(sessionId);
-  if (entry.snapshot.running) return;
+  if (entry.snapshot.running || stopUnconfirmed(entry.snapshot)) return;
   entry.runId = runId;
+  entry.runReady = false;
+  entry.resuming = true;
+  entry.startError = undefined;
   entry.lastMode = "code";
   update(entry, (s) => ({
     ...s,
     running: true,
+    runControlState: "running",
+    cancelError: null,
     turns: s.turns.map((t) => (t.kind === "agent" && t.id === agentId
-      ? { ...t, running: true, answerState: "draft", error: undefined, resumable: false }
+      ? { ...t, running: true, answerState: "draft", error: undefined, resumable: false, runControlState: "running", cancelError: null }
       : t)),
   }));
   wire(entry, agentId, (handlers) => resumeCodeAgent(runId, handlers));
 }
 
-/** Stop a session's run: cancel upstream first, then drop the local reader. */
-export function stop(sessionId: string): void {
+/** Freeze output immediately; retain ownership until every cleanup is confirmed. */
+export function stop(sessionId: string): Promise<void> {
   const entry = _runs.get(sessionId);
-  if (!entry) return;
+  if (!entry) return Promise.resolve();
+  if (entry.cancellation) return entry.cancellation;
+  if (!entry.snapshot.running && !stopUnconfirmed(entry.snapshot)) return Promise.resolve();
   const rid = entry.runId;
   const readerAbort = entry.abort;
-  if (rid) {
-    // Keep the SSE connection alive until the backend acknowledges cancellation.
-    // Aborting it first can dispose the run reader while its LLM HTTP worker is
-    // still blocked in prefill. UI state still flips to stopped immediately.
-    void cancelCodeAgent(rid)
-      .catch(() => { /* UI is already stopped; still release the local reader. */ })
-      .finally(() => readerAbort?.abort());
-  } else {
-    readerAbort?.abort();
-  }
-  entry.abort = null;
-  entry.runId = null;
-  entry.activeAgentId = null;
+  const agentId = entry.activeAgentId;
   update(entry, (s) => ({
     ...s,
     running: false,
-    turns: s.turns.map((t) => (t.kind === "agent" && t.running ? { ...t, running: false, answerState: "interrupted" } : t)),
+    runControlState: "stopping",
+    cancelError: null,
+    turns: s.turns.map((t) => (t.kind === "agent" && t.id === agentId ? { ...t, running: false,
+      answerState: t.answerState === "accepted" ? "accepted" : "interrupted", activeTool: undefined, brainPhase: undefined,
+      runControlState: "stopping", cancelError: null, resumable: false } : t)),
   }));
   entry.persist?.(entry.snapshot);
+  const finish = () => {
+    entry.cancellation = undefined;
+    entry.abort = null;
+    entry.runId = null;
+    entry.activeAgentId = null;
+    update(entry, (s) => ({ ...s, runControlState: "stopped", cancelError: null,
+      turns: s.turns.map((t) => t.kind === "agent" && t.id === agentId
+        ? { ...t, runControlState: "stopped", cancelError: null, resumable: Boolean(rid && entry.lastMode) } : t) }));
+    readerAbort?.abort();
+    entry.persist?.(entry.snapshot);
+  };
+  entry.cancellation = (async () => {
+    // Install the shared attempt before a synchronous validation/API failure
+    // can complete, so every failure remains available for another Stop.
+    await Promise.resolve();
+    try {
+      if (!rid) throw new Error("Нет ID прогона для подтверждения остановки.");
+      if (entry.resuming && !entry.runReady) {
+        // Resume reuses a terminal ID. Its new route must expose the prepared
+        // cancellation generation before Stop can acknowledge that identity.
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            entry.listeners.delete(ready);
+            reject(new Error("Нет подтверждения запуска Resume. Повтори Stop."));
+          }, 15000);
+          const ready = () => {
+            if (!entry.runReady && !entry.startError) return;
+            clearTimeout(timer);
+            entry.listeners.delete(ready);
+            if (entry.startError) reject(entry.startError);
+            else resolve();
+          };
+          entry.listeners.add(ready);
+          ready();
+        });
+      }
+      const result = await cancelCodeAgent(rid);
+      if (!result.ok || result.state !== "stopped" || result.run_id !== rid) {
+        throw new Error(result.error || "Сервер не подтвердил очистку ресурсов прогона.");
+      }
+      finish();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Не удалось подтвердить остановку.";
+      update(entry, (s) => ({ ...s, runControlState: "cancel_failed", cancelError: reason,
+        turns: s.turns.map((t) => t.kind === "agent" && t.id === agentId
+          ? { ...t, runControlState: "cancel_failed", cancelError: reason, resumable: false } : t) }));
+      entry.persist?.(entry.snapshot);
+    } finally {
+      if (entry.abort === readerAbort) entry.cancellation = undefined;
+    }
+  })();
+  return entry.cancellation;
 }
 
 /** Append uploaded-files turn placeholders and return the turn id + a status

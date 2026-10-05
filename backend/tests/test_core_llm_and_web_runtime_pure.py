@@ -586,7 +586,7 @@ class FormatSearchResultsTest(unittest.TestCase):
 
 
 class SearchWebRuntimeRelevanceTest(unittest.TestCase):
-    def test_relevant_fallback_result_beats_primary_engine_name_collision(self) -> None:
+    def test_relevant_result_beats_engine_name_collision(self) -> None:
         irrelevant = [{
             "title": "Ed Sheeran - Perfect",
             "href": "https://video.test/perfect",
@@ -597,55 +597,37 @@ class SearchWebRuntimeRelevanceTest(unittest.TestCase):
             "title": "Perfect World Pangu rune guide",
             "href": "https://game.test/pangu-rune",
             "body": "skill rune build for the game",
-            "engine": "duckduckgo",
+            "engine": "searxng",
         }]
 
         result = search_web_runtime(
             "Perfect World Pangu rune",
             max_results=1,
-            engines=("searxng", "duckduckgo"),
-            per_engine=1,
+            engines=("searxng",),
+            per_engine=2,
             resolve_search_engines_func=lambda engines: tuple(engines or ()),
             engine_funcs={
-                "searxng": lambda *args, **kwargs: irrelevant,
-                "duckduckgo": lambda *args, **kwargs: relevant,
+                "searxng": lambda *args, **kwargs: irrelevant + relevant,
             },
             logger_obj=logging.getLogger("search-relevance-test"),
         )
 
         self.assertEqual(result[0]["href"], "https://game.test/pangu-rune")
 
-    def test_top_results_include_an_equally_relevant_fallback_engine(self) -> None:
-        searxng = [
-            {
-                "title": f"Perfect World guide {index}",
-                "href": f"https://primary.test/{index}",
-                "body": "Perfect World guide",
-                "engine": "searxng",
-            }
-            for index in range(3)
-        ]
-        duckduckgo = [{
-            "title": "Perfect World guide from the community",
-            "href": "https://fallback.test/guide",
-            "body": "Perfect World guide",
-            "engine": "duckduckgo",
-        }]
-
+    def test_retired_engine_cannot_run_even_with_an_injected_resolver(self) -> None:
+        from unittest.mock import Mock
+        primary = Mock(return_value=[{"title": "Guide", "href": "https://example.org/guide",
+                                     "body": "Guide", "engine": "searxng"}])
+        retired = Mock(side_effect=AssertionError("retired adapter executed"))
         result = search_web_runtime(
-            "Perfect World guide",
-            max_results=3,
-            engines=("searxng", "duckduckgo"),
-            per_engine=3,
+            "Guide", max_results=3, engines=("searxng", "duckduckgo"),
             resolve_search_engines_func=lambda engines: tuple(engines or ()),
-            engine_funcs={
-                "searxng": lambda *args, **kwargs: searxng,
-                "duckduckgo": lambda *args, **kwargs: duckduckgo,
-            },
-            logger_obj=logging.getLogger("search-diversity-test"),
+            engine_funcs={"searxng": primary, "duckduckgo": retired},
+            logger_obj=logging.getLogger("single-search-test"),
         )
-
-        self.assertIn("duckduckgo", {item["engine"] for item in result})
+        primary.assert_called_once()
+        retired.assert_not_called()
+        self.assertEqual([item["engine"] for item in result], ["searxng"])
 
 
 if __name__ == "__main__":

@@ -1,22 +1,39 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { StreamCodeAgentArgs } from "../api/codeAgent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StreamCodeAgentArgs, StreamHandlers } from "../api/codeAgent";
+import type { AdvancedMultiAgentRequest, AdvancedMultiAgentStreamHandlers } from "../api/project";
 
-const fake = vi.hoisted(() => ({ handlers: [] as StreamCodeAgentArgs[], cancels: [] as string[], input: vi.fn() }));
+const fake = vi.hoisted(() => ({ handlers: [] as StreamCodeAgentArgs[], cancels: [] as string[], input: vi.fn(), cancel: vi.fn(),
+  resumed: [] as (StreamHandlers & { signal?: AbortSignal })[],
+  multi: [] as { body: AdvancedMultiAgentRequest; handlers: AdvancedMultiAgentStreamHandlers; signal?: AbortSignal }[] }));
 vi.mock("../api/codeAgent", () => ({
   sendCodeAgentInput: fake.input,
   streamCodeAgent: (args: StreamCodeAgentArgs) => {
     fake.handlers.push(args);
     return new Promise<void>(() => {});
   },
-  resumeCodeAgent: () => new Promise<void>(() => {}),
+  resumeCodeAgent: (_runId: string, handlers: StreamHandlers & { signal?: AbortSignal }) => {
+    fake.resumed.push(handlers);
+    return new Promise<void>(() => {});
+  },
   cancelCodeAgent: (id: string) => {
     fake.cancels.push(id);
+    return fake.cancel(id);
+  },
+}));
+vi.mock("../api/project", () => ({
+  streamAdvancedMultiAgent: (body: AdvancedMultiAgentRequest, handlers: AdvancedMultiAgentStreamHandlers, signal?: AbortSignal) => {
+    fake.multi.push({ body, handlers, signal });
     return new Promise<void>(() => {});
   },
 }));
-import { send, stop, steer, getSnapshot, seed, setPersist } from "./backgroundRuns";
+import { send, sendMultiAgent, resume, stop, steer, getSnapshot, seed, setPersist } from "./backgroundRuns";
 import { isAcceptedAnswer } from "./answerLifecycle";
 import { uploadResource } from "../api/resources";
+
+beforeEach(() => {
+  fake.cancels.length = 0;
+  fake.cancel.mockReset().mockImplementation(async (id: string) => ({ ok: true, state: "stopped", run_id: id }));
+});
 
 describe("updates to a live run", () => {
   afterEach(() => { fake.cancels.length = 0; fake.input.mockReset(); });
@@ -30,12 +47,12 @@ describe("updates to a live run", () => {
     handler.onRunId?.("starting-run");
     await pending;
     expect(fake.input.mock.calls[0].slice(0, 2)).toEqual(["starting-run", args.sessionId]);
-    stop(args.sessionId);
+    await stop(args.sessionId);
     fake.input.mockClear();
     send({ ...args, sessionId: "steer-stopped-at-start" });
     const interrupted = steer("steer-stopped-at-start", "сохранённый текст");
     const rejected = expect(interrupted).rejects.toThrow("Текст сохранён");
-    stop("steer-stopped-at-start");
+    await stop("steer-stopped-at-start");
     await rejected;
     expect(fake.input).not.toHaveBeenCalled();
   });
@@ -58,7 +75,7 @@ describe("updates to a live run", () => {
     const updates = getSnapshot(sessionId).turns.filter(t => t.kind === "user" && t.steering);
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ steering: { state: "applied", reply: "Ок, только прочитаю." } });
-    stop(sessionId);
+    await stop(sessionId);
     expect(fake.cancels.at(-1)).toBe("live-run");
   });
 
@@ -72,7 +89,7 @@ describe("updates to a live run", () => {
     fake.input.mockImplementationOnce(async (_run, _session, id, text) => ({ request_id: id, text, state: "queued" }));
     await steer(sessionId, "сохрани данные");
     expect(fake.input.mock.calls.at(-1)![2]).toBe(first[2]);
-    stop(sessionId);
+    await stop(sessionId);
     await expect(steer(sessionId, "поздно")).rejects.toThrow("Текст сохранён");
   });
 });
@@ -92,9 +109,9 @@ describe("attachment history", () => {
     expect(fake.handlers.at(-1)!.resources).toEqual([first, second].map(r => ({ ...r, status: "ready" })));
     const persist = vi.fn();
     setPersist(sessionId, persist);
-    stop(sessionId);
+    await stop(sessionId);
     // Session storage JSON is the same boundary used by WorkspaceShell.
-    const saved = JSON.parse(JSON.stringify(persist.mock.calls[0][0].turns));
+    const saved = JSON.parse(JSON.stringify(persist.mock.calls.at(-1)![0].turns));
     seed(sessionId, []);
     seed(sessionId, saved);
     send({ ...args, text: "теперь собери КП" });
@@ -105,34 +122,34 @@ describe("attachment history", () => {
       resources: [{ resource_id: first.resource_id }, { resource_id: second.resource_id }],
     });
     expect(JSON.stringify(saved)).not.toContain('"first"');
-    stop(sessionId);
+    await stop(sessionId);
 
     send({ ...args, sessionId: "other-attachment-session", text: "продолжай" });
     expect(fake.handlers.at(-1)!.conversationHistory).toEqual([]);
     expect(fake.handlers.at(-1)!.resources).toEqual([]);
-    stop("other-attachment-session");
+    await stop("other-attachment-session");
   });
 
-  it("does not carry uploading or failed files as attached resources", () => {
+  it("does not carry uploading or failed files as attached resources", async () => {
     const sessionId = "failed-attachments";
     const resource = { resource_id: "c".repeat(32), name: "voice.ogg", kind: "audio" as const, content_type: "audio/ogg", size: 10 };
     const args = { sessionId, text: "расшифруй", mode: "code" as const, projectRoot: "", model: "auto" };
     send({ ...args, resources: [{ ...resource, status: "error" }, { ...resource, status: "uploading" }] });
-    stop(sessionId);
+    await stop(sessionId);
     send({ ...args, text: "продолжай" });
     expect(fake.handlers.at(-1)!.conversationHistory).toEqual([{ role: "user", content: "расшифруй" }]);
-    stop(sessionId);
+    await stop(sessionId);
   });
 });
 
 describe("SSE run ownership", () => {
-  it("ignores cancelled callbacks while a new run owns the session", () => {
+  it("ignores cancelled callbacks while a new run owns the session", async () => {
     const sessionId = "stale-events";
     const args = { sessionId, text: "first", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const old = fake.handlers.at(-1)!;
     old.onRunId?.("old-run");
-    stop(sessionId);
+    await stop(sessionId);
     send({ ...args, text: "second" });
     const current = fake.handlers.at(-1)!;
     current.onRunId?.("new-run");
@@ -141,27 +158,27 @@ describe("SSE run ownership", () => {
     old.onError?.(new Error("old transport failed"));
     expect(getSnapshot(sessionId).running).toBe(true);
     expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ kind: "agent", running: true, runId: "new-run" });
-    stop(sessionId);
+    await stop(sessionId);
     expect(fake.cancels).toEqual(["old-run", "new-run"]);
   });
 });
 
 describe("answer lifecycle", () => {
-  it("persists a late accepted Workflow answer after Stop before the next message", () => {
+  it("persists a late accepted Workflow answer after Stop before the next message", async () => {
     const args = { sessionId: "late-workflow-input", text: "собери КП", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const first = fake.handlers.at(-1)!;
     const input = { request_id: "late-request-1", question: "Количество?", answer: "1 ИБП, 40 АКБ" };
     const persist = vi.fn();
     setPersist(args.sessionId, persist);
-    stop(args.sessionId);
+    await stop(args.sessionId);
     const event = {
       type: "tool_call" as const, step: 1, tool: "ask_user", arguments: {},
       result: "RAW LATE OUTPUT", ok: true, workflow_input: input,
     };
     first.onEvent?.(event);
     first.onEvent?.(event);
-    expect(persist).toHaveBeenCalledTimes(2); // Stop + the one accepted receipt
+    expect(persist).toHaveBeenCalledTimes(3); // stopping + stopped + the accepted receipt
     expect(getSnapshot(args.sessionId).running).toBe(false);
     const saved = JSON.parse(JSON.stringify(persist.mock.calls.at(-1)![0].turns));
     expect(JSON.stringify(saved)).not.toContain("RAW LATE OUTPUT");
@@ -169,15 +186,15 @@ describe("answer lifecycle", () => {
     send({ ...args, text: "продолжай" });
     const history = fake.handlers.at(-1)!.conversationHistory!;
     expect(history.filter(m => m.role === "user" && m.content.includes(input.answer))).toHaveLength(1);
-    stop(args.sessionId);
+    await stop(args.sessionId);
   });
 
-  it("confines late Workflow input to its stopped turn while another run is active", () => {
+  it("confines late Workflow input to its stopped turn while another run is active", async () => {
     const args = { sessionId: "late-workflow-new-run", text: "first", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const old = fake.handlers.at(-1)!;
     const stoppedId = getSnapshot(args.sessionId).turns.at(-1)!.id;
-    stop(args.sessionId);
+    await stop(args.sessionId);
     send({ ...args, text: "second" });
     const current = fake.handlers.at(-1)!;
     current.onEvent?.({ type: "tool_started", step: 1, tool: "read_file", arguments: {} });
@@ -202,10 +219,10 @@ describe("answer lifecycle", () => {
     expect(stopped.toolCalls).toHaveLength(1);
     expect(stopped.toolCalls[0].workflow_input).toEqual(input);
     expect(stopped.running).toBe(false);
-    stop(args.sessionId);
+    await stop(args.sessionId);
   });
 
-  it("preserves accepted Workflow input after cancellation and reload without retaining draft text", () => {
+  it("preserves accepted Workflow input after cancellation and reload without retaining draft text", async () => {
     const args = { sessionId: "workflow-input-history", text: "собери КП", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const first = fake.handlers.at(-1)!;
@@ -218,7 +235,7 @@ describe("answer lifecycle", () => {
     first.onEvent?.(event); // replay must not duplicate user input in the next prompt
     first.onEvent?.({ ...event, workflow_input: undefined, result: "LEGACY RAW ANSWER" });
     first.onEvent?.({ type: "delta", step: 1, text: "UNACCEPTED DRAFT", answer_state: "draft" });
-    stop(args.sessionId);
+    await stop(args.sessionId);
     seed(args.sessionId, JSON.parse(JSON.stringify(getSnapshot(args.sessionId).turns)));
     send({ ...args, text: "продолжай" });
     const history = fake.handlers.at(-1)!.conversationHistory!;
@@ -228,10 +245,10 @@ describe("answer lifecycle", () => {
     expect(answers[0].content).toContain(JSON.stringify(input));
     expect(JSON.stringify(history)).not.toContain("UNACCEPTED DRAFT");
     expect(JSON.stringify(history)).not.toContain("LEGACY RAW ANSWER");
-    stop(args.sessionId);
+    await stop(args.sessionId);
   });
 
-  it("does not retract an accepted answer on a later transport error", () => {
+  it("does not retract an accepted answer on a later transport error", async () => {
     const args = { sessionId: "post-accept-error", text: "question", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const first = fake.handlers.at(-1)!;
@@ -242,14 +259,14 @@ describe("answer lifecycle", () => {
     expect(isAcceptedAnswer(turn)).toBe(true);
     expect(turn.error).toBeFalsy();
   });
-  it.each(["stop", "error"])("keeps a %s draft out of next history and speech", (ending) => {
+  it.each(["stop", "error"])("keeps a %s draft out of next history and speech", async (ending) => {
     const args = { sessionId: `draft-${ending}`, text: "question", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const first = fake.handlers.at(-1)!;
     first.onEvent?.({ type: "delta", step: 1, text: "UNACCEPTED DRAFT", answer_state: "draft" });
     const persist = vi.fn();
     setPersist(args.sessionId, persist);
-    if (ending === "stop") stop(args.sessionId);
+    if (ending === "stop") await stop(args.sessionId);
     else first.onError?.(new Error("transport interrupted"));
     const turn = getSnapshot(args.sessionId).turns.at(-1)!;
     expect(turn).toMatchObject({ text: "UNACCEPTED DRAFT", answerState: "interrupted" });
@@ -258,10 +275,10 @@ describe("answer lifecycle", () => {
     expect(isAcceptedAnswer(turn)).toBe(false);
     send({ ...args, text: "continue" });
     expect(fake.handlers.at(-1)!.conversationHistory?.some(m => m.content.includes("UNACCEPTED"))).toBe(false);
-    stop(args.sessionId);
+    await stop(args.sessionId);
   });
 
-  it("stores exactly the accepted replacement and carries its journal reference", () => {
+  it("stores exactly the accepted replacement and carries its journal reference", async () => {
     const args = { sessionId: "accepted-replacement", text: "question", mode: "code" as const, projectRoot: "", model: "auto" };
     send(args);
     const first = fake.handlers.at(-1)!;
@@ -277,6 +294,95 @@ describe("answer lifecycle", () => {
     send({ ...args, text: "follow up" });
     expect(fake.handlers.at(-1)!.conversationHistory).toContainEqual({ role: "assistant", content: text });
     expect(fake.handlers.at(-1)!.sourceRunIds).toEqual(["source-run"]);
-    stop(args.sessionId);
+    await stop(args.sessionId);
+  });
+});
+
+describe("confirmed Stop", () => {
+  it("waits for the current Resume cancellation generation before stopping its reused ID", async () => {
+    const sessionId = "stop-before-resume-headers";
+    seed(sessionId, [{ kind: "agent", id: "resume-turn", text: "draft", toolCalls: [], running: false,
+      runId: "resumed-run", resumable: true, answerState: "interrupted" }]);
+    resume(sessionId, "resume-turn", "resumed-run");
+    const handlers = fake.resumed.at(-1)!;
+    const stopping = stop(sessionId);
+    await Promise.resolve();
+    expect(fake.cancels).toEqual([]);
+    expect(getSnapshot(sessionId).runControlState).toBe("stopping");
+    handlers.onRunId?.("resumed-run");
+    await stopping;
+    expect(fake.cancels).toEqual(["resumed-run"]);
+    expect(getSnapshot(sessionId).runControlState).toBe("stopped");
+  });
+
+  it("requires cleanup acknowledgment for multi-agent even before its first stream event", async () => {
+    const sessionId = "multi-stop-retry";
+    sendMultiAgent({ sessionId, text: "проверь", useOrchestrator: true, useReflection: true });
+    const stream = fake.multi.at(-1)!;
+    const runId = stream.body.run_id!;
+    expect(runId).toMatch(/^[a-f0-9]{32}$/);
+    fake.cancel.mockResolvedValueOnce({ ok: false, state: "cancel_failed", run_id: runId, error: "child cleanup refused" });
+    await stop(sessionId);
+    expect(getSnapshot(sessionId).runControlState).toBe("cancel_failed");
+    expect(stream.signal!.aborted).toBe(false);
+    stream.handlers.onDone?.({ ok: true, report: "late report" });
+    const count = fake.multi.length;
+    sendMultiAgent({ sessionId, text: "новый прогон", useOrchestrator: false, useReflection: false });
+    expect(fake.multi).toHaveLength(count);
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ runId, text: "", running: false });
+    await stop(sessionId);
+    expect(fake.cancels).toEqual([runId, runId]);
+    expect(stream.signal!.aborted).toBe(true);
+    expect(getSnapshot(sessionId).runControlState).toBe("stopped");
+  });
+
+  it("retains identity on failed cleanup, freezes late output and retries the same run", async () => {
+    const sessionId = "confirmed-stop-retry";
+    const args = { sessionId, text: "проверь", mode: "code" as const, projectRoot: "", model: "auto" };
+    send(args);
+    const handler = fake.handlers.at(-1)!;
+    const runId = handler.runId!;
+    expect(runId).toMatch(/^[a-f0-9]{32}$/);
+    handler.onRunId?.(runId);
+    handler.onEvent?.({ type: "delta", step: 1, text: "сохранённый черновик", answer_state: "draft" });
+    let resolve!: (value: unknown) => void;
+    fake.cancel.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const stopping = stop(sessionId);
+    expect(stop(sessionId)).toBe(stopping);
+    expect(getSnapshot(sessionId)).toMatchObject({ running: false, runControlState: "stopping", cancelError: null });
+    expect(handler.signal!.aborted).toBe(false);
+    const count = fake.handlers.length;
+    send({ ...args, text: "новая задача" });
+    handler.onEvent?.({ type: "delta", step: 1, text: "поздний вывод", answer_state: "draft" });
+    handler.onEvent?.({ type: "done", ok: true, run_id: runId, steps: 1, stop_reason: "answer", error: null });
+    await Promise.resolve();
+    resolve({ ok: false, state: "cancel_failed", run_id: runId, error: "process tree 7312 is still alive" });
+    await stopping;
+    expect(getSnapshot(sessionId)).toMatchObject({ runControlState: "cancel_failed", cancelError: "process tree 7312 is still alive" });
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ runId, text: "сохранённый черновик", resumable: false });
+    expect(handler.signal!.aborted).toBe(false);
+    seed(sessionId, []);
+    send({ ...args, text: "новая задача" });
+    expect(fake.handlers).toHaveLength(count);
+    await stop(sessionId);
+    expect(fake.cancels).toEqual([runId, runId]);
+    expect(getSnapshot(sessionId).runControlState).toBe("stopped");
+    expect(handler.signal!.aborted).toBe(true);
+    send({ ...args, text: "новая задача" });
+    expect(fake.handlers).toHaveLength(count + 1);
+    await stop(sessionId);
+  });
+
+  it("persists an unresolved Stop across reload and requires a confirmed receipt", async () => {
+    const sessionId = "restored-stop-retry";
+    seed(sessionId, [{ kind: "agent", id: "restored-turn", text: "черновик", toolCalls: [], running: false,
+      runId: "restored-run", runControlState: "stopping", answerState: "interrupted" }]);
+    expect(getSnapshot(sessionId).runControlState).toBe("cancel_failed");
+    fake.cancel.mockResolvedValueOnce({ ok: true, found: false, run_id: "restored-run" });
+    await stop(sessionId);
+    expect(getSnapshot(sessionId).runControlState).toBe("cancel_failed");
+    await stop(sessionId);
+    expect(fake.cancels).toEqual(["restored-run", "restored-run"]);
+    expect(getSnapshot(sessionId).runControlState).toBe("stopped");
   });
 });

@@ -22,7 +22,7 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     useCallback((cb) => bg.subscribe(sessionId, cb), [sessionId]),
     useCallback(() => bg.getSnapshot(sessionId), [sessionId]),
   );
-  const { turns, running, taskLedger, contextUsage } = snapshot;
+  const { turns, running, runControlState, cancelError, taskLedger, contextUsage } = snapshot;
 
   // Seed the composer's context meter at 0% before the first turn, using the
   // live ctx_size from the backend. Re-seeds on model change while still unseeded
@@ -52,7 +52,7 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
   }, [sessionId]);
 
   const stop = useCallback(() => {
-    bg.stop(sessionId);
+    void bg.stop(sessionId);
   }, [sessionId]);
 
   const reset = useCallback((next: Turn[], ledger: bg.RunSnapshot["taskLedger"] = [], contextState: bg.RunSnapshot["contextState"] = null) => {
@@ -66,5 +66,5 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     });
   }, [sessionId, model]);
 
-  return { turns, running, send, sendMultiAgent, resume, stop, reset, contextUsage, taskLedger };
+  return { turns, running, runControlState, cancelError, send, sendMultiAgent, resume, stop, reset, contextUsage, taskLedger };
 }

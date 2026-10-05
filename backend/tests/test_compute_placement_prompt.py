@@ -53,7 +53,8 @@ def test_transcription_guidance_leaves_placement_to_agent_without_server_probe(t
     assert "Где выполнить расшифровку?" not in seen_prompt
     assert "локальное клиентское" in seen_prompt
     assert "восстановление локальной GPU-среды" in seen_prompt
-    assert "Отсутствие навыка" in seen_prompt
+    assert "resource_process auto перебирает только локальные GPU/CPU, server_cpu выбирается" in seen_prompt
+    assert "Объяви все требования исходной задачи через task_decide" not in seen_prompt
     catalog.assert_not_called()
 
 

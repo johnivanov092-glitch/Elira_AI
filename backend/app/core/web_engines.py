@@ -2,27 +2,17 @@ from __future__ import annotations
 
 import os
 from typing import Dict, Iterable, List
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
-try:
-    from ddgs import DDGS
-    DDGS_LABEL = "DDGS metasearch"
-    # DDGS auto prioritizes encyclopedia engines and stops once its result
-    # count is met. Query web engines explicitly; Wikipedia has its own adapter.
-    DDGS_WEB_BACKENDS = ("google", "brave", "duckduckgo", "yahoo", "mojeek", "yandex")
-except ImportError:  # pragma: no cover - compatibility fallback
-    from duckduckgo_search import DDGS
-    DDGS_LABEL = "DuckDuckGo"
-    DDGS_WEB_BACKENDS = ()  # Legacy package has a different backend vocabulary.
-
 from .files import truncate_text
+from .redaction import redact_text
 
 
-SUPPORTED_SEARCH_ENGINES = ("searxng", "duckduckgo", "wikipedia")
+SUPPORTED_SEARCH_ENGINES = ("searxng",)
 DEFAULT_SEARCH_ENGINES = SUPPORTED_SEARCH_ENGINES
-CURRENT_WORLD_ENGINES = {"searxng", "duckduckgo", "ddg-news"}
+CURRENT_WORLD_ENGINES = {"searxng"}
 ENGINE_PRIORITY = {
     "searxng": 0,
     "duckduckgo": 1,
@@ -30,9 +20,9 @@ ENGINE_PRIORITY = {
 }
 ENGINE_LABELS = {
     "searxng": "SearXNG",
-    "duckduckgo": DDGS_LABEL,
+    "duckduckgo": "DuckDuckGo",
     "wikipedia": "Wikipedia",
-    "ddg-news": f"{DDGS_LABEL} News",
+    "ddg-news": "DuckDuckGo News",
 }
 
 KZ_LOCAL_NEWS_DOMAINS = (
@@ -52,6 +42,40 @@ FINANCE_HIGH_CONFIDENCE_DOMAINS = (
     "investing.com",
     "wise.com",
 )
+
+
+class SearchResults(list[Dict[str, str]]):
+    """Keep the list API while carrying upstream diagnostics through ranking."""
+
+    def __init__(self, rows: Iterable[Dict[str, str]] = (), *,
+                 engine_warnings: Iterable[Dict[str, str]] = ()):
+        super().__init__(rows)
+        self.engine_warnings = [dict(warning) for warning in engine_warnings]
+
+
+class SearchUnavailable(RuntimeError):
+    """Transport failure with the same structured diagnostics as partial results."""
+
+    def __init__(self, message: str, *, engine_warnings: Iterable[Dict[str, str]] = ()):
+        super().__init__(message)
+        self.engine_warnings = [dict(warning) for warning in engine_warnings]
+
+
+def search_warning_text(warnings: Iterable[Dict[str, str]]) -> str:
+    rows = list(warnings)
+    if not rows:
+        return ""
+    summary = "; ".join(f"{item['engine']}: {item['error']}" for item in rows[:3])
+    return f"WARNING: incomplete SearXNG engine coverage ({len(rows)} engine failures); {summary}"
+
+
+def _engine_warnings(payload: dict) -> list[Dict[str, str]]:
+    rows = payload.get("unresponsive_engines", [])
+    if (not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != 2
+            or any(not isinstance(value, str) or not value.strip() for value in row) for row in rows)):
+        raise RuntimeError("Invalid SearXNG response: expected unresponsive_engines name/error pairs")
+    return [{"engine": redact_text(row[0].strip())[:100], "error": redact_text(row[1].strip())[:240]}
+            for row in rows]
 
 
 def session() -> requests.Session:
@@ -95,99 +119,30 @@ def domain_matches(domain: str, expected: Iterable[str]) -> bool:
 
 def searxng_url() -> str:
     """Base URL of the self-hosted SearXNG metasearch (e.g.
-    http://192.168.88.15:8003). Empty when unconfigured -> SearXNG is skipped
-    and search degrades to the keyless DuckDuckGo/Wikipedia fallback."""
+    http://192.168.88.15:8003). Missing configuration fails search explicitly."""
     return os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
 
 
 def engine_available(engine: str) -> bool:
-    if engine == "searxng":
-        return bool(searxng_url())
-    return engine in {"duckduckgo", "wikipedia"}
+    return engine == "searxng" and bool(searxng_url())
 
 
 def resolve_search_engines(engines: Iterable[str] | None = None) -> tuple[str, ...]:
-    requested = list(engines or DEFAULT_SEARCH_ENGINES)
-    resolved: list[str] = []
-    for engine in requested:
-        if engine not in SUPPORTED_SEARCH_ENGINES:
-            continue
-        if not engine_available(engine):
-            continue
-        resolved.append(engine)
-    if "duckduckgo" not in resolved:
-        resolved.append("duckduckgo")
-    if "wikipedia" not in resolved:
-        resolved.append("wikipedia")
-    deduped: list[str] = []
-    for engine in resolved:
-        if engine not in deduped:
-            deduped.append(engine)
-    return tuple(deduped)
+    """The sole client backend; legacy preferences cannot activate adapters."""
+    return DEFAULT_SEARCH_ENGINES
 
 
 def get_web_engine_status() -> dict:
-    searxng_enabled = bool(searxng_url())
-    available = list(resolve_search_engines())
-
-    primary = "searxng" if searxng_enabled else "duckduckgo"
-    fallback = [engine for engine in available if engine != primary]
-    degraded = not searxng_enabled
-    warnings: list[str] = []
-
-    if not searxng_enabled:
-        warnings.append(f"SEARXNG_URL not configured; web search uses {DDGS_LABEL} and Wikipedia.")
-
+    configured = bool(searxng_url())
     return {
         "supported_engines": list(SUPPORTED_SEARCH_ENGINES),
-        "available_engines": available,
-        "primary_engine": primary,
-        "fallback_engines": fallback,
-        "api_keys_present": {
-            "searxng": searxng_enabled,
-        },
-        "degraded_mode": degraded,
-        "warnings": warnings,
+        "available_engines": ["searxng"] if configured else [],
+        "primary_engine": "searxng",
+        "fallback_engines": [],
+        "api_keys_present": {"searxng": configured},
+        "degraded_mode": not configured,
+        "warnings": [] if configured else ["SEARXNG_URL not configured; web search is unavailable."],
     }
-
-
-def search_duckduckgo(
-    query: str,
-    max_results: int = 5,
-    *,
-    categories: str | None = None,
-) -> List[Dict[str, str]]:
-    results: list[Dict[str, str]] = []
-    with DDGS() as ddgs:
-        text_options = {"backend": ",".join(DDGS_WEB_BACKENDS)} if DDGS_WEB_BACKENDS else {}
-        raw_results = (
-            ddgs.images(query, max_results=max_results)
-            if categories == "images"
-            else ddgs.text(query, max_results=max_results, **text_options)
-        )
-        for item in raw_results:
-            href = clean_url(item.get("url") or item.get("href", ""))
-            if not href.startswith("http"):
-                continue
-            results.append(
-                {
-                    "title": (item.get("title") or "").strip(),
-                    "href": href,
-                    "body": (item.get("body") or item.get("source") or "").strip(),
-                    "engine": "duckduckgo",
-                    **({"date": str(item.get("date") or item.get("publishedDate"))}
-                       if item.get("date") or item.get("publishedDate") else {}),
-                    **(
-                        {
-                            "img_src": clean_url(item.get("image", "")),
-                            "thumbnail_src": clean_url(item.get("thumbnail", "")),
-                        }
-                        if categories == "images"
-                        else {}
-                    ),
-                }
-            )
-    return results
 
 
 def _is_cyrillic(text: str) -> bool:
@@ -203,8 +158,7 @@ def search_searxng(
     pageno: int | None = None,
 ) -> List[Dict[str, str]]:
     """Query the self-hosted SearXNG metasearch JSON API. SearXNG already
-    aggregates Google/Bing/DuckDuckGo/Wikipedia upstream, so one call fans out
-    across engines. Returns snippet-level results (no raw page content — the
+    owns its upstream engine selection; this client uses only that endpoint. Returns snippet-level results (no raw page content — the
     research path fetches full text from the top pages separately).
 
     Optional tuning (all backward-compatible — omitted means SearXNG default):
@@ -235,9 +189,15 @@ def search_searxng(
     )
     response.raise_for_status()
     payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise RuntimeError("Invalid SearXNG response: expected a results array")
+    warnings = _engine_warnings(payload)
 
     results: list[Dict[str, str]] = []
-    for item in payload.get("results", [])[:max_results]:
+    # SearXNG's leading rows can be unrelated or violate an explicit site
+    # constraint. Rank a bounded candidate pool before applying the output cap.
+    candidate_limit = max(max_results, min(100, max_results * 4))
+    for item in payload.get("results", [])[:candidate_limit]:
         href = clean_url(item.get("url", ""))
         if not href.startswith("http"):
             continue
@@ -264,135 +224,32 @@ def search_searxng(
                 ),
             }
         )
-    return results
-
-
-def search_wikipedia(
-    query: str,
-    max_results: int = 5,
-    *,
-    categories: str | None = None,
-) -> List[Dict[str, str]]:
-    results: list[Dict[str, str]] = []
-    if categories == "images":
+    # The news category may contain only one failing upstream. A single bounded
+    # general-category attempt uses the same SearXNG instance and exact query /
+    # period. Page N remains page N of the requested category, without fallback.
+    if categories == "news" and not (pageno and pageno > 1) and (
+        warnings or len(results) < min(max_results, 2)
+    ):
         try:
-            response = session().get(
-                "https://commons.wikimedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "generator": "search",
-                    "gsrsearch": query,
-                    "gsrnamespace": 6,
-                    "gsrlimit": min(max(max_results * 2, 3), 10),
-                    "prop": "imageinfo",
-                    "iiprop": "url",
-                    "iiurlwidth": 800,
-                    "format": "json",
-                    "utf8": 1,
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
-            pages = response.json().get("query", {}).get("pages", {})
-            for item in pages.values():
-                image_info = (item.get("imageinfo") or [{}])[0]
-                image_url = str(image_info.get("url") or "").strip()
-                thumbnail = str(image_info.get("thumburl") or "").strip()
-                source_url = str(image_info.get("descriptionurl") or "").strip()
-                title = str(item.get("title") or "").removeprefix("File:").strip()
-                if not title or not image_url or not source_url:
-                    continue
-                results.append({
-                    "title": title,
-                    "href": source_url,
-                    "body": "Wikimedia Commons",
-                    "engine": "wikipedia",
-                    "img_src": clean_url(image_url),
-                    "thumbnail_src": clean_url(thumbnail or image_url),
-                })
-                if len(results) >= max_results:
-                    return results
-        except Exception:
-            pass
-    for lang in ("ru", "en"):
-        if len(results) >= max_results:
-            break
-        try:
-            if categories == "images":
-                response = session().get(
-                    f"https://{lang}.wikipedia.org/w/api.php",
-                    params={
-                        "action": "query",
-                        "generator": "search",
-                        "gsrsearch": query,
-                        "gsrlimit": min(max_results, 5),
-                        "prop": "pageimages|info",
-                        "piprop": "thumbnail|original",
-                        "pithumbsize": 800,
-                        "inprop": "url",
-                        "format": "json",
-                        "utf8": 1,
-                    },
-                    timeout=15,
-                )
-                response.raise_for_status()
-                pages = response.json().get("query", {}).get("pages", {})
-                for item in pages.values():
-                    title = str(item.get("title") or "").strip()
-                    original = str((item.get("original") or {}).get("source") or "").strip()
-                    thumbnail = str((item.get("thumbnail") or {}).get("source") or "").strip()
-                    image_url = original or thumbnail
-                    if not title or not image_url:
-                        continue
-                    href = str(item.get("fullurl") or "").strip()
-                    if not href:
-                        href = f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
-                    if any(existing["title"] == title for existing in results):
-                        continue
-                    results.append({
-                        "title": title,
-                        "href": href,
-                        "body": f"Wikipedia {lang.upper()}",
-                        "engine": "wikipedia",
-                        "img_src": clean_url(image_url),
-                        "thumbnail_src": clean_url(thumbnail or image_url),
-                    })
-                    if len(results) >= max_results:
-                        break
-                continue
-            response = session().get(
-                f"https://{lang}.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "list": "search",
-                    "srsearch": query,
-                    "srlimit": min(max_results, 5),
-                    "format": "json",
-                    "utf8": 1,
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            for item in payload.get("query", {}).get("search", []):
-                title = item.get("title", "")
-                snippet = item.get("snippet", "")
-                href = f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
-                if any(existing["title"] == title for existing in results):
-                    continue
-                results.append(
-                    {
-                        "title": f"{title} (Wikipedia {lang.upper()})",
-                        "href": href,
-                        "body": re_sub_html(snippet),
-                        "engine": "wikipedia",
-                    }
-                )
-                if len(results) >= max_results:
-                    break
-        except Exception:
-            continue
-    return results
+            general = search_searxng(query, max_results=max_results,
+                                     time_range=time_range, categories="general")
+            warnings.extend(general.engine_warnings)
+            seen = {row["href"] for row in results}
+            results.extend(row for row in general if row["href"] not in seen)
+        except (requests.RequestException, RuntimeError, ValueError) as exc:
+            warnings.extend(getattr(exc, "engine_warnings", []) or [{
+                "engine": "SearXNG general", "error": redact_text(str(exc))[:240],
+            }])
+        warnings = [dict(pair) for pair in dict.fromkeys(tuple(sorted(row.items())) for row in warnings)]
+    if not results and warnings:
+        raise SearchUnavailable("SearXNG upstream search failed: " + search_warning_text(warnings),
+                                engine_warnings=warnings)
+    # Lazy import avoids the runtime/adapter import cycle. All callers use the
+    # existing ranker; a category fallback does not get its own retrieval path.
+    from .web_runtime import filter_site_results, rerank_results
+
+    ranked = rerank_results(filter_site_results(query, results), query=query)
+    return SearchResults(ranked[:max_results], engine_warnings=warnings)
 
 
 def re_sub_html(snippet: str) -> str:

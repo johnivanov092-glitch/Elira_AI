@@ -4,10 +4,29 @@ from copy import deepcopy
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.delivery_session import build_continuation_kwargs
 from app.application.code_agent.run_journal import RunJournal
+from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE, task_guidance_blocks
 from app.application.code_agent.tools import _web
 from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
 from app.infrastructure.search import web_search
 from app.infrastructure.search.web_runtime import PageFetchResult
+
+
+def test_retrieval_guidance_keeps_source_fidelity_and_operational_contracts():
+    blocks = task_guidance_blocks({"web_search", "web_fetch", "web_query", "browser", "http_api"})
+    assert set(blocks) == {"web"}
+    guidance = blocks["web"]
+    assert guidance.count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
+    assert "API либо локального файла" in guidance
+    assert "предмет, группу, условия применимости" in guidance
+    assert "Сохраняй отрицания и силу вывода" in guidance
+    assert "Дата публикации, индексации или чтения не доказывает дату события" in guidance
+    assert "обнаружение, а не содержание" in guidance and "[[source:id]]" in guidance
+    assert "первичные источники" in guidance and "текущим официальным индексом нужного канала" in guidance
+    assert "в той же ветке и компоненте" in guidance and "учитывай backport" in guidance
+    assert "предупреждения поисковых движков" in guidance
+    assert "web_fetch(store=true)" in guidance and "web_query" in guidance and "store=false" in guidance
+    assert "force_refresh — только по прямому запросу" in guidance
+    assert "find работает для HTML, текста и PDF" in guidance and "используй browser" in guidance
 
 
 def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tmp_path, monkeypatch):
@@ -37,15 +56,17 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
     reasoning = "Synthetic reasoning stream fixture."
 
     def chat_stream(**kwargs):
-        captures.append({"messages": deepcopy(kwargs["messages"])})
         assert kwargs["options"]["reasoning_effort"] == "xhigh"
         assert kwargs["options"]["chat_template_kwargs"] == {
             "enable_thinking": True, "reasoning_effort": "xhigh",
         }
+        captures.append({"messages": deepcopy(kwargs["messages"])})
         index = len(captures) - 1
         if index:
             names = {schema["function"]["name"] for schema in kwargs["tools"]}
             assert {"web_search", "web_fetch", "browser"} <= names
+            assert any(WEB_SOURCE_FIDELITY_GUIDANCE in item.get("content", "")
+                       for item in kwargs["messages"])
         if index < len(sequence):
             name, arguments = sequence[index]
             message = {"content": "", "tool_calls": [{
@@ -56,6 +77,10 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
             assert excerpt.strip() in context
             assert browser_url in context
             assert "The rendered fixture shows the input example." in context
+            cue = kwargs["messages"][-1]
+            assert cue["role"] == "user" and cue["_msg_id"] == "web-closing-context"
+            assert cue["content"].count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
+            assert excerpt.strip() not in cue["content"]
             sources = {source["url"]: source for event in events if event["type"] == "tool_call"
                        for source in event.get("sources", []) if source["status"] == "excerpt"}
             marker = sources[source_url]["id"]
@@ -107,6 +132,7 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
         assert source_url in context
         assert browser_source["quote"] in context
         assert browser_url in context
+        assert WEB_SOURCE_FIDELITY_GUIDANCE in kwargs["messages"][-1]["content"]
         return {"message": {"content": (
             f"Input format remains grounded in the source. [[source:{source['id']}]]\n"
             f"The rendered example is retained. [[source:{browser_source['id']}]]"

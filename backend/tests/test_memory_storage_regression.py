@@ -156,7 +156,7 @@ class MemoryStorageRegressionTest(unittest.TestCase):
             env = os.environ.copy()
             env["ELIRA_DATA_DIR"] = str(data_path)
             # Strip any web-search config so this test always asserts the
-            # no-engine fallback (duckduckgo). Without this, if pytest's own
+            # unconfigured SearXNG status. Without this, if pytest's own
             # process loaded backend/.env.local via another test that imported
             # app.main (test_route_registry, test_web_engine_stack), the
             # subprocess inherits SEARXNG_URL and primary_engine becomes
@@ -183,10 +183,9 @@ class MemoryStorageRegressionTest(unittest.TestCase):
             self.assertEqual(payload["runtime"]["active_chat_count"], 1)
             self.assertEqual(payload["runtime"]["storage_mode"], "rooted_sqlite")
             self.assertEqual(payload["runtime"]["active_db_path"], str((data_path / "elira_state.db").resolve()))
-            self.assertEqual(payload["runtime"]["primary_engine"], "duckduckgo")
+            self.assertEqual(payload["runtime"]["primary_engine"], "searxng")
             self.assertTrue(payload["runtime"]["degraded_mode"])
-            self.assertIn("duckduckgo", payload["runtime"]["available_engines"])
-            self.assertIn("wikipedia", payload["runtime"]["available_engines"])
+            self.assertEqual(payload["runtime"]["available_engines"], [])
             self.assertIsInstance(payload["runtime"]["warning"], str)
 
 if __name__ == "__main__":

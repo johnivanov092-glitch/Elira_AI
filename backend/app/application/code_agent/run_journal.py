@@ -10,6 +10,8 @@ import os
 import re
 import shutil
 import tempfile
+import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,16 @@ _TOKEN_METRIC_KEYS = re.compile(
     re.I,
 )
 _MAX_STRING = 40_000
+
+
+@dataclass
+class _AgentLockLease:
+    owner_run_id: str
+    holders: set[Any] = field(default_factory=set)
+
+
+_LEASE_LOCK = threading.RLock()
+_ACTIVE_JOURNALS: dict[tuple[Path, str], Any] = {}
 
 
 def _utc_now() -> str:
@@ -67,7 +79,7 @@ def _clean(value: Any, *, key: str = "", bound_strings: bool = True) -> Any:
 def sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
     """Redact display output; Workflow schemas and opaque refs are control data."""
     cleaned = dict(event)
-    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output", "sources", "citations", "workflow_input"):
+    for field in ("result", "old_content", "new_content", "evidence", "error", "established_facts", "recent_tool_output", "sources", "citations", "workflow_input", "engine_warnings", "query_sources"):
         if field in cleaned:
             cleaned[field] = _clean(cleaned[field], bound_strings=False)
     return cleaned
@@ -138,10 +150,15 @@ def related_sources(
 class RunJournal:
     """Owns state/events/commands/health files for one stable run id."""
 
-    def __init__(self, run_id: str, *, runs_root: Path | None = None) -> None:
+    def __init__(self, run_id: str, *, runs_root: Path | None = None,
+                 parent_run_id: str | None = None) -> None:
         if not _RUN_ID_RE.fullmatch(run_id) or run_id in {".", ".."}:
             raise ValueError("run_id must contain only letters, digits, dot, underscore or dash")
         self.run_id = run_id
+        if parent_run_id is not None and (not _RUN_ID_RE.fullmatch(parent_run_id) or parent_run_id == run_id):
+            raise ValueError("invalid parent run id")
+        self.parent_run_id = parent_run_id
+        self._parent_project_root: Path | None = None
         self.runs_root = (runs_root or _runtime_root()).resolve()
         self.run_dir = self.runs_root / run_id
         self.events_path = self.run_dir / "events.jsonl"
@@ -152,6 +169,7 @@ class RunJournal:
         self.agent_lock_path = self.runs_root.parent / "agent.lock"
         self._locked = False
         self._agent_locked = False
+        self._agent_lease: _AgentLockLease | None = None
         self._stale_lock: dict[str, Any] | None = None
         self._state: dict[str, Any] = {}
 
@@ -170,6 +188,28 @@ class RunJournal:
     @property
     def state(self) -> dict[str, Any]:
         return dict(self._state)
+
+    @classmethod
+    def active_state(cls, run_id: str, *, runs_root: Path | None = None) -> dict[str, Any]:
+        """Internal delegation context from a live journal in this process."""
+        root = (runs_root or _runtime_root()).resolve()
+        with _LEASE_LOCK:
+            parent = _ACTIVE_JOURNALS.get((root, run_id))
+            if parent is None or not parent._owns_live_lease():
+                raise RuntimeError(f"parent run is not active in this process: {run_id}")
+            return parent.state
+
+    def _owns_live_lease(self) -> bool:
+        lease = self._agent_lease
+        if not self._locked or lease is None or self not in lease.holders:
+            return False
+        try:
+            owner = json.loads(self.agent_lock_path.read_text(encoding="utf-8"))
+            run_lock = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            return (owner.get("pid") == os.getpid() and owner.get("run_id") == lease.owner_run_id
+                    and run_lock.get("pid") == os.getpid())
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
 
     def read_user_inputs(self) -> dict[str, Any] | None:
         path = self.run_dir / "user-inputs.json"
@@ -202,12 +242,16 @@ class RunJournal:
     def acquire(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.commands_path.parent.mkdir(parents=True, exist_ok=True)
-        self._acquire_agent_lock()
-        try:
-            self._acquire_run_lock()
-        except RuntimeError:
-            self._release_agent_lock()
-            raise
+        with _LEASE_LOCK:
+            if self._locked:
+                raise RuntimeError(f"run is already active: {self.run_id}")
+            self._acquire_agent_lock()
+            try:
+                self._acquire_run_lock()
+            except BaseException:
+                self._release_agent_lock()
+                raise
+            _ACTIVE_JOURNALS[(self.runs_root, self.run_id)] = self
 
     def _acquire_run_lock(self) -> None:
         """Per-run_id write lock only (O_EXCL run.lock) — no global agent.lock."""
@@ -221,6 +265,16 @@ class RunJournal:
         self._locked = True
 
     def _acquire_agent_lock(self) -> None:
+        if self.parent_run_id is not None:
+            parent = _ACTIVE_JOURNALS.get((self.runs_root, self.parent_run_id))
+            if parent is None or not parent._owns_live_lease():
+                raise RuntimeError(f"parent run is not active in this process: {self.parent_run_id}")
+            parent_root = str(parent.state.get("project_root") or "")
+            if not parent_root or self._parent_project_root != Path(parent_root).resolve():
+                raise RuntimeError("delegated run must use its parent's project root")
+            self._agent_lease = parent._agent_lease
+            self._agent_lease.holders.add(self)
+            return
         payload = {
             "run_id": self.run_id,
             "pid": os.getpid(),
@@ -251,12 +305,14 @@ class RunJournal:
                 json.dump(payload, handle, ensure_ascii=False)
                 handle.write("\n")
             self._agent_locked = True
+            self._agent_lease = _AgentLockLease(self.run_id, {self})
             return
         raise RuntimeError("failed to acquire agent lock")
 
     def start(self, request: dict[str, Any], capabilities: dict[str, Any]) -> None:
         from app.application.code_agent.answer_contracts import infer_quote_word_limit
 
+        self._parent_project_root = Path(request["project_root"]).resolve() if request.get("project_root") else None
         self.acquire()
         now = _utc_now()
         self._state = {
@@ -335,7 +391,7 @@ class RunJournal:
             self._state["preflight"] = _clean(event["preflight"])
         if event_type == "skills_changed":
             self._state["active_skills"] = _clean(event.get("active_skills") or [])
-        for field in ("task_outcome", "command_progress", "skill_advisor", "skill_advisor_learning"):
+        for field in ("task_outcome", "command_progress", "skill_advisor", "skill_advisor_learning", "persistence_policy", "task_spec"):
             if isinstance(event.get(field), dict):
                 self._state[field] = _clean(event[field])
         if type(event.get("code_input_epoch")) is int:
@@ -344,8 +400,12 @@ class RunJournal:
             self._state["bom_validation_selected"] = event["bom_validation_selected"]
         if event_type == "answer_format_correction" and event.get("contract") == "quote_word_limit":
             self._state["quote_word_limit_correction_sent"] = True
+        if event_type == "answer_format_correction" and event.get("contract") == "quote_source":
+            self._state["quote_source_correction_sent"] = True
         if event_type == "answer_format_correction" and event.get("contract") == "web_cadence_citation":
             self._state["web_cadence_correction_sent"] = True
+        if event_type == "answer_format_correction" and event.get("contract") == "web_source_citation":
+            self._state["web_source_correction_sent"] = True
         step = int(event.get("step") or event.get("steps") or 0)
         runtime_activation = event.get("runtime_activation")
         if isinstance(runtime_activation, dict):
@@ -527,21 +587,31 @@ class RunJournal:
         self.release()
 
     def release(self) -> None:
-        if self._locked:
-            try:
-                self.lock_path.unlink()
-            except FileNotFoundError:
-                pass
-            self._locked = False
-        self._release_agent_lock()
+        with _LEASE_LOCK:
+            if self._locked:
+                try:
+                    self.lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                self._locked = False
+                if _ACTIVE_JOURNALS.get((self.runs_root, self.run_id)) is self:
+                    _ACTIVE_JOURNALS.pop((self.runs_root, self.run_id), None)
+            self._release_agent_lock()
 
     def _release_agent_lock(self) -> None:
-        if self._agent_locked:
+        lease = self._agent_lease
+        self._agent_lease = None
+        self._agent_locked = False
+        if lease is None:
+            return
+        lease.holders.discard(self)
+        if not lease.holders:
             try:
-                self.agent_lock_path.unlink()
-            except FileNotFoundError:
+                owner = json.loads(self.agent_lock_path.read_text(encoding="utf-8"))
+                if owner.get("pid") == os.getpid() and owner.get("run_id") == lease.owner_run_id:
+                    self.agent_lock_path.unlink()
+            except (OSError, ValueError, TypeError, AttributeError):
                 pass
-            self._agent_locked = False
 
     def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

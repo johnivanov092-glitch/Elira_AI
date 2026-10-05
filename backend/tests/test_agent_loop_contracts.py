@@ -144,11 +144,12 @@ def test_duplicate_registration_preserves_public_run_owner_and_drain_accounting(
 def test_stop_closes_upstream_before_ack_and_attempts_every_cleanup(tmp_path, monkeypatch, transport_failure):
     run_id = "contracts-cancel"
     stages = []
+    fail_close = transport_failure
 
     class Transport:
         def close(self):
             stages.append("transport")
-            if transport_failure:
+            if fail_close:
                 raise RuntimeError("synthetic transport close failure")
 
     monkeypatch.setattr(tools, "kill_run_processes", lambda value: stages.append("processes"))
@@ -174,6 +175,9 @@ def test_stop_closes_upstream_before_ack_and_attempts_every_cleanup(tmp_path, mo
             [] if transport_failure else ["ack"]
         )
     finally:
+        # Cleanup failure is retained for a real retry, including finally.
+        fail_close = False
+        agent_loop.request_cancel(run_id)
         stream.close()
     assert run_id not in run_control._CANCEL_REGISTRY
 

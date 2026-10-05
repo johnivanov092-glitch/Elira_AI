@@ -191,7 +191,8 @@ def advisor_context(query: str) -> tuple[str, dict[str, Any]]:
             "не вероятности. Проверь текущие условия и версию; можешь выбрать другой навык, "
             "создать новый или выполнить разовую работу. Полный каталог остаётся доступен. "
             "Подсказка не задаёт разрешений и не запускает инструменты.\n"
-            + json.dumps(advice, ensure_ascii=False, sort_keys=True)
+            + json.dumps({key: value for key, value in advice.items() if key != "shadow"},
+                         ensure_ascii=False, sort_keys=True)
         )
         return text, advice
     except Exception as exc:
@@ -203,31 +204,43 @@ def learn_from_run(run_id: str, state: dict[str, Any]) -> dict[str, Any]:
     """Build a training observation from exact live receipts in the existing journal."""
     if os.getenv("ELIRA_SKILL_ADVISOR_MODE", "on").strip().lower() not in {"on", "shadow"}:
         return {"status": "disabled"}
-    if (state.get("status") != "completed" or state.get("answer_status") != "complete"
-            or state.get("stop_reason") != "answer"):
-        return {"status": "ineligible", "reason": "task_not_verified_complete"}
+    from app.application.code_agent.loop_helpers import persistence_policy_from_state
+
+    if not persistence_policy_from_state(state)["learning"]:
+        return {"status": "ineligible", "reason": "task_persistence_denied"}
     try:
         from app.application.code_agent import skill_advisor
         from app.application.code_agent.task_outcomes import TaskOutcome
 
         outcome = TaskOutcome(state.get("task_outcome"))
-        evidence = outcome.learning_evidence(int(state.get("code_input_epoch") or 0))
-        if evidence is None or outcome.pending():
-            return {"status": "ineligible", "reason": "no_current_bound_result_check"}
-        binding = evidence["skill_binding"]
-        current = _skill_binding(_read(binding["name"]))
-        if current != binding or not any(
-            _skill_binding(snapshot) == binding for snapshot in state.get("active_skills", [])
-        ):
-            return {"status": "ineligible", "reason": "skill_version_changed"}
         request = state.get("request") or {}
         query = request.get("user_message")
         if not isinstance(query, str) or not query.strip():
             return {"status": "ineligible", "reason": "missing_request"}
         if query.endswith("\n[... truncated]"):
             return {"status": "ineligible", "reason": "truncated_request"}
-        return skill_advisor.observe(query, {**evidence, "provenance": "observed_verification"},
-                                     run_id, context={"os": os.name})
+        observations = outcome.learning_observations(int(state.get("code_input_epoch") or 0))
+        complete = (state.get("status") == "completed" and state.get("answer_status") == "complete"
+                    and state.get("stop_reason") == "answer" and not outcome.pending())
+        results = []
+        for evidence in observations:
+            if evidence.get("outcome") == "verified_success" and not complete:
+                continue
+            binding = evidence["skill_binding"]
+            # Historical failure receipts retain the exact loaded version even
+            # after its corrected successor has been published. No arbitrary
+            # skill is assigned to failures with no recorded selection.
+            if evidence.get("outcome") == "verified_success" and not any(
+                _skill_binding(snapshot) == binding for snapshot in state.get("active_skills", [])
+            ):
+                continue
+            if evidence.get("outcome") == "verified_success" and _skill_binding(_read(binding["name"])) != binding:
+                continue
+            results.append(skill_advisor.observe(query, {**evidence, "provenance": "observed_verification"},
+                                                 run_id, context={"os": os.name}))
+        if not results:
+            return {"status": "ineligible", "reason": "no_current_bound_result_check"}
+        return results[-1] if len(results) == 1 else {**results[-1], "observations": results}
     except Exception as exc:
         logger.warning("Skill advisor learning skipped for run %s: %s", run_id, exc)
         return {"status": "unavailable", "reason": type(exc).__name__}

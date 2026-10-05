@@ -196,7 +196,7 @@ def _fetch_raw(url: str) -> dict[str, Any]:
                                 headers={"User-Agent": "Mozilla/5.0 EliraBot",
                                          "Accept-Language": "ru,en;q=0.9"})
         except requests.RequestException as exc:
-            return {"ok": False, "error": f"fetch failed: {exc}"}
+            return {"ok": False, "error": f"fetch failed: {exc}", "final_url": current}
         if resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
             loc = resp.headers.get("Location") or ""
             resp.close()
@@ -210,7 +210,8 @@ def _fetch_raw(url: str) -> dict[str, Any]:
         charset = charset_match.group(1).strip().lower()[:40] if charset_match else ""
         if resp.status_code != 200:
             resp.close()
-            return {"ok": False, "error": f"HTTP {resp.status_code}"}
+            return {"ok": False, "error": f"HTTP {resp.status_code}", "status_code": resp.status_code,
+                    "retry_after": str(resp.headers.get("Retry-After", ""))[:128], "final_url": resp.url or current}
         if mime and not any(mime == m for m in _MIME_ALLOW):
             resp.close()
             return {"ok": False, "error": f"unsupported MIME '{mime}' (allow: html/plain/pdf/docx)"}
@@ -233,7 +234,8 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     corpus document exactly like an HTML page (untrusted, dedup/quota/TTL apply)."""
     raw = _fetch_raw(url)
     if not raw.get("ok"):
-        return {"ok": False, "error": raw.get("error", "fetch failed")}
+        return {"ok": False, "error": raw.get("error", "fetch failed"),
+                **{key: raw[key] for key in ("status_code", "retry_after", "final_url") if key in raw}}
     mime = raw["mime"]
     outline: list[str] = []
     decoded = ""

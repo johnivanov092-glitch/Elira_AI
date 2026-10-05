@@ -11,7 +11,7 @@ from urllib.parse import quote_plus
 from app.core.web import ENGINE_LABELS, format_search_results
 from app.core.web import research_web as core_research_web
 from app.core.web import search_web as core_search_web
-from app.core.web_engines import searxng_url
+from app.core.web_engines import SearchResults, searxng_url
 from app.infrastructure.search import web_query
 from app.infrastructure.search import web_runtime
 from app.infrastructure.search import web_temporal
@@ -42,25 +42,23 @@ def search_web(
 
     sources = core_search_web(query, max_results=max_results, time_range=time_range, categories=categories)
     engines_used = list({item.get("engine", "") for item in sources if item.get("engine")})
-    context = format_search_results(sources[:6]) if sources else ""
+    warnings = getattr(sources, "engine_warnings", [])
+    context = format_search_results(SearchResults(sources[:6], engine_warnings=warnings))
 
     engine_links = []
     _searxng = searxng_url()
     if _searxng:
         engine_links.append({"name": "SearXNG", "url": f"{_searxng}/search?q={quote_plus(query)}"})
-    engine_links += [
-        {"name": "DuckDuckGo", "url": f"https://duckduckgo.com/?q={quote_plus(query)}"},
-        {"name": "Wikipedia", "url": f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"},
-    ]
 
     return {
-        "ok": bool(sources),
+        "ok": True,
         "query": query,
         "sources": sources,
         "engines_used": [ENGINE_LABELS.get(engine, engine) for engine in engines_used],
         "count": len(sources),
         "context": context,
         "engine_links": engine_links,
+        **({"engine_warnings": [dict(warning) for warning in warnings]} if warnings else {}),
     }
 
 

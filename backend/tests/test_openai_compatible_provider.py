@@ -463,13 +463,53 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(result["message"]["content"], "OK")
         self.assertEqual(result["message"]["reasoning_content"], "because reasons")
 
+    def test_vllm_reasoning_field_is_surfaced_like_reasoning_content(self) -> None:
+        """vLLM's qwen3 reasoning parser names the field `reasoning`."""
+        stream = _Response(
+            {},
+            lines=[
+                'data: {"choices":[{"delta":{"reasoning":"Let me "}}]}',
+                'data: {"choices":[{"delta":{"reasoning":"think."}}]}',
+                'data: {"choices":[{"delta":{"content":"Answer."}}]}',
+                "data: [DONE]",
+            ],
+        )
+        plain = _Response(
+            {
+                "model": "local-model",
+                "choices": [{"message": {"role": "assistant", "content": "OK", "reasoning": "because"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            side_effect=[stream, plain],
+        ):
+            events = list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "q"}],
+                options={"chat_template_kwargs": {"enable_thinking": True}},
+            ))
+            result = openai_compatible.chat_completion(
+                model="local-model",
+                messages=[{"role": "user", "content": "hi"}],
+                options={"chat_template_kwargs": {"enable_thinking": True}},
+            )
+        self.assertEqual([e["content"] for e in events if e.get("type") == "reasoning"], ["Let me ", "think."])
+        self.assertEqual([e["content"] for e in events if e.get("type") == "delta"], ["Answer."])
+        self.assertEqual(events[-1]["response"]["message"]["reasoning_content"], "Let me think.")
+        self.assertEqual(result["message"]["content"], "OK")
+        self.assertEqual(result["message"]["reasoning_content"], "because")
+
     def test_sampling_extra_dry_params_reach_payload_whitelisted(self) -> None:
         """options['sampling'] DRY params are sent per-request; unknown keys dropped."""
         response = _Response(
             {},
             lines=['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"],
         )
-        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+        with patch.dict(os.environ, _llama_env(), clear=False), patch.dict(
+            openai_compatible._sampling_backends, {_llama_env()["LLAMA_SERVER_BASE_URL"]: "llama.cpp"}, clear=True,
+        ), patch(
             "app.infrastructure.llm.openai_compatible.requests.post",
             return_value=response,
         ) as post:

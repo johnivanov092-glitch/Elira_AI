@@ -77,13 +77,14 @@ def _kill_proc_tree(proc: subprocess.Popen) -> None:
     pid = proc.pid
     if _IS_WINDOWS:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
-            return
+            if result.returncode == 0:
+                return
         except Exception:
             # taskkill missing/failed — fall back to the single-process kill.
             pass

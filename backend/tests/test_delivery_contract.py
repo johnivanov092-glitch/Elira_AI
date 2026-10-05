@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shlex
+import subprocess
+import sys
 
 import pytest
 
@@ -34,12 +38,45 @@ def workspace(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("explicit_none", [False, True])
 def test_download_button_code_goal_does_not_require_chat_publication(workspace, explicit_none):
-    decision = {"disposition": "one_off", "reason": "Изменить функцию приложения"}
+    decision = {"disposition": "one_off", "reason": "Изменить функцию приложения",
+                "targets": ["download.ts", "archive.py"], "requirements": [
+                    {"id": "req-ui", "text": "Кнопка UI скачивает ZIP с backend", "mandatory": True},
+                    {"id": "req-backend", "text": "Backend создаёт ZIP с результатом", "mandatory": True},
+                ]}
     if explicit_none:
         decision["delivery"] = {"mode": "none", "targets": []}
+    checker = workspace / "check_download.py"
+    checker.write_text(
+        "import json, runpy\nfrom io import BytesIO\nfrom pathlib import Path\nfrom zipfile import ZipFile\n"
+        "source = Path('download.ts').read_text(encoding='utf-8')\n"
+        "ui = all(part in source for part in [\"fetch('/api/archive.zip')\", 'response.blob()', 'link.download = archiveName', 'link.click()'])\n"
+        "payload = runpy.run_path('archive.py')['archive_zip']()\n"
+        "with ZipFile(BytesIO(payload)) as archive:\n"
+        "    backend = archive.namelist() == ['report.txt'] and archive.read('report.txt') == b'report'\n"
+        "Path('download_checks.json').write_text(json.dumps({'checks': [\n"
+        "    {'name': 'UI download', 'requirement_id': 'req-ui', 'passed': ui},\n"
+        "    {'name': 'backend ZIP', 'requirement_id': 'req-backend', 'passed': backend}]}), encoding='utf-8')\n",
+        encoding="utf-8", newline="\n",
+    )
+    arguments = [sys.executable, str(checker)]
+    command = subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
     replies = iter([
         _reply("runtime_control", {"operation": "task_decide", "config": decision}),
-        _reply("write_file", {"path": "download.ts", "content": "export const archiveName = 'report.zip';\n"}),
+        _reply("write_file", {"path": "download.ts", "content":
+            "export const archiveName = 'report.zip';\n"
+            "export async function downloadArchive() {\n"
+            "  const response = await fetch('/api/archive.zip');\n"
+            "  const link = document.createElement('a');\n"
+            "  link.href = URL.createObjectURL(await response.blob());\n"
+            "  link.download = archiveName;\n  link.click();\n}\n"}),
+        _reply("write_file", {"path": "archive.py", "content":
+            "from io import BytesIO\nfrom zipfile import ZipFile\n"
+            "def archive_zip():\n    buffer = BytesIO()\n"
+            "    with ZipFile(buffer, 'w') as archive:\n        archive.writestr('report.txt', 'report')\n"
+            "    return buffer.getvalue()\n"}),
+        _reply("runtime_control", {"operation": "result_verify", "config": {
+            "command": command, "targets": decision["targets"], "report_path": "download_checks.json",
+        }}),
         _reply(text="Реализована кнопка скачивания архива в приложении."),
     ])
     events = list(stream_code_agent(
@@ -53,6 +90,11 @@ def test_download_button_code_goal_does_not_require_chat_publication(workspace, 
     assert final["answer_status"] == "complete"
     assert not final["task_outcome"]["delivery_attempts"]
     assert not any(event.get("tool") == "resource_publish" for event in events)
+    state = RunJournal.load("download-button").state
+    outcome = TaskOutcome(state["task_outcome"])
+    epoch = int(state.get("code_input_epoch") or 0)
+    assert outcome.checks_current([str(workspace / path) for path in decision["targets"]], epoch)
+    assert outcome.missing_requirements(epoch) == []
 
 
 def _decide(outcome, root, **extra):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 CHECKLIST_STATUSES = frozenset({"pending", "in_progress", "completed"})
-SUBAGENT_ROLES = frozenset({"explore", "plan", "verify"})
+SUBAGENT_ROLES = frozenset({"explore", "plan", "verify", "review"})
 SUBAGENT_STATUSES = frozenset({"in_progress", "completed", "failed"})
 
 def init_db(*, connect_func: Callable[[], Any]) -> None:

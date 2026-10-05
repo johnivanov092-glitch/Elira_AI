@@ -27,11 +27,16 @@ from app.application.code_agent.prompts import (
     _is_scratch_workspace,
 )
 from app.application.code_agent.taskspec import (
-    TaskSpec, derive_task_spec, is_continuation_message, taskspec_context,
+    TaskSpec, derive_task_spec, is_continuation_message, merge_task_spec, taskspec_context,
+)
+from app.application.context.compaction import (
+    TASK_CONTRACT_PREFIX, TASK_CONTRACT_MARKER_VALUE, TASK_STATE_MARKER_KEY,
 )
 from app.application.tool_providers import ToolRegistry
 from app.application.tool_providers.mcp_provider import creative_workflow_prompt
-from app.application.code_agent.task_guidance import DELIVERY_GUIDANCE, task_guidance_blocks
+from app.application.code_agent.task_guidance import (
+    DELIVERY_GUIDANCE, WEB_SOURCE_FIDELITY_GUIDANCE, task_guidance_blocks,
+)
 from app.application.code_agent.task_skills import (
     ADVISOR_CONTEXT_ID, CATALOG_ID, CONTEXT_ID, SkillContext,
     advisor_context, catalog_context, insert_skill_context,
@@ -40,6 +45,7 @@ from app.application.code_agent.task_skills import (
 
 logger = logging.getLogger(__name__)
 PromptBuilder = Callable[..., str]
+_WEB_CLOSING_CONTEXT_ID = "web-closing-context"
 
 
 @dataclass(frozen=True)
@@ -105,7 +111,8 @@ def build_initial_turn(
     document_page_count_contract = infer_expected_page_count(user_message)
     if task_spec is None and is_continuation_message(user_message):
         # A new question must not inherit a previous structured task's criteria.
-        for turn in reversed(conversation_history or []):
+        for index in range(len(conversation_history or []) - 1, -1, -1):
+            turn = conversation_history[index]
             if isinstance(turn, dict) and turn.get("role") == "user":
                 history_spec = derive_task_spec(
                     str(turn.get("content") or ""), project_root=root,
@@ -113,6 +120,10 @@ def build_initial_turn(
                 if history_spec is not None:
                     task_spec = history_spec
                     task_spec_source = "conversation_history"
+                    # Later clarifications amend this task instead of erasing it.
+                    for later in (conversation_history or [])[index + 1:]:
+                        if isinstance(later, dict) and later.get("role") == "user":
+                            task_spec = merge_task_spec(task_spec, str(later.get("content") or ""), project_root=root)
                     break
     if document_page_count_contract is None and is_continuation_message(user_message):
         for turn in reversed(conversation_history or []):
@@ -176,6 +187,8 @@ class TurnContext:
                  root: Path, working_dir: Path | str | None, run_id: str):
         self.messages = messages
         self.raw_user_message = raw_user_message
+        self.original_goal = raw_user_message
+        self.clarifications: list[str] = []
         self.root, self.working_dir, self.run_id = root, working_dir, run_id
 
     def initialize_skills(self, *, resume: bool) -> None:
@@ -207,6 +220,7 @@ class TurnContext:
         for row in rows:
             self.messages.append({"role": "user", "content": row["text"]})
             self.raw_user_message += "\n\nУточнение пользователя:\n" + row["text"]
+            self.clarifications.append(row["text"])
             self.awaiting_input_replies.append(row["request_id"])
             yield {"type": "user_input_applied", "step": step, "run_id": self.run_id,
                    "request_id": row["request_id"], "text": row["text"]}
@@ -225,7 +239,7 @@ class TurnContext:
 
 
     def add_skill_reminder(self) -> None:
-        if self.skill_reminder_pending and not self.skill_reminder_sent and not self.skills.snapshots():
+        if self.catalog and self.skill_reminder_pending and not self.skill_reminder_sent and not self.skills.snapshots():
             # A bounded reminder after actual project/tool discovery. This
             # uses the next existing inference turn, never blocks tools and
             # never assigns a domain/persona from user keywords.
@@ -242,17 +256,24 @@ class TurnContext:
 
 
     def add_guidance(self, *, schemas: list[dict], request_route,
-                     task_instructions: str, step: int) -> None:
+                      task_instructions: str, step: int, work_started: bool = True) -> None:
         guidance = task_guidance_blocks(
             {_schema_tool_name(schema) for schema in schemas},
             domain_policies=request_route.domain_policies,
         )
+        if not work_started:
+            guidance.pop("work", None)
+        if "web" in guidance and "web" not in self.sent_guidance:
+            self.messages[0] = {**self.messages[0], "content": (
+                str(self.messages[0].get("content") or "")
+                + "\n\n[Контракт ответа по прочитанным источникам]\n" + WEB_SOURCE_FIDELITY_GUIDANCE
+            )}
         if request_route.download_requested or "resources" in guidance:
             guidance["file_delivery"] = DELIVERY_GUIDANCE
         if task_instructions:
             guidance["delivery"] = task_instructions
-        if "work" in guidance and "work" not in self.sent_guidance:
-            guidance["work"] += "\n" + _build_project_context(self.root, self.working_dir)
+        if ("work" in guidance or "web" in guidance) and "project_context" not in self.sent_guidance:
+            guidance["project_context"] = _build_project_context(self.root, self.working_dir)
         if "project" in guidance and "project" not in self.sent_guidance:
             guidance["project"] += "\n" + _shell_guidance()
             guidance["project"] += (
@@ -279,6 +300,20 @@ class TurnContext:
     def update_task_state(self, *, task_spec, criteria_rows: list[dict],
                           checklist_items: list[dict], mutated_files: list[str],
                           verifications: list[str], failed_attempts: list[str]) -> None:
+        # Keep every requirement, but leave repeated verifier receipts in the
+        # journal/outcome owner rather than pinning their metadata twice.
+        requirements = [{key: row[key] for key in (
+            "requirement_id", "text", "mandatory", "status", "lifecycle", "host", "target", "condition",
+        ) if key in row} for row in criteria_rows]
+        contract = {"original_goal": self.original_goal,
+                    "goal": str(getattr(task_spec, "goal", "") or self.original_goal),
+                    "clarifications": self.clarifications, "requirements": requirements}
+        contract_message = {"role": "assistant", "content": TASK_CONTRACT_PREFIX + json.dumps(
+            contract, ensure_ascii=False, separators=(",", ":")),
+            TASK_STATE_MARKER_KEY: TASK_CONTRACT_MARKER_VALUE}
+        self.messages = [message for message in self.messages
+                         if message.get(TASK_STATE_MARKER_KEY) != TASK_CONTRACT_MARKER_VALUE]
+        self.messages.insert(1, contract_message)
         if (task_spec is not None or checklist_items) and self.refresh_task_state:
             self.messages = upsert_task_state_message(
                 self.messages, build_task_state_block(
@@ -301,18 +336,121 @@ class TurnContext:
         self.messages = insert_skill_context(self.messages, text, context_id)
         self.guidance_message_ids.add(context_id)
 
+    def refresh_web_closing_context(self, messages: list[dict[str, Any]], *,
+                                    source_handles: tuple[str, ...]) -> list[dict[str, Any]]:
+        """One input-side closing cue after complete result groups, never fact prose."""
+        messages = [message for message in messages
+                    if message.get("_msg_id") != _WEB_CLOSING_CONTEXT_ID]
+        pending = 0
+        for message in messages:
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                pending += len(message["tool_calls"])
+            elif message.get("role") == "tool":
+                pending = max(0, pending - 1)
+        if not source_handles or pending:
+            return messages
+        content = (
+            "[Следующий шаг: инструкция runtime, не выводи]\n"
+            "Прочитаны в этом контексте: "
+            + ", ".join(f"[[source:{handle}]]" for handle in source_handles) + ".\n"
+            "Если исходный вопрос покрыт, дай итоговый ответ. Для файла или действия "
+            "продолжай до результата: чтение его не заменяет. Проверяй лишь конкретный "
+            "пробел исходной цели; другие источники доступны. ID означают чтение, не выводы. "
+            + WEB_SOURCE_FIDELITY_GUIDANCE + " Промежуточная сводка не требуется."
+        )
+        return [*messages, {"role": "user", "content": content, "_msg_id": _WEB_CLOSING_CONTEXT_ID}]
+
+    def provider_messages(self, *,
+                          read_source_handles: Callable[[list[dict[str, Any]]], tuple[str, ...]] | None = None,
+                          project_search_without_snippets: Callable[[str], str] | None = None,
+                          ) -> list[dict[str, Any]]:
+        """Project older discovery text without changing retained tool history."""
+        if read_source_handles is None or project_search_without_snippets is None:
+            return self.messages
+        expected: list[dict[str, Any]] = []
+        group_start = -1
+        group_has_read = False
+        read_boundary = -1
+        for index, message in enumerate(self.messages):
+            role = message.get("role")
+            if role == "assistant" and message.get("tool_calls"):
+                if expected or not isinstance(message["tool_calls"], list):
+                    return self.messages
+                expected = list(message["tool_calls"])
+                group_start, group_has_read = index, False
+            elif role == "tool":
+                if not expected:
+                    return self.messages
+                call = expected.pop(0)
+                function = call.get("function") if isinstance(call, dict) else None
+                if not isinstance(function, dict) or message.get("name") != function.get("name"):
+                    return self.messages
+                # Ordinary retained results may omit IDs; the executor writes
+                # them in declared order. Existing IDs must still match exactly.
+                if "tool_call_id" in message and message["tool_call_id"] != call.get("id"):
+                    return self.messages
+                if message.get("name") != "web_search" and read_source_handles([message]):
+                    group_has_read = True
+                if not expected and group_has_read:
+                    read_boundary = group_start
+            elif expected:
+                return self.messages
+        if expected or read_boundary < 0:
+            return self.messages
+        # Restoration is not another read. If compaction removed the original
+        # read group, retain discovery text rather than hide a newer search.
+        provider = self.messages
+        for index, message in enumerate(self.messages[:read_boundary]):
+            if message.get("role") != "tool" or message.get("name") != "web_search":
+                continue
+            content = str(message.get("content") or "")
+            projected = project_search_without_snippets(content)
+            if projected != content:
+                if provider is self.messages:
+                    provider = list(self.messages)
+                provider[index] = {**message, "content": projected}
+        return provider
+
     def prepare(self, *, prepare_fn, num_ctx: int, model: str, chat_fn,
                 context_profile: dict, tool_schemas: list[dict], cancel_handle,
-                audit_sink, restore_source_context):
+                audit_sink, restore_source_context,
+                web_closing_sources: Callable[[list[dict[str, Any]]], tuple[str, ...]] | None = None):
+        from app.application.context.usage import get_context_usage
+
+        def restore(packed, *, compacted):
+            # A soft closing cue must never enter the history compactor.
+            packed = [message for message in packed
+                      if message.get("_msg_id") != _WEB_CLOSING_CONTEXT_ID]
+            return restore_source_context(packed, compacted=compacted, max_chars=min(7000, num_ctx))
+
         self.messages, compacted, usage = prepare_fn(
             self.messages, num_ctx=num_ctx, model=model, chat_fn=chat_fn,
             context_profile=context_profile, tool_schemas=tool_schemas,
             cancel_handle=cancel_handle, audit_sink=audit_sink,
             pinned_message_ids=self.guidance_message_ids | {"web-source-context"},
-            restore_messages=lambda packed, *, compacted: restore_source_context(
-                packed, compacted=compacted, max_chars=min(7000, num_ctx),
-            ),
+            restore_messages=restore,
         )
+        # Derive handles from the final packed payload, including any source
+        # blocks that were removed after restoration by the request packer.
+        handles = web_closing_sources(self.messages) if web_closing_sources is not None else ()
+        candidate = self.refresh_web_closing_context(self.messages, source_handles=handles)
+        if len(candidate) != len(self.messages):
+            candidate_usage = get_context_usage(
+                candidate, ctx_size=num_ctx,
+                reserved_output_tokens=int(context_profile["reserved_output_tokens"]),
+                reserved_system_tokens=int(context_profile.get("reserved_system_tokens") or 4096),
+                safety_margin_tokens=int(context_profile.get("safety_margin_tokens") or 2048),
+                extra_categories={"tools": list(tool_schemas)} if tool_schemas else None,
+            )
+            thresholds = context_profile.get("compaction_thresholds") or {}
+            compact_threshold = float((thresholds.get("auto") or {}).get("percent")
+                                      or (60.0 if num_ctx < 16_384 else 75.0))
+            safe_input_budget = int(context_profile.get("safe_input_budget") or 0)
+            # The cue is optional: it must never displace evidence or trigger
+            # compaction that the actual request payload did not require.
+            if float(candidate_usage["percent"]) < compact_threshold and (
+                    safe_input_budget <= 0 or int(candidate_usage["current_tokens"]) <= safe_input_budget):
+                self.messages, usage = candidate, candidate_usage
         return compacted, usage
 
     def activate_skill_result(self, *, name: str, args: dict, tool_meta: dict, status: str):

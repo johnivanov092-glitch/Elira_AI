@@ -8,8 +8,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Generator
+from weakref import WeakValueDictionary
 
 from app.application.code_agent.loop_helpers import (
     _WORKFLOW_REQUEST_KEEPALIVE_EVERY,
@@ -25,6 +27,14 @@ logger = logging.getLogger("app.application.code_agent.agent_loop")
 _CANCEL_REGISTRY: dict[str, threading.Event] = {}
 _UPSTREAM_HANDLE_REGISTRY: dict[int, LLMStreamCancelHandle] = {}
 _REGISTRY_LOCK = threading.Lock()
+_CLEANUP_LOCKS: WeakValueDictionary[str, Any] = WeakValueDictionary()
+# Stop may arrive after response headers but before the lazy generator starts.
+# Keep its intent until an explicit Resume starts a fresh execution generation.
+_CANCEL_REQUESTED: set[str] = set()
+_FAILED_CANCEL_HANDLES: dict[str, LLMStreamCancelHandle] = {}
+_FINISHED_RUNS: OrderedDict[str, None] = OrderedDict()
+_FINISHED_RUN_KEEP = 1024
+_PREPARED_RUNS: set[str] = set()
 
 # Live direct-stream Workflow requests. Durable request metadata lives in the
 # Workflow store; this in-memory rendezvous only wakes the currently running
@@ -49,7 +59,47 @@ def submit_workflow_response(
     return True
 
 
+def _cleanup_lock_for(run_id: str):
+    with _REGISTRY_LOCK:
+        lock = _CLEANUP_LOCKS.get(run_id)
+        if lock is None:
+            lock = threading.RLock()
+            _CLEANUP_LOCKS[run_id] = lock
+        return lock
+
+
+def prepare_run(run_id: str, *, resume: bool = False) -> None:
+    """Establish the next cancellation generation before exposing SSE headers."""
+    with _cleanup_lock_for(run_id):
+        with _REGISTRY_LOCK:
+            if run_id in _CANCEL_REGISTRY or run_id in _PREPARED_RUNS:
+                return
+            if run_id in _FAILED_CANCEL_HANDLES:
+                raise RuntimeError(f"run cancellation cleanup is incomplete: {run_id}")
+            _FINISHED_RUNS.pop(run_id, None)
+            if resume:
+                from app.application.code_agent.tools._shell import clear_run_stop_marker
+
+                clear_run_stop_marker(run_id)
+                _CANCEL_REQUESTED.discard(run_id)
+            _PREPARED_RUNS.add(run_id)
+
+
 def request_cancel(run_id: str) -> bool:
+    """Idempotently stop owned resources, including a not-yet-started stream."""
+    with _REGISTRY_LOCK:
+        ev = _CANCEL_REGISTRY.get(run_id)
+        if ev is not None or run_id not in _FINISHED_RUNS:
+            _CANCEL_REQUESTED.add(run_id)
+        if ev is not None:
+            ev.set()
+    # Provider callbacks can be non-reentrant. All flags are signalled before
+    # waiting here; a repeated request retries retained failed cleanup stages.
+    with _cleanup_lock_for(run_id):
+        return _cleanup_cancelled_run(run_id)
+
+
+def _cleanup_cancelled_run(run_id: str) -> bool:
     """Flip the cancel event for `run_id`. Returns True if the run was
     known, False otherwise. Raises when owned live resources cannot be stopped,
     so callers never acknowledge an incomplete cancellation.
@@ -65,7 +115,8 @@ def request_cancel(run_id: str) -> bool:
     with _REGISTRY_LOCK:
         ev = _CANCEL_REGISTRY.get(run_id)
         upstream_handle = (
-            _UPSTREAM_HANDLE_REGISTRY.get(id(ev)) if ev is not None else None
+            _UPSTREAM_HANDLE_REGISTRY.get(id(ev)) if ev is not None
+            else _FAILED_CANCEL_HANDLES.get(run_id)
         )
     if ev is not None:
         ev.set()
@@ -76,7 +127,13 @@ def request_cancel(run_id: str) -> bool:
         try:
             upstream_handle.close()
         except Exception as exc:
+            with _REGISTRY_LOCK:
+                _FAILED_CANCEL_HANDLES[run_id] = upstream_handle
             cleanup_errors.append(exc)
+        else:
+            with _REGISTRY_LOCK:
+                if _FAILED_CANCEL_HANDLES.get(run_id) is upstream_handle:
+                    _FAILED_CANCEL_HANDLES.pop(run_id, None)
 
     # Attempt every cleanup stage even if an earlier one failed. The caller is
     # told about any surviving transport/process only after all owners had a
@@ -122,22 +179,36 @@ def request_cancel(run_id: str) -> bool:
     return ev is not None
 
 
-def _register_run(run_id: str) -> threading.Event:
+def _register_run(run_id: str, *, resume: bool = False) -> threading.Event:
+    with _cleanup_lock_for(run_id):
+        return _claim_run(run_id, resume=resume)
+
+
+def _claim_run(run_id: str, *, resume: bool) -> threading.Event:
     from app.core.release_runtime import begin_agent_run
 
-    try:
-        from app.application.code_agent.tools._shell import clear_run_stop_marker
-
-        clear_run_stop_marker(run_id)
-    except Exception:
-        logger.warning("failed to clear stale Stop marker for run %s", run_id, exc_info=True)
     ev = threading.Event()
     with _REGISTRY_LOCK:
         if run_id in _CANCEL_REGISTRY:
             raise RuntimeError(f"run is already active: {run_id}")
+        if run_id in _FAILED_CANCEL_HANDLES:
+            raise RuntimeError(f"run cancellation cleanup is incomplete: {run_id}")
+        _FINISHED_RUNS.pop(run_id, None)
+        prepared = run_id in _PREPARED_RUNS
+        _PREPARED_RUNS.discard(run_id)
+        if (resume and not prepared) or run_id not in _CANCEL_REQUESTED:
+            from app.application.code_agent.tools._shell import clear_run_stop_marker
+
+            clear_run_stop_marker(run_id)
+            _CANCEL_REQUESTED.discard(run_id)
+        elif run_id in _CANCEL_REQUESTED:
+            ev.set()
         begin_agent_run(run_id)
         _CANCEL_REGISTRY[run_id] = ev
-        _UPSTREAM_HANDLE_REGISTRY[id(ev)] = LLMStreamCancelHandle()
+        handle = LLMStreamCancelHandle()
+        _UPSTREAM_HANDLE_REGISTRY[id(ev)] = handle
+        if ev.is_set():
+            handle.close()
     return ev
 
 
@@ -149,18 +220,41 @@ def _cancel_handle_for(cancel_event: threading.Event) -> LLMStreamCancelHandle:
     return handle
 
 
+def _has_retained_cancel_handle(run_id: str) -> bool:
+    """Delegation must retain its parent abort hook after a failed natural close."""
+    with _REGISTRY_LOCK:
+        return run_id in _FAILED_CANCEL_HANDLES
+
+
 def _unregister_run(run_id: str) -> None:
+    # A naturally finishing generator must not hide a transport whose close
+    # failed while a concurrent Stop is deciding whether cleanup is confirmed.
+    with _cleanup_lock_for(run_id):
+        _release_run(run_id)
+
+
+def _release_run(run_id: str) -> None:
     from app.core.release_runtime import end_agent_run
 
     with _REGISTRY_LOCK:
         ev = _CANCEL_REGISTRY.pop(run_id, None)
+        if ev is not None:
+            _CANCEL_REQUESTED.discard(run_id)
+            _FINISHED_RUNS[run_id] = None
+            while len(_FINISHED_RUNS) > _FINISHED_RUN_KEEP:
+                _FINISHED_RUNS.popitem(last=False)
         upstream_handle = (
             _UPSTREAM_HANDLE_REGISTRY.pop(id(ev), None) if ev is not None else None
         )
         if ev is not None:
             end_agent_run(run_id)
     if upstream_handle is not None:
-        upstream_handle.close()
+        try:
+            upstream_handle.close()
+        except Exception:
+            with _REGISTRY_LOCK:
+                _FAILED_CANCEL_HANDLES[run_id] = upstream_handle
+            raise
 
 
 @dataclass(frozen=True)

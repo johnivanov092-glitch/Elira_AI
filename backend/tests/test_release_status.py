@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -124,17 +125,17 @@ def test_foundation_uses_protected_read_client_and_never_reads_legacy_state(owne
     calls = []
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return SimpleNamespace(stdout=json.dumps({"active": "a", "progress": progress("checking", "b")}))
+        return SimpleNamespace(stdout=json.dumps({"active": "a", "progress": progress("checking", "b")}).encode(), returncode=0)
     monkeypatch.setattr(status.subprocess, "run", run)
     result = status.get_release_status(port=8000)
     assert result["mode"] == "foundation" and result["phase"] == "checking"
-    assert calls[0][0] == protected + ["status"]
+    assert calls[0][0] == [protected[0], "-X", "utf8", *protected[1:], "status"]
     assert calls[0][1]["timeout"] == 4
 
 
 def test_old_foundation_without_progress_is_unavailable(owner, monkeypatch):
     owner._foundation_client_command = lambda **kwargs: ["protected-client"]
-    monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout='{"active":"a"}'))
+    monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=b'{"active":"a"}', returncode=0))
     assert status.get_release_status(port=8000)["phase"] == "unavailable"
 
 
@@ -169,7 +170,7 @@ def test_manual_rollback_availability_and_owner_selection(owner, monkeypatch):
     calls = []
     def run(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(returncode=0, stdout='{"pending":"b"}')
+        return SimpleNamespace(returncode=0, stdout=b'{"pending":"b"}')
     monkeypatch.setattr(status.subprocess, "run", run)
     status.rollback_release(active_release_id="a", previous_release_id="b", port=18581)
     assert calls[0][-6:] == ["rollback", "--expected-active", "a", "--expected-previous", "b", "--confirm"]
@@ -222,25 +223,25 @@ def test_confirmation_uses_bound_owner_and_invalidates_status_cache(owner, tmp_p
         owner._foundation_client_command = lambda **kwargs: prefix
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return SimpleNamespace(stdout=json.dumps({"status": "completed"} if foundation else {"pending": "b"}), returncode=0)
+        return SimpleNamespace(stdout=json.dumps({"status": "completed"} if foundation else {"pending": "b"}).encode(), returncode=0)
     monkeypatch.setattr(status.subprocess, "run", run)
     status._cache[(str(tmp_path), 18581)] = (0, {})
     status.confirm_release(request_id="a" * 32, port=18581)
     command, options = calls[0]
     assert command[-1] == "120" if foundation else command[-1] == "a" * 32
     if foundation:
-        assert command == prefix + ["confirm", "a" * 32, "--wait", "--timeout", "120"]
+        assert command == [prefix[0], "-X", "utf8", *prefix[1:], "confirm", "a" * 32, "--wait", "--timeout", "120"]
     else:
         assert "--platform" in command and str(tmp_path) in command
         assert command[command.index("--port") + 1] == "18581"
-        assert Path(command[3]).name == "elira_release.py"
+        assert Path(command[5]).name == "elira_release.py"
     assert options["timeout"] == 130 and options["cwd"] == tmp_path
     assert not status._cache
 
 
 @pytest.mark.parametrize(("code", "expected"), [(1, 409), (2, 504)])
 def test_confirmation_owner_failure_does_not_report_success(owner, monkeypatch, code, expected):
-    monkeypatch.setattr(status.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="{}", returncode=code))
+    monkeypatch.setattr(status.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=b"{}", returncode=code))
     with pytest.raises(status.ReleaseConfirmationError) as caught:
         status.confirm_release(request_id="a" * 32, port=18581)
     assert caught.value.status_code == expected
@@ -277,3 +278,47 @@ def test_confirmation_route_validates_input_counts_request_and_rejects_during_dr
         assert client.post("/api/release/confirm", json={"request_id": "a" * 32}).status_code == 503
     assert calls == [{"request_id": "a" * 32, "port": 18581}]
     assert release_runtime._active_requests == 0
+
+
+def test_real_owner_subprocess_uses_utf8_despite_legacy_io_environment(owner, monkeypatch):
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1251")
+    payload = {"active": "a", "progress": progress("checking", "b",
+        step={"index": 1, "total": 2, "label": "Проверка кириллицы"})}
+    owner._foundation_client_command = lambda **_: [sys.executable, "-I", "-c",
+        "import json; print(json.dumps(" + repr(payload) + ", ensure_ascii=False))"]
+    result = status.get_release_status(port=8000)
+    assert result["phase"] == "checking"
+    assert result["step"]["label"] == "Проверка кириллицы"
+
+
+@pytest.mark.parametrize("body,diagnostic", [
+    ("import sys; sys.stdout.buffer.write(bytes([255]))", "not UTF-8"),
+    ("pass", "empty"),
+    ("print('broken json')", "Expecting value"),
+    ("print('[]')", "non-object"),
+    ("raise SystemExit(7)", "code 7"),
+])
+def test_real_broken_owner_status_is_unavailable_without_http_500(owner, body, diagnostic):
+    owner._foundation_client_command = lambda **_: [sys.executable, "-I", "-c", body]
+    app = FastAPI()
+    app.include_router(release_routes.router)
+    with TestClient(app, base_url="http://testserver:18581") as client:
+        response = client.get("/api/release/status")
+    assert response.status_code == 200
+    assert response.json()["phase"] == "unavailable"
+    assert diagnostic in response.json()["error"]
+
+
+@pytest.mark.parametrize("operation", ["confirm", "rollback"])
+def test_real_broken_owner_mutation_response_is_controlled(owner, monkeypatch, operation):
+    owner._foundation_client_command = lambda **_: [sys.executable, "-I", "-c",
+        "import sys; sys.stdout.buffer.write(bytes([255]))"]
+    if operation == "rollback":
+        monkeypatch.setattr(status, "get_release_status", lambda **_: {
+            "rollback_available": True, "active_release_id": "a", "previous_release_id": "b"})
+    with pytest.raises(status.ReleaseConfirmationError) as caught:
+        if operation == "confirm":
+            status.confirm_release(request_id="a" * 32, port=18581)
+        else:
+            status.rollback_release(active_release_id="a", previous_release_id="b", port=18581)
+    assert caught.value.status_code == 503

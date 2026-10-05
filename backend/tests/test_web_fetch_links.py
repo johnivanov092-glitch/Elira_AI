@@ -66,13 +66,36 @@ def test_fetch_marks_bounded_link_manifest(monkeypatch):
     assert "Список ссылок сокращён" in result["text"]
 
 
+def test_news_index_keeps_all_article_cards_and_links(monkeypatch):
+    html = "<main>" + "".join(
+        f"<article><h2>News {number}</h2><p>{'Event details. ' * 12}</p>"
+        f"<a href='/news/{number}'>Article {number}</a></article>" for number in range(3)
+    ) + "</main>"
+    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    result = _web.tool_web_fetch(url="https://example.org/guide/page")
+    assert result["ok"]
+    assert all(f"News {number}" in result["text"] for number in range(3))
+    assert {row["url"] for row in result["pages"][0]["links"]} == {
+        f"https://example.org/news/{number}" for number in range(3)
+    }
+
+
+def test_single_article_keeps_focus_in_main_container(monkeypatch):
+    html = ("<main><p>Unrelated promotion</p><article><h1>Article</h1><p>"
+            + "Event details. " * 12 + "</p><a href='/source'>Source</a></article></main>")
+    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    result = _web.tool_web_fetch(url="https://example.org/guide/page")
+    assert "Event details." in result["text"]
+    assert "Unrelated promotion" not in result["text"]
+
+
 def test_browser_fallback_retains_links_from_rendered_main_dom(monkeypatch):
     monkeypatch.setattr("requests.get", lambda *a, **k: _response("<main>Loading</main>"))
     target = "https://www.firefox.com/en-US/releases/"
     html = ("<main><p>" + "Current channel information. " * 15 + "</p>"
             f"<a href='{target}'>Release Notes</a></main>")
     page = SimpleNamespace(
-        goto=AsyncMock(return_value=SimpleNamespace(status=200)),
+        goto=AsyncMock(return_value=SimpleNamespace(status=200, headers={})),
         title=AsyncMock(return_value="Releases"), url="https://example.org/current",
         inner_text=AsyncMock(return_value="Current channel information. " * 15),
         content=AsyncMock(return_value=html),
@@ -99,6 +122,7 @@ def test_store_fetch_preserves_links_in_passport_without_verifying_targets(monke
 
     monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "links.sqlite3"))
     monkeypatch.setattr(_web, "_current_run_id", lambda: "links-run")
+    monkeypatch.setattr("app.application.code_agent.loop_helpers.run_persistence_policy", lambda run_id: {"rag": True})
     url = "https://example.org/guide/page"
     target = "https://example.org/current?q=a%26b"
     html = ("<nav><a href='/noise'>Navigation noise</a></nav><main><h1>Current channel</h1><p>"
@@ -119,7 +143,7 @@ def test_store_fetch_preserves_links_in_passport_without_verifying_targets(monke
 
 
 def test_batch_fetch_keeps_every_page_excerpt_and_links_through_llm_packing(monkeypatch):
-    from app.application.code_agent.loop_helpers import TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+    from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
     from app.application.code_agent.run_evidence import RunEvidence
     from app.infrastructure.search.web_runtime import PageFetchResult
 
@@ -128,18 +152,19 @@ def test_batch_fetch_keeps_every_page_excerpt_and_links_through_llm_packing(monk
         if url == urls[-1]:
             return PageFetchResult(final_url=url, status_code=404, error="HTTP 404")
         return PageFetchResult(final_url=url, status_code=200,
-                               text=f"Facts for {url}. " + "Detailed page content. " * 400,
+                               # Three pages fit the 12000-character per-call budget whole.
+                               text=f"Facts for {url}. " + "Detailed page content. " * 100,
                                links=(("Release index", url + "/current"),))
     monkeypatch.setattr(_web, "_fetch_one", fetch)
     result = _web.tool_web_fetch(urls=urls)
-    packed = _truncate_for_llm(result["text"])
-    assert len(result["text"]) <= TOOL_RESULT_LLM_LIMIT
+    packed = _truncate_for_llm(result["text"], WEB_TOOL_RESULT_LLM_LIMIT)
+    assert len(result["text"]) <= WEB_TOOL_RESULT_LLM_LIMIT
     assert packed == result["text"]
     for url in urls[:-1]:
         assert f"Facts for {url}." in packed
         assert url + "/current" in packed
     assert "HTTP 404" in packed
-    assert all(page["truncated"] for page in result["pages"][:-1])
+    assert not any(page["truncated"] for page in result["pages"][:-1])
     evidence = RunEvidence(sources=result["sources"])
     evidence.mark_sources_presented([{"role": "tool", "content": packed}])
     excerpts = [source for source in evidence.sources if source["status"] == "excerpt"]

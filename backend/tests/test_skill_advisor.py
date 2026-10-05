@@ -238,3 +238,60 @@ def test_unvalidated_candidate_cannot_be_activated_by_rollback(store):
     assert result["status"] == "recorded" and result["model_version"] is None
     assert advisor.rollback(result["candidate_version"])["status"] == "unavailable"
     assert advisor.status()["active"] is None
+
+
+def test_proven_failure_recovery_and_resume_are_one_case_and_shadow_only(store):
+    populate()
+    active = advisor.status()["active"]
+    query = "Сверь таблицу суммы и строки исходных данных"
+    proof = {**evidence("table-reconcile"), "outcome": "requirement_failure", "execution_ok": True,
+             "case_id": digest("case"), "requirement_ids": ["req-sums"]}
+    failed = advisor.observe(query, proof, "recovering", CONTEXT)
+    assert failed["ok"] is True
+    before = (store / "dataset.json").read_bytes()
+    replay = {**proof, "reports": [{"sha256": digest("fresh checker timestamp")}]}
+    assert advisor.observe(query, replay, "recovering", CONTEXT)["status"] == "duplicate"
+    assert (store / "dataset.json").read_bytes() == before
+    success = {**evidence("table-reconcile", 3), "outcome": "verified_success",
+               "case_id": proof["case_id"], "requirement_ids": ["req-sums"]}
+    assert advisor.observe(query, success, "recovering", CONTEXT)["ok"] is True
+    rows = json.loads((store / "dataset.json").read_text(encoding="utf-8"))["samples"]
+    cases = [row for row in rows if row["run_id"] == "recovering"]
+    assert len(cases) == 2
+    recovered = next(row for row in cases if row["outcome"] == "verified_success")
+    assert recovered["recovery_of"] == [failed["sample_id"]]
+    state = advisor.status()
+    assert state["shadow_evaluation"]["mode"] == "shadow"
+    assert state["shadow_evaluation"]["promote"] is False
+    shadow = json.loads((store / "models" / f"{state['shadow_candidate']}.json").read_text())
+    assert shadow["mode"] == "shadow"
+    assert any(entry["failure_support"] for entry in shadow["classes"].values()) or cases[0]["holdout"]
+    assert state["active"] != state["shadow_candidate"]
+    assert advisor.rollback(state["shadow_candidate"])["status"] == "unavailable"
+    assert advisor._model(active).get("mode") != "shadow"
+
+
+def test_success_recheck_after_failure_links_recovery_without_an_extra_vote(store):
+    query = "Сверь таблицу и суммы"
+    success = {**evidence("table-reconcile"), "outcome": "verified_success", "case_id": digest("case")}
+    assert advisor.observe(query, success, "same-case")["ok"]
+    failure = {**evidence("table-reconcile", 1), "outcome": "requirement_failure", "execution_ok": True,
+               "requirement_ids": ["req-sums"], "case_id": success["case_id"]}
+    failed = advisor.observe(query, failure, "same-case")
+    assert advisor.observe(query, {**success, "input_version": digest("corrected")}, "same-case")["ok"]
+    rows = json.loads((store / "dataset.json").read_text())["samples"]
+    assert len(rows) == 2
+    assert next(row for row in rows if row["outcome"] == "verified_success")["recovery_of"] == [failed["sample_id"]]
+
+
+@pytest.mark.parametrize("diagnostic", ["network_error", "cancelled", "unknown"])
+def test_diagnostics_never_penalize_a_skill(store, diagnostic):
+    proof = {**evidence("audio-transcribe"), "outcome": diagnostic}
+    assert advisor.observe("Расшифруй аудио", proof, "diagnostic")["status"] == "unavailable"
+    proof = {**evidence("audio-transcribe"), "outcome": "requirement_failure", "execution_ok": False,
+             "requirement_ids": ["req-transcript"]}
+    assert advisor.observe("Расшифруй аудио", proof, "execution-error")["status"] == "unavailable"
+    proof = {**evidence("audio-transcribe"), "outcome": "requirement_failure", "execution_ok": True,
+             "requirement_ids": ["req-transcript"], "skill_binding": {}}
+    assert advisor.observe("Расшифруй аудио", proof, "unselected")["status"] == "unavailable"
+    assert not (store / "dataset.json").exists()

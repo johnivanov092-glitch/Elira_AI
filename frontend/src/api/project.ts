@@ -21,6 +21,7 @@ export type ReadProjectFileRequest = {
 
 export type AdvancedMultiAgentRequest = {
   query?: string;
+  run_id?: string;
   model_name?: string;
   context?: string;
   agents?: string[];
@@ -141,6 +142,7 @@ export type AdvancedMultiAgentStreamEvent =
   | { type: "error"; error: string };
 
 export type AdvancedMultiAgentStreamHandlers = {
+  onRunId?: (runId: string) => void;
   onStep?: (index: number, total: number, label: string) => void;
   onDone?: (result: ProjectResponse) => void;
   onError?: (error: Error) => void;
@@ -154,7 +156,7 @@ export async function streamAdvancedMultiAgent(
   handlers: AdvancedMultiAgentStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const { onStep, onDone, onError } = handlers;
+  const { onStep, onDone, onError, onRunId } = handlers;
   const isAbort = (err: unknown) => (err as Error)?.name === "AbortError";
   let response: Response;
   try {
@@ -174,6 +176,8 @@ export async function streamAdvancedMultiAgent(
     onError?.(new Error(`Stream failed: HTTP ${response.status}`));
     return;
   }
+  const runId = response.headers.get("X-Run-Id");
+  if (runId) onRunId?.(runId);
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");

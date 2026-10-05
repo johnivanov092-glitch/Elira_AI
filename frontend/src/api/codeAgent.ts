@@ -563,10 +563,19 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
   }
 }
 
-export async function cancelCodeAgent(runId: string): Promise<{ ok: boolean; found: boolean }> {
-  return request<{ ok: boolean; found: boolean; run_id: string }>("/api/code-agent/cancel", {
+export type CancelCodeAgentResult = {
+  ok: boolean;
+  found?: boolean;
+  run_id: string;
+  state: "stopped" | "cancel_failed";
+  error?: string;
+};
+
+export async function cancelCodeAgent(runId: string): Promise<CancelCodeAgentResult> {
+  return request<CancelCodeAgentResult>("/api/code-agent/cancel", {
     method: "POST",
     body: { run_id: runId },
+    timeoutMs: 15000,
   });
 }
 

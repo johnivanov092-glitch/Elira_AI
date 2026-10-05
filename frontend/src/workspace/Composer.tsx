@@ -6,6 +6,7 @@ import { uploadResource, type ResourceAttachment } from "../api/resources";
 import { Chip } from "../ui/Chip";
 import { MicButton } from "./MicButton";
 import { cn } from "../ui/cn";
+import type { RunControlState } from "./types";
 
 type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agent mode.
 
@@ -28,7 +29,7 @@ export type ComposerAttachControls = {
  *  (opened in the
  *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
 export function Composer({
-  value, onChange, sessionId, onPlus, onPlugins, onSend, onSendMultiAgent, running, onStop, contextUsage, onAttachReady,
+  value, onChange, sessionId, onPlus, onPlugins, onSend, onSendMultiAgent, running, runControlState, cancelError, onStop, contextUsage, onAttachReady,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -42,6 +43,8 @@ export function Composer({
    *  pick one of the 4 backend workflow templates. */
   onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) => void;
   running: boolean;
+  runControlState?: RunControlState;
+  cancelError?: string | null;
   onStop: () => void;
   contextUsage?: ContextUsage | null;
   /** Receives a function that opens the hidden file picker, so the "+" menu in
@@ -113,6 +116,7 @@ export function Composer({
   const submitRef = useRef<() => void>(() => {});
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const stopPending = runControlState === "stopping" || runControlState === "cancel_failed";
   useLayoutEffect(() => {
     const input = inputRef.current;
     if (!input) return;
@@ -161,7 +165,7 @@ export function Composer({
 
   function submit() {
     const text = value.trim();
-    if (!text || submittingRef.current) return;
+    if (!text || submittingRef.current || stopPending) return;
     setSendError(null);
     if (running && (multiAgent || attachments.length > 0 || uploading.length > 0)) {
       setSendError("Во время работы можно отправить текстовое уточнение. Вложения и мульти-агент доступны для следующей задачи.");
@@ -394,20 +398,22 @@ export function Composer({
             placeholder={running ? "Добавь уточнение, не прерывая работу…  Enter — отправить" : "Опиши задачу или перетащи файл…  Enter — отправить"}
             className="min-w-0 flex-1 resize-none bg-transparent text-sm leading-5 text-tx outline-none placeholder:text-mut"
           />
-          {running && (
+          {(running || stopPending) && (
             <button
               type="button"
               onClick={onStop}
-              aria-label="Остановить"
+              aria-label={runControlState === "cancel_failed" ? "Повторить остановку" : "Остановить"}
+              title={runControlState === "stopping" ? "Подтверждаю остановку…" : runControlState === "cancel_failed" ? "Повторить остановку" : "Остановить"}
+              disabled={runControlState === "stopping"}
               className="grid h-[33px] w-[33px] shrink-0 place-items-center rounded-lg border border-line text-t2 transition-colors hover:bg-hover hover:text-tx"
             >
-              <Square size={15} />
+              {runControlState === "stopping" ? <Loader2 size={15} className="animate-spin" /> : <Square size={15} />}
             </button>
           )}
             <button
               type="button"
               onClick={submit}
-              disabled={submitting || !value.trim()}
+              disabled={submitting || stopPending || !value.trim()}
               aria-label={running ? "Отправить уточнение" : "Отправить"}
               title={running ? "Отправить, не прерывая работу Elira" : pendingSend ? "Отправлю, как только загрузится файл" : undefined}
               className={cn(
@@ -419,6 +425,9 @@ export function Composer({
             </button>
         </div>
         {sendError && <p role="alert" className="mt-2 text-[11px] text-danger">{sendError}</p>}
+        {runControlState === "stopping" && <p role="status" className="mt-2 text-[11px] text-mut">Подтверждаю остановку и очистку ресурсов.</p>}
+        {runControlState === "stopped" && <p role="status" className="mt-2 text-[11px] text-mut">Остановка подтверждена.</p>}
+        {runControlState === "cancel_failed" && <p role="alert" className="mt-2 text-[11px] text-danger">Остановка не подтверждена: {cancelError || "нет подтверждения сервера"}. Повтори Stop. Новый запуск пока недоступен.</p>}
       </div>
     </div>
   );

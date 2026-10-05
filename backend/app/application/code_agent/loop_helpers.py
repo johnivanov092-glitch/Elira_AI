@@ -12,6 +12,7 @@ every helper here through the ``agent_loop`` module namespace, so tests that
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -39,6 +40,9 @@ def _truncate(text: str, limit: int = 4000) -> str:
 # call, leaving room for several tool calls per turn plus the model's
 # own reasoning.
 TOOL_RESULT_LLM_LIMIT = 12000
+# Web results share the general per-call budget again (owner decision 2026-10-03,
+# pre-2026-10-01 value); the fair per-query summary still applies within it.
+WEB_TOOL_RESULT_LLM_LIMIT = 12000
 
 
 def _truncate_for_llm(text: str, limit: int = TOOL_RESULT_LLM_LIMIT) -> str:
@@ -506,6 +510,61 @@ def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+def _pack_web_excerpts(text: str, limit: int) -> str:
+    """Keep complete source blocks fairly across pages in a smaller window.
+
+    Presentation is still verified against the ledger's full quote immediately
+    before inference. This parser selects text; it never creates source records.
+    """
+    if len(text) <= limit:
+        return text
+    from app.application.web_evidence.corpus import envelope
+
+    envelopes = list(re.finditer(r"<<<DATA\n([\s\S]*?)\nDATA>>>", text))
+    bodies = [match.group(1) for match in envelopes] or [text]
+    groups: dict[str, list[tuple[int, str]]] = {}
+    position = 0
+    for body in bodies:
+        starts = list(re.finditer(
+            r"(?m)^\[\[source:[a-zA-Z0-9_-]{1,80}\]\] [^\n]*\nURL: ([^\n]+)\n", body,
+        ))
+        for index, match in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(body)
+            groups.setdefault(match.group(1), []).append((position, body[match.start():end]))
+            position += 1
+    outside = re.sub(r"<<<DATA\n[\s\S]*?\nDATA>>>", "", text)
+    header = text.splitlines()[0][:400]
+    warnings = [line for line in outside.splitlines()
+                if line.strip().startswith(("WARNING", "ERROR", "Предупреждение"))]
+    prefix = "\n".join(dict.fromkeys([header, *warnings]))
+    if not groups:
+        # Legacy/plain search output has no quote receipts to preserve, but
+        # provider warnings must survive even when they occur in the middle.
+        return prefix + "\n" + _truncate_for_llm(text, limit=max(400, limit - len(prefix) - 1))
+
+    note = (
+        "[Веб-выдержки сокращены под текущее окно контекста: показаны только целые "
+        "фрагменты. Пропущенные разделы прочитай отдельным web_fetch по URL#якорю.]"
+    )
+    rows = list(groups.values())
+    # With room for only a few pages, cover the beginning, middle and end before
+    # giving any one page a second excerpt.
+    order = list(dict.fromkeys([0, len(rows) // 2, len(rows) - 1, *range(len(rows))]))
+    selected: list[tuple[int, str]] = []
+
+    def render(blocks: list[tuple[int, str]]) -> str:
+        payload = "\n\n".join(block for _, block in sorted(blocks))
+        return prefix + "\n" + note + ("\n\n" + envelope(payload, source="current web excerpts") if payload else "")
+
+    for depth in range(max(len(row) for row in rows)):
+        for index in order:
+            if depth < len(rows[index]):
+                candidate = [*selected, rows[index][depth]]
+                if len(render(candidate)) <= limit:
+                    selected = candidate
+    return render(selected)
+
+
 class ContextBudgetError(RuntimeError):
     """Protected/recent context cannot fit the active server window."""
 
@@ -610,6 +669,47 @@ def _prepare_messages_for_llm(
         usage = get_context_usage(messages, **usage_kwargs)
 
     safe_input_budget = int(context_profile.get("safe_input_budget") or 0)
+
+    def fits(value: dict[str, Any]) -> bool:
+        return float(value["percent"]) < critical_threshold and (
+            safe_input_budget <= 0 or int(value["current_tokens"]) <= safe_input_budget
+        )
+
+    if not fits(usage) and any(message.get("role") == "tool"
+                               and message.get("name") in {"web_search", "web_fetch"}
+                               for message in messages):
+        # Compaction handles older history first. If the recent web batch still
+        # cannot fit, pack its complete receipts using the same request estimator
+        # and reserves. Protected instructions and schemas remain untouched.
+        original = messages
+
+        def packed_candidate(limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            candidate = [
+                {**message, "content": _pack_web_excerpts(str(message.get("content") or ""), limit)}
+                if message.get("role") == "tool" and message.get("name") in {"web_search", "web_fetch"}
+                else message for message in original
+            ]
+            if restore_messages is not None:
+                candidate = restore_messages(candidate, compacted=True)
+            candidate = [
+                {**message, "content": _pack_web_excerpts(str(message.get("content") or ""), limit)}
+                if message.get("_msg_id") == "web-source-context" else message
+                for message in candidate
+            ]
+            return candidate, get_context_usage(candidate, **usage_kwargs)
+
+        low, high = 400, WEB_TOOL_RESULT_LLM_LIMIT
+        best = None
+        while low <= high:
+            middle = (low + high) // 2
+            candidate, candidate_usage = packed_candidate(middle)
+            if fits(candidate_usage):
+                best = candidate, candidate_usage
+                low = middle + 1
+            else:
+                high = middle - 1
+        if best is not None:
+            messages, usage = best
     if float(usage["percent"]) >= critical_threshold or (
         safe_input_budget > 0 and int(usage["current_tokens"]) > safe_input_budget
     ):
@@ -651,6 +751,166 @@ def _is_throwaway_project(project_root: Path) -> bool:
         return False
 
 
+def _memory_fact_digest(text: str) -> str:
+    normalized = " ".join(text.split()).casefold().rstrip(".")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _explicit_memory_digests(text: str) -> list[str]:
+    commands = list(re.finditer(
+        r"(?:^|(?<=[.!?;\n]))\s*(?:пожалуйста[, ]+)?(?:запомни|запоминай|remember|memorize)\b[,:]?\s*",
+        text, re.IGNORECASE,
+    ))
+    facts = set()
+    for index, command in enumerate(commands):
+        body = text[command.end():commands[index + 1].start() if index + 1 < len(commands) else len(text)].strip()
+        statements = [body, *(re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", row).strip()
+                               for row in body.splitlines())]
+        facts.update(_memory_fact_digest(row) for row in statements if row)
+    return sorted(facts)[:200]
+
+
+def task_memory_write_allowed(policy: dict[str, Any], fact: object) -> bool:
+    """One operation policy for both memory tools; literal consent is bounded."""
+    if policy.get("direct_memory") is not True or not isinstance(fact, str) or not fact.strip():
+        return False
+    return (policy.get("direct_memory_scope") == "task" or (
+        policy.get("direct_memory_scope") == "facts"
+        and _memory_fact_digest(fact) in policy.get("direct_memory_facts", [])
+    ))
+
+
+def task_persistence_policy(
+    user_text: str = "", *, saved: dict[str, Any] | None = None,
+    auto_remember: bool = True,
+    trusted_user_text: bool = True,
+) -> dict[str, Any]:
+    """Run-owned consent for durable memory/training, never for technical logs.
+
+    Only direct user text is accepted here. Callers must not pass tool output,
+    attachment bodies or generated continuation instructions. A later explicit
+    instruction can change a field; an automatic Resume cannot grant consent.
+    """
+    if saved is not None:
+        valid = (isinstance(saved, dict) and saved.get("schema") == 1
+                 and all(type(saved.get(key)) is bool for key in ("rag", "learning")))
+        policy = {"schema": 1, "rag": bool(valid and saved["rag"]),
+                  "learning": bool(valid and saved["learning"]),
+                  "direct_memory": bool(valid and saved.get("direct_memory", saved["rag"]) is True),
+                  "technical_journal": True}
+        saved_fields = saved if isinstance(saved, dict) else {}
+        scope = saved_fields.get("direct_memory_scope", "task" if policy["direct_memory"] else "none")
+        facts = saved_fields.get("direct_memory_facts", [])
+        scope_valid = isinstance(scope, str) and scope in {"none", "task", "facts"} and isinstance(facts, list) and len(facts) <= 200 and all(
+            isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) for item in facts)
+        policy.update(direct_memory_scope=scope if scope_valid else "none",
+                      direct_memory_facts=sorted(set(facts)) if scope_valid else [])
+        if not scope_valid:
+            policy["direct_memory"] = False
+    else:
+        policy = {"schema": 1, "rag": bool(auto_remember),
+                  "learning": bool(auto_remember), "direct_memory": bool(auto_remember),
+                  "technical_journal": True}
+        policy.update(direct_memory_scope="task" if auto_remember else "none", direct_memory_facts=[])
+    # Short imperative clauses, not a keyword anywhere in an arbitrary body.
+    clauses = re.split(r"[.!?;\n]+|\bи (?=не )|,\s*(?=(?:ничего\s+)?не\s+"
+                       r"(?:запоминай|запоминать|сохраняй|используй)\b)", user_text.casefold())
+    for clause in clauses:
+        clause = clause.strip()
+        deny_memory = bool(re.match(
+            r"(?:пожалуйста[, ]+)?(?:ничего\s+)?не\s+(?:запоминай|запоминать)\b"
+            r"|(?:пожалуйста[, ]+)?не\s+(?:сохраняй|сохранять|записывай|записывать)\b.*(?:памят|rag|долговрем)"
+            r"|(?:эту задачу|это|ничего из (?:этой задачи|этого))\s+не\s+(?:запоминай|сохраняй)\b"
+            r"|(?:do not|don't|never)\s+(?:remember|memorize|store .*memory|save .*memory)\b",
+            clause,
+        ))
+        deny_learning = bool(re.match(
+            r"не\s+(?:обучайся|обучаться|обучай|обучать)\b"
+            r"|не\s+(?:используй|использовать|сохраняй|сохранять|добавляй|добавлять)\b.*(?:обучени|обучающ|training)"
+            r"|(?:do not|don't|never)\s+(?:learn|train|use .*training)\b", clause,
+        ))
+        allow_memory = bool(re.match(
+            r"(?:теперь\s+)?(?:можно|разрешаю)\s+(?:запоминать|сохранять .*памят[ьи])\b"
+            r"|(?:you may|i allow you to)\s+(?:remember|store .*memory)\b", clause,
+        ))
+        allow_learning = bool(re.match(
+            r"(?:теперь\s+)?(?:можно|разрешаю)\s+(?:обучаться|использовать .*обучени)"
+            r"|(?:you may|i allow you to)\s+(?:learn|use .*training)\b", clause,
+        ))
+        direct_memory_command = trusted_user_text and bool(re.match(
+            r"(?:пожалуйста[, ]+)?(?:запомни|запоминай|remember|memorize)\b", clause,
+        ))
+        if deny_memory:
+            # A generic no-memory instruction includes learned examples.
+            policy.update(rag=False, learning=False, direct_memory=False,
+                          direct_memory_scope="none", direct_memory_facts=[])
+        if deny_learning:
+            policy["learning"] = False
+        if allow_memory and trusted_user_text:
+            policy["rag"] = True
+            policy["direct_memory"] = True
+            policy.update(direct_memory_scope="task", direct_memory_facts=[])
+        if direct_memory_command:
+            # Explicit human memory commands are separate from automatic
+            # task summaries/training. API auto_remember=False blocks those
+            # automatic channels without revoking a direct user instruction.
+            facts = _explicit_memory_digests(user_text)
+            if policy["direct_memory_scope"] == "facts":
+                facts = sorted(set(facts) | set(policy["direct_memory_facts"]))[:200]
+            policy.update(direct_memory=bool(facts), direct_memory_scope="facts", direct_memory_facts=facts)
+        if allow_learning and trusted_user_text:
+            policy["learning"] = True
+    if not auto_remember:
+        policy.update(rag=False, learning=False)
+    return policy
+
+
+def persistence_policy_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return task_persistence_policy(auto_remember=False)
+    request = state.get("request")
+    request = request if isinstance(request, dict) else {}
+    saved = state.get("persistence_policy", request.get("persistence_policy"))
+    if saved is None and (
+        type(request.get("auto_remember")) is not bool
+        or not any(isinstance(request.get(key), str) and request[key].strip()
+                   for key in ("memory_query", "user_message"))
+    ):
+        # An incomplete legacy journal cannot reconstruct user consent.
+        return task_persistence_policy(auto_remember=False)
+    raw_text = request.get("memory_query")
+    if not isinstance(raw_text, str):
+        raw_text = request.get("user_message")
+    text = "" if saved is not None else raw_text if isinstance(raw_text, str) else ""
+    policy = task_persistence_policy(text, saved=saved, auto_remember=request.get("auto_remember") is not False,
+                                     trusted_user_text=isinstance(request.get("memory_query"), str))
+    # Migration for journals created before the durable policy was added.
+    if saved is None:
+        for item in state.get("workflow_inputs") or []:
+            if isinstance(item, dict):
+                policy = task_persistence_policy(str(item.get("answer") or ""), saved=policy,
+                                                 auto_remember=request.get("auto_remember") is not False)
+    return policy
+
+
+def run_persistence_policy(run_id: str) -> dict[str, Any]:
+    from app.application.code_agent.run_journal import RunJournal
+
+    try:
+        return persistence_policy_from_state(RunJournal.load(run_id).state)
+    except (OSError, ValueError, RuntimeError):
+        # A missing/corrupt consent record is not authorization to write memory.
+        return task_persistence_policy(auto_remember=False)
+
+
+def web_cache_write_allowed(policy: dict[str, Any] | None) -> bool:
+    """A durable page cache follows the existing task memory permission."""
+    return isinstance(policy, dict) and (
+        policy.get("rag") is True or (policy.get("direct_memory") is True
+                                     and policy.get("direct_memory_scope") == "task")
+    )
+
+
 def _try_remember_turn(
     *,
     user_message: str,
@@ -659,13 +919,16 @@ def _try_remember_turn(
     verified: bool = False,
     mutation_targets: Iterable[str] = (),
     verification_targets: Iterable[str] = (),
+    persistence_policy: dict[str, Any] | None = None,
 ) -> None:
     """Persist only a verified project change, never free-form model prose.
 
     ``response_text`` stays in the signature for call-site compatibility but is
     intentionally not stored: a fluent final answer is not evidence.
     """
-    if _is_throwaway_project(project_root):
+    policy = task_persistence_policy("" if persistence_policy is not None else user_message,
+                                     saved=persistence_policy)
+    if not policy["rag"] or _is_throwaway_project(project_root):
         return
     changed = sorted({
         str(target or "").strip()[:240]

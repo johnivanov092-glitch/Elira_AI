@@ -12,4 +12,4 @@ Run typechecking regularly, single test files regularly, and the full test suite
 
 Once done, use /code-review to review the work.
 
-Commit your work to the current branch.
+Commit or push only when the user explicitly asks. Follow AGENTS.md branch rules and preserve unrelated uncommitted work. Report the final diff and checks even when no commit was requested.

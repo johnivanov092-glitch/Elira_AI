@@ -7,7 +7,7 @@ description: Diagnosis loop for hard bugs and performance regressions. Use when 
 
 A discipline for hard bugs. Skip phases only when explicitly justified.
 
-When exploring the codebase, read `CONTEXT.md` (if it exists) to get a clear mental model of the relevant modules, and check ADRs in the area you're touching.
+When exploring the codebase, follow `docs/agents/domain.md` when present and read its configured documents. Otherwise read an existing CONTEXT.md if available. Consult relevant existing architectural decisions.
 
 ## Phase 1 — Build a feedback loop
 
@@ -23,7 +23,7 @@ Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give
 4. **Headless browser script** (Playwright / Puppeteer) — drives the UI, asserts on DOM/console/network.
 5. **Replay a captured trace.** Save a real network request / payload / event log to disk; replay it through the code path in isolation.
 6. **Throwaway harness.** Spin up a minimal subset of the system (one service, mocked deps) that exercises the bug code path with a single function call.
-7. **Property / fuzz loop.** If the bug is "sometimes wrong output", run 1000 random inputs and look for the failure mode.
+7. **Property / fuzz loop.** For intermittent wrong output, use an isolated fixture, a recorded seed, and explicit time and attempt limits. Start with cases that distinguish the leading hypotheses; expand only when the evidence warrants it.
 8. **Bisection harness.** If the bug appeared between two known states (commit, dataset, version), automate "boot at state X, check, repeat" so you can `git bisect run` it.
 9. **Differential loop.** Run the same input through old-version vs new-version (or two configs) and diff outputs.
 10. **HITL bash script.** Last resort. If a human must click, drive _them_ with `scripts/hitl-loop.template.sh` so the loop is still structured. Captured output feeds back to you.
@@ -42,11 +42,11 @@ A 30-second flaky loop is barely better than no loop; a 2-second deterministic o
 
 ### Non-deterministic bugs
 
-The goal is not a clean repro but a **higher reproduction rate**. Loop the trigger 100×, parallelise, add stress, narrow timing windows, inject sleeps. A 50%-flake bug is debuggable; 1% is not — keep raising the rate until it's debuggable.
+Measure the reproduction rate within explicit time and attempt limits. Prefer controlled scheduling or fault injection in an isolated fixture; add concurrency or stress only when it probes a specific hypothesis. Stop on a useful failure or when the budget expires. Record attempts, failures and elapsed time; lack of reproduction is inconclusive. Do not repeat effectful production requests to increase the sample count.
 
 ### When you genuinely cannot build a loop
 
-Stop and say so explicitly. List what you tried. Ask the user for: (a) access to whatever environment reproduces it, (b) a captured artifact (HAR file, log dump, core dump, screen recording with timestamps), or (c) permission to add temporary production instrumentation. Do **not** proceed to hypothesise without a loop.
+State what was tried and what evidence is missing. Continue safe code inspection and label hypotheses as unconfirmed; ask for access or a captured artifact only when needed. Obtain authorization before adding production instrumentation. Do not claim a fix is verified without a relevant observable check.
 
 ### Completion criterion — a tight loop that goes red
 
@@ -57,7 +57,7 @@ Phase 1 is done when the loop is **tight** and **red-capable**: you can name **o
 - [ ] **Fast** — seconds, not minutes.
 - [ ] **Agent-runnable** — you can run it unattended; a human in the loop only via `scripts/hitl-loop.template.sh`.
 
-If you catch yourself reading code to build a theory before this command exists, **stop — jumping straight to a hypothesis is the exact failure this skill prevents.** No red-capable command, no Phase 2.
+A failing reproduction is the preferred signal. When it cannot be obtained safely, code inspection may narrow hypotheses, but keep that limitation explicit and validate through the closest relevant seam.
 
 ## Phase 2 — Reproduce + minimise
 
@@ -77,11 +77,11 @@ Why bother: a minimal repro shrinks the hypothesis space in Phase 3 (fewer movin
 
 Done when **every remaining element is load-bearing** — removing any one of them makes the loop go green.
 
-Do not proceed until you have reproduced **and** minimised.
+Prefer a reproduced, minimised case. If the environment prevents it, retain the evidence gap while progressing through safe investigation.
 
 ## Phase 3 — Hypothesise
 
-Generate **3–5 ranked hypotheses** before testing any of them. Single-hypothesis generation anchors on the first plausible idea.
+Start with the highest-probability cause supported by the evidence. Keep plausible alternatives and choose the cheapest probe that distinguishes them; simple defects need no fixed number of hypotheses.
 
 Each hypothesis must be **falsifiable**: state the prediction it makes.
 
@@ -128,7 +128,7 @@ Required before declaring done:
 - [ ] Original repro no longer reproduces (re-run the Phase 1 loop)
 - [ ] Regression test passes (or absence of seam is documented)
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
-- [ ] Throwaway prototypes deleted (or moved to a clearly-marked debug location)
-- [ ] The hypothesis that turned out correct is stated in the commit / PR message — so the next debugger learns
+- [ ] Temporary artifacts retained in a clearly marked debug location, or removed only when cleanup is authorized
+- [ ] The confirmed cause is stated in the result and, if a commit or PR was requested, in its description
 
 **Then ask: what would have prevented this bug?** If the answer involves architectural change (no good test seam, tangled callers, hidden coupling) hand off to the `/improve-codebase-architecture` skill with the specifics. Make the recommendation **after** the fix is in, not before — you have more information now than when you started.

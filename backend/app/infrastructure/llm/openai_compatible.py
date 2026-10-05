@@ -39,7 +39,9 @@ class LLMStreamCancelHandle:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._close_lock = threading.Lock()
         self._response: requests.Response | None = None
+        self._failed_responses: list[requests.Response] = []
         self._closed = False
 
     def bind(self, response: requests.Response) -> None:
@@ -50,20 +52,39 @@ class LLMStreamCancelHandle:
             else:
                 self._response = response
         if close_now:
-            response.close()
+            with self._close_lock:
+                try:
+                    response.close()
+                except Exception:
+                    with self._lock:
+                        self._failed_responses.append(response)
+                    raise
 
     def release(self, response: requests.Response) -> None:
         with self._lock:
             if self._response is response:
                 self._response = None
+            self._failed_responses = [item for item in self._failed_responses if item is not response]
 
     def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            response = self._response
-            self._response = None
-        if response is not None:
-            response.close()
+        # A failed transport close remains owned and retryable. Serialize close
+        # calls so concurrent Stop/finally cannot acknowledge it prematurely.
+        with self._close_lock:
+            with self._lock:
+                self._closed = True
+                responses = list(self._failed_responses)
+                if self._response is not None:
+                    responses.append(self._response)
+            errors: list[Exception] = []
+            for response in responses:
+                try:
+                    response.close()
+                except Exception as exc:
+                    errors.append(exc)
+                else:
+                    self.release(response)
+            if errors:
+                raise errors[0]
 
     @property
     def is_closed(self) -> bool:
@@ -112,6 +133,8 @@ _LLM_RETRY_BACKOFF_S = 0.5
 # new -c value is adopted within the TTL, without an app restart.
 _PROPS_CTX_TTL_S = 120.0
 _props_ctx_cache: dict[str, tuple[float, int | None]] = {}
+_sampling_backends: dict[str, str] = {}
+_sampling_omissions: set[tuple[str, str, tuple[str, ...]]] = set()
 
 
 def _env_value(name: str, default: str = "") -> str:
@@ -468,7 +491,8 @@ def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, A
             # Reasoning arrives in a separate field when thinking is enabled
             # (--jinja server); surface it so callers can show it apart from the
             # answer. Empty string when thinking is off — never mixed into content.
-            "reasoning_content": str(message.get("reasoning_content") or ""),
+            # vLLM names the same field `reasoning`.
+            "reasoning_content": str(message.get("reasoning_content") or message.get("reasoning") or ""),
             "tool_calls": _normalize_tool_calls(message.get("tool_calls")),
         },
         "done": True,
@@ -518,12 +542,31 @@ def _apply_thinking_option(payload: dict[str, Any], opts: dict[str, Any]) -> Non
         payload["reasoning_effort"] = effort
 
 
-# Extra sampler params llama.cpp accepts in the request body (verified against the
-# live server via /props). Whitelisted so callers can only set known keys, never
-# inject arbitrary payload fields. Used for per-request DRY anti-repetition on
-# thinking runs (a reasoning model can fall into a degenerate "same sentence
-# forever" loop; DRY penalises repeated token sequences at sampling time so the
-# loop never forms). Sent per-request → no server restart, server default stays off.
+def _apply_response_format(payload: dict[str, Any], opts: dict[str, Any]) -> None:
+    """Forward an explicit JSON-schema format without sharing mutable options."""
+    if "response_format" not in opts:
+        return
+    response_format = opts["response_format"]
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_schema":
+        raise ValueError("response_format must be an object with type json_schema")
+    structured = response_format.get("json_schema")
+    if not isinstance(structured, dict):
+        raise ValueError("response_format.json_schema must be an object")
+    if not isinstance(structured.get("name"), str) or not structured["name"].strip():
+        raise ValueError("response_format.json_schema.name must be a non-empty string")
+    if not isinstance(structured.get("schema"), dict):
+        raise ValueError("response_format.json_schema.schema must be an object")
+    try:
+        detached = json.loads(json.dumps(response_format, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise ValueError("response_format must contain only JSON-compatible values") from exc
+    if detached != response_format:
+        raise ValueError("response_format must contain JSON values and string object keys")
+    payload["response_format"] = detached
+
+
+# Samplers are backend-specific. A permissive OpenAI request parser accepting
+# unknown keys does not mean those keys reach its sampling implementation.
 _SAMPLING_EXTRA_KEYS = frozenset({
     "dry_multiplier", "dry_base", "dry_allowed_length", "dry_penalty_last_n",
     "dry_sequence_breakers", "repeat_penalty", "repeat_last_n",
@@ -531,12 +574,22 @@ _SAMPLING_EXTRA_KEYS = frozenset({
 
 
 def _apply_sampling_extra(payload: dict[str, Any], opts: dict[str, Any]) -> None:
-    """Merge whitelisted extra sampling params (e.g. DRY) from ``options['sampling']``
-    into the request body top-level. Omitted keys keep the server default."""
+    """Use capabilities observed by the existing context probe; never map DRY to a different penalty."""
     extra = opts.get("sampling")
     if isinstance(extra, dict):
+        endpoint = local_llm_config().base_url
+        backend = _sampling_backends.get(endpoint, "unknown")
+        allowed = (_SAMPLING_EXTRA_KEYS if backend == "llama.cpp" else
+                   frozenset({"repetition_penalty", "presence_penalty", "frequency_penalty", "top_k", "min_p"})
+                   if backend == "vllm" else frozenset())
+        omitted = tuple(sorted(key for key, value in extra.items() if value is not None and key not in allowed))
+        identity = (endpoint, backend, omitted)
+        if omitted and identity not in _sampling_omissions:
+            _sampling_omissions.add(identity)
+            logger.warning("Sampling backend=%s: unsupported parameters omitted: %s; server defaults retained",
+                           backend, ", ".join(omitted))
         for key, value in extra.items():
-            if key in _SAMPLING_EXTRA_KEYS and value is not None:
+            if key in allowed and value is not None:
                 payload[key] = value
 
 
@@ -614,6 +667,7 @@ def chat_completion(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
+    _apply_response_format(payload, opts)
     _apply_sampling_extra(payload, opts)
 
     _guard_context_request(
@@ -684,6 +738,7 @@ def chat_completion_stream(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
+    _apply_response_format(payload, opts)
     _apply_sampling_extra(payload, opts)
     _guard_context_request(
         normalized_messages,
@@ -757,6 +812,7 @@ def chat_completion_event_stream(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
+    _apply_response_format(payload, opts)
     _apply_sampling_extra(payload, opts)
     _guard_context_request(
         normalized_messages,
@@ -803,14 +859,14 @@ def chat_completion_event_stream(
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
             delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
             if first_token_ns is None and any(
-                delta.get(field) for field in ("reasoning_content", "content", "tool_calls")
+                delta.get(field) for field in ("reasoning_content", "reasoning", "content", "tool_calls")
             ):
                 first_token_ns = time.monotonic_ns()
             # Thinking (--jinja) streams the chain-of-thought in its own
-            # `reasoning_content` field, separate from the answer's `content`.
-            # Route it to a distinct event so callers show it apart from (and
-            # never blended into) the final answer.
-            rtoken = str(delta.get("reasoning_content") or "")
+            # `reasoning_content` field (vLLM: `reasoning`), separate from the
+            # answer's `content`. Route it to a distinct event so callers show
+            # it apart from (and never blended into) the final answer.
+            rtoken = str(delta.get("reasoning_content") or delta.get("reasoning") or "")
             if rtoken:
                 reasoning_parts.append(rtoken)
                 yield {"type": "reasoning", "content": rtoken}
@@ -929,17 +985,43 @@ def list_models() -> list[dict[str, Any]]:
     return result
 
 
-def server_context_window(*, fresh: bool = False) -> int | None:
-    """Authoritative context window (n_ctx) of the live llama.cpp server.
+def _models_context_window(cfg: OpenAICompatibleConfig) -> int | None:
+    """Served window from vLLM's ``/v1/models`` ``max_model_len``.
 
-    Read from the server's ``/props`` endpoint
-    (``default_generation_settings.n_ctx``) — the ONLY place the loaded window is
-    exposed. ``/v1/models`` omits it, so callers that trust ``/models`` silently
-    fall back to the config default (e.g. 128k) and over-size prompts past the
-    server's real window (e.g. 64k), which the server then truncates/errors —
-    read as "the model stops holding context". Returns None when the server is
-    unreachable / unparseable. ``fresh=True`` bypasses the passive-consumer TTL
-    cache so the next model run sees a model or ``-c`` swap immediately.
+    llama.cpp omits this field, so its ``/models`` can never yield a stale
+    config-sized window here. Prefers the configured model id, then any entry.
+    """
+    response = requests.get(
+        f"{cfg.base_url}/models",
+        headers=_headers(cfg),
+        timeout=min(8.0, cfg.timeout_seconds),
+    )
+    response.raise_for_status()
+    data = response.json()
+    models = data.get("data") if isinstance(data, dict) else None
+    windows: dict[str, int] = {}
+    for item in models if isinstance(models, list) else []:
+        if isinstance(item, dict):
+            if item.get("owned_by") == "vllm":
+                _sampling_backends[cfg.base_url] = "vllm"
+            window = _positive_int(item.get("max_model_len"))
+            if window:
+                windows[str(item.get("id") or "")] = window
+    return windows.get(cfg.model) or next(iter(windows.values()), None)
+
+
+def server_context_window(*, fresh: bool = False) -> int | None:
+    """Authoritative context window of the live inference server.
+
+    llama.cpp: ``/props`` (``default_generation_settings.n_ctx``) — its
+    ``/v1/models`` omits the loaded window, so callers that trust ``/models``
+    silently fall back to the config default (e.g. 128k) and over-size prompts
+    past the server's real window (e.g. 64k), which the server then
+    truncates/errors — read as "the model stops holding context".
+    vLLM has no ``/props``; its ``/v1/models`` ``max_model_len`` is the served
+    limit. Returns None when the server is unreachable / unparseable.
+    ``fresh=True`` bypasses the passive-consumer TTL cache so the next model
+    run sees a model or ``-c`` swap immediately.
     """
     cfg = local_llm_config()
     if not cfg.enabled:
@@ -950,6 +1032,7 @@ def server_context_window(*, fresh: bool = False) -> int | None:
         if cached is not None and (now - cached[0]) < _PROPS_CTX_TTL_S:
             return cached[1]
     value: int | None = None
+    _sampling_backends.pop(cfg.base_url, None)
     try:
         # base_url ends with /v1 (OpenAI-compat); /props lives at the server root.
         root = cfg.base_url[:-3].rstrip("/") if cfg.base_url.endswith("/v1") else cfg.base_url
@@ -962,10 +1045,16 @@ def server_context_window(*, fresh: bool = False) -> int | None:
         data = response.json()
         gen = data.get("default_generation_settings")
         if isinstance(gen, dict):
+            _sampling_backends[cfg.base_url] = "llama.cpp"
             value = _positive_int(gen.get("n_ctx"))
         if value is None:
             value = _positive_int(data.get("n_ctx"))
     except Exception:
         value = None
+    if value is None:
+        try:
+            value = _models_context_window(cfg)
+        except Exception:
+            value = None
     _props_ctx_cache[cfg.base_url] = (now, value)
     return value

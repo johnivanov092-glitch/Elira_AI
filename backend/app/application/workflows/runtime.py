@@ -463,29 +463,12 @@ def cancel_workflow_run(
     run = get_workflow_run(db_path=resolved_db_path, run_id=run_id)
     if not run:
         raise ValueError(f"Workflow run '{run_id}' not found")
-    if run["status"] in {"completed", "partial", "failed", "cancelled"}:
-        raise ValueError("Terminal workflow runs cannot be cancelled")
+    terminal = run["status"] in {"completed", "partial", "failed", "cancelled"}
 
-    # Tool steps bind processes/provider callbacks to the Workflow run id;
-    # agent steps use a deterministic child id. Signal both through the existing
-    # cancellation seam before committing the durable terminal transition.
-    current_step_id = str(run.get("current_step_id") or "").strip()
-    from app.application.code_agent.agent_loop import request_cancel
-
-    cleanup_errors: list[Exception] = []
-    try:
-        request_cancel(run_id)
-    except Exception as exc:
-        cleanup_errors.append(exc)
-    if current_step_id:
-        stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
-        code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
-        try:
-            request_cancel(code_agent_run_id)
-        except Exception as exc:
-            cleanup_errors.append(exc)
-
-    cancelled = cancel_run(
+    # Seal the durable transition before cleanup so another step cannot start
+    # while a blocking child transport is being closed. Repeated cancellation
+    # retains terminal state and retries its still-owned resources.
+    cancelled = run if terminal else cancel_run(
         run_id=run_id,
         run=run,
         update_workflow_run=lambda current_run_id, **fields: _update_workflow_run_for_db(
@@ -497,6 +480,22 @@ def cancel_workflow_run(
         emit_workflow_event=emit_workflow_event,
         now_func=now_utc,
     )
+    current_step_ids = {str(item.get("current_step_id") or "").strip() for item in (run, cancelled)} - {""}
+    from app.application.code_agent.agent_loop import request_cancel
+
+    cleanup_errors: list[Exception] = []
+    try:
+        request_cancel(run_id)
+    except Exception as exc:
+        cleanup_errors.append(exc)
+    for current_step_id in current_step_ids:
+        stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
+        code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
+        try:
+            request_cancel(code_agent_run_id)
+        except Exception as exc:
+            cleanup_errors.append(exc)
+
     if cleanup_errors:
         raise RuntimeError(
             f"Workflow '{run_id}' was cancelled, but live cleanup failed: "

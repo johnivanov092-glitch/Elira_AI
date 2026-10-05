@@ -42,7 +42,7 @@ def test_public_loop_learns_only_bound_checked_results_and_keeps_full_catalog(tm
         "import json\nfrom pathlib import Path\n"
         "passed = int(Path('result.txt').read_text()) == int(Path('input.txt').read_text()) * 2\n"
         + ("Path('input.txt').write_bytes(b'8\\n')\n" if mutate_input else "") +
-        "Path('checks.json').write_text(json.dumps({'checks': [{'name': 'expected doubled value', 'passed': passed}]}))\n"
+        "Path('checks.json').write_text(json.dumps({'checks': [{'name': 'expected doubled value', 'requirement_id': 'req-double', 'passed': passed}]}))\n"
         "raise SystemExit(0 if passed else 1)\n",
         encoding="utf-8",
     )
@@ -51,6 +51,7 @@ def test_public_loop_learns_only_bound_checked_results_and_keeps_full_catalog(tm
         ("runtime_control", {"operation": "task_decide", "config": {
             "disposition": "reuse", "reason": "Existing Python procedure", "skill_name": "python",
             "inputs": [str(source)], "targets": [str(output)],
+            "requirements": [{"id": "req-double", "text": "Удвоенное значение соответствует исходному числу", "mandatory": True}],
         }}),
         ("run_bash", {"command": command(processor)}),
         ("runtime_control", {"operation": "result_verify", "config": {
@@ -70,7 +71,7 @@ def test_public_loop_learns_only_bound_checked_results_and_keeps_full_catalog(tm
 
     events = list(stream_code_agent(
         user_message="Удвой целое число из input.txt скриптом Python и проверь результат.",
-        project_root=tmp_path, run_id="verified-advisor", chat_fn=chat, auto_remember=False,
+        project_root=tmp_path, run_id="verified-advisor", chat_fn=chat, auto_remember=True,
         permission_mode="bypass", num_ctx=32768,
     ))
     assert output.read_bytes() == b"14\n"
@@ -141,8 +142,8 @@ def test_missing_result_feedback_requires_an_explicit_model_repair(tmp_path, mon
     checker.write_text(
         "import json\nfrom pathlib import Path\n"
         "number = int(Path('input.txt').read_text())\n"
-        "checks = [{'name': name, 'passed': int(Path(name).read_text()) == number * factor}\n"
-        "          for name, factor in [('double.txt', 2), ('triple.txt', 3)]]\n"
+        "checks = [{'name': name, 'requirement_id': identifier, 'passed': int(Path(name).read_text()) == number * factor}\n"
+        "          for name, factor, identifier in [('double.txt', 2, 'req-double'), ('triple.txt', 3, 'req-triple')]]\n"
         "Path('checks.json').write_text(json.dumps({'checks': checks}), encoding='utf-8')\n"
         "raise SystemExit(0 if all(row['passed'] for row in checks) else 1)\n",
         encoding="utf-8", newline="\n",
@@ -151,14 +152,19 @@ def test_missing_result_feedback_requires_an_explicit_model_repair(tmp_path, mon
     additional_checker.write_text(
         "import json\nfrom pathlib import Path\n"
         "rows = json.loads(Path('checks.json').read_text(encoding='utf-8'))['checks']\n"
-        "passed = rows == [{'name': 'double.txt', 'passed': True}, {'name': 'triple.txt', 'passed': True}]\n"
-        "Path('report_receipt.json').write_text(json.dumps({'checks': [{'name': 'report content', 'passed': passed}]}), encoding='utf-8')\n"
+        "passed = rows == [{'name': 'double.txt', 'requirement_id': 'req-double', 'passed': True}, {'name': 'triple.txt', 'requirement_id': 'req-triple', 'passed': True}]\n"
+        "Path('report_receipt.json').write_text(json.dumps({'checks': [{'name': 'report content', 'requirement_id': 'req-report', 'passed': passed}]}), encoding='utf-8')\n"
         "raise SystemExit(0 if passed else 1)\n",
         encoding="utf-8", newline="\n",
     )
     declared_targets = [str(path) for path in [*outputs, report]]
     decision = {"disposition": "reuse", "reason": "Use the saved Python procedure", "skill_name": "python",
-                "inputs": [str(source)], "targets": declared_targets}
+                "inputs": [str(source)], "targets": declared_targets, "requirements": [
+                    {"id": "req-double", "text": "double.txt содержит удвоенное исходное число", "mandatory": True},
+                    {"id": "req-triple", "text": "triple.txt содержит утроенное исходное число", "mandatory": True},
+                    *([{"id": "req-report", "text": "checks.json содержит верные результаты проверок", "mandatory": True}]
+                      if recovery != "correct_decision" else []),
+                ]}
     verify = {"operation": "result_verify", "config": {
         "command": command(checker), "targets": [str(path) for path in outputs], "report_path": str(report),
     }}
@@ -198,15 +204,19 @@ def test_missing_result_feedback_requires_an_explicit_model_repair(tmp_path, mon
     events = list(stream_code_agent(
         user_message="Удвой и утрой число из input.txt скриптом Python и проверь результаты."
         + (" Сохрани также проверочный JSON как результат задачи." if recovery != "correct_decision" else ""),
-        project_root=tmp_path, run_id="result-feedback", chat_fn=chat, auto_remember=False,
+        project_root=tmp_path, run_id="result-feedback", chat_fn=chat, auto_remember=True,
         permission_mode="bypass", num_ctx=32768,
     ))
     corrections = [event for event in events if event.get("type") == "task_outcome_changed"]
     assert len(corrections) == 1
     correction = corrections[0]["task_outcome"]["correction"]
     assert report.name in correction and all(path.name not in correction for path in outputs)
-    assert "task_decide.config.targets" in correction and "result_verify.config.targets" in correction
-    assert "проверь его отдельно" in correction
+    if recovery == "correct_decision":
+        assert "task_decide.config.targets" in correction and "result_verify.config.targets" in correction
+        assert "проверь его отдельно" in correction
+    else:
+        assert "req-report" in correction and "req-double" not in correction and "req-triple" not in correction
+        assert "Не подтверждены обязательные требования" in correction and "проверь" in correction.casefold()
     assert any(message.get("content") == correction for message in captured[5])
     assert corrections[0]["task_outcome"]["decision"]["targets"] == declared_targets
     state = RunJournal.load("result-feedback").state

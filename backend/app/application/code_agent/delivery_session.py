@@ -161,6 +161,14 @@ def _resume_facts_block(run_id: str, state: dict, *, delivery_shaped: bool) -> s
         FACTS_PREFIX,
         "Продолжение того же прогона. Состояние по данным журнала сервера:",
     ]
+    from app.application.code_agent.loop_helpers import persistence_policy_from_state
+
+    policy = persistence_policy_from_state(state)
+    if not policy["rag"] or not policy["learning"]:
+        lines.append("— Долговременное сохранение: RAG=" + str(policy["rag"])
+                     + ", обучение=" + str(policy["learning"])
+                     + ", явные записи=" + str(policy["direct_memory"])
+                     + ". Технический журнал ведётся отдельно; Resume не снимает запрет.")
     changed = [str(p) for p in (state.get("changed_files") or []) if str(p).strip()]
     if changed:
         shown = ", ".join(changed[:30])
@@ -280,6 +288,7 @@ def build_continuation_kwargs(
         "auto_remember": bool(req.get("auto_remember", True)),
         "chat_fn": chat_fn,
         "chat_stream_fn": chat_stream_fn,
+        "source_first_answers": req.get("source_first_answers"),
         "resume": True,
         "profile_name": str(req.get("profile_name") or "Инженерный"),
         "permission_mode": str(req.get("permission_mode") or "ask"),

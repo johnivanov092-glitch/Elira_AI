@@ -450,6 +450,39 @@ def _looks_like_windows_no_cmd(stderr: Any) -> bool:
     return "is not recognized" in low or "не является внутренн" in low
 
 
+def _powershell_unavailable(proc: subprocess.CompletedProcess[bytes]) -> bool:
+    """Fallback only when the remote shell explicitly lacks PowerShell."""
+    if proc.returncode not in {1, 127}:
+        return False
+    text = decode_console(proc.stderr).lower()
+    return _looks_like_windows_no_cmd(text) or bool(
+        re.search(r"powershell(?:[^\n]*)\b(?:not found|command not found)\b", text)
+    )
+
+
+def _probe_error(proc: subprocess.CompletedProcess[bytes], *, probe: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "ssh_probe_unverified",
+        "exit_code": proc.returncode,
+        "text": (
+            f"ERROR: {probe} produced no recognised verdict (exit {proc.returncode}): "
+            f"{_truncate_for_llm(decode_console(proc.stderr).strip() or decode_console(proc.stdout).strip())}"
+        ),
+    }
+
+
+def _ssh_verification(host: str, target: str, condition: str, observed: bool,
+                      passed: bool, *, pattern: str = "") -> dict[str, Any]:
+    """Receipt for an executed, decoded probe; failures never carry this field."""
+    return {
+        "executed": True, "exit_code": 0,
+        "host": resolve_allowed_host(host) or host.strip(),
+        "target": target, "condition": condition,
+        "observed": observed, "passed": passed, "pattern": pattern,
+    }
+
+
 def _windows_read_encoded(path: str, limit: int | None) -> str:
     """`powershell -EncodedCommand …` that reads `path` as bytes, bounded to
     `limit`, and writes them raw to stdout. base64 (UTF-16LE) so cmd.exe on the
@@ -608,6 +641,7 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
         "evidence": f"{path}: прочитан ({len(raw)} байт) — существует",
         "touched_host": host,
         "touched_path": path,
+        "ssh_verification": _ssh_verification(host, path, "exists", True, True),
     }
 
 
@@ -701,6 +735,9 @@ def _ssh_assert(host: str, path: str, pattern: str, *, want: bool) -> dict[str, 
         "verifier": True,
         "evidence": f"«{pattern[:60]}» {verdict} в {path}",
         "touched_host": host,
+        "ssh_verification": _ssh_verification(
+            host, path, kind, present, ok, pattern=pattern,
+        ),
     }
 
 
@@ -732,8 +769,8 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
         return {"text": "ERROR: `port` out of range (1–65535)", "ok": False}
 
     ps = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        f"$c=Get-NetTCPConnection -State Listen -LocalPort {p};"
+        "$ErrorActionPreference='Stop';"
+        f"$c=Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object {{$_.LocalPort -eq {p}}};"
         "if($c){$c|ForEach-Object{'LISTENING '+$_.LocalAddress+':'+$_.LocalPort+' pid='+$_.OwningProcess}}"
         "else{'NOT-LISTENING'}"
     )
@@ -741,25 +778,39 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
     try:
         proc = run_registered_process([*_ssh_args(host), win_cmd])
-    except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
+    except Exception as exc:
+        logger.warning("SSH port probe failed for host=%s", host, exc_info=True)
+        return {"text": f"ERROR: {exc}", "ok": False}
     out = decode_console(proc.stdout)
     # PowerShell missing (POSIX remote) → fall back to ss/netstat.
-    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
-        posix = f"ss -ltn 2>/dev/null | grep -w ':{p}' || netstat -ltn 2>/dev/null | grep -w ':{p}'"
-        proc = run_registered_process([*_ssh_args(host), posix])
+    if _powershell_unavailable(proc):
+        posix = (
+            "if command -v ss >/dev/null 2>&1; then output=$(ss -ltn) || exit $?; "
+            "elif command -v netstat >/dev/null 2>&1; then output=$(netstat -ltn) || exit $?; "
+            "else echo 'No socket inspection command available' >&2; exit 127; fi; "
+            "printf '%s\\n' \"$output\" | "
+            f"awk '$4 ~ /:{p}$/ {{print \"LISTENING \" $4 \" pid=unknown\"; found=1}} "
+            "END {if (!found) print \"NOT-LISTENING\"}'"
+        )
+        try:
+            proc = run_registered_process([*_ssh_args(host), posix])
+        except Exception as exc:
+            logger.warning("SSH POSIX port probe failed for host=%s", host, exc_info=True)
+            return {"text": f"ERROR: {exc}", "ok": False}
         out = decode_console(proc.stdout)
-        listening = bool(out.strip())
-    else:
-        # "NOT-LISTENING" contains "LISTENING" as a substring — check for the
-        # negative sentinel first so a not-listening port isn't read as listening.
-        listening = "NOT-LISTENING" not in out and "LISTENING" in out
+    lines = out.strip().splitlines()
+    listening = bool(lines) and all(
+        re.fullmatch(rf"LISTENING \S+:{p} pid=(?:\d+|unknown)", line) for line in lines
+    )
+    if proc.returncode != 0 or not (listening or lines == ["NOT-LISTENING"]):
+        return _probe_error(proc, probe=f"port {p}")
     return {
         "text": f"ssh_port_check {host}:{p}: {'LISTENING' if listening else 'НЕ слушает'}\n{_truncate_for_llm(out.rstrip())}",
         "ok": listening,
         "verifier": True,
         "evidence": f"порт {p} {'LISTENING' if listening else 'не слушает'}: {out.strip()[:120]}",
         "touched_host": host,
+        "ssh_verification": _ssh_verification(host, str(p), "listening", listening, listening),
     }
 
 
@@ -776,26 +827,43 @@ def _ssh_probe_exists(host: str, path: str) -> tuple[bool | None, str, dict[str,
 
     esc = path.replace("'", "''")  # PowerShell single-quote literal escaping
     ps = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        f"if(Test-Path -LiteralPath '{esc}'){{"
-        f"if(Test-Path -LiteralPath '{esc}' -PathType Container){{'EXISTS DIR'}}else{{'EXISTS FILE'}}"
+        "$ErrorActionPreference='Stop';"
+        f"if(Test-Path -LiteralPath '{esc}' -ErrorAction Stop){{"
+        f"if(Test-Path -LiteralPath '{esc}' -PathType Container -ErrorAction Stop){{'EXISTS DIR'}}else{{'EXISTS FILE'}}"
         "}else{'MISSING'}"
     )
     b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
     win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
     try:
         proc = run_registered_process([*_ssh_args(host), win_cmd])
-    except FileNotFoundError:
-        return None, "", {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
+    except Exception as exc:
+        logger.warning("SSH existence probe failed for host=%s", host, exc_info=True)
+        return None, "", {"text": f"ERROR: {exc}", "ok": False}
     out = decode_console(proc.stdout)
     # PowerShell missing (POSIX remote) → fall back to `test`.
-    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
+    if _powershell_unavailable(proc):
         q = _shell_quote(path)
-        posix = f"if [ -d {q} ]; then echo 'EXISTS DIR'; elif [ -e {q} ]; then echo 'EXISTS FILE'; else echo 'MISSING'; fi"
-        proc = run_registered_process([*_ssh_args(host), posix])
+        # test -e alone confuses inaccessible paths with absent ones. Only the
+        # known ENOENT diagnostic from ls permits an absence verdict.
+        posix = (
+            f"if [ -d {q} ]; then echo 'EXISTS DIR'; elif [ -e {q} ]; then echo 'EXISTS FILE'; "
+            f"else error=$(LC_ALL=C ls -ld -- {q} 2>&1); code=$?; "
+            "if [ \"$code\" -ne 0 ]; then case \"$error\" in "
+            "*': No such file or directory') echo 'MISSING';; "
+            "*) printf '%s\\n' \"$error\" >&2; exit \"$code\";; esac; "
+            "else echo 'EXISTS FILE'; fi; fi"
+        )
+        try:
+            proc = run_registered_process([*_ssh_args(host), posix])
+        except Exception as exc:
+            logger.warning("SSH POSIX existence probe failed for host=%s", host, exc_info=True)
+            return None, "", {"text": f"ERROR: {exc}", "ok": False}
         out = decode_console(proc.stdout)
-    exists = "EXISTS" in out
-    kind = "директория" if "EXISTS DIR" in out else ("файл" if "EXISTS FILE" in out else "нет")
+    out = out.strip()
+    if proc.returncode != 0 or out not in {"EXISTS DIR", "EXISTS FILE", "MISSING"}:
+        return None, "", _probe_error(proc, probe=f"path {path}")
+    exists = out != "MISSING"
+    kind = "директория" if out == "EXISTS DIR" else ("файл" if out == "EXISTS FILE" else "нет")
     return exists, kind, None
 
 
@@ -814,6 +882,7 @@ def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
         "verifier": True,
         "evidence": f"{path}: {'существует (' + kind + ')' if exists else 'не найден'}",
         "touched_host": host,
+        "ssh_verification": _ssh_verification(host, path, "exists", bool(exists), bool(exists)),
     }
 
 
@@ -832,6 +901,7 @@ def tool_ssh_not_exists(*, host: str, path: str) -> dict[str, Any]:
         "verifier": True,
         "evidence": f"{path}: {'отсутствует — cleanup ок' if gone else 'ещё существует (' + kind + ')'}",
         "touched_host": host,
+        "ssh_verification": _ssh_verification(host, path, "not_exists", bool(exists), gone),
     }
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,31 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_web_search,
 )
 from app.infrastructure.search.web_runtime import PageFetchResult, _extract_readable_text  # noqa: E402
+
+
+class _ConcurrentBatchCall:
+    def __init__(self, result):
+        self.result = result
+        self.seen = []
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+
+    def __call__(self, *args):
+        with self.lock:
+            self.seen.append(args)
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            if self.active == 5:
+                self.ready.set()
+        try:
+            if not self.ready.wait(2):
+                raise TimeoutError("five batch workers did not start")
+            return self.result(*args)
+        finally:
+            with self.lock:
+                self.active -= 1
 
 
 class WebSearchToolTest(unittest.TestCase):
@@ -89,15 +115,16 @@ class WebSearchToolTest(unittest.TestCase):
         self.assertIn("use asyncio.gather", text)             # snippet present
 
     def test_top_k_clamps_to_max(self) -> None:
-        sources = [{"title": f"T{i}", "url": f"https://x/{i}", "snippet": "s"} for i in range(20)]
+        sources = [{"title": f"T{i}", "url": f"https://x/{i}", "snippet": "s"} for i in range(35)]
         with patch(
             "app.infrastructure.search.web_search.search_web",
             return_value={"sources": sources, "engines_used": ["test"]},
-        ):
+        ) as search:
             result = tool_web_search(query="any", top_k=99)
-        # 10 is the documented max
+        search.assert_called_once_with("any", max_results=10, categories=None, time_range=None)
         self.assertIn("[10]", result["text"])
         self.assertNotIn("[11]", result["text"])
+        self.assertEqual(len(result["sources"]), 10)
 
     def test_long_snippet_truncated(self) -> None:
         big_snippet = "X" * 1000
@@ -260,6 +287,32 @@ class WebFetchToolTest(unittest.TestCase):
             tool_web_fetch(url="https://example.com/", max_chars=1_000_000)
         self.assertEqual(captured["max_chars"], 50000)
 
+    def test_single_max_page_is_fitted_to_web_budget_with_exact_presented_receipts(self) -> None:
+        import app.application.code_agent.tools._web as w
+        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+        from app.application.code_agent.run_evidence import RunEvidence
+        from app.application.web_evidence.receipts import valid_source
+
+        url = "https://example.org/large-page"
+        body = ("Observed page content. " * 4000)[:50000]
+        with patch.object(w, "_fetch_one", return_value=PageFetchResult(
+            final_url=url, status_code=200, text=body,
+        )) as fetch:
+            result = tool_web_fetch(url=url, max_chars=50000)
+        fetch.assert_called_once_with(url, 50000)
+        self.assertIs(result["ok"], True)
+        # The 12000-character per-call budget presents the page start, marked truncated.
+        self.assertTrue(result["pages"][0]["truncated"])
+        presented = "".join(source["quote"] for source in result["sources"])
+        self.assertTrue(presented and body.startswith(presented))
+        self.assertLessEqual(len(result["text"]), WEB_TOOL_RESULT_LLM_LIMIT)
+        self.assertEqual(_truncate_for_llm(result["text"], WEB_TOOL_RESULT_LLM_LIMIT), result["text"])
+        self.assertTrue(result["sources"])
+        self.assertTrue(all(valid_source(source) for source in result["sources"]))
+        evidence = RunEvidence(sources=result["sources"])
+        evidence.mark_sources_presented([{"role": "tool", "content": result["text"]}])
+        self.assertTrue(all(source["quote_verified"] and source["presented"] for source in evidence.sources))
+
     def test_fetch_exception_returns_error(self) -> None:
         with patch(
             "app.infrastructure.search.web_search.fetch_page",
@@ -343,12 +396,121 @@ class BatchWebToolsTest(unittest.TestCase):
             result = tool_web_fetch(urls=["https://x/1", "https://x/2"])
         self.assertIs(result["ok"], False)
 
-    def test_batch_is_capped(self) -> None:
+    def test_search_batch_accepts_10_caps_11_and_keeps_five_workers(self) -> None:
         import app.application.code_agent.tools._web as w
-        seen: list[str] = []
-        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: seen.append(u) or PageFetchResult(text="fetched")):
-            tool_web_fetch(urls=[f"https://x/{i}" for i in range(20)])
-        self.assertLessEqual(len(seen), w._WEB_BATCH_MAX)
+        for count, kwargs, expected_limit in ((10, {}, 5), (11, {"top_k": 11}, 10)):
+            with self.subTest(count=count):
+                queries = [f"q{number}" for number in range(count)]
+                probe = _ConcurrentBatchCall(lambda query, limit, cat, tr: [
+                    {"title": query, "href": f"https://example.org/{query}", "body": "Found result"}
+                ])
+                with patch.object(w, "_run_search", side_effect=probe):
+                    result = tool_web_search(queries=queries, **kwargs)
+                self.assertIs(result["ok"], True)
+                self.assertEqual({args[0] for args in probe.seen}, set(queries[:10]))
+                self.assertEqual(len(probe.seen), 10)
+                self.assertEqual({args[1] for args in probe.seen}, {expected_limit})
+                self.assertEqual(probe.peak, 5)
+                self.assertEqual([source["url"] for source in result["sources"]],
+                                 [f"https://example.org/{query}" for query in queries[:10]])
+
+    def test_search_overflow_keeps_100_sources_and_fair_whole_results(self) -> None:
+        import app.application.code_agent.tools._web as w
+        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+        from app.application.web_evidence.receipts import valid_source
+
+        queries = [f"q{number}" for number in range(10)]
+        def search(query, limit, cat, tr):
+            return [{"title": f"{query} result {rank}", "href": f"https://example.org/{query}/{rank}",
+                     "body": f"Excerpt {query}/{rank}. " + "Details. " * 60} for rank in range(limit)]
+        with patch.object(w, "_run_search", side_effect=search):
+            result = tool_web_search(queries=queries, top_k=10)
+        self.assertIs(result["ok"], True)
+        urls = [f"https://example.org/{query}/{rank}" for query in queries for rank in range(10)]
+        self.assertEqual([source["url"] for source in result["sources"]], urls)
+        self.assertTrue(all(valid_source(source) for source in result["sources"]))
+        text = result["text"]
+        self.assertLessEqual(len(text), WEB_TOOL_RESULT_LLM_LIMIT)
+        self.assertEqual(_truncate_for_llm(text, WEB_TOOL_RESULT_LLM_LIMIT), text)
+        positions = [text.index(f"https://example.org/{query}/0\n") for query in queries]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("https://example.org/q0/9\n", text)
+        shown = sum(f"    {url}\n" in text for url in urls)
+        self.assertIn(f"Showing {shown} of 100 results", text)
+        self.assertIn(f"{100 - shown} omitted", text)
+        self.assertIn("web_fetch(store=true)", text)
+        self.assertIn("web_query", text)
+        for number in range(1, shown + 1):
+            self.assertEqual(text.count(f"\n[{number}] "), 1)
+
+    def test_search_skips_oversized_result_without_losing_later_queries(self) -> None:
+        import app.application.code_agent.tools._web as w
+        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
+        def search(query, limit, cat, tr):
+            url = "https://example.org/" + "x" * WEB_TOOL_RESULT_LLM_LIMIT if query == "large" else "https://example.org/small"
+            return [{"title": query, "href": url, "body": "Complete excerpt."}]
+        with patch.object(w, "_run_search", side_effect=search):
+            result = tool_web_search(queries=["large", "small"])
+        self.assertEqual(len(result["sources"]), 2)
+        self.assertLessEqual(len(result["text"]), WEB_TOOL_RESULT_LLM_LIMIT)
+        self.assertIn("https://example.org/small", result["text"])
+        self.assertIn("Showing 1 of 2 results", result["text"])
+        self.assertNotIn("x" * WEB_TOOL_RESULT_LLM_LIMIT, result["text"])
+
+    def test_fetch_batch_accepts_10_caps_11_keeps_workers_and_current_receipts(self) -> None:
+        import app.application.code_agent.tools._web as w
+        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+        from app.application.code_agent.run_evidence import RunEvidence
+        from app.application.web_evidence.receipts import valid_source
+
+        for count, kwargs, expected_limit in ((10, {}, 8000), (11, {"max_chars": 90000}, 50000)):
+            with self.subTest(count=count):
+                urls = [f"https://example.org/page-{number}" for number in range(count)]
+                probe = _ConcurrentBatchCall(lambda url, limit: PageFetchResult(
+                    final_url=url, status_code=200, text=f"Facts for {url}. " + "Detailed content. " * 2000,
+                    links=(("Current index", url + "/current"),)))
+                with patch.object(w, "_fetch_one", side_effect=probe):
+                    result = tool_web_fetch(urls=urls, **kwargs)
+                self.assertIs(result["ok"], True)
+                self.assertEqual({args[0] for args in probe.seen}, set(urls[:10]))
+                self.assertEqual(len(probe.seen), 10)
+                self.assertEqual({args[1] for args in probe.seen}, {expected_limit})
+                self.assertEqual(probe.peak, 5)
+                self.assertEqual([page["url"] for page in result["pages"]], urls[:10])
+                self.assertTrue(all(page["truncated"] for page in result["pages"]))
+                text = result["text"]
+                self.assertLessEqual(len(text), WEB_TOOL_RESULT_LLM_LIMIT)
+                self.assertEqual(_truncate_for_llm(text, WEB_TOOL_RESULT_LLM_LIMIT), text)
+                self.assertEqual({source["url"] for source in result["sources"]}, set(urls[:10]))
+                self.assertTrue(all(valid_source(source) for source in result["sources"]))
+                evidence = RunEvidence(sources=result["sources"])
+                evidence.mark_sources_presented([{"role": "tool", "content": text}])
+                self.assertTrue(all(source["presented"] and source["quote_verified"] for source in evidence.sources))
+
+    def test_store_batch_accepts_10_and_caps_11_without_parallel_ingestion(self) -> None:
+        import app.application.code_agent.tools._web as w
+        from app.application.web_evidence import corpus
+        from app.application.web_evidence.receipts import valid_source
+        for count in (10, 11):
+            with self.subTest(count=count):
+                urls = [f"https://example.org/page-{number}" for number in range(count)]
+                seen = []
+                def ingest(url, run_id):
+                    seen.append((url, run_id, threading.get_ident()))
+                    return {"ok": True, "doc_id": f"doc-{len(seen)}", "final_url": url,
+                            "title": "Stored page", "nbytes": 16000, "n_chunks": 12, "outline": []}
+                with patch.object(w, "_current_run_id", return_value="store-batch"), \
+                     patch("app.application.code_agent.loop_helpers.run_persistence_policy", return_value={"rag": True}), \
+                     patch.object(corpus, "ingest", side_effect=ingest), \
+                     patch.object(w, "_fetch_one") as ordinary_fetch:
+                    result = tool_web_fetch(urls=urls, store=True)
+                ordinary_fetch.assert_not_called()
+                self.assertIs(result["ok"], True)
+                self.assertEqual([row[0] for row in seen], urls[:10])
+                self.assertEqual({row[1] for row in seen}, {"store-batch"})
+                self.assertEqual({row[2] for row in seen}, {threading.get_ident()})
+                self.assertEqual([source["url"] for source in result["sources"]], urls[:10])
+                self.assertTrue(all(valid_source(source) for source in result["sources"]))
 
 
 class ToolRegistrationTest(unittest.TestCase):
@@ -393,6 +555,9 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertEqual(params["required"], [])
         self.assertIn("query", params["properties"])
         self.assertEqual(params["properties"]["queries"]["type"], "array")
+        self.assertEqual(params["properties"]["queries"]["maxItems"], 10)
+        self.assertEqual(params["properties"]["top_k"]["default"], 5)
+        self.assertEqual(params["properties"]["top_k"]["maximum"], 10)
 
     def test_web_fetch_schema_offers_url_and_urls(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
@@ -400,6 +565,9 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertEqual(params["required"], [])
         self.assertIn("url", params["properties"])
         self.assertEqual(params["properties"]["urls"]["type"], "array")
+        self.assertEqual(params["properties"]["urls"]["maxItems"], 10)
+        self.assertEqual(params["properties"]["max_chars"]["default"], 8000)
+        self.assertEqual(params["properties"]["max_chars"]["maximum"], 50000)
 
     def test_sandbox_run_schema_requires_code(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}

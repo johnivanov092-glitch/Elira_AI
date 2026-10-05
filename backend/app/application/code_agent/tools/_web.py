@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextvars
+import json
+import re
 import time
 from dataclasses import replace
 from urllib.parse import quote, unquote, urlsplit
@@ -9,6 +11,7 @@ from typing import Any
 
 from app.application.agent_kernel.impact_policy import BROWSER_CHANGE_ACTIONS
 from app.application.web_evidence.receipts import excerpt_sources, format_source, make_source
+from app.core.web_engines import SearchResults, SearchUnavailable, search_warning_text
 from app.infrastructure.search.web_runtime import PageFetchResult
 
 # Phase A — JS auto-render: static (BeautifulSoup) extraction returns little/no
@@ -20,39 +23,123 @@ _THIN_TEXT_THRESHOLD = 200
 # Batch web tools: the model can pass multiple queries/urls in ONE call and we
 # fan them out concurrently (I/O-bound → bounded thread pool). Caps keep upstream
 # engines/sites from being hammered.
-_WEB_BATCH_MAX = 6        # max queries / urls accepted per call
+_WEB_BATCH_MAX = 10       # max queries / urls accepted per call
 _WEB_BATCH_WORKERS = 5    # max concurrent requests
+_WEB_FIND_SCAN_CHARS = 200000
+_READ_EXCERPT_LABEL = "[excerpt; прочитанные фрагменты; соответствие выводов не проверено.]"
+_SEARCH_SNIPPET_LABEL = "    Сниппет: "
+_SEARCH_SNIPPET_START = re.compile(r"^    \[search-snippet:v1[^\n]*\]\n", re.MULTILINE)
+_SEARCH_SNIPPET_LENGTH = re.compile(r"    \[search-snippet:v1 chars=([0-9]{1,4})\]\n")
+_SEARCH_SNIPPET_END = "\n    [/search-snippet:v1]"
 
 
-# SearXNG engine categories the agent may target (passed only to SearXNG; other
-# engines ignore them). Keep in sync with the tool schema enum.
+# SearXNG engine categories the agent may target. Keep in sync with the tool schema enum.
 _WEB_SEARCH_CATEGORIES = frozenset(
     {"general", "news", "it", "science", "images", "videos", "map", "music", "files"}
 )
 _WEB_SEARCH_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 
 
-def _coerce_str_list(value: Any) -> list[str]:
-    """Normalize a tool arg that should be a list of non-empty strings."""
-    if isinstance(value, list):
-        return [s for s in (str(x).strip() for x in value) if s]
-    return []
+class WebArgumentFormatError(ValueError):
+    """A web batch argument cannot be safely interpreted as string targets."""
+
+
+def _coerce_str_list(value: Any, *, field: str = "batch") -> list[str]:
+    """Accept a native array or a JSON-encoded array without losing targets."""
+    if value is None:
+        return []
+    message = f"{field} must be an array of non-empty strings (or a JSON-encoded array)"
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise WebArgumentFormatError(message) from exc
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise WebArgumentFormatError(message)
+    return [item.strip() for item in value]
+
+
+def normalize_web_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize batch fields before repeat checks and tool execution.
+
+    Invalid fields raise a format error instead of becoming an empty single
+    target. The caller's dictionary is retained unchanged for journal evidence.
+    """
+    normalized = dict(arguments)
+    field = {"web_search": "queries", "web_fetch": "urls"}.get(tool_name)
+    if field is not None and field in normalized:
+        normalized[field] = _coerce_str_list(normalized[field], field=field)
+        singular = normalized.get("query" if field == "queries" else "url")
+        if not normalized[field] and (not isinstance(singular, str) or not singular.strip()):
+            raise WebArgumentFormatError(f"{field} must contain at least one non-empty string, or pass a non-empty "
+                                         f"{'query' if field == 'queries' else 'url'}")
+    return normalized
 
 
 def _run_search(query: str, limit: int, cat: str, tr: str) -> list[dict]:
     """Run one query through the web stack; transport failures propagate."""
     from app.infrastructure.search.web_search import search_web
     result = search_web(query, max_results=limit, categories=cat or None, time_range=tr or None)
-    return result.get("sources") or []
+    _check_search_result(result)
+    return SearchResults(result.get("sources") or [], engine_warnings=result.get("engine_warnings") or [])
+
+
+def _check_search_result(result: dict) -> None:
+    if result.get("ok") is False:
+        raise SearchUnavailable(str(result.get("error") or "SearXNG search unavailable"),
+                                engine_warnings=result.get("engine_warnings") or [])
+
+
+def _search_error_reason(exc: Exception) -> str:
+    return (str(exc).strip() or type(exc).__name__)[:240]
+
+
+def _search_error_metadata(exc: Exception) -> dict:
+    warnings = getattr(exc, "engine_warnings", [])
+    return {"engine_warnings": warnings} if warnings else {}
+
+
+def _search_failure_summary(errors: list[dict[str, str]]) -> str:
+    reasons = list(dict.fromkeys(item["error"] for item in errors))
+    return f"{len(errors)} queries failed: " + "; ".join(reasons[:3])
+
+
+def project_search_without_snippets(text: str) -> str:
+    """Return a search-message view retaining discovery metadata, without snippets.
+
+    Only the formatter's length-framed v1 payloads are projected. Exact lengths
+    keep multiline snippets (including delimiter-looking text) inside their own
+    frame. Legacy or damaged frames remain unchanged; journal text and source
+    receipts are never mutated. The caller selects search messages older than a
+    verified read, rather than using this helper on arbitrary tool output.
+    """
+    parts = []
+    cursor = 0
+    while match := _SEARCH_SNIPPET_START.search(text, cursor):
+        length = _SEARCH_SNIPPET_LENGTH.fullmatch(match.group())
+        if length is None:
+            return text
+        payload_start = match.end()
+        payload_end = payload_start + int(length.group(1))
+        frame_end = payload_end + len(_SEARCH_SNIPPET_END)
+        if (not text[payload_start:payload_end].startswith(_SEARCH_SNIPPET_LABEL)
+                or text[payload_end:frame_end] != _SEARCH_SNIPPET_END
+                or (frame_end < len(text) and text[frame_end] != "\n")):
+            return text
+        parts.extend((text[cursor:match.start()],
+                      _SEARCH_SNIPPET_LABEL + "[убран из контекста после чтения]"))
+        cursor = frame_end
+    if not parts:
+        return text
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def _format_search_results(sources: list[dict], header: str, limit: int, *,
-                           category: str = "", time_range: str = "") -> str:
+                           category: str = "", time_range: str = "", start_index: int = 1) -> str:
     from app.core.web_engines import ENGINE_LABELS
 
-    # W6 (flag-gated): annotate each result with its deterministic source tier
-    # (official/primary/secondary/ugc) so the model can weigh sources; flag off →
-    # output is byte-identical to pre-W6.
+    # Source tier annotation is separate from whether the page has been read.
     tag_tiers = False
     try:
         tag_tiers = _web_corpus_on()
@@ -61,9 +148,11 @@ def _format_search_results(sources: list[dict], header: str, limit: int, *,
     except Exception:
         tag_tiers = False
     lines = [header]
-    for i, item in enumerate(sources[:limit], 1):
+    from app.application.web_evidence.availability import notes
+    availability_notes = notes([str(item.get("href") or item.get("url") or "") for item in sources[:limit]])
+    for i, item in enumerate(sources[:limit], start_index):
         title = (item.get("title") or "").strip() or "(no title)"
-        # Engine results carry the link under "href" (SearXNG/DDG/Wikipedia);
+        # SearXNG results carry the link under "href";
         # fall back to "url" for any source that uses that key.
         url = (item.get("href") or item.get("url") or "").strip()
         snippet = (item.get("body") or item.get("snippet") or item.get("content") or "").strip()
@@ -74,7 +163,12 @@ def _format_search_results(sources: list[dict], header: str, limit: int, *,
             tier = classify_tier(url)
             mark = f" [{tier}]" if tier != "unknown" else ""
         head = f"\n[{i}] {title}{mark}\n    {url}"
+        records = _search_sources([item], 1)
+        source_id = f"; source_id={records[0]['id']}" if records else ""
+        head += f"\n    [discovered; страница не прочитана; сниппет не подтверждён чтением{source_id}]"
         metadata = []
+        if url in availability_notes:
+            metadata.append(availability_notes[url])
         engine = str(item.get("engine") or "")
         if engine:
             metadata.append(ENGINE_LABELS.get(engine, engine))
@@ -88,8 +182,61 @@ def _format_search_results(sources: list[dict], header: str, limit: int, *,
             metadata.append(f"категория: {applied}" if applied else "фильтр категории не применён")
         if metadata:
             head += "\n    " + "; ".join(metadata)
-        lines.append(f"{head}\n    {snippet}" if snippet else head)
+        if snippet:
+            payload = _SEARCH_SNIPPET_LABEL + snippet
+            head += (f"\n    [search-snippet:v1 chars={len(payload)}]\n"
+                     + payload + _SEARCH_SNIPPET_END)
+        lines.append(head)
     return "\n".join(lines)
+
+
+def _bounded_search_results(sources: list[dict], header: str, limit: int, *,
+                            category: str = "", time_range: str = "",
+                            queries: list[str] | None = None,
+                            per_query: dict[str, list[dict]] | None = None) -> str:
+    """Keep whole result blocks within the model budget, fairly across queries.
+
+    Only presentation changes: structured source receipts retain their original
+    merged order and count. A search snippet never becomes a fetched-page quote.
+    """
+    from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
+
+    text = _format_search_results(sources, header, limit, category=category, time_range=time_range)
+    if len(text) <= WEB_TOOL_RESULT_LLM_LIMIT:
+        return text
+    candidates = sources[:limit]
+    if queries and per_query:
+        eligible = {(item.get("href") or item.get("url") or "").strip() for item in candidates}
+        seen = set()
+        candidates = []
+        depth = max((len(per_query.get(query, [])) for query in queries), default=0)
+        for rank in range(depth):
+            for query in queries:
+                rows = per_query.get(query, [])
+                if rank >= len(rows):
+                    continue
+                item = rows[rank]
+                url = (item.get("href") or item.get("url") or "").strip()
+                if url in eligible and url not in seen:
+                    seen.add(url)
+                    candidates.append(item)
+
+    total = min(len(sources), limit)
+    def summary_header(shown: int) -> str:
+        return (f"{header}\nShowing {shown} of {total} results; {total - shown} omitted "
+                "from the text budget. Full source metadata is retained. "
+                "Read complete pages via web_fetch(store=true) → web_query.")
+
+    blocks = []
+    block_chars = 0
+    for item in candidates:
+        block = _format_search_results([item], "", 1, category=category, time_range=time_range,
+                                       start_index=len(blocks) + 1)
+        if len(summary_header(len(blocks) + 1)) + block_chars + len(block) > WEB_TOOL_RESULT_LLM_LIMIT:
+            continue
+        blocks.append(block)
+        block_chars += len(block)
+    return summary_header(len(blocks)) + "".join(blocks)
 
 
 def _image_media_payload(category: str, sources: list[dict], limit: int) -> dict[str, Any]:
@@ -118,7 +265,7 @@ def tool_web_search(
     time_range: str = "",
     page: int = 1,
 ) -> dict[str, Any]:
-    """Search the web (SearXNG / DDGS metasearch / Wikipedia). Returns ranked results
+    """Search the web through SearXNG. Returns ranked results
     with title + URL + snippet. Use `web_fetch` after to read a result in full.
 
     Pass `queries` (a list of strings) to run SEVERAL searches in PARALLEL in one
@@ -129,6 +276,10 @@ def tool_web_search(
     pypi/mdn, "science"=arxiv/pubmed/scholar, "news", "map", "images", "videos")
     and `time_range` ("day"|"week"|"month"|"year") for recency.
     """
+    try:
+        queries = normalize_web_tool_arguments("web_search", {"query": query, "queries": queries})["queries"]
+    except WebArgumentFormatError as exc:
+        return {"text": f"ERROR: {exc}", "ok": False, "error": "argument_format"}
     cat = (categories or "").strip().lower()
     cat = cat if cat in _WEB_SEARCH_CATEGORIES else ""
     tr = (time_range or "").strip().lower()
@@ -171,40 +322,57 @@ def tool_web_search(
             sources = filter_site_results(cleaned, sources)
         except Exception as exc:  # noqa: BLE001 — pagination is SearXNG-only
             return {"text": f"ERROR: страница {page_n} недоступна — пагинация работает только "
-                            f"через SearXNG ({exc}). Fallback-движки отдают только первую страницу.",
-                    "ok": False}
+                            f"через SearXNG ({_search_error_reason(exc)}).",
+                    "ok": False, **_search_error_metadata(exc)}
+        warnings = getattr(sources, "engine_warnings", [])
+        warning = search_warning_text(warnings)
+        warning_payload = {"engine_warnings": warnings} if warnings else {}
         if not sources:
             return {
-                "text": f"Страница {page_n} по '{cleaned}' пуста — дальше результатов нет.",
+                "text": (f"Нет доступных совпадений на странице {page_n} по '{cleaned}'.\n{warning}" if warnings
+                         else f"Страница {page_n} по '{cleaned}' пуста — дальше результатов нет."),
                 "ok": True,
+                **warning_payload,
             }
         return {
-            "text": _format_search_results(
+            "text": _bounded_search_results(
                 sources,
-                f"Результаты, страница {page_n} (SearXNG){focus}:",
+                f"Результаты, страница {page_n} (SearXNG){focus}:" + ("\n" + warning if warning else ""),
                 limit,
                 category=cat, time_range=tr,
             ),
             "ok": True,
             **_image_media_payload(cat, sources, limit),
             "sources": _search_sources(sources, limit),
+            **warning_payload,
         }
 
     query_list = _coerce_str_list(queries)
     if query_list:
+        # Some models provide both fields. Preserve the primary query rather
+        # than silently dropping it when parallel follow-ups are supplied.
+        if isinstance(query, str) and query.strip():
+            query_list = list(dict.fromkeys([query.strip(), *query_list]))
         # ── Batch: several queries in parallel, merged + de-duped by URL ──────
         query_list = query_list[:_WEB_BATCH_MAX]
         import concurrent.futures
         per_query: dict[str, list[dict]] = {}
-        failed_queries = 0
+        query_errors: dict[str, str] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(query_list), _WEB_BATCH_WORKERS)) as ex:
             futs = {ex.submit(_run_search, q, limit, cat, tr): q for q in query_list}
             for f in concurrent.futures.as_completed(futs):
                 try:
                     per_query[futs[f]] = f.result()
-                except Exception:
-                    failed_queries += 1
-                    per_query[futs[f]] = []
+                except Exception as exc:
+                    query_errors[futs[f]] = _search_error_reason(exc)
+                    per_query[futs[f]] = SearchResults(
+                        engine_warnings=getattr(exc, "engine_warnings", []))
+        errors = [{"query": q, "error": query_errors[q]} for q in query_list if q in query_errors]
+        failure_payload = {"partial": True, "query_errors": errors} if errors else {}
+        warnings = [{"query": q, **warning} for q in query_list
+                    for warning in getattr(per_query.get(q, []), "engine_warnings", [])]
+        warning = search_warning_text(warnings)
+        warning_payload = {"engine_warnings": warnings} if warnings else {}
         seen: set[str] = set()
         merged: list[dict] = []
         for q in query_list:  # preserve query order for stable output
@@ -213,23 +381,48 @@ def tool_web_search(
                 if u and u not in seen:
                     seen.add(u)
                     merged.append(item)
+        sources = _search_sources(merged, _WEB_BATCH_MAX * limit)
+        ids_by_url = {source["url"]: source["id"] for source in sources}
+        # Tool-owned discovery provenance, separate from presentation: each
+        # executed query binds only its returned canonical source receipts.
+        query_sources = [{
+            "query": q,
+            "source_ids": list(dict.fromkeys(
+                ids_by_url[url] for item in per_query.get(q, [])[:limit]
+                if (url := (item.get("href") or item.get("url") or "").strip()) in ids_by_url
+            )),
+        } for q in query_list]
         if not merged:
-            if failed_queries == len(query_list):
+            if errors:
                 return {
-                    "text": "ERROR: web search unavailable for all queries",
+                    "text": "ERROR: web search unavailable; " + _search_failure_summary(errors),
                     "ok": False,
+                    **failure_payload,
+                    **warning_payload,
+                    "query_sources": query_sources,
                 }
             return {
-                "text": f"No web results for {len(query_list)} queries.",
+                "text": (f"No usable web results for {len(query_list)} queries.\n{warning}" if warnings
+                         else f"No web results for {len(query_list)} queries."),
                 "ok": True,
+                "query_sources": query_sources,
+                **warning_payload,
             }
         header = f"Found {len(merged)} results across {len(query_list)} parallel queries{focus}:"
+        if errors:
+            header += "\nWARNING: incomplete search; " + _search_failure_summary(errors)
+        if warning:
+            header += "\n" + warning
         return {
-            "text": _format_search_results(merged, header, _WEB_BATCH_MAX * limit,
-                                           category=cat, time_range=tr),
+            "text": _bounded_search_results(merged, header, _WEB_BATCH_MAX * limit,
+                                            category=cat, time_range=tr,
+                                            queries=query_list, per_query=per_query),
             "ok": True,
+            **failure_payload,
             **_image_media_payload(cat, merged, _WEB_BATCH_MAX * limit),
-            "sources": _search_sources(merged, _WEB_BATCH_MAX * limit),
+            "sources": sources,
+            "query_sources": query_sources,
+            **warning_payload,
         }
 
     # ── Single query (back-compat) ───────────────────────────────────────────
@@ -250,26 +443,52 @@ def tool_web_search(
             categories=cat or None,
             time_range=tr or None,
         )
-    except Exception:
-        return {"text": "ERROR: web search unavailable", "ok": False}
+        _check_search_result(result)
+    except Exception as exc:
+        return {"text": f"ERROR: web search unavailable: {_search_error_reason(exc)}", "ok": False,
+                **_search_error_metadata(exc)}
     sources = result.get("sources") or []
+    warnings = result.get("engine_warnings") or []
+    warning = search_warning_text(warnings)
+    warning_payload = {"engine_warnings": warnings} if warnings else {}
     if not sources:
-        return {"text": f"No web results for '{cleaned}'", "ok": True}
+        return {"text": (f"No usable web results for '{cleaned}'\n{warning}" if warnings
+                         else f"No web results for '{cleaned}'"), "ok": True, **warning_payload}
     engines = ", ".join(result.get("engines_used") or []) or "?"
     return {
-        "text": _format_search_results(
+        "text": _bounded_search_results(
             sources,
-            f"Found {len(sources)} results via {engines}{focus}:",
+            f"Found {len(sources)} results via {engines}{focus}:" + ("\n" + warning if warning else ""),
             limit,
             category=cat, time_range=tr,
         ),
         "ok": True,
         **_image_media_payload(cat, sources, limit),
         "sources": _search_sources(sources, limit),
+        **warning_payload,
     }
 
 
-def _fetch_one(url: str, limit: int) -> PageFetchResult:
+def _fetch_one(url: str, limit: int, *, force_refresh: bool = False) -> PageFetchResult:
+    from app.application.web_evidence import availability
+
+    probe = availability.begin(url, force=force_refresh)
+    if probe.get("blocked"):
+        return PageFetchResult(final_url=url, error=probe["blocked"])
+    try:
+        result = _fetch_one_untracked(url, limit)
+    except Exception:
+        availability.finish(probe, ok=False)
+        raise
+    # Rendering is attempted only after an accessible static response. Its
+    # independent browser outcome must not teach an HTTP transport failure.
+    availability.finish(probe, ok=result.ok or result.rendered,
+                        status=200 if result.rendered else result.status_code, error=result.error,
+                        retry_after=result.retry_after, final_url=result.final_url)
+    return result
+
+
+def _fetch_one_untracked(url: str, limit: int) -> PageFetchResult:
     """Fetch + extract one page (static, with the Phase A JS-render fallback).
     Status and extraction metadata never come from parsing the page body."""
     cleaned_url = (url or "").strip()
@@ -294,6 +513,8 @@ def _fetch_one(url: str, limit: int) -> PageFetchResult:
     except Exception as exc:
         return PageFetchResult(final_url=cleaned_url, error=str(exc))
 
+    if result.mime in {"application/pdf", "text/plain"}:
+        return result
     # HTTP errors are definitive failures, not invitations to render an error
     # page. A healthy thin page or a missing JS-created anchor may use fallback.
     if result.error and result.fragment_found is not False:
@@ -331,7 +552,7 @@ def _current_run_id() -> str:
         return ""
 
 
-def _fetch_into_corpus(url_list: list[str]) -> dict[str, Any] | None:
+def _fetch_into_corpus(url_list: list[str], *, force_refresh: bool = False) -> dict[str, Any] | None:
     """W1 store mode: fetch pages into the run's web-evidence corpus and return
     lightweight PASSPORTS (doc_id/title/outline/size) instead of full bodies — the
     model reads selectively via web_query, so page size stops eating the context.
@@ -341,15 +562,26 @@ def _fetch_into_corpus(url_list: list[str]) -> dict[str, Any] | None:
     run_id = _current_run_id()
     if not run_id:
         return {"text": "ERROR: web_fetch(store) требует контекст рана", "ok": False}
+    from app.application.code_agent.loop_helpers import run_persistence_policy, web_cache_write_allowed
+    if not web_cache_write_allowed(run_persistence_policy(run_id)):
+        return {"text": "ERROR: web cache storage is disabled by task persistence policy. "
+                        "Read with web_fetch(store=false, find='phrase from the document') or actual HTML #sections.",
+                "ok": False}
     from app.application.web_evidence import corpus as _corpus
     lines = ["Сохранено в веб-корпус (читай выборочно через web_query):"]
     any_ok = False
     sources = []
     for u in url_list[:_WEB_BATCH_MAX]:
+        from app.application.web_evidence import availability
+        probe = availability.begin(u, force=force_refresh)
         try:
-            res = _corpus.ingest(u, run_id)
+            res = ({"ok": False, "error": probe["blocked"]} if probe.get("blocked")
+                   else _corpus.ingest(u, run_id))
         except Exception as exc:  # noqa: BLE001 — never crash the tool call
             res = {"ok": False, "error": str(exc)[:200], "store_unavailable": True}
+        availability.finish(probe, ok=bool(res.get("ok")), status=res.get("status_code"),
+                            error=str(res.get("error") or ""), retry_after=str(res.get("retry_after") or ""),
+                            final_url=str(res.get("final_url") or ""))
         if res.get("store_unavailable"):
             return None   # degrade the WHOLE call to the old path
         if res.get("ok"):
@@ -405,10 +637,10 @@ def _fetch_receipts(url: str, page: PageFetchResult) -> tuple[str, list[dict[str
         )
         return error, [source] if source else []
     note = " · отрисовано в браузере (JS)" if page.rendered else ""
-    header = f"[fetched: {final_url}{note}]"
+    header = f"[fetched: {final_url}{note}]\n{_READ_EXCERPT_LABEL}"
     records = excerpt_sources(
         run_id=_current_run_id(), tool="web_fetch", url=final_url,
-        text=page.text, fetched_at=time.time(),
+        text=page.text, fetched_at=time.time(), offset_base=page.text_offset,
     )
     from app.application.web_evidence.corpus import envelope
     payload = "\n\n".join(format_source(source) for source in records)
@@ -416,8 +648,15 @@ def _fetch_receipts(url: str, page: PageFetchResult) -> tuple[str, list[dict[str
     if link_text:
         payload += "\n\n" + link_text
     text = envelope(payload, source=final_url)
-    if page.truncated:
-        header += "\n[Текст обрезан по max_chars; нужный раздел читай по #якорю или через web_fetch(store=true) → web_query.]"
+    if page.text_offset:
+        header += f"\n[Фрагмент текста документа с позиции {page.text_offset}; начало документа опущено.]"
+    if page.mime == "application/pdf":
+        if page.fragment_found is False:
+            header += "\n[Якоря PDF не поддерживаются: показан текст документа, а не запрошенная страница. Не перебирай #page=N.]"
+        if page.truncated:
+            header += "\n[Показана часть PDF. Нужную фразу читай через web_fetch(find='фраза из документа'); сохранение в память не требуется.]"
+    elif page.truncated:
+        header += "\n[Показана часть текста; нужный фрагмент читай через web_fetch(find='фраза из документа') или реальный HTML #якорь.]"
     header += fragment_hint
     return header + "\n\n" + text, records
 
@@ -425,6 +664,8 @@ def _fetch_receipts(url: str, page: PageFetchResult) -> tuple[str, list[dict[str
 def _page_metadata(requested_url: str, page: PageFetchResult) -> dict[str, Any]:
     return {"url": requested_url, "final_url": page.final_url or requested_url,
             "status_code": page.status_code, "ok": page.ok, "error": page.error,
+            "mime": page.mime,
+            "text_offset": page.text_offset,
             "truncated": page.truncated, "fragment_found": page.fragment_found,
             "available_fragments": list(page.available_fragments),
             "links": [{"label": label, "url": target} for label, target in page.links],
@@ -465,8 +706,23 @@ def _fit_fetch_receipts(url: str, page: PageFetchResult, budget: int) -> tuple[s
                     [], replace(kept, truncated=True))
 
 
+def _find_page_text(page: PageFetchResult, phrase: str, limit: int) -> PageFetchResult:
+    """Select verbatim context without a corpus write or an extra model call."""
+    if not phrase or not page.ok:
+        return page
+    pattern = r"\s+".join(re.escape(part) for part in phrase.split())
+    match = re.search(pattern, page.text, re.IGNORECASE)
+    if match is None:
+        scope = f"first {len(page.text)} extracted characters" if page.truncated else "extracted text"
+        return replace(page, text="", error=f"find phrase not found in {scope}; use another phrase or source")
+    # Keep the match near the beginning so response-budget fitting retains it.
+    start = max(0, match.start() - min(300, limit // 4))
+    return replace(page, text=page.text[start:start + limit], text_offset=page.text_offset + start,
+                   truncated=page.truncated or start > 0 or len(page.text) > start + limit)
+
+
 def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
-                   store: bool = False) -> dict[str, Any]:
+                   store: bool = False, force_refresh: bool = False, find: str = "") -> dict[str, Any]:
     """Fetch a web page and extract its main readable text (nav/ads/scripts
     stripped). JS-rendered pages (SPA/dashboards/tickers) are transparently
     re-fetched with a headless browser when static extraction is thin.
@@ -479,14 +735,28 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
     web-evidence corpus and returns a compact passport; read it selectively with
     web_query. Without the flag, `store` is ignored and behaviour is unchanged.
     """
+    try:
+        urls = normalize_web_tool_arguments("web_fetch", {"url": url, "urls": urls})["urls"]
+    except WebArgumentFormatError as exc:
+        return {"text": f"ERROR: {exc}", "ok": False, "error": "argument_format"}
+    if not isinstance(find, str) or len(find) > 200:
+        return {"ok": False, "text": "ERROR: find must be a phrase of at most 200 characters"}
+    find = find.strip()
+    if find and store:
+        return {"ok": False, "text": "ERROR: use find with store=false; stored documents are read through web_query"}
+    if find and _coerce_str_list(urls):
+        return {"ok": False, "text": "ERROR: find reads one document; pass its single url instead of urls"}
     if store and _web_corpus_on():
         targets = _coerce_str_list(urls) or ([url] if str(url).strip() else [])
         if targets:
-            stored = _fetch_into_corpus(targets)
+            stored = _fetch_into_corpus(targets, force_refresh=force_refresh)
             if stored is not None:
                 return stored
             # store unavailable → fall through to the old no-store path (fail-soft)
     limit = max(500, min(int(max_chars), 50000))
+    from functools import partial
+    fetch = partial(_fetch_one, force_refresh=True) if force_refresh else _fetch_one
+    scan_limit = _WEB_FIND_SCAN_CHARS if find else limit
 
     url_list = _coerce_str_list(urls)
     if url_list:
@@ -495,16 +765,16 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
         import concurrent.futures
         blocks: dict[int, PageFetchResult] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(url_list), _WEB_BATCH_WORKERS)) as ex:
-            futs = {ex.submit(contextvars.copy_context().run, _fetch_one, u, limit): i for i, u in enumerate(url_list)}
+            futs = {ex.submit(contextvars.copy_context().run, fetch, u, scan_limit): i for i, u in enumerate(url_list)}
             for f in concurrent.futures.as_completed(futs):
                 i = futs[f]
                 blocks[i] = f.result() if not f.exception() else PageFetchResult(error=str(f.exception()))
-        ordered = [blocks[i] for i in range(len(url_list))]
-        from app.application.code_agent.loop_helpers import TOOL_RESULT_LLM_LIMIT
+        ordered = [_find_page_text(blocks[i], find, limit) for i in range(len(url_list))]
+        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
 
         header = f"Fetched {len(url_list)} pages in parallel:\n\n"
         separator = "\n\n———\n\n"
-        budget = (TOOL_RESULT_LLM_LIMIT - len(header) - len(separator) * (len(url_list) - 1)) // len(url_list)
+        budget = (WEB_TOOL_RESULT_LLM_LIMIT - len(header) - len(separator) * (len(url_list) - 1)) // len(url_list)
         receipts = [_fit_fetch_receipts(url_list[i], block, budget) for i, block in enumerate(ordered)]
         return {
             "text": header + separator.join(text for text, _, _ in receipts),
@@ -514,8 +784,10 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
         }
 
     # ── Single page (back-compat) ────────────────────────────────────────────
-    page = _fetch_one(url, limit)
-    formatted, sources = _fetch_receipts(url, page)
+    page = _find_page_text(fetch(url, scan_limit), find, limit)
+    from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
+
+    formatted, sources, page = _fit_fetch_receipts(url, page, WEB_TOOL_RESULT_LLM_LIMIT)
     return {"text": formatted, "ok": page.ok, "sources": sources, "pages": [_page_metadata(url, page)]}
 
 
@@ -569,7 +841,8 @@ def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str,
         return {"ok": False, "error": "unverified_excerpt", "sources": [], "results": [],
                 "text": "ERROR: выдержки не прошли проверку происхождения; повтори web_fetch."}
     body = [format_source(source) for source in sources]
-    payload = _corpus.envelope("\n\n———\n\n".join(body), source=f"веб-корпус ({res.get('ranker')})")
+    payload = _corpus.envelope(_READ_EXCERPT_LABEL + "\n\n" + "\n\n———\n\n".join(body),
+                               source=f"веб-корпус ({res.get('ranker')})")
     return {**res, "text": payload, "sources": sources, "results": verified_results}
 
 
@@ -724,13 +997,13 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
                     actions: list[dict] | None = None,
                     viewport: dict | None = None,
                     extract_fragment: bool = False,
-                    page_metadata: dict[str, Any] | None = None) -> tuple[str, str, str, int, dict | None, int | None]:
+                    page_metadata: dict[str, Any] | None = None) -> tuple[str, str, str, int, dict | None, int | None, str]:
     """Render a page with Playwright, optionally performing interaction steps (fill /
     select / check / click / wait) before capturing the DOM — so an interaction criterion
     ("after typing X and clicking Calculate the DOM shows Network: …") is verified against
     the ACTUAL post-interaction DOM, not a static render. When `viewport` is given, the page
     is sized to it and horizontal overflow is measured (positive layout evidence). Returns
-    (title, url, body, applied, viewport_signal, HTTP status) where `applied` counts real interactions
+    (title, url, body, applied, viewport_signal, HTTP status, Retry-After) where `applied` counts real interactions
     that resolved+ran and `viewport_signal` is {'checked':True,'width':W,'no_hoverflow':bool}
     (or None when no viewport was requested). Runs in a worker thread (see tool_browser):
     the worker owns its event loop and browser lifecycle."""
@@ -740,10 +1013,15 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
         browser = await p.chromium.launch(headless=True)
         try:
             page = await browser.new_page(viewport=viewport) if viewport else await browser.new_page()
-            response = await page.goto(url, wait_until="networkidle", timeout=30000)
+            # Reading an article must not wait for ad/analytics connections to
+            # become idle. Interactive/layout checks retain their load contract;
+            # dynamic research pages can request a specific wait_selector.
+            wait_until = "networkidle" if actions or viewport else "domcontentloaded"
+            response = await page.goto(url, wait_until=wait_until, timeout=30000)
             status = response.status if response is not None else None
+            retry_after = str(response.headers.get("retry-after", ""))[:128] if response is not None else ""
             if status is not None and not 200 <= status < 300:
-                return "", page.url, "", 0, None, status
+                return "", page.url, "", 0, None, status, retry_after
             if wait_selector:
                 try:
                     await page.wait_for_selector(wait_selector, timeout=8000)
@@ -786,7 +1064,7 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
                                          available_fragments=_available_fragments(soup))
             else:
                 body = (await page.inner_text("body") or "")[:limit]
-            return await page.title(), page.url, body, applied, vp_signal, status
+            return await page.title(), page.url, body, applied, vp_signal, status, retry_after
         finally:
             close_task = asyncio.create_task(browser.close())
             try:
@@ -800,7 +1078,7 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
                     actions: list[dict] | None = None,
                     viewport: dict | None = None,
                     extract_fragment: bool = False,
-                    page_metadata: dict[str, Any] | None = None) -> tuple[str, str, str, int, dict | None, int | None]:
+                    page_metadata: dict[str, Any] | None = None) -> tuple[str, str, str, int, dict | None, int | None, str]:
     """Own the async browser in this worker; Stop waits for its cleanup."""
     import asyncio
     import sys
@@ -856,6 +1134,19 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
 
 
 def _render_fallback(url: str, limit: int) -> PageFetchResult:
+    from app.application.web_evidence import availability
+
+    probe = availability.begin(url, channel="browser")
+    if probe.get("blocked"):
+        return PageFetchResult(final_url=url, error=probe["blocked"], rendered=True)
+    result = _render_fallback_untracked(url, limit)
+    availability.finish(probe, ok=result.ok, status=result.status_code, error=result.error,
+                        retry_after=result.retry_after, final_url=result.final_url,
+                        origin_scope=result.status_code is not None)
+    return result
+
+
+def _render_fallback_untracked(url: str, limit: int) -> PageFetchResult:
     """Best-effort headless-browser render for a thin/empty static fetch (Phase A).
     Reuses _browser_render in a worker thread with current run ownership. HTTP
     errors remain errors; provider failures permit retaining healthy static text.
@@ -864,12 +1155,12 @@ def _render_fallback(url: str, limit: int) -> PageFetchResult:
     try:
         metadata: dict[str, Any] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            _title, final_url, text, _applied, _vp, status = ex.submit(
+            _title, final_url, text, _applied, _vp, status, *headers = ex.submit(
                 contextvars.copy_context().run, _browser_render, url, None, limit + 1, None, None, True, metadata
             ).result()
         if status is not None and not 200 <= status < 300:
             return PageFetchResult(final_url=final_url, status_code=status,
-                                   error=f"HTTP {status}", rendered=True)
+                                   error=f"HTTP {status}", rendered=True, retry_after=headers[0] if headers else "")
         text = (text or "").strip()
         return PageFetchResult(text=text[:limit], final_url=final_url, status_code=status,
                                truncated=len(text) > limit, rendered=True,
@@ -878,11 +1169,12 @@ def _render_fallback(url: str, limit: int) -> PageFetchResult:
                                available_fragments=metadata.get("available_fragments", ()),
                                fragment_found=True if urlsplit(url).fragment else None)
     except Exception as exc:
-        return PageFetchResult(final_url=url, error=f"browser fallback failed: {str(exc)[:200]}")
+        return PageFetchResult(final_url=url, error=f"browser fallback failed: {str(exc)[:200]}", rendered=True)
 
 
 def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000,
-                 actions: list[dict] | None = None, viewport: Any = None) -> dict[str, Any]:
+                 actions: list[dict] | None = None, viewport: Any = None,
+                 force_refresh: bool = False) -> dict[str, Any]:
     """Open a URL in a real headless browser (Playwright/Chromium), render
     JavaScript, optionally perform interaction steps, and return the visible page
     text. Use when `web_fetch` is not enough — pages that need JS to render, SPAs,
@@ -914,16 +1206,24 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
 
     steps = actions if isinstance(actions, list) else None
     vp = _coerce_viewport(viewport)
+    from app.application.web_evidence import availability
+    # Application interactions/layout checks are not passive research reads.
+    probe = {} if steps or vp else availability.begin(cleaned_url, channel="browser", force=force_refresh)
+    if probe.get("blocked"):
+        return {"text": probe["blocked"], "ok": False, "error": "source_cooldown"}
     limit = max(500, min(int(max_chars), 50000))
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            title, final_url, text, applied, vp_signal, status = ex.submit(
+            title, final_url, text, applied, vp_signal, status, *headers = ex.submit(
                 contextvars.copy_context().run, _browser_render, cleaned_url, wait_selector, limit, steps, vp
             ).result()
     except Exception as exc:
+        availability.finish(probe, ok=False, error=str(exc), origin_scope=False)
         return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}
 
+    availability.finish(probe, ok=bool(text) and (status is None or 200 <= status < 300), status=status,
+                        retry_after=headers[0] if headers else "", final_url=final_url)
     if status is not None and not 200 <= status < 300:
         return {"text": f"ERROR: HTTP {status} ({final_url})", "ok": False,
                 "error": "http_error", "status_code": status, "url": final_url}
@@ -975,6 +1275,8 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     # The cited excerpts contain observed DOM only. Input/action echoes remain
     # outside both the source records and the raw verifier evidence below.
     page_body = "\n\n".join(format_source(source) for source in sources) if sources else text
+    if sources:
+        page_body = _READ_EXCERPT_LABEL + "\n\n" + page_body
     presented = envelope(f"TITLE: {title}\n\n{page_body}", source=final_url)
     result = {
         "text": f"[browser: {final_url}]\n{vp_note}{act_note}{presented}",

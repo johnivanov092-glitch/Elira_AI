@@ -28,3 +28,11 @@ def isolate_local_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("ELIRA_DATA_DIR", os.environ["ELIRA_DATA_DIR"])
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", os.environ["ELIRA_AGENT_RUNS_DIR"])
+
+
+@pytest.fixture(autouse=True)
+def isolate_web_diagnostics(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Availability must persist between real runs, never between independent
+    # tests using the same synthetic source domains.
+    from app.infrastructure.web_corpus import store
+    monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "web-evidence.sqlite3"))

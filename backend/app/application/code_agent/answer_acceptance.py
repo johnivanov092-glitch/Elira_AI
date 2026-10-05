@@ -11,20 +11,20 @@ import json
 from typing import Any, Literal
 
 from app.application.code_agent.answer_contracts import (
-    normalize_quote_word_counts, quote_word_limit_correction,
+    explicit_quote_request, explicit_web_check_requested, normalize_quote_word_counts, quote_word_limit_correction,
     quote_word_limit_violations, web_cadence_citation_correction,
-    web_cadence_citation_violations,
+    web_cadence_citation_violations, web_source_citation_violations,
 )
 from app.application.code_agent.capabilities import (
     should_require_local_catalog_search, should_require_web_catalog_fallback,
     should_escalate_web_from_answer,
 )
-from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence
+from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 
 RetryReason = Literal[
     "background", "local_catalog", "web_catalog", "catalog_source", "evidence",
-    "outcome", "bom", "delivery", "quote", "cadence",
+    "outcome", "bom", "delivery", "quote", "quote_source", "cadence", "web_source",
 ]
 
 
@@ -41,11 +41,14 @@ class AcceptanceDecision:
     event_task_outcome: bool = False
     event_runtime_activation: bool = False
     outcome_correction: str | None = None
+    retain_rejected_answer: bool = True
 
     @property
     def messages(self) -> tuple[dict[str, str], ...]:
         if self.action != "retry":
             return ()
+        if not self.retain_rejected_answer:
+            return ({"role": "user", "content": self.correction},)
         return ({"role": "assistant", "content": self.text},
                 {"role": "user", "content": self.correction})
 
@@ -65,7 +68,9 @@ class AnswerAcceptance:
     bom_validation_selected: bool = False
     bom_validation_correction_sent: bool = False
     quote_correction_sent: bool = False
+    quote_source_correction_sent: bool = False
     cadence_correction_sent: bool = False
+    web_source_correction_sent: bool = False
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
@@ -84,16 +89,20 @@ class AnswerAcceptance:
             self.download_delivery_correction_sent = True
         elif decision.reason == "quote":
             self.quote_correction_sent = True
+        elif decision.reason == "quote_source":
+            self.quote_source_correction_sent = True
         elif decision.reason == "cadence":
             self.cadence_correction_sent = True
+        elif decision.reason == "web_source":
+            self.web_source_correction_sent = True
 
     def evaluate(
         self, *, final_text: str, raw_user_message: str,
-        pending_redirected_jobs: Collection[int],
-        active_capability_groups: Collection[str],
+        pending_redirected_jobs: Collection[int], active_capability_groups: Collection[str],
         task_outcome: TaskOutcome, run_evidence: RunEvidence,
         code_input_epoch: int, quote_word_limit: int | None,
-        durable_task: str = "", step: int, run_id: str,
+        durable_task: str = "", criteria_rows: list[dict] | None = None,
+        persistence_policy: dict[str, Any] | None = None, step: int, run_id: str,
     ) -> AcceptanceDecision:
         if pending_redirected_jobs:
             pending_list = ", ".join(str(pid) for pid in sorted(pending_redirected_jobs))
@@ -109,6 +118,25 @@ class AnswerAcceptance:
                 ),
                 log_note="completion blocked by redirected SSH job: " + pending_list,
             )
+        runtime_echo = (final_text.lstrip().startswith(("[Системный ответ]", "[ТЕКУЩИЙ КОНТРАКТ ЗАДАЧИ"))
+                        and "[ТЕКУЩИЙ КОНТРАКТ ЗАДАЧИ" not in raw_user_message)
+        if runtime_echo and not self.evidence_answer_correction_sent:
+            return AcceptanceDecision("retry", final_text, reason="evidence", correction=(
+                "Вместо ответа выведены внутренние данные runtime. Они не являются результатом задачи. "
+                "Выполни исходный запрос существующими инструментами и дай содержательный ответ пользователю. "
+                "Для поиска прочитай источники, изложи подтверждённое со ссылками; не печатай контракт или план вместо ответа."
+            ))
+        missing_web_check = (explicit_web_check_requested(raw_user_message)
+                             and not run_evidence.has_web_research and not run_evidence.has_external_source
+                             and not any(source.get("status") in {"discovered", "fetched", "excerpt"}
+                                         for source in run_evidence.sources))
+        if missing_web_check and not self.evidence_answer_correction_sent:
+            return AcceptanceDecision("retry", final_text, reason="evidence", correction=(
+                "[Проверка выполнения] Пользователь поручил проверить внешние источники, но runtime "
+                "не получил ни одного результата поиска или чтения. Напечатанный текст web_search/JSON "
+                "не является вызовом инструмента. Вызови web_search или web_fetch через structured tool_calls, "
+                "прочитай нужный источник и ответь на исходный вопрос. Не выдумывай результаты или ссылки."
+            ), activate_groups=("web",) if "web" not in active_capability_groups else ())
         if (not self.local_catalog_correction_sent
                 and should_require_local_catalog_search(
                     final_text,
@@ -179,7 +207,93 @@ class AnswerAcceptance:
                        "step": step, "source": "evidence_uncertain_answer"},
                 event_runtime_activation=True,
             )
+        if quote_word_limit is not None:
+            final_text = normalize_quote_word_counts(final_text)
+        # Names in «…» are typography, not quotations, unless quotes were requested.
+        skip_quoted_names = not (quote_word_limit is not None or explicit_quote_request(
+            raw_user_message or str(durable_task or "")))
+        quote_source_problems = [item for item in run_evidence.citations(final_text, skip_names=skip_quoted_names)
+                                 if item.get("status") == "unresolved"]
+        if quote_source_problems and not self.quote_source_correction_sent:
+            return AcceptanceDecision(
+                "retry", final_text, reason="quote_source", correction=(
+                    "[Проверка источников] Ссылка или дословная цитата не подтверждена показанными источниками: "
+                    + json.dumps([{key: item.get(key, "source_unavailable") for key in ("source_id", "reason")}
+                                  for item in quote_source_problems], ensure_ascii=False)
+                    + ". Исправь только ответ: найди дословный текст в уже показанных веб-выдержках "
+                    "и укажи точную [[source:id]] именно этого отрывка рядом с цитатой. "
+                    "Совпадение URL страницы не подтверждает другой отрывок. Не выдумывай ID "
+                    "и не повторяй успешное чтение. Если цитата не подтверждается, явно сообщи об этом. "
+                    + ("Дословные цитаты пользователь не запрашивал: вместо них дай точный пересказ "
+                       "прочитанного со ссылками. Верни готовый ответ на исходный вопрос без обсуждения "
+                       "служебной проверки и без неподтверждённых цитат." if skip_quoted_names else "")
+                ),
+                log_note="exact quote does not match cited excerpt",
+                event={"type": "answer_format_correction", "step": step, "contract": "quote_source"},
+                retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
+            )
+        quote_source_failed = bool(quote_source_problems)
+        web_source_problems = ()
+        if run_evidence.sources and not task_outcome.artifact_contract_seen:
+            web_source_problems = web_source_citation_violations(
+                final_text,
+                read_source_urls={source["url"] for source in run_evidence.presented_sources
+                                  if source.get("quote_verified") is True},
+                known_source_urls={source["url"] for source in run_evidence.sources},
+            )
+        if web_source_problems and not self.web_source_correction_sent:
+            return AcceptanceDecision(
+                "retry", final_text, reason="web_source", correction=(
+                    "[Проверка прочитанных источников] Ссылки рядом с утверждениями ведут на страницы, "
+                    "чей текст не прочитан: "
+                    + json.dumps([{"block": item.block_index, "url": item.url, "reason": item.reason}
+                                  for item in web_source_problems[:8]], ensure_ascii=False)
+                    + ". Исправь ответ по уже показанным выдержкам: укажи именно прочитанный источник "
+                    "или удали неподтверждённое утверждение. Если этот факт нужен для исходного вопроса, "
+                    "прочитай конкретную недостающую страницу. Сниппет, оглавление и ссылка из соседней "
+                    "статьи не подтверждают содержание целевой страницы. Не оставляй утверждение только "
+                    "с оговоркой о непроверенной ссылке и не заменяй ссылку ради прохождения проверки. "
+                    "Не вызывай task_decide ради ответа и не повторяй уже успешное чтение."
+                ),
+                log_note="ordinary Web answer cites unread sources",
+                event={"type": "answer_format_correction", "step": step,
+                       "contract": "web_source_citation"},
+                retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
+            )
+        web_source_failed = bool(web_source_problems)
+        if web_source_failed:
+            # A warning below an unsupported assertion still leaves that
+            # assertion in the delivered answer. Replace the body instead.
+            final_text = (
+                "Подтвердить исходный ответ прочитанными источниками не удалось. "
+                "Непроверенные утверждения исключены."
+            )
+            read_urls = list(dict.fromkeys(source["url"] for source in run_evidence.presented_sources
+                                          if source.get("quote_verified") is True))[:5]
+            if read_urls:
+                final_text += "\n\nПрочитанные источники:\n" + "\n".join(
+                    f"- [Источник]({url})" for url in read_urls)
+        final_text = run_evidence.answer_with_search_warnings(final_text)
+        answer_verification = task_outcome.verify_answer(
+            final_text, run_evidence, code_input_epoch, persistence_policy=persistence_policy,
+            user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))
         outcome_pending = task_outcome.pending()
+        missing_requirements = task_outcome.missing_requirements(
+            code_input_epoch, criteria_rows, answer_verification=answer_verification, answer=final_text)
+        if missing_requirements:
+            outcome_pending = (
+                "Не подтверждены обязательные требования текущей задачи: "
+                + json.dumps(missing_requirements, ensure_ascii=False)
+                + ". Сохрани исходную цель и остальные требования. Для ответа прямо в чате "
+                "исправь содержание по уже прочитанным источникам и прямым условиям пользователя. "
+                "Не составляй task_decide ради ответа. Если фактов не хватает, проверь недостающий "
+                "источник или явно обозначь пробел; не повторяй уже успешные поиски без новых данных. "
+                "Успешный поиск не покрывает непроверяемые смысловые условия. Для файлов проверь каждый пункт "
+                "подходящим реальным verifier. Для result_verify свежий JSON отчёт должен "
+                "содержать checks:[{name,requirement_id,passed:boolean}] с ID из текущего "
+                "контракта. passed=true для части проверок не покрывает остальные пункты. "
+                "После уточнения или изменения входов выполни проверки заново."
+            )
         outcome_targets = task_outcome.decision.get("targets") or []
         if not outcome_pending and outcome_targets:
             unverified_targets = set(task_outcome.unverified_targets(outcome_targets, code_input_epoch))
@@ -200,15 +314,28 @@ class AnswerAcceptance:
                     "targets. При несовпадении исправь решение и проверь снова."
                 )
         if outcome_pending and task_outcome.correction != outcome_pending:
+            failed_checks = [
+                {"requirement_id": row["requirement_id"],
+                 "failed_checks": [item["kind"] for item in row["predicates"] if not item["passed"]]}
+                for row in answer_verification.get("checks", []) if not row["passed"]
+            ]
+            # Keep the retry identity stable: a changing candidate/predicate must
+            # not create an additional correction attempt for the same gap.
+            feedback = outcome_pending
+            if failed_checks:
+                feedback += (
+                    " Не прошли конкретные проверки текущего ответа: "
+                    + json.dumps(failed_checks, ensure_ascii=False)
+                    + ". Исправь указанные проверки, сохрани успешные. Не повторяй уже успешный "
+                    "поиск или чтение без причины. Проверка формата не подтверждает достоверность фактов."
+                )
             return AcceptanceDecision(
-                "retry", final_text, reason="outcome", correction=outcome_pending,
+                "retry", final_text, reason="outcome", correction=feedback,
                 outcome_correction=outcome_pending,
                 activate_groups=("runtime",) if "runtime" not in active_capability_groups else (),
                 event={"type": "task_outcome_changed", "step": step},
                 event_task_outcome=True, event_runtime_activation=True,
             )
-        if outcome_pending:
-            final_text += "\n\nНе подтверждено: " + outcome_pending
         if (self.bom_validation_selected and self.bom_snapshot is None
                 and not self.bom_validation_correction_sent):
             return AcceptanceDecision(
@@ -318,6 +445,7 @@ class AnswerAcceptance:
                 event={"type": "answer_format_correction", "step": step,
                        "contract": "web_cadence_citation",
                        "quantities": [item.quantity for item in cadence_violations]},
+                retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
             )
         cadence_format_failed = bool(cadence_violations)
         if cadence_format_failed:
@@ -330,6 +458,33 @@ class AnswerAcceptance:
             "degraded" if (download_delivery_failed or bool(outcome_pending)
                            or bom_validation_failed or catalog_web_failed
                            or unverified_document_qa_claim or quote_format_failed
-                           or cadence_format_failed) else "complete"
+                           or cadence_format_failed or quote_source_failed or web_source_failed
+                           or runtime_echo or missing_web_check) else "complete"
         )
+        if runtime_echo:
+            final_text = "Содержательный ответ не получен: модель повторила внутренние данные задачи."
+        if missing_web_check:
+            final_text = "Запрошенная проверка внешних источников не выполнена. Фактических результатов поиска или чтения нет; подтвердить ответ не удалось."
+        if quote_source_failed:
+            # Keep the verified answer; drop only the unconfirmed quotes.
+            final_text = drop_unverified_quotes(
+                final_text, run_evidence.quote_bindings(final_text, skip_names=skip_quoted_names))
+            if any(item.get("status") == "unresolved" for item in run_evidence.citations(final_text)):
+                final_text += "\n\nЧасть ссылок на источники не подтверждена; связанные с ними выводы требуют проверки."
+        # A read-only sourced answer remains useful with explicitly reported
+        # gaps. Artifact completion claims still require their actual verifiers.
+        preserve_partial = (run_evidence.has_external_source and not run_evidence.has_mutations
+                            and not task_outcome.artifact_contract_seen)
+        if missing_requirements:
+            final_text = (final_text.rstrip() + "\n\n" if preserve_partial else "") + "Не удалось подтвердить:\n" + "\n".join(
+                f"- {item['text']} ({item['status']})" for item in missing_requirements)
+        elif outcome_pending:
+            final_text = ((final_text.rstrip() + "\n\n" if preserve_partial else "")
+                          + "Полное выполнение задачи не подтверждено. " + outcome_pending)
+        final_text = run_evidence.answer_with_search_warnings(final_text)
+        # Receipts attest to the delivered bytes, not an earlier candidate that
+        # was replaced by a safety fallback or extended with missing coverage.
+        task_outcome.verify_answer(final_text, run_evidence, code_input_epoch,
+                                   persistence_policy=persistence_policy,
+                                   user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))
         return AcceptanceDecision("accept", final_text, answer_status=answer_status)

@@ -2,8 +2,9 @@
 
 Only the run's verified-outcome boundary may call observe(). Features describe
 the original request and observed environment, never the answer/checker text.
-Positive-only multinomial NB learns associations, not a skill's causal benefit
-or calibrated probability of success. Unknown tasks keep the full Qwen catalog.
+The existing positive-only model stays active. Bound requirement failures and
+recovery histories feed a separately evaluated shadow ranking, never activation.
+Neither model measures causal benefit or calibrated probability of success.
 """
 from __future__ import annotations
 
@@ -115,8 +116,17 @@ def _class(binding: dict) -> str:
 def _sample(query: str, evidence: dict, run_id: str, context: dict | None) -> dict:
     _require(isinstance(evidence, dict) and evidence.get("provenance") == "observed_verification",
              "Learning needs observed verification provenance")
-    _require(evidence.get("status") in {None, "passed"} and evidence.get("ok") is not False,
-             "Failed verification cannot be a positive example")
+    outcome = evidence.get("outcome", "verified_success")
+    _require(outcome in {"verified_success", "requirement_failure"}, "Unknown learning outcome")
+    if outcome == "verified_success":
+        _require(evidence.get("status") in {None, "passed", "verified_success"} and evidence.get("ok") is not False,
+                 "Failed verification cannot be a positive example")
+    else:
+        _require(evidence.get("execution_ok") is True, "An execution error is not a requirement failure")
+        requirements = evidence.get("requirement_ids")
+        _require(isinstance(requirements, list) and 0 < len(requirements) <= 100 and all(
+            isinstance(item, str) and 0 < len(item) <= 240 for item in requirements),
+            "A failure must identify proven failed requirements")
     _require(isinstance(run_id, str) and 1 <= len(run_id) <= 128, "Invalid run identity")
     binding = _binding(evidence.get("skill_binding"))
     hashes = {}
@@ -126,12 +136,20 @@ def _sample(query: str, evidence: dict, run_id: str, context: dict | None) -> di
         hashes[field] = sorted({_hash(row.get("sha256")) for row in rows if isinstance(row, dict)})
         _require(len(hashes[field]) > 0 and all(isinstance(row, dict) for row in rows), "Invalid verification hashes")
     observed = {"provenance": "observed_verification", "input_version": _hash(evidence.get("input_version")), **hashes}
+    if evidence.get("requirement_ids"):
+        observed["requirement_ids"] = sorted({_digest(item) for item in evidence["requirement_ids"]})
+    if outcome == "requirement_failure":
+        observed["execution_ok"] = True
     request_hash = _digest(_query(query))
     vector = features(query, context)
     _require(any(key.startswith("q:") for key in vector), "No learnable task features")
     # Every identical request stays in one split, including retries and resume.
     group = request_hash
-    return {"id": _digest([run_id, request_hash, binding, observed]), "run_id": run_id,
+    case_id = _hash(evidence["case_id"]) if evidence.get("case_id") else _digest([request_hash, binding])
+    # One selected skill/task case supplies at most one vote per outcome even
+    # if Resume reruns a checker that writes a fresh timestamp/report digest.
+    identity = _digest([run_id, request_hash, binding, outcome, case_id])
+    return {"id": identity, "run_id": run_id, "case_id": case_id, "outcome": outcome,
             "request_hash": request_hash, "group": group,
             "holdout": int(group[:8], 16) % 5 == 0,
             "features": vector, "binding": binding, "evidence": observed}
@@ -219,6 +237,15 @@ def _samples() -> list[dict]:
         _require(isinstance(row, dict) and _hash(row.get("id")) not in seen, "Duplicate sample identity")
         seen.add(row["id"])
         _binding(row.get("binding"))
+        _require(row.get("outcome", "verified_success") in {"verified_success", "requirement_failure"},
+                 "Invalid recorded outcome")
+        if "case_id" in row:
+            _hash(row["case_id"])
+        if "recovery_of" in row:
+            _require(isinstance(row["recovery_of"], list) and len(row["recovery_of"]) <= _MAX_SAMPLES,
+                     "Invalid recovery history")
+            for previous in row["recovery_of"]:
+                _hash(previous)
         _hash(row.get("request_hash"))
         _require(row.get("group") == row["request_hash"], "Invalid sample grouping")
         _require(row.get("holdout") is (int(row["group"][:8], 16) % 5 == 0), "Sample split changed")
@@ -235,7 +262,7 @@ def _state() -> dict:
         return {"schema": _SCHEMA, "active": None, "previous": None, "candidate": None}
     state = _read(path)
     _require(state.get("schema") == _SCHEMA, "Unsupported advisor state schema")
-    for key in ("active", "previous", "candidate"):
+    for key in ("active", "previous", "candidate", "shadow_candidate"):
         if state.get(key) is not None:
             _hash(state[key])
     versions = state.get("approved_versions", [])
@@ -260,6 +287,10 @@ def _model(version: str) -> dict:
         _require(isinstance(entry.get("default_weight"), (int, float)) and math.isfinite(entry["default_weight"]), "Invalid default weight")
         _require(all(_FEATURE.fullmatch(name) and isinstance(value, (int, float)) and math.isfinite(value)
                      for name, value in entry["weights"].items()), "Invalid learned weight")
+        if "failure_weights" in entry:
+            _require(isinstance(entry["failure_weights"], dict) and all(
+                _FEATURE.fullmatch(name) and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
+                for name, value in entry["failure_weights"].items()), "Invalid failure weights")
     return model
 
 
@@ -267,7 +298,7 @@ def _unique(rows: list[dict]) -> list[dict]:
     # A repeated run with the same task/context/version supplies no extra vote.
     selected = {}
     for row in sorted(rows, key=lambda item: item["id"]):
-        key = _digest([row["group"], row["features"], row["binding"]])
+        key = _digest([row["group"], row["features"], row["binding"], row.get("outcome", "verified_success")])
         selected.setdefault(key, row)
     return list(selected.values())
 
@@ -276,7 +307,8 @@ def _fit(rows: list[dict]) -> dict:
     counts: dict[str, Counter] = defaultdict(Counter)
     supports: Counter = Counter()
     bindings = {}
-    for row in _unique([row for row in rows if not row["holdout"]]):
+    for row in _unique([row for row in rows if not row["holdout"]
+                        and row.get("outcome", "verified_success") == "verified_success"]):
         label = _class(row["binding"])
         counts[label].update(row["features"])
         supports[label] += 1
@@ -295,6 +327,25 @@ def _fit(rows: list[dict]) -> dict:
             "dataset_sha256": _digest(rows), "classes": classes}
 
 
+def _fit_shadow(rows: list[dict]) -> dict:
+    """Conservative failure penalties, kept outside the active model pointer."""
+    model = _fit(rows)
+    failures: dict[str, Counter] = defaultdict(Counter)
+    supports: Counter = Counter()
+    for row in _unique([row for row in rows if not row["holdout"]
+                        and row.get("outcome") == "requirement_failure"]):
+        label = _class(row["binding"])
+        failures[label].update(row["features"])
+        supports[label] += 1
+    for label, entry in model["classes"].items():
+        entry["failure_support"] = supports[label]
+        entry["failure_weights"] = {key: math.log1p(count / max(1, entry["support"]))
+                                    for key, count in sorted(failures[label].items())}
+    model["algorithm"] = "multinomial-nb-bound-failure-penalty-shadow-v1"
+    model["mode"] = "shadow"
+    return model
+
+
 def _rank(model: dict, vector: dict[str, int], eligible: set[str] | None = None) -> list[tuple[str, float]]:
     candidates = {key: value for key, value in model["classes"].items() if eligible is None or key in eligible}
     known = {feature for entry in candidates.values() for feature in entry["weights"]}
@@ -307,14 +358,19 @@ def _rank(model: dict, vector: dict[str, int], eligible: set[str] | None = None)
     for key, entry in candidates.items():
         score = sum(count * entry["weights"].get(feature, entry["default_weight"])
                     for feature, count in vector.items() if feature in known)
+        if model.get("mode") == "shadow":
+            score -= sum(count * entry.get("failure_weights", {}).get(feature, 0)
+                         for feature, count in vector.items())
         scored.append((key, score))
     ranked = sorted(scored, key=lambda item: (-item[1], item[0]))
     return [] if len(ranked) > 1 and abs(ranked[0][1] - ranked[1][1]) < 1e-9 else ranked
 
 
 def _evaluate(model: dict, rows: list[dict], incumbent: dict | None) -> dict:
-    heldout = _unique([row for row in rows if row["holdout"]])
-    training = _unique([row for row in rows if not row["holdout"]])
+    heldout = _unique([row for row in rows if row["holdout"]
+                      and row.get("outcome", "verified_success") == "verified_success"])
+    training = _unique([row for row in rows if not row["holdout"]
+                       and row.get("outcome", "verified_success") == "verified_success"])
     popularity = Counter(_class(row["binding"]) for row in training)
     baseline = sorted(popularity, key=lambda key: (-popularity[key], key))
 
@@ -348,28 +404,67 @@ def _unavailable(operation: str, exc: Exception) -> dict:
 
 
 def observe(query: str, evidence: dict, run_id: str, context: dict | None = None) -> dict:
-    """Record one verified association; never accept failed/unverified outcomes."""
+    """Record exact verified cases; failure-aware ranking is always shadow."""
     try:
         sample = _sample(query, evidence, run_id, context)
         with _locked():
             rows, state = _samples(), _state()
             incumbent = _model(state["active"]) if state.get("active") else None
             existing = next((row for row in rows if row["id"] == sample["id"]), None)
+            if existing is None:
+                # Backward compatibility with the original evidence-hash IDs.
+                existing = next((row for row in rows if row.get("run_id") == run_id
+                                 and row.get("request_hash") == sample["request_hash"]
+                                 and row.get("binding") == sample["binding"]
+                                 and row.get("outcome", "verified_success") == sample["outcome"]
+                                 and row.get("evidence") == sample["evidence"]), None)
             if existing:
-                _require(existing == sample, "A replay changed a recorded sample")
-                if state.get("dataset_sha256") == _digest(rows):
-                    return {"ok": True, "status": "duplicate", "model_version": state.get("active"), "sample_id": sample["id"]}
+                recovery = sorted(row["id"] for row in rows
+                    if sample["outcome"] == "verified_success" and row.get("outcome") == "requirement_failure"
+                    and row.get("run_id") == run_id and row["request_hash"] == sample["request_hash"]
+                    and (row.get("case_id") == sample["case_id"] or (
+                        set(row["evidence"].get("requirement_ids", []))
+                        & set(sample["evidence"].get("requirement_ids", [])))))
+                added_recovery = bool(set(recovery) - set(existing.get("recovery_of", [])))
+                if added_recovery:
+                    existing["recovery_of"] = sorted(set(recovery) | set(existing.get("recovery_of", [])))
+                    existing["evidence"] = sample["evidence"]
+                if not added_recovery and state.get("dataset_sha256") == _digest(rows):
+                    return {"ok": True, "status": "duplicate", "model_version": state.get("active"), "sample_id": existing["id"]}
             else:
                 _require(len(rows) < _MAX_SAMPLES, "Advisor dataset capacity reached")
+                if sample["outcome"] == "verified_success":
+                    sample["recovery_of"] = sorted(row["id"] for row in rows
+                        if row.get("outcome") == "requirement_failure" and row.get("run_id") == run_id
+                        and row["request_hash"] == sample["request_hash"]
+                        and (row.get("case_id") == sample["case_id"] or (
+                            set(row["evidence"].get("requirement_ids", []))
+                            & set(sample["evidence"].get("requirement_ids", [])))))
                 rows = sorted([*rows, sample], key=lambda item: item["id"])
             candidate = _fit(rows)
             version = _digest(candidate)
             evaluation = _evaluate(candidate, rows, incumbent)
+            shadow = _fit_shadow(rows)
+            shadow_version = _digest(shadow)
+            shadow_evaluation = _evaluate(shadow, rows, incumbent)
+            heldout_failures = _unique([row for row in rows if row["holdout"]
+                                       and row.get("outcome") == "requirement_failure"])
+            wrong = sum(bool(ranked := _rank(shadow, row["features"]))
+                        and ranked[0][0] == _class(row["binding"]) for row in heldout_failures)
+            shadow_evaluation.update({"mode": "shadow", "promote": False,
+                "holdout_failure_groups": len({row["group"] for row in heldout_failures}),
+                "failure_top1_rate": wrong / len(heldout_failures) if heldout_failures else None,
+                "reason": "shadow_requires_independent_evaluation"})
             model_path = _path(f"models/{version}.json")
             if model_path.exists():
                 _model(version)
             else:
                 _write(model_path, candidate)
+            shadow_path = _path(f"models/{shadow_version}.json")
+            if shadow_path.exists():
+                _model(shadow_version)
+            else:
+                _write(shadow_path, shadow)
             # Immutable model first, dataset next, atomic active pointer last.
             # A retry repairs an interrupted publish, but never undoes rollback.
             _write(_path("dataset.json"), {"schema": _SCHEMA, "sha256": _digest(rows), "samples": rows})
@@ -377,10 +472,13 @@ def observe(query: str, evidence: dict, run_id: str, context: dict | None = None
                 state["previous"], state["active"] = state.get("active"), version
                 state["approved_versions"] = [*state.get("approved_versions", []), version]
             state.update({"candidate": version, "dataset_sha256": _digest(rows), "evaluation": evaluation,
-                          "sample_count": len(rows), "last_action": "observe"})
+                          "sample_count": len(rows), "last_action": "observe",
+                          "shadow_candidate": shadow_version, "shadow_evaluation": shadow_evaluation,
+                          "outcome_counts": dict(Counter(row.get("outcome", "verified_success") for row in _unique(rows)))})
             _write(_path("active.json"), state)
             return {"ok": True, "status": "learned" if evaluation["promote"] else "recorded", "sample_id": sample["id"],
-                    "model_version": state.get("active"), "candidate_version": version, "evaluation": evaluation}
+                    "model_version": state.get("active"), "candidate_version": version, "evaluation": evaluation,
+                    "shadow_candidate_version": shadow_version, "shadow_evaluation": shadow_evaluation}
     except _Busy:
         return {"ok": False, "status": "busy", "model_version": None, "reason": "advisor_store_locked"}
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -409,7 +507,12 @@ def advise(query: str, catalog: list[dict], identities: dict[str, dict], context
         best = ranked[0][1]
         recommendations = [{**model["classes"][key]["binding"], "score": round(score - best, 6),
                             "support": model["classes"][key]["support"]} for key, score in ranked[:3]]
+        shadow = _model(state["shadow_candidate"]) if state.get("shadow_candidate") else None
+        shadow_ranked = _rank(shadow, features(query, context), eligible) if shadow else []
+        shadow_recommendations = [{**shadow["classes"][key]["binding"], "score": round(score - shadow_ranked[0][1], 6)}
+                                  for key, score in shadow_ranked[:3]]
         return {"ok": True, "status": "ready", "model_version": state["active"], "recommendations": recommendations,
+                "shadow": {"model_version": state.get("shadow_candidate"), "recommendations": shadow_recommendations},
                 "reason": "learned_relative_ranking", "score_kind": "relative_log_likelihood_not_probability"}
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         return _unavailable("advise", exc)
@@ -432,6 +535,7 @@ def rollback(version: str) -> dict:
         with _locked():
             _model(version)
             state = _state()
+            _require(_model(version).get("mode") != "shadow", "A shadow ranking cannot be activated by rollback")
             _require(version in state.get("approved_versions", []), "Only an evaluated, previously active model can be restored")
             if state.get("active") != version:
                 state["previous"], state["active"] = state.get("active"), version

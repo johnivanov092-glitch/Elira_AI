@@ -188,15 +188,13 @@ class CleanupIntentTest(unittest.TestCase):
                  ok=False, evidence="C:\\lab\\tmp.txt: не найден")
         self.assertEqual(t.items[0]["status"], "confirmed")
 
-    def test_passive_exists_present_does_not_fail_cleanup(self):
-        # A PASSIVE ssh_exists that sees the file (e.g. a pre-cleanup check) must not
-        # FAIL a "removed" criterion — it stays unconfirmed (lifecycle-safe).
+    def test_current_cleanup_condition_fails_while_file_is_present(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
             "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
         ]))
         t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
                  ok=True, evidence="C:\\lab\\tmp.txt: существует (файл)")
-        self.assertEqual(t.items[0]["status"], "unconfirmed")
+        self.assertEqual(t.items[0]["status"], "failed")
 
     def test_explicit_not_exists_still_present_fails_cleanup(self):
         # An EXPLICIT ssh_not_exists assertion that finds the file still there IS a
@@ -220,7 +218,7 @@ class CleanupIntentTest(unittest.TestCase):
         # FIX #2: setup-exists confirmed during setup, then a post-cleanup absence
         # check must NOT flip it to failed.
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "файл `C:\\lab\\tmp.txt` существует",           # setup criterion
+            "файл `C:\\lab\\tmp.txt` создан при setup",   # historical criterion
         ]))
         t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
                  ok=True, evidence="существует")            # setup: confirmed
@@ -229,7 +227,7 @@ class CleanupIntentTest(unittest.TestCase):
                  ok=True, evidence="отсутствует")           # post-cleanup: absent
         self.assertEqual(t.items[0]["status"], "confirmed")  # NOT failed
         # and even an unconfirmed setup-exists is only neutral on a later absence
-        t2 = CriteriaTracker.from_spec(TaskSpec(success_criteria=["файл `C:\\lab\\tmp.txt` существует"]))
+        t2 = CriteriaTracker.from_spec(TaskSpec(success_criteria=["файл `C:\\lab\\tmp.txt` создан при setup"]))
         t2.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
                   ok=False, evidence="не найден")
         self.assertEqual(t2.items[0]["status"], "unconfirmed")  # neutral, not failed

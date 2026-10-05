@@ -238,8 +238,8 @@ def recover_tool_calls(content: str, tool_calls: list[dict[str, Any]],
 
 def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
                       cancel_event: threading.Event, upstream_cancel_handle: LLMStreamCancelHandle,
-                      step: int):
-    """Relay one draft/reasoning exchange and return its final provider payload."""
+                      step: int, emit_content_deltas: bool = True):
+    """Relay one exchange; content visibility never changes its final payload."""
     response: dict[str, Any] = {}
     pending_delta = ""
     suppress_deltas = False
@@ -266,7 +266,7 @@ def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
             if rtext:
                 yield {"type": "reasoning_delta", "step": step, "text": rtext}
             continue
-        if llm_event["type"] != "delta":
+        if llm_event["type"] != "delta" or not emit_content_deltas:
             continue
         pending_delta += str(llm_event["value"] or "")
         marker_text = pending_delta.lower()
@@ -279,6 +279,6 @@ def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
             if visible:
                 yield {"type": "delta", "step": step, "text": visible, "answer_state": "draft"}
     response_content = str(((response.get("message") or {}).get("content") or ""))
-    if not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
+    if emit_content_deltas and not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
         yield {"type": "delta", "step": step, "text": pending_delta, "answer_state": "draft"}
     return response

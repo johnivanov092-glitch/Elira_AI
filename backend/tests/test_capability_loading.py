@@ -299,16 +299,20 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
         ))
 
     assert len(model_contexts) >= 4
+    pid_messages = [message for message in model_contexts[1]
+                    if message.get("role") == "tool" and message.get("name") == "ssh_run_ps"]
+    assert len(pid_messages) == 1
+    pid_content = pid_messages[0]["content"]
     assert (
         "run_server(action='logs', kind='job', pid=4242)"
-        in model_contexts[1][-1]["content"]
+        in pid_content
     )
-    assert '"backgrounded": true' in model_contexts[1][-1]["content"]
-    assert '"remote_pid": 7312' in model_contexts[1][-1]["content"]
-    assert '"remote_cleanup_supported": true' in model_contexts[1][-1]["content"]
+    assert '"backgrounded": true' in pid_content
+    assert '"remote_pid": 7312' in pid_content
+    assert '"remote_cleanup_supported": true' in pid_content
     assert (
         '"remote_process_identity_captured": true'
-        in model_contexts[1][-1]["content"]
+        in pid_content
     )
     assert "Задачу нельзя завершать" in model_contexts[2][-1]["content"]
     assert "SSH job completed successfully" in model_contexts[3][-1]["content"]
