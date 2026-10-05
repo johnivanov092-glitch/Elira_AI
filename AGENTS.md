@@ -45,6 +45,13 @@ npm --prefix frontend run typecheck
 npm --prefix frontend run build
 backend\.venv\Scripts\python.exe -m pytest -q
 ```
+Full `pytest -q` is the LAST step (John, 2026-10-05): run it only when the work
+has no open questions — everything works, no problems, nothing waits on John's
+decision. While questions remain, run only the tests of the touched area
+(`atlas_tests`, or the specific test files) — no full-suite runs.
+Green tests do not prove the problem is solved: prove it on the real task
+(sandbox/golden run, live result) instead of re-running tests again and again.
+
 Commit/push only when asked; create named branches so work is visible.
 
 ## Agent skills

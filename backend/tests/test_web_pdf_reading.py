@@ -100,7 +100,8 @@ def test_pdf_anchor_aliases_recover_in_real_coordinator_without_repeated_downloa
             "arguments": {"url": f"https://example.org/paper.pdf#page={len(turns)}"}}}]}}
     events = list(stream_code_agent(user_message="Найди первичную публикацию и объясни результат.", project_root=tmp_path,
         chat_fn=chat, permission_mode="bypass", auto_remember=False, num_ctx=65536, base_tools=["web_fetch"]))
-    assert events[-1]["stop_reason"] == "blocked" and events[-1]["resumable"]
+    # A web question answers from what was read instead of a «Задача не завершена» dead end.
+    assert events[-1]["stop_reason"] == "answer"
     download.assert_called_once()
     state = RunJournal.load(events[-1]["run_id"]).state
     assert state["command_progress"]["whole_documents"] == ["https://example.org/paper.pdf"]

@@ -43,7 +43,8 @@ def test_read_context_cues_next_main_answer_without_an_extra_turn(tmp_path, monk
         assert any(message.get("role") == "user" and
                    "When was the observation registered?" in message.get("content", "")
                    for message in kwargs["messages"][:-1])
-        assert "[[source:" in cue and BODY not in cue
+        assert f"Прочитаны страницы: {URL}." in cue and "[[source:w_" not in cue and BODY not in cue
+        assert "Markdown-ссылки [Название](url)" in cue
         assert "итоговый ответ" in cue and "Промежуточная сводка не требуется" in cue
         assert cue.count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
         assert "условия применимости" in cue and "неопределённость и логическую связь" in cue
@@ -77,7 +78,7 @@ def test_closing_cue_keeps_another_source_available_and_does_not_accumulate(tmp_
         assert any(tool["function"]["name"] == "web_fetch" for tool in kwargs["tools"])
         if len(main) == 2:
             return {"message": {"tool_calls": [_call("web_fetch", {"url": OTHER}, "second")]}}
-        assert cue.count("[[source:") == 2
+        assert URL in cue and OTHER in cue and "[[source:w_" not in cue
         assert sum(message.get("role") == "tool" for message in kwargs["messages"]) == 2
         return {"message": {"content": "Registered on 14 September 2015; two detectors were named."}}
     events = list(stream_code_agent(user_message="Find the observation date and the detector count.",
@@ -140,19 +141,21 @@ def test_cue_requires_actual_verified_text_and_waits_for_all_tool_results(tmp_pa
     result = {"role": "tool", "content": format_source(source)}
     handles = evidence.read_source_handles([result])
     assert handles == (source["id"],)
+    pages = evidence.read_source_pages([result])
+    assert pages == (URL,)
     messages = [{"role": "system", "content": "System"},
                 {"role": "assistant", "content": "", "tool_calls": [
                     _call("web_fetch", {"url": URL}, "first"), _call("web_fetch", {"url": OTHER}, "second")]},
                 result]
     context = TurnContext(messages=messages, raw_user_message="Find the date.",
                           root=tmp_path, working_dir=None, run_id="closing")
-    assert context.refresh_web_closing_context(messages, source_handles=handles) == messages
+    assert context.refresh_web_closing_context(messages, read_pages=pages) == messages
     messages.append({"role": "tool", "content": "Other result"})
-    first = context.refresh_web_closing_context(messages, source_handles=handles)
-    second = context.refresh_web_closing_context(first, source_handles=handles)
+    first = context.refresh_web_closing_context(messages, read_pages=pages)
+    second = context.refresh_web_closing_context(first, read_pages=pages)
     assert first == second and len(second) == len(messages) + 1
     assert _cue(second)
-    assert context.refresh_web_closing_context(second, source_handles=()) == messages
+    assert context.refresh_web_closing_context(second, read_pages=()) == messages
 
 
 def test_prepare_rebuilds_closing_handles_after_packed_source_restoration(tmp_path):
@@ -172,9 +175,9 @@ def test_prepare_rebuilds_closing_handles_after_packed_source_restoration(tmp_pa
                             "_msg_id": "web-source-context"}]
     context.prepare(prepare_fn=prepare, num_ctx=65536, model="test", chat_fn=None,
         context_profile={"reserved_output_tokens": 2048}, tool_schemas=[], cancel_handle=None, audit_sink=None,
-        restore_source_context=restore, web_closing_sources=evidence.read_source_handles)
+        restore_source_context=restore, web_closing_sources=evidence.read_source_pages)
     cue = _cue(context.messages)
-    assert sources[1]["id"] in cue and sources[0]["id"] not in cue
+    assert OTHER in cue and URL not in cue
 
 
 def test_soft_closing_cue_is_omitted_without_displacing_source_context(tmp_path):
@@ -191,6 +194,6 @@ def test_soft_closing_cue_is_omitted_without_displacing_source_context(tmp_path)
         context_profile={"reserved_output_tokens": 2048, "safe_input_budget": 1},
         tool_schemas=[], cancel_handle=None, audit_sink=None,
         restore_source_context=lambda packed, **kwargs: packed,
-        web_closing_sources=evidence.read_source_handles)
+        web_closing_sources=evidence.read_source_pages)
     assert context.messages == messages
     assert evidence.read_source_handles(context.messages) == (source["id"],)

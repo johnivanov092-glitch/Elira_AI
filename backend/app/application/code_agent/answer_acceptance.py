@@ -273,7 +273,6 @@ class AnswerAcceptance:
             if read_urls:
                 final_text += "\n\nПрочитанные источники:\n" + "\n".join(
                     f"- [Источник]({url})" for url in read_urls)
-        final_text = run_evidence.answer_with_search_warnings(final_text)
         answer_verification = task_outcome.verify_answer(
             final_text, run_evidence, code_input_epoch, persistence_policy=persistence_policy,
             user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))
@@ -481,7 +480,6 @@ class AnswerAcceptance:
         elif outcome_pending:
             final_text = ((final_text.rstrip() + "\n\n" if preserve_partial else "")
                           + "Полное выполнение задачи не подтверждено. " + outcome_pending)
-        final_text = run_evidence.answer_with_search_warnings(final_text)
         # Receipts attest to the delivered bytes, not an earlier candidate that
         # was replaced by a safety fallback or extended with missing coverage.
         task_outcome.verify_answer(final_text, run_evidence, code_input_epoch,

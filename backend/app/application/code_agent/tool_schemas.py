@@ -749,8 +749,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "queries": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "maxItems": 10,
-                            "description": "Several queries in one call (up to 10; at most 5 requests concurrently). Long batches return a fair summary within 12000 characters, with omitted counts; full source metadata is retained.",
+                            "maxItems": 5,
+                            "description": "Several queries in one call (up to 5, run concurrently). Long batches return a fair summary within 12000 characters, with omitted counts; full source metadata is retained.",
                         },
                         "top_k": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5,
                                   "description": "Max results per query (default 5, max 10). Read complete pages via web_fetch(store=true) and web_query."},
@@ -791,8 +791,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "maxItems": 10,
-                            "description": "Several http(s) URLs in one call (up to 10; at most 5 concurrent fetches). store=true ingests sequentially. Batch text shares a 12000-character budget; use store=true then web_query for full pages.",
+                            "maxItems": 5,
+                            "description": "Several http(s) URLs in one call (up to 5, fetched concurrently). store=true ingests sequentially. Batch text shares a 12000-character budget; use store=true then web_query for full pages.",
                         },
                         "max_chars": {"type": "integer", "minimum": 500, "maximum": 50000, "default": 8000,
                                       "description": "Extract up to this many chars per page (default 8000, max 50000); model-facing excerpts share the 12000-character response budget."},

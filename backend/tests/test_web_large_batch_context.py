@@ -16,8 +16,8 @@ from app.application.web_evidence.receipts import valid_source
 from app.infrastructure.search.web_runtime import PageFetchResult
 
 
-QUERIES = [f"documentation-query-{index}" for index in range(10)]
-URLS = [f"https://example.org/documentation/{index}" for index in range(10)]
+QUERIES = [f"documentation-query-{index}" for index in range(5)]
+URLS = [f"https://example.org/documentation/{index}" for index in range(5)]
 
 
 def test_native_thirty_by_thirty_retains_every_current_query_receipt():
@@ -36,11 +36,11 @@ def test_native_thirty_by_thirty_retains_every_current_query_receipt():
         tool_name="web_search", arguments={"queries": QUERIES, "top_k": 10},
         execution_status="ok", output=result, text_result=result["text"], state_changed=False,
     )
-    assert len(result["sources"]) == len(evidence.sources) == 100
+    assert len(result["sources"]) == len(evidence.sources) == 50
     assert all(valid_source(source) for source in evidence.sources)
     retained = {source["id"]: source for source in evidence.sources}
     binding = evidence.web_operations[0]["query_source_ids"]
-    for query in (QUERIES[0], QUERIES[5], QUERIES[-1]):
+    for query in (QUERIES[0], QUERIES[2], QUERIES[-1]):
         assert len(binding[query]) == 10
         for rank in (0, 5, 9):
             url = f"https://example.org/{query}/{rank}"
@@ -58,9 +58,9 @@ def test_native_thirty_by_thirty_retains_every_current_query_receipt():
     )
     evidence.mark_sources_presented([{"role": "tool", "name": "web_fetch", "content": read["text"]}])
     retained = {source["id"]: source for source in evidence.sources}
-    assert len(retained) == 100 + len(read["sources"]) <= 1024
-    assert {URLS[0], URLS[5], URLS[-1]} <= {source["url"] for source in evidence.presented_sources}
-    for query in (QUERIES[0], QUERIES[5], QUERIES[-1]):
+    assert len(retained) == 50 + len(read["sources"]) <= 1024
+    assert {URLS[0], URLS[2], URLS[-1]} <= {source["url"] for source in evidence.presented_sources}
+    for query in (QUERIES[0], QUERIES[2], QUERIES[-1]):
         assert all(source_id in retained for source_id in binding[query])
 
 
@@ -115,7 +115,7 @@ def test_native_thirty_pages_reach_next_canonical_model_turn(tmp_path):
         assert url in content
     assert len(outputs) == 1
     output = outputs[0]
-    assert len(output["pages"]) == 10
+    assert len(output["pages"]) == 5
     assert all(page["truncated"] is True for page in output["pages"])
     assert all(page["available_fragments"] == ["configuration", "security"] for page in output["pages"])
     receipts = output["sources"]
@@ -167,7 +167,7 @@ def test_native_large_batch_is_packed_for_small_window_before_model_call(tmp_pat
     shown = [source for source in outputs[0]["sources"] if f"[[source:{source['id']}]]" in text]
     assert shown
     assert all(source["quote"] in text for source in shown)
-    assert {URLS[0], URLS[5], URLS[-1]} <= {source["url"] for source in shown}
+    assert {URLS[0], URLS[2], URLS[-1]} <= {source["url"] for source in shown}
     # Within the 12000-character per-call budget the batch already fits 32K without
     # packing; packing is covered by the 8K-window tests below.
     prepared = [event["context"] for event in events if event.get("type") == "context_prepared"]
@@ -217,7 +217,7 @@ def test_eight_k_window_packs_native_receipts_when_fixed_prefix_fits():
     assert compacted
     assert usage["current_tokens"] <= profile["safe_input_budget"]
     assert usage["percent"] < profile["compaction_thresholds"]["critical"]["percent"]
-    assert {URLS[0], URLS[5], URLS[-1]} <= {source["url"] for source in evidence.presented_sources}
+    assert {URLS[0], URLS[2], URLS[-1]} <= {source["url"] for source in evidence.presented_sources}
     text = "\n".join(str(message.get("content") or "") for message in packed)
     shown = [source for source in output["sources"] if f"[[source:{source['id']}]]" in text]
     assert shown and all(source["quote"] in text for source in shown)

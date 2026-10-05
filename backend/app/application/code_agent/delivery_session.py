@@ -288,7 +288,6 @@ def build_continuation_kwargs(
         "auto_remember": bool(req.get("auto_remember", True)),
         "chat_fn": chat_fn,
         "chat_stream_fn": chat_stream_fn,
-        "source_first_answers": req.get("source_first_answers"),
         "resume": True,
         "profile_name": str(req.get("profile_name") or "Инженерный"),
         "permission_mode": str(req.get("permission_mode") or "ask"),

@@ -1,7 +1,7 @@
 """Deterministic checks for narrowly stated answer-format requirements.
 
 This is not a factual judge. Quote limits are read only from the user's request;
-citation coverage and source-first rendering retain provenance-only meaning.
+citation coverage retains provenance-only meaning.
 Unrecognised/ambiguous wording establishes no inferred semantic contract.
 """
 from __future__ import annotations
@@ -9,206 +9,9 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-import json
 import re
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urldefrag
-
-from app.application.web_evidence.receipts import valid_source
-
-
-_LITERAL_RENDER_UNSAFE = re.compile(r"```|</?think>")
-_SOURCE_PARAGRAPH_BREAK = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
-_SOURCE_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
-
-
-@dataclass(frozen=True)
-class SourceFirstAnswer:
-    """Quote membership only; neither entailment nor translation is certified."""
-
-    status: Literal["ready", "degraded", "need_more", "invalid"]
-    text: str
-    issues: tuple[str, ...]
-    needs_more_reading: bool
-
-
-def source_first_response_format(source_ids: Collection[str]) -> dict[str, Any]:
-    """Constrain the ordinary writing turn's format and current source handles."""
-    if not source_ids or any(not isinstance(identifier, str) or re.fullmatch(
-            r"[a-zA-Z0-9_-]{1,80}", identifier) is None for identifier in source_ids):
-        raise ValueError("source-first writing requires valid presented source IDs")
-    identifiers = sorted(set(source_ids))
-    return {"type": "json_schema", "json_schema": {
-        "name": "read_source_answer", "strict": True,
-        "schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "facts": {"type": "array", "items": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": {
-                        "source_id": {"type": "string", "enum": identifiers},
-                        "quote": {"type": "string"},
-                        "translation": {"type": "string"},
-                    },
-                    "required": ["source_id", "quote", "translation"],
-                }},
-                "needs_more_reading": {"type": "boolean"},
-            },
-            "required": ["facts", "needs_more_reading"],
-        },
-    }}
-
-
-def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate_json_key")
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(value: str) -> Any:
-    raise ValueError("nonfinite_json_value")
-
-
-def _source_quote_span(quote: str, excerpt: str) -> tuple[str, str] | None:
-    """Retain complete source lines, or paragraph/sentence context for fragments."""
-    words = quote.split()
-    if not words:
-        return None
-    match = re.search(r"\s+".join(re.escape(word) for word in words), excerpt)
-    if match is None:
-        return None
-    line_start = excerpt.rfind("\n", 0, match.start()) + 1
-    line_end = excerpt.find("\n", match.end())
-    if line_end < 0:
-        line_end = len(excerpt)
-    begins_line = not excerpt[line_start:match.start()].strip()
-    if begins_line and not excerpt[match.end():line_end].strip():
-        # Complete literal lines may be headlines, dates or reference blocks;
-        # their lack of sentence punctuation must not pull in the entire feed.
-        return match.group(), match.group()
-    start, end = 0, len(excerpt)
-    if _SOURCE_PARAGRAPH_BREAK.search(excerpt):
-        for boundary in _SOURCE_PARAGRAPH_BREAK.finditer(excerpt):
-            if boundary.end() <= match.start():
-                start = boundary.end()
-            elif boundary.start() >= match.end():
-                end = boundary.start()
-                break
-    else:
-        if begins_line:
-            start = match.start()
-        # A single newline may wrap a condition within the same sentence.
-        # Decimal points do not match because the next character is a digit.
-        for boundary in _SOURCE_SENTENCE_END.finditer(excerpt):
-            if boundary.end() <= match.start():
-                start = max(start, boundary.end())
-            elif boundary.end() >= match.end():
-                end = boundary.end()
-                break
-    return match.group(), excerpt[start:end].strip()
-
-
-def parse_source_first_answer(
-    raw: str, *, presented_sources: Collection[Mapping[str, Any]],
-    quote_word_limit: int | None = None,
-) -> SourceFirstAnswer:
-    """Parse an ordinary writer's quote selection against its current excerpts.
-
-    The caller supplies only sources presented in the latest model context.
-    Invalid JSON/schema rejects the envelope; an unavailable quote drops only
-    that fact. Complete source-line blocks stay literal. Other selections expand
-    to their read paragraphs, or complete sentences when extraction has no
-    blank-line structure; a source-line start bounds preceding metadata. These
-    structural units retain local text without certifying semantic support.
-    Explicit word limits apply before
-    literal rendering; an overlong span is omitted, never clipped.
-    Expanded selections discard their model-authored translations.
-    Non-Latin/mixed quotes keep only the original; optional Latin-text
-    translations remain visible beside the original and are not authenticated.
-    """
-    if quote_word_limit is not None and (type(quote_word_limit) is not int or quote_word_limit < 1):
-        raise ValueError("quote_word_limit must be a positive integer or None")
-    try:
-        if not isinstance(raw, str):
-            raise ValueError("invalid_json_type")
-        payload = json.loads(raw, object_pairs_hook=_unique_json_object,
-                             parse_constant=_reject_json_constant)
-    except (ValueError, TypeError, RecursionError) as error:
-        issue = str(error) if str(error) in {
-            "duplicate_json_key", "nonfinite_json_value", "invalid_json_type",
-        } else "invalid_json"
-        return SourceFirstAnswer("invalid", "", (issue,), False)
-    if (not isinstance(payload, dict) or set(payload) != {"facts", "needs_more_reading"}
-            or not isinstance(payload["facts"], list)
-            or type(payload["needs_more_reading"]) is not bool):
-        return SourceFirstAnswer("invalid", "", ("invalid_answer_schema",), False)
-    facts = payload["facts"]
-    for index, fact in enumerate(facts, 1):
-        if (not isinstance(fact, dict) or set(fact) != {"source_id", "quote", "translation"}
-                or not all(isinstance(value, str) for value in fact.values())
-                or re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", fact["source_id"]) is None):
-            return SourceFirstAnswer("invalid", "", (f"fact:{index}:invalid_schema",), False)
-
-    sources = {
-        source["id"]: source for source in presented_sources
-        if isinstance(source, Mapping) and valid_source(dict(source))
-        and source.get("status") == "excerpt" and source.get("quote_verified") is True
-    }
-    blocks: list[str] = []
-    issues: list[str] = []
-    seen: set[tuple[str, str]] = set()
-    for index, fact in enumerate(facts, 1):
-        source_id = fact["source_id"]
-        source = sources.get(source_id)
-        selection = _source_quote_span(fact["quote"], source["quote"]) if source else None
-        if selection is None:
-            issues.append(f"fact:{index}:quote_not_in_presented_source")
-            continue
-        selected, span = selection
-        expanded = span != selected
-        if expanded:
-            issues.append(f"fact:{index}:quote_expanded")
-        if _LITERAL_RENDER_UNSAFE.search(span):
-            # The UI strips think tags even across fenced blocks; reject either
-            # tag so another fact cannot complete a pair around literal text.
-            issues.append(f"fact:{index}:unrenderable_quote")
-            continue
-        if quote_word_limit is not None and _quote_word_count(span) > quote_word_limit:
-            issues.append(f"fact:{index}:quote_word_limit_exceeded")
-            continue
-        identity = (source_id, span)
-        if identity in seen:
-            issues.append(f"fact:{index}:duplicate_quote")
-            continue
-        seen.add(identity)
-        translation = fact["translation"].strip()
-        quote = f"```text\n{span}\n```\n\n[[source:{source_id}]]"
-        if translation:
-            # Script is used only to suppress rewriting non-Latin source text;
-            # it cannot establish that a source is English or a translation faithful.
-            latin_only = all(not char.isalpha() or char.isascii() for char in span)
-            if expanded:
-                issues.append(f"fact:{index}:translation_ignored_after_expansion")
-            elif not latin_only or not any(char.isalpha() for char in span):
-                issues.append(f"fact:{index}:translation_ignored")
-            elif _LITERAL_RENDER_UNSAFE.search(translation):
-                issues.append(f"fact:{index}:unrenderable_translation")
-            elif quote_word_limit is not None and _quote_word_count(translation) > quote_word_limit:
-                issues.append(f"fact:{index}:translation_quote_word_limit_exceeded")
-            else:
-                quote = f"Перевод цитаты:\n\n```text\n{translation}\n```\n\nОригинал:\n\n{quote}"
-        blocks.append(quote)
-
-    needs_more = payload["needs_more_reading"]
-    if not blocks:
-        return SourceFirstAnswer("need_more" if needs_more else "invalid", "",
-                                 tuple(issues or ["no_supported_facts"]), needs_more)
-    status = "degraded" if issues or needs_more else "ready"
-    return SourceFirstAnswer(status, "Из прочитанных источников:\n\n" + "\n\n".join(blocks),
-                             tuple(issues), needs_more)
 
 
 _FENCED_CODE = re.compile(r"```[^\n]*\n.*?(?:```|\Z)|~~~[^\n]*\n.*?(?:~~~|\Z)", re.DOTALL)
@@ -307,6 +110,43 @@ def explicit_web_check_requested(request: str) -> bool:
                      r"официальн\w+\s+документаци\w*|web|online|internet|official\s+documentation)\b", clause, re.I):
             return True
     return False
+
+
+WEB_SITE_LIMIT = 5
+WEB_SITE_LIMIT_DEEP = 10
+WEB_SITE_CHECKPOINT = 2
+_DEEP_ANALYSIS = re.compile(
+    r"\b(?:(?:глубок|подробн|детальн|развёрнут|развернут|тщательн|всесторонн)\w*\s+"
+    r"(?:анализ|исследован|разбор|обзор|сравнени|изучени|поиск)\w*|"
+    r"исследуй\w*|deep\s+(?:research|analysis|dive)|in-depth|"
+    r"thorough\w*\s+(?:research|analysis|review|comparison))",
+    re.IGNORECASE,
+)
+_SITE_COUNT = re.compile(
+    r"\b(\d{1,2})\s+(?:сайт\w*|источник\w*|страниц\w*|sites?|sources?|pages?)\b", re.IGNORECASE)
+_NOT_NEEDED = re.compile(
+    r"\b(?:не\s+(?:нуж\w*|надо|требуется|делай|проводи)|без\s+(?:глубок|подробн|детальн|развёрнут|развернут)\w*|"
+    r"don't|do\s+not|no\s+need|without)\b",
+    re.IGNORECASE,
+)
+
+
+def explicit_web_site_limit(request: str) -> int:
+    """Pages a web question may read: 5, up to 10 only by the user's explicit request.
+
+    John's rule (2026-10-05): 2 sites → enough? answer : read more, at most 5;
+    deeper analysis only when the user directly asks for it or names a count.
+    """
+    prose = _PAIRED_QUOTE.sub("", _BLOCK.sub("", _INLINE_CODE.sub("", _FENCED_CODE.sub("", request or ""))))
+    limit = WEB_SITE_LIMIT
+    for clause in re.split(r"[.!?;\n]", prose):
+        if _NOT_NEEDED.search(clause):
+            continue
+        if _DEEP_ANALYSIS.search(clause):
+            limit = max(limit, WEB_SITE_LIMIT_DEEP)
+        for match in _SITE_COUNT.finditer(clause):
+            limit = max(limit, min(int(match[1]), WEB_SITE_LIMIT_DEEP))
+    return limit
 
 
 @dataclass(frozen=True)

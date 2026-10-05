@@ -337,7 +337,7 @@ class TurnContext:
         self.guidance_message_ids.add(context_id)
 
     def refresh_web_closing_context(self, messages: list[dict[str, Any]], *,
-                                    source_handles: tuple[str, ...]) -> list[dict[str, Any]]:
+                                    read_pages: tuple[str, ...]) -> list[dict[str, Any]]:
         """One input-side closing cue after complete result groups, never fact prose."""
         messages = [message for message in messages
                     if message.get("_msg_id") != _WEB_CLOSING_CONTEXT_ID]
@@ -347,15 +347,15 @@ class TurnContext:
                 pending += len(message["tool_calls"])
             elif message.get("role") == "tool":
                 pending = max(0, pending - 1)
-        if not source_handles or pending:
+        if not read_pages or pending:
             return messages
         content = (
             "[Следующий шаг: инструкция runtime, не выводи]\n"
-            "Прочитаны в этом контексте: "
-            + ", ".join(f"[[source:{handle}]]" for handle in source_handles) + ".\n"
+            "Прочитаны страницы: " + ", ".join(read_pages) + ".\n"
             "Если исходный вопрос покрыт, дай итоговый ответ. Для файла или действия "
             "продолжай до результата: чтение его не заменяет. Проверяй лишь конкретный "
-            "пробел исходной цели; другие источники доступны. ID означают чтение, не выводы. "
+            "пробел исходной цели; другие источники доступны. Это список прочитанного, не выводы. "
+            "Источники в ответе — Markdown-ссылки [Название](url) на эти страницы (рядом с фактом или строкой «Источники:» в конце), без меток [[source:…]] после фактов. "
             + WEB_SOURCE_FIDELITY_GUIDANCE + " Промежуточная сводка не требуется."
         )
         return [*messages, {"role": "user", "content": content, "_msg_id": _WEB_CLOSING_CONTEXT_ID}]
@@ -432,8 +432,8 @@ class TurnContext:
         )
         # Derive handles from the final packed payload, including any source
         # blocks that were removed after restoration by the request packer.
-        handles = web_closing_sources(self.messages) if web_closing_sources is not None else ()
-        candidate = self.refresh_web_closing_context(self.messages, source_handles=handles)
+        pages = web_closing_sources(self.messages) if web_closing_sources is not None else ()
+        candidate = self.refresh_web_closing_context(self.messages, read_pages=pages)
         if len(candidate) != len(self.messages):
             candidate_usage = get_context_usage(
                 candidate, ctx_size=num_ctx,

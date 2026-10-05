@@ -20,8 +20,11 @@ def test_failed_browser_loop_stops_exact_passive_repetition_without_hiding_inter
         raise TimeoutError("navigation timeout")
     monkeypatch.setattr(_web, "_browser_render", render)
     def chat(**kwargs):
+        if not kwargs["tools"]:
+            assert "[Ответ по прочитанному]" in kwargs["messages"][-1]["content"]
+            return {"message": {"content": "Страница не открылась: истекло время ожидания."}}
         turns.append(1)
-        assert len(turns) <= 8, "Failed passive browser reads must reach resumable recovery"
+        assert len(turns) <= 8, "Failed passive browser reads must reach an answer"
         assert "browser" in {s["function"]["name"] for s in kwargs["tools"]}
         return {"message": {"tool_calls": [{"id": str(len(turns)), "function": {
             "name": "browser", "arguments": {"url": URL},
@@ -30,17 +33,23 @@ def test_failed_browser_loop_stops_exact_passive_repetition_without_hiding_inter
         project_root=tmp_path, chat_fn=chat, permission_mode="bypass", auto_remember=False,
         base_tools=["browser"], num_ctx=65536))
     assert len(reads) == 2
-    assert events[-1]["stop_reason"] == "blocked"
-    assert events[-1]["resumable"] and not events[-1]["ok"]
+    assert events[-1]["stop_reason"] == "answer"
+    assert "Задача не завершена" not in next(
+        event for event in events if event["type"] == "final_response")["text"]
 
 
 @pytest.mark.parametrize("obeys_recovery", [True, False])
 def test_repeated_search_gets_a_final_answer_without_global_step_limit(tmp_path, obeys_recovery):
+    """A web question never ends in «Задача не завершена»: the model answers from what it has."""
     calls = []
 
     def chat(**kwargs):
         calls.append(deepcopy(kwargs["messages"]))
         assert len(calls) <= 9, "An identical search must not loop indefinitely"
+        if not kwargs["tools"]:
+            assert not obeys_recovery and "[Ответ по прочитанному]" in kwargs["messages"][-1]["content"]
+            return {"message": {"content": f"Найдена документация: [Источник]({URL}). "
+                                           "Содержимое страницы пока не проверено."}}
         assert "web_search" in {schema["function"]["name"] for schema in kwargs["tools"]}
         if len(calls) >= 4 and obeys_recovery:
             return {"message": {"content": f"Найдена документация: [Источник]({URL}). Содержимое страницы пока не проверено."}}
@@ -53,11 +62,8 @@ def test_repeated_search_gets_a_final_answer_without_global_step_limit(tmp_path,
             chat_fn=chat, permission_mode="bypass", auto_remember=False, num_ctx=65536))
     assert len(requests) == 1
     final = next(event for event in events if event["type"] == "final_response")
-    assert URL in final["text"]
-    assert events[-1]["stop_reason"] == ("answer" if obeys_recovery else "blocked")
-    if not obeys_recovery:
-        assert final["answer_status"] == "degraded"
-        assert events[-1]["resumable"] and not events[-1]["ok"]
+    assert URL in final["text"] and "Задача не завершена" not in final["text"]
+    assert events[-1]["stop_reason"] == "answer" and events[-1]["ok"]
     assert any(event.get("status") == "strategy_required" for event in events)
     state = RunJournal.load(events[-1]["run_id"]).state
     assert state["command_progress"]["web_repeats"]

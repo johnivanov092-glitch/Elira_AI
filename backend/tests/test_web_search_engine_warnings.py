@@ -102,8 +102,8 @@ def test_page_two_keeps_warning_after_site_filter_and_exact_pagination_params():
                                   "categories": "news", "time_range": "month", "pageno": "2"}
 
 
-def test_ten_queries_ten_results_each_keep_receipts_warnings_and_text_budget():
-    queries = [f"service-advisory-{index}" for index in range(10)]
+def test_five_queries_ten_results_each_keep_receipts_warnings_and_text_budget():
+    queries = [f"service-advisory-{index}" for index in range(5)]
 
     def reply(params):
         return {"results": [{"url": f"https://security.example.org/{params['q']}/{index}",
@@ -114,15 +114,15 @@ def test_ten_queries_ten_results_each_keep_receipts_warnings_and_text_budget():
     with _http(reply=reply) as calls:
         result = tool_web_search(queries=queries, top_k=10, categories="it", time_range="year")
     assert result["ok"] is True and not result.get("partial") and not result.get("query_errors")
-    assert len(calls) == 10 and {call["params"]["q"] for call in calls} == set(queries)
+    assert len(calls) == 5 and {call["params"]["q"] for call in calls} == set(queries)
     assert all(call["params"]["categories"] == "it" and call["params"]["time_range"] == "year"
                and call["timeout"] == 20 for call in calls)
-    assert len(result["sources"]) == 100
-    assert len(result["query_sources"]) == 10
+    assert len(result["sources"]) == 50
+    assert len(result["query_sources"]) == 5
     assert all(len(row["source_ids"]) == 10 for row in result["query_sources"])
     assert result["engine_warnings"] == [{"query": query, **WARNINGS[0]} for query in queries]
     assert len(result["text"]) <= WEB_TOOL_RESULT_LLM_LIMIT and "WARNING:" in result["text"]
-    assert "10 engine failures" in result["text"]
+    assert "5 engine failures" in result["text"]
 
 
 @pytest.mark.parametrize("args", [{"query": "empty"}, {"queries": ["empty", "also empty"]},

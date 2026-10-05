@@ -396,9 +396,9 @@ class BatchWebToolsTest(unittest.TestCase):
             result = tool_web_fetch(urls=["https://x/1", "https://x/2"])
         self.assertIs(result["ok"], False)
 
-    def test_search_batch_accepts_10_caps_11_and_keeps_five_workers(self) -> None:
+    def test_search_batch_accepts_5_caps_6_and_keeps_five_workers(self) -> None:
         import app.application.code_agent.tools._web as w
-        for count, kwargs, expected_limit in ((10, {}, 5), (11, {"top_k": 11}, 10)):
+        for count, kwargs, expected_limit in ((5, {}, 5), (6, {"top_k": 11}, 10)):
             with self.subTest(count=count):
                 queries = [f"q{number}" for number in range(count)]
                 probe = _ConcurrentBatchCall(lambda query, limit, cat, tr: [
@@ -407,19 +407,19 @@ class BatchWebToolsTest(unittest.TestCase):
                 with patch.object(w, "_run_search", side_effect=probe):
                     result = tool_web_search(queries=queries, **kwargs)
                 self.assertIs(result["ok"], True)
-                self.assertEqual({args[0] for args in probe.seen}, set(queries[:10]))
-                self.assertEqual(len(probe.seen), 10)
+                self.assertEqual({args[0] for args in probe.seen}, set(queries[:5]))
+                self.assertEqual(len(probe.seen), 5)
                 self.assertEqual({args[1] for args in probe.seen}, {expected_limit})
                 self.assertEqual(probe.peak, 5)
                 self.assertEqual([source["url"] for source in result["sources"]],
-                                 [f"https://example.org/{query}" for query in queries[:10]])
+                                 [f"https://example.org/{query}" for query in queries[:5]])
 
-    def test_search_overflow_keeps_100_sources_and_fair_whole_results(self) -> None:
+    def test_search_overflow_keeps_50_sources_and_fair_whole_results(self) -> None:
         import app.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
         from app.application.web_evidence.receipts import valid_source
 
-        queries = [f"q{number}" for number in range(10)]
+        queries = [f"q{number}" for number in range(5)]
         def search(query, limit, cat, tr):
             return [{"title": f"{query} result {rank}", "href": f"https://example.org/{query}/{rank}",
                      "body": f"Excerpt {query}/{rank}. " + "Details. " * 60} for rank in range(limit)]
@@ -436,8 +436,8 @@ class BatchWebToolsTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn("https://example.org/q0/9\n", text)
         shown = sum(f"    {url}\n" in text for url in urls)
-        self.assertIn(f"Showing {shown} of 100 results", text)
-        self.assertIn(f"{100 - shown} omitted", text)
+        self.assertIn(f"Showing {shown} of 50 results", text)
+        self.assertIn(f"{50 - shown} omitted", text)
         self.assertIn("web_fetch(store=true)", text)
         self.assertIn("web_query", text)
         for number in range(1, shown + 1):
@@ -457,13 +457,13 @@ class BatchWebToolsTest(unittest.TestCase):
         self.assertIn("Showing 1 of 2 results", result["text"])
         self.assertNotIn("x" * WEB_TOOL_RESULT_LLM_LIMIT, result["text"])
 
-    def test_fetch_batch_accepts_10_caps_11_keeps_workers_and_current_receipts(self) -> None:
+    def test_fetch_batch_accepts_5_caps_6_keeps_workers_and_current_receipts(self) -> None:
         import app.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
         from app.application.code_agent.run_evidence import RunEvidence
         from app.application.web_evidence.receipts import valid_source
 
-        for count, kwargs, expected_limit in ((10, {}, 8000), (11, {"max_chars": 90000}, 50000)):
+        for count, kwargs, expected_limit in ((5, {}, 8000), (6, {"max_chars": 90000}, 50000)):
             with self.subTest(count=count):
                 urls = [f"https://example.org/page-{number}" for number in range(count)]
                 probe = _ConcurrentBatchCall(lambda url, limit: PageFetchResult(
@@ -472,26 +472,26 @@ class BatchWebToolsTest(unittest.TestCase):
                 with patch.object(w, "_fetch_one", side_effect=probe):
                     result = tool_web_fetch(urls=urls, **kwargs)
                 self.assertIs(result["ok"], True)
-                self.assertEqual({args[0] for args in probe.seen}, set(urls[:10]))
-                self.assertEqual(len(probe.seen), 10)
+                self.assertEqual({args[0] for args in probe.seen}, set(urls[:5]))
+                self.assertEqual(len(probe.seen), 5)
                 self.assertEqual({args[1] for args in probe.seen}, {expected_limit})
                 self.assertEqual(probe.peak, 5)
-                self.assertEqual([page["url"] for page in result["pages"]], urls[:10])
+                self.assertEqual([page["url"] for page in result["pages"]], urls[:5])
                 self.assertTrue(all(page["truncated"] for page in result["pages"]))
                 text = result["text"]
                 self.assertLessEqual(len(text), WEB_TOOL_RESULT_LLM_LIMIT)
                 self.assertEqual(_truncate_for_llm(text, WEB_TOOL_RESULT_LLM_LIMIT), text)
-                self.assertEqual({source["url"] for source in result["sources"]}, set(urls[:10]))
+                self.assertEqual({source["url"] for source in result["sources"]}, set(urls[:5]))
                 self.assertTrue(all(valid_source(source) for source in result["sources"]))
                 evidence = RunEvidence(sources=result["sources"])
                 evidence.mark_sources_presented([{"role": "tool", "content": text}])
                 self.assertTrue(all(source["presented"] and source["quote_verified"] for source in evidence.sources))
 
-    def test_store_batch_accepts_10_and_caps_11_without_parallel_ingestion(self) -> None:
+    def test_store_batch_accepts_5_and_caps_6_without_parallel_ingestion(self) -> None:
         import app.application.code_agent.tools._web as w
         from app.application.web_evidence import corpus
         from app.application.web_evidence.receipts import valid_source
-        for count in (10, 11):
+        for count in (5, 6):
             with self.subTest(count=count):
                 urls = [f"https://example.org/page-{number}" for number in range(count)]
                 seen = []
@@ -506,10 +506,10 @@ class BatchWebToolsTest(unittest.TestCase):
                     result = tool_web_fetch(urls=urls, store=True)
                 ordinary_fetch.assert_not_called()
                 self.assertIs(result["ok"], True)
-                self.assertEqual([row[0] for row in seen], urls[:10])
+                self.assertEqual([row[0] for row in seen], urls[:5])
                 self.assertEqual({row[1] for row in seen}, {"store-batch"})
                 self.assertEqual({row[2] for row in seen}, {threading.get_ident()})
-                self.assertEqual([source["url"] for source in result["sources"]], urls[:10])
+                self.assertEqual([source["url"] for source in result["sources"]], urls[:5])
                 self.assertTrue(all(valid_source(source) for source in result["sources"]))
 
 
@@ -555,7 +555,7 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertEqual(params["required"], [])
         self.assertIn("query", params["properties"])
         self.assertEqual(params["properties"]["queries"]["type"], "array")
-        self.assertEqual(params["properties"]["queries"]["maxItems"], 10)
+        self.assertEqual(params["properties"]["queries"]["maxItems"], 5)
         self.assertEqual(params["properties"]["top_k"]["default"], 5)
         self.assertEqual(params["properties"]["top_k"]["maximum"], 10)
 
@@ -565,7 +565,7 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertEqual(params["required"], [])
         self.assertIn("url", params["properties"])
         self.assertEqual(params["properties"]["urls"]["type"], "array")
-        self.assertEqual(params["properties"]["urls"]["maxItems"], 10)
+        self.assertEqual(params["properties"]["urls"]["maxItems"], 5)
         self.assertEqual(params["properties"]["max_chars"]["default"], 8000)
         self.assertEqual(params["properties"]["max_chars"]["maximum"], 50000)
 

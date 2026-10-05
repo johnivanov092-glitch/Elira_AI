@@ -215,19 +215,19 @@ def test_healthy_empty_queries_are_observed_but_do_not_claim_discovery(tmp_path)
 
 
 def test_receipt_registry_bound_does_not_reject_retained_sources_across_batches(tmp_path):
-    # 10 queries x 10 results per call: eleven calls exceed the 1024-source registry.
-    batches = [[f"batch-{batch}-query-{index}" for index in range(10)] for batch in range(11)]
+    # 5 queries x 10 results per call: 21 calls exceed the 1024-source registry.
+    batches = [[f"batch-{batch}-query-{index}" for index in range(5)] for batch in range(21)]
     rows = {query: [f"https://example.org/{query}/{rank}" for rank in range(10)]
             for queries in batches for query in queries}
     results = [_native_batch(rows, queries=queries, top_k=10) for queries in batches]
-    assert all(len(result["sources"]) == 100 for result in results)
+    assert all(len(result["sources"]) == 50 for result in results)
     assert sum(len(result["sources"]) for result in results) > MAX_SOURCES
     evidence = None
     for result, queries in zip(results, batches):
         evidence = _record(result, queries=queries, evidence=evidence)
     assert len(evidence.sources) == MAX_SOURCES
     first_queries, last_queries = batches[0], batches[-1]
-    for query in (last_queries[0], last_queries[5], last_queries[-1]):
+    for query in (last_queries[0], last_queries[2], last_queries[-1]):
         for rank in (0, 5, 9):
             assert _verified(tmp_path, evidence, query, rows[query][rank])
     assert _verified(tmp_path, evidence, first_queries[-1], rows[first_queries[-1]][0])

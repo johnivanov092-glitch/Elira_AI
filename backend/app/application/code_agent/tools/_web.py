@@ -23,7 +23,7 @@ _THIN_TEXT_THRESHOLD = 200
 # Batch web tools: the model can pass multiple queries/urls in ONE call and we
 # fan them out concurrently (I/O-bound → bounded thread pool). Caps keep upstream
 # engines/sites from being hammered.
-_WEB_BATCH_MAX = 10       # max queries / urls accepted per call
+_WEB_BATCH_MAX = 5        # max queries / urls accepted per call (John, 2026-10-05)
 _WEB_BATCH_WORKERS = 5    # max concurrent requests
 _WEB_FIND_SCAN_CHARS = 200000
 _READ_EXCERPT_LABEL = "[excerpt; прочитанные фрагменты; соответствие выводов не проверено.]"
