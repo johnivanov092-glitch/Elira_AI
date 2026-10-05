@@ -481,5 +481,32 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
         self.assertIn("JOB_DONE", result.get("text", ""))
 
 
+
+class GuiVerificationPrivacyTest(unittest.TestCase):
+    """Review defect 9e2205c6a37f: a start without a port captured the whole desktop."""
+
+    def _handle(self):
+        handle = mock.Mock()
+        handle.port = None
+        handle.pid = 4242
+        return handle
+
+    def test_no_foreground_window_of_the_process_means_no_capture(self):
+        with mock.patch.object(_run, "_GUI_VERIFY_SETTLE", 0),              mock.patch.object(_run, "_process_window_rect", return_value=None) as rect,              mock.patch.object(_run, "_native_screenshot") as grab:
+            text = _run._auto_verify_gui(self._handle())
+        rect.assert_called_once_with(4242)
+        grab.assert_not_called()
+        self.assertIn("screen not captured", text)
+
+    def test_only_the_process_window_rectangle_is_captured(self):
+        with mock.patch.object(_run, "_GUI_VERIFY_SETTLE", 0),              mock.patch.object(_run, "_process_window_rect", return_value=(10, 20, 410, 320)),              mock.patch.object(_run, "_native_screenshot", return_value={"ok": False, "error": "x"}) as grab:
+            _run._auto_verify_gui(self._handle())
+        grab.assert_called_once_with((10, 20, 410, 320))
+
+    def test_foreign_foreground_window_is_not_attributed_to_the_process(self):
+        # The current foreground window belongs to some other process (the test runner's console or none).
+        self.assertIsNone(_run._process_window_rect(2 ** 31 - 7))
+
+
 if __name__ == "__main__":
     unittest.main()
