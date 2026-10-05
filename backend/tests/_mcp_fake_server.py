@@ -103,6 +103,9 @@ def main() -> None:
 
         elif method == "tools/call":
             params = req.get("params", {}) or {}
+            if os.environ.get("FAKE_MCP_CALL_DELAY"):
+                # A long editor operation (render/build) that outlives any fixed deadline.
+                time.sleep(float(os.environ["FAKE_MCP_CALL_DELAY"]))
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
             if os.environ.get("FAKE_MCP_CALL_FAIL"):
