@@ -7,7 +7,7 @@ a 25 % markup is a 20 % margin.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal, overload
 
 from app.application.calculation.numbers import money, parse_decimal, plain
 
@@ -23,6 +23,12 @@ class FinanceError(ValueError):
     """Missing or invalid inputs for a finance formula."""
 
 
+@overload
+def _number(params: dict[str, Any], name: str, *, required: Literal[True] = True, default: Any = None,
+            minimum: Decimal | None = None) -> Decimal: ...
+@overload
+def _number(params: dict[str, Any], name: str, *, required: bool, default: Any = None,
+            minimum: Decimal | None = None) -> Decimal | None: ...
 def _number(params: dict[str, Any], name: str, *, required: bool = True, default: Any = None,
             minimum: Decimal | None = None) -> Decimal | None:
     value = params.get(name)
@@ -100,12 +106,12 @@ def _split(params: dict[str, Any], places: int) -> dict[str, Any]:
     if not isinstance(weights, list) or not weights or len(weights) > _MAX_ITEMS:
         raise FinanceError("weights: список долей (например [1, 1, 2])")
     parsed = [_number({"w": w}, "w", minimum=Decimal(0)) for w in weights]
-    total_weight = sum(parsed)
+    total_weight = sum(parsed, Decimal(0))
     if total_weight == 0:
         raise FinanceError("weights: сумма долей больше нуля")
     shares = [money(amount * w / total_weight, places) for w in parsed]
-    remainder = money(amount, places) - sum(shares)
-    shares[max(range(len(shares)), key=lambda index: parsed[index])] += remainder
+    remainder = money(amount, places) - sum(shares, Decimal(0))
+    shares[max(range(len(shares)), key=parsed.__getitem__)] += remainder
     return {"amount": plain(amount), "shares": [_m(share, places) for share in shares],
             "note": "остаток округления отнесён на самую крупную долю" if remainder else ""}
 

@@ -9,6 +9,8 @@ import type { AgentTurnData } from "./types";
 import { deriveArtifacts } from "./artifacts";
 import { getAutoSpeak, speak, stop as stopSpeech } from "./voice";
 import { isAcceptedAnswer } from "./answerLifecycle";
+import { unopenedSources } from "./unopenedSources";
+import { ExternalBrowserLink } from "../components/ExternalLink";
 import { cn } from "../ui/cn";
 
 function splitAnswerIntro(text: string): [string, string] {
@@ -49,6 +51,8 @@ function AnswerWithMedia({ text, media, citations }: { text: string; media: Answ
 // turns on each token (callbacks from useAgentRun are stable useCallbacks).
 export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { turn: AgentTurnData; onResume?: (turnId: string, runId: string) => void }) {
   const idle = turn.running && !turn.text && !turn.reasoning && !turn.brainPhase && turn.toolCalls.length === 0 && !turn.activeTool;
+  // John 2026-10-06: Elira lists pages that did not open; the model no longer has to write it.
+  const unopened = isAcceptedAnswer(turn) && !/Не открылись/i.test(turn.text) ? unopenedSources(turn.sources) : [];
   const downloads = deriveArtifacts([turn]).downloads;
   const [speaking, setSpeaking] = useState(false);
 
@@ -117,6 +121,17 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
               <blockquote className="whitespace-pre-wrap break-words">{citation.source.quote}</blockquote>}
           </div>)}
         </details>
+      )}
+
+      {unopened.length > 0 && (
+        <div className="mt-2 text-[11.5px] text-mut" data-unopened-sources>
+          Не открылись: {unopened.map((page, index) => (
+            <span key={page.url}>{index ? "; " : ""}
+              <ExternalBrowserLink href={page.url} className="underline" title={page.url}>{page.host}</ExternalBrowserLink>
+              {" — "}{page.reason}
+            </span>
+          ))}
+        </div>
       )}
 
       {!turn.text && turn.media && turn.media.length > 0 && <AnswerMediaGallery media={turn.media} />}

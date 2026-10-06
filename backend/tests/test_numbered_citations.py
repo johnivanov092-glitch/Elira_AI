@@ -33,6 +33,19 @@ def test_code_is_never_touched_and_rendering_is_idempotent():
     assert render_numbered_citations("Факт [1].", []) == "Факт [1]."  # nothing read: nothing to render
 
 
+def test_number_stands_at_the_head_of_each_newly_read_page():
+    content = ("Fetched 3 pages in parallel:\n\n[fetched: https://a.kz/news]\nтекст A"
+               "\n\n———\n\n[fetched: https://a.kz/news/1 · отрисовано в браузере (JS)]\nтекст B"
+               "\n\n———\n\n[fetched: https://b.kz/doc#part]\nтекст C")
+    numbered = agent_loop._number_read_pages(
+        content, ("https://old.kz", "https://a.kz/news", "https://a.kz/news/1", "https://b.kz/doc"), 1)
+    assert "[2] [fetched: https://a.kz/news]\nтекст A" in numbered       # a prefix URL does not steal /news/1
+    assert "[3] [fetched: https://a.kz/news/1 · отрисовано" in numbered
+    assert "[4] [fetched: https://b.kz/doc#part]" in numbered
+    assert "[1]" not in numbered                                          # pages read earlier keep their number
+    assert agent_loop._number_read_pages(content, ("https://a.kz/news",), 1) == content  # nothing new
+
+
 def test_read_page_gets_a_number_and_the_answer_gets_the_link(tmp_path, monkeypatch):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr("app.infrastructure.llm.openai_compatible.server_context_window",
@@ -54,5 +67,6 @@ def test_read_page_gets_a_number_and_the_answer_gets_the_link(tmp_path, monkeypa
         base_tools=["web_fetch", "web_search"], permission_mode="bypass", auto_remember=False, chat_fn=chat))
     tool_text = next(m["content"] for m in captures[1] if m.get("role") == "tool")
     assert f"[1] {url}" in tool_text and "адрес сам не пиши" in tool_text
+    assert f"[1] [fetched: {url}]" in tool_text  # the number also heads the page text itself
     final = next(event for event in events if event["type"] == "final_response")
     assert final["text"] == f"Значение — 42 [Отчёт]({url}); ещё."

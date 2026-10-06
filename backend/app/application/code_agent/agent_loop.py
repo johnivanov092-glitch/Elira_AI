@@ -1682,6 +1682,7 @@ def _stream_code_agent_core(
                 if recovery_context:
                     _tool_content += "\n\n" + recovery_context
                 _tool_content += _site_trim_note
+                _tool_content = _number_read_pages(_tool_content, run_evidence.read_site_urls, _sites_before)
                 _tool_content += _read_numbers_note(run_evidence.read_site_urls, _sites_before)
                 _sites_read = len(run_evidence.read_site_urls)
                 if _sites_read > _sites_before and _web_question():
@@ -1783,6 +1784,15 @@ def _web_language_hint(operations: list[dict[str, Any]]) -> str:
 
 
 _AUDIENCE_REJECTION_LIMIT = 2
+
+
+def _number_read_pages(content: str, read_urls: tuple[str, ...], before: int) -> str:
+    """John 2026-10-06: the citation number stands at the head of each newly read page,
+    next to its text, not only in the note after the whole batch."""
+    for number, url in enumerate(read_urls[before:], before + 1):
+        header = re.compile(r"(?m)^\[fetched: " + re.escape(url) + r"(?=[#\]\s])")
+        content = header.sub(lambda match, n=number: f"[{n}] " + match.group(0), content, count=1)
+    return content
 
 
 def _read_numbers_note(read_urls: tuple[str, ...], before: int) -> str:
