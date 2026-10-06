@@ -63,6 +63,10 @@ const ACTIVE_LABELS: Record<string, string> = {
   ssh_run: "Выполняю команду на сервере",
   ssh_list_hosts: "Проверяю доступные серверы",
   resource_publish: "Подготавливаю файл для скачивания",
+  calc: "Считаю",
+  finance_calc: "Считаю смету",
+  unit_convert: "Перевожу единицы",
+  csv: "Считаю по таблице",
 };
 
 function activeLabel(tool: string): string {

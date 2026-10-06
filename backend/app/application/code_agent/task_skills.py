@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.core.config import ROOT_DIR
 from app.core.redaction import redact_text
 
@@ -325,11 +326,26 @@ class SkillContext:
 
 
 def insert_skill_context(messages: list[dict[str, Any]], content: str, message_id: str) -> list[dict[str, Any]]:
-    """Replace one pinned block without splitting a tool call/result sequence."""
-    result = [message for message in messages if message.get("_msg_id") != message_id]
+    """Replace one pinned runtime block in place, or insert it once.
+
+    The provider projection moves runtime blocks into the system message in
+    list order, so an existing block keeps its position: an unchanged block
+    leaves the system prefix (and the provider prompt cache) intact.
+    """
+    existing = next((index for index, message in enumerate(messages)
+                     if message.get("_msg_id") == message_id), None)
+    block = {"role": "user", "content": content, "_msg_id": message_id, RUNTIME_BLOCK_KEY: "pinned"}
+    if existing is not None:
+        result = list(messages)
+        if content:
+            result[existing] = block
+        else:
+            del result[existing]
+        return result
+    result = list(messages)
     if content:
         index = max(1, len(result) - 1)
         while index > 1 and result[index].get("role") == "tool":
             index -= 1
-        result.insert(index, {"role": "user", "content": content, "_msg_id": message_id})
+        result.insert(index, block)
     return result

@@ -38,6 +38,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     }),
     "memory": frozenset({"recall", "remember"}),
     "operations": frozenset({"reconcile_server_facts", "webhook"}),
+    "math": frozenset({"calc", "unit_convert", "finance_calc"}),
 }
 
 
@@ -50,6 +51,7 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "data": "sandboxed code, regex, CSV, conversion, SQLite, encryption and archives",
     "memory": "project RAG recall; save durable user facts/corrections only on explicit request, never transient chat preferences",
     "operations": "inference-server facts and webhooks",
+    "math": "unit conversion and money formulas (invoices/VAT/markup/margin/discounts/loans); calc is always loaded, table sums: csv in data",
 }
 
 
@@ -66,9 +68,9 @@ DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "Личный": frozenset({"memory"}),
     "Баланс": frozenset(),
     "Инженерный": frozenset(),  # project/code tools are already in the core
-    "Деловой": frozenset(),
+    "Деловой": frozenset({"math", "data"}),
     "Инфраструктура": frozenset({"web"}),
-    "Научный": frozenset({"web", "data"}),
+    "Научный": frozenset({"web", "data", "math"}),
     "Медицина": frozenset({"web"}),
 }
 

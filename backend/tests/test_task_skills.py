@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from _runtime_roles import base_system
 from app.application.code_agent import agent_loop, task_skills as skills
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.tools._runtime_control import tool_runtime_control
@@ -125,7 +126,7 @@ def test_real_loop_loads_recovers_deduplicates_and_resumes_only_this_run(tmp_pat
     assert snapshot["name"] == skill_name
     assert snapshot["content"] not in json.dumps(seen[0], ensure_ascii=False)
     assert sum(_encoded_content(snapshot) in message.get("content", "") for message in seen[-1]) == 1
-    assert all(messages[0] == seen[0][0] for messages in seen)
+    assert all(base_system(messages) == base_system(seen[0]) for messages in seen)
     from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
     for messages in seen:
         wire = _normalize_messages_for_request(messages)

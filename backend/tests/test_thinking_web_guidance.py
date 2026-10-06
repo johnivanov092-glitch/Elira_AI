@@ -77,10 +77,8 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
             assert excerpt.strip() in context
             assert browser_url in context
             assert "The rendered fixture shows the input example." in context
-            cue = kwargs["messages"][-1]
-            assert cue["role"] == "user" and cue["_msg_id"] == "web-closing-context"
-            assert cue["content"].count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
-            assert excerpt.strip() not in cue["content"]
+            assert not any(item.get("_msg_id") == "web-closing-context" for item in kwargs["messages"])
+            assert kwargs["messages"][0]["content"].count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
             sources = {source["url"]: source for event in events if event["type"] == "tool_call"
                        for source in event.get("sources", []) if source["status"] == "excerpt"}
             marker = sources[source_url]["id"]
@@ -132,7 +130,8 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
         assert source_url in context
         assert browser_source["quote"] in context
         assert browser_url in context
-        assert WEB_SOURCE_FIDELITY_GUIDANCE in kwargs["messages"][-1]["content"]
+        assert WEB_SOURCE_FIDELITY_GUIDANCE in kwargs["messages"][0]["content"]
+        assert not any(item.get("_msg_id") == "web-closing-context" for item in kwargs["messages"])
         return {"message": {"content": (
             f"Input format remains grounded in the source. [[source:{source['id']}]]\n"
             f"The rendered example is retained. [[source:{browser_source['id']}]]"

@@ -49,6 +49,7 @@ from app.application.code_agent.tools._content import (
     tool_webhook,
 )
 from app.application.code_agent.tools._bom import tool_bom_validate
+from app.application.code_agent.tools._math import tool_calc, tool_finance_calc, tool_unit_convert
 from app.application.code_agent.tools._vision import (
     tool_ocr_file,
     tool_read_image,
@@ -97,6 +98,9 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "translator": lambda **kw: tool_translator(project_root, **kw),
         "regex": lambda **kw: tool_regex(project_root, **kw),
         "csv": lambda **kw: tool_csv(project_root, **kw),
+        "calc": lambda **kw: tool_calc(**kw),
+        "unit_convert": lambda **kw: tool_unit_convert(**kw),
+        "finance_calc": lambda **kw: tool_finance_calc(**kw),
         "bom_validate": lambda **kw: tool_bom_validate(project_root, **kw),
         "converter": lambda **kw: tool_converter(project_root, **kw),
         "http_api": lambda **kw: tool_http_api(project_root, **kw),

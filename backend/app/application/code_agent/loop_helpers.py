@@ -441,20 +441,19 @@ def upsert_task_state_message(
 
     if not block_text.strip():
         return messages
-    out = [
-        message
-        for message in messages
-        if message.get(TASK_STATE_MARKER_KEY) != TASK_STATE_MARKER_VALUE
-    ]
+    block = {
+        "role": "assistant",
+        "content": TASK_STATE_PREFIX + block_text,
+        TASK_STATE_MARKER_KEY: TASK_STATE_MARKER_VALUE,
+    }
+    out = list(messages)
+    # Replace in place so the projected system section keeps a stable order.
+    for index, message in enumerate(out):
+        if message.get(TASK_STATE_MARKER_KEY) == TASK_STATE_MARKER_VALUE:
+            out[index] = block
+            return out
     insert_at = 1 if out and out[0].get("role") == "system" else 0
-    out.insert(
-        insert_at,
-        {
-            "role": "assistant",
-            "content": TASK_STATE_PREFIX + block_text,
-            TASK_STATE_MARKER_KEY: TASK_STATE_MARKER_VALUE,
-        },
-    )
+    out.insert(insert_at, block)
     return out
 
 

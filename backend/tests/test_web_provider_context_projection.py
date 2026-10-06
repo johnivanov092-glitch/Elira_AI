@@ -45,7 +45,7 @@ def _project(context, evidence):
 def test_actual_read_projects_only_older_search_content_without_changing_history(tmp_path):
     context, evidence, source = _setup(tmp_path, _group("web_search", SEARCH, "search"))
     context.messages.extend(_group("web_fetch", format_source(source), "read"))
-    context.messages.append({"role": "user", "content": "Closing cue", "_msg_id": "web-closing-context"})
+    context.messages.append({"role": "user", "content": "Trailing user note"})
     original = deepcopy(context.messages)
     provider = _project(context, evidence)
     assert context.messages == original

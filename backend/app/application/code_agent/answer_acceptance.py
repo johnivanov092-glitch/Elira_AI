@@ -21,6 +21,7 @@ from app.application.code_agent.capabilities import (
 )
 from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
+from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 RetryReason = Literal[
     "background", "local_catalog", "web_catalog", "catalog_source", "evidence",
@@ -47,10 +48,13 @@ class AcceptanceDecision:
     def messages(self) -> tuple[dict[str, str], ...]:
         if self.action != "retry":
             return ()
+        # Runtime corrections are projected into the system section; the
+        # rejected text is quoted there, never left as the model's last reply.
+        correction = {"role": "user", "content": self.correction, RUNTIME_BLOCK_KEY: "answer_correction"}
         if not self.retain_rejected_answer:
-            return ({"role": "user", "content": self.correction},)
-        return ({"role": "assistant", "content": self.text},
-                {"role": "user", "content": self.correction})
+            return (correction,)
+        return ({"role": "assistant", "content": self.text, RUNTIME_BLOCK_KEY: "rejected_answer"},
+                correction)
 
 
 @dataclass

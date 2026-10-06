@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from _runtime_roles import runtime_text
 from app.application.code_agent import skill_advisor, task_skills
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.run_evidence import RunEvidence
@@ -217,7 +218,7 @@ def test_missing_result_feedback_requires_an_explicit_model_repair(tmp_path, mon
     else:
         assert "req-report" in correction and "req-double" not in correction and "req-triple" not in correction
         assert "Не подтверждены обязательные требования" in correction and "проверь" in correction.casefold()
-    assert any(message.get("content") == correction for message in captured[5])
+    assert correction in runtime_text(captured[5])
     assert corrections[0]["task_outcome"]["decision"]["targets"] == declared_targets
     state = RunJournal.load("result-feedback").state
     restored = TaskOutcome(json.loads(json.dumps(state["task_outcome"])))

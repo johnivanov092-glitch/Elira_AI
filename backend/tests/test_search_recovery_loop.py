@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import pytest
 
+from _runtime_roles import runtime_text
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
@@ -21,7 +22,7 @@ def test_failed_browser_loop_stops_exact_passive_repetition_without_hiding_inter
     monkeypatch.setattr(_web, "_browser_render", render)
     def chat(**kwargs):
         if not kwargs["tools"]:
-            assert "[Ответ по прочитанному]" in kwargs["messages"][-1]["content"]
+            assert "[Ответ по прочитанному]" in runtime_text(kwargs["messages"])
             return {"message": {"content": "Страница не открылась: истекло время ожидания."}}
         turns.append(1)
         assert len(turns) <= 8, "Failed passive browser reads must reach an answer"
@@ -47,7 +48,7 @@ def test_repeated_search_gets_a_final_answer_without_global_step_limit(tmp_path,
         calls.append(deepcopy(kwargs["messages"]))
         assert len(calls) <= 9, "An identical search must not loop indefinitely"
         if not kwargs["tools"]:
-            assert not obeys_recovery and "[Ответ по прочитанному]" in kwargs["messages"][-1]["content"]
+            assert not obeys_recovery and "[Ответ по прочитанному]" in runtime_text(kwargs["messages"])
             return {"message": {"content": f"Найдена документация: [Источник]({URL}). "
                                            "Содержимое страницы пока не проверено."}}
         assert "web_search" in {schema["function"]["name"] for schema in kwargs["tools"]}

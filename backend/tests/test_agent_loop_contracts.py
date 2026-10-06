@@ -8,6 +8,7 @@ import threading
 
 import pytest
 
+from _runtime_roles import base_system, runtime_text, user_texts
 from app.api.routes import code_agent_routes
 from app.application.code_agent import agent_loop, delivery_session, model_turn, run_control
 from app.application.code_agent.delivery_session import build_continuation_kwargs
@@ -468,7 +469,8 @@ def test_resume_reuses_persisted_plan_without_another_planner_or_execution_call(
     assert not any(event["type"] == "planning_started" for event in resumed)
     assert any(event.get("applied_thinking_mode") == "plan_reused" for event in resumed)
     assert len(planning_calls) == 1 and len(execution_calls) == 2
-    assert execution_calls[0]["messages"][0] == execution_calls[1]["messages"][0]
+    # The stable persona prompt survives Resume; runtime context may differ.
+    assert base_system(execution_calls[0]["messages"]) == base_system(execution_calls[1]["messages"])
     assert execution_calls[0]["tools"] == execution_calls[1]["tools"]
     for invocation in execution_calls:
         assert invocation["messages"][0]["role"] == "system"
@@ -562,8 +564,9 @@ def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_coun
         active.update(decision.activate_groups)
         owner.commit(decision)
     assert [decision.reason for decision in decisions] == ["evidence", "quote", None]
-    assert decisions[0].messages[1] in calls[1]
-    assert decisions[1].messages[1] in calls[2]
+    assert decisions[0].messages[1]["content"] in runtime_text(calls[1])
+    assert decisions[1].messages[1]["content"] in runtime_text(calls[2])
+    assert not any(decisions[0].correction in text for text in user_texts(calls[1]))
     assert decisions[2].text == final["text"]
     assert decisions[2].answer_status == final["answer_status"]
     assert owner.evidence_answer_correction_sent and owner.quote_correction_sent

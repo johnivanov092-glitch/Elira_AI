@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from _runtime_roles import runtime_text
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.capabilities import (
     is_local_tabular_catalog_probe,
@@ -339,7 +340,7 @@ def test_local_catalog_absence_requires_library_search_before_finalizing(tmp_pat
         ))
 
     assert len(prompts) == 4
-    assert "internal local-catalog correction" in str(prompts[2][-1]["content"])
+    assert "internal local-catalog correction" in runtime_text(prompts[2])
     assert any(
         event.get("type") == "tool_call"
         and event.get("tool") == "runtime_control"
@@ -398,7 +399,7 @@ def test_local_catalog_correction_is_sent_only_once(tmp_path) -> None:
         ))
 
     assert len(prompts) == 3
-    assert "internal local-catalog correction" in str(prompts[2][-1]["content"])
+    assert "internal local-catalog correction" in runtime_text(prompts[2])
     final = next(event for event in events if event.get("type") == "final_response")
     assert final["text"] == "В локальном прайсе нужной позиции нет."
 
@@ -517,7 +518,7 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
             permission_mode="bypass",
         ))
 
-    assert "internal local-catalog correction" in str(prompts[3][-1]["content"])
+    assert "internal local-catalog correction" in runtime_text(prompts[3])
     assert any("internal catalog Web fallback" in str(m.get("content", "")) for m in prompts[5])
     assert any(
         event.get("type") == "runtime_activation_changed"
@@ -578,7 +579,7 @@ def test_download_request_cannot_finish_before_resource_publish(tmp_path) -> Non
         ))
 
     assert len(prompts) == 4
-    assert "internal delivery correction" in str(prompts[2][-1]["content"])
+    assert "internal delivery correction" in runtime_text(prompts[2])
     published = next(
         event for event in events
         if event.get("type") == "tool_call" and event.get("tool") == "resource_publish"

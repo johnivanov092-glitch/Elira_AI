@@ -4,13 +4,13 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterator
 
+from app.application.calculation.numbers import money, parse_decimal
 from app.application.code_agent.tools._sandbox import _resolve_safe
 
-_MONEY = Decimal("0.01")
 _MAX_CATALOG_BYTES = 50 * 1024 * 1024
 _MAX_CATALOG_ROWS = 100_000
 _MAX_CATALOG_COLUMNS = 512
@@ -35,22 +35,11 @@ _SNAPSHOT_FIELDS = (
 
 
 def _money(value: Decimal) -> Decimal:
-    return value.quantize(_MONEY, rounding=ROUND_HALF_UP)
+    return money(value, 2)
 
 
-def _decimal(value: Any) -> Decimal:
-    if isinstance(value, bool) or value is None:
-        raise InvalidOperation
-    if isinstance(value, (int, float, Decimal)):
-        return Decimal(str(value))
-    raw = str(value).strip().replace("\u00a0", "").replace(" ", "")
-    for token in ("₸", "тг", "KZT", "kzt"):
-        raw = raw.replace(token, "")
-    if "," in raw and "." not in raw:
-        raw = raw.replace(",", ".")
-    elif "," in raw and "." in raw:
-        raw = raw.replace(",", "")
-    return Decimal(raw)
+# Shared price-list number parsing (calculation.numbers, math contour 2026-10-06).
+_decimal = parse_decimal
 
 
 def _positive_quantity(value: Any) -> int:

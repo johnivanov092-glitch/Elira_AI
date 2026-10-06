@@ -112,8 +112,10 @@ def explicit_web_check_requested(request: str) -> bool:
     return False
 
 
-WEB_SITE_LIMIT = 5
-WEB_SITE_LIMIT_DEEP = 10
+# John's decision 2026-10-06: a stable 10 sites per question, 20 for an
+# explicitly requested deep analysis (was 5/10 on 2026-10-05).
+WEB_SITE_LIMIT = 10
+WEB_SITE_LIMIT_DEEP = 20
 WEB_SITE_CHECKPOINT = 2
 _DEEP_ANALYSIS = re.compile(
     r"\b(?:(?:глубок|подробн|детальн|развёрнут|развернут|тщательн|всесторонн)\w*\s+"
@@ -132,9 +134,9 @@ _NOT_NEEDED = re.compile(
 
 
 def explicit_web_site_limit(request: str) -> int:
-    """Pages a web question may read: 5, up to 10 only by the user's explicit request.
+    """Pages a web question may read: 10, up to 20 only by the user's explicit request.
 
-    John's rule (2026-10-05): 2 sites → enough? answer : read more, at most 5;
+    John's rule (2026-10-05, limits 2026-10-06): 2 sites → enough? answer : read more, at most 10;
     deeper analysis only when the user directly asks for it or names a count.
     """
     prose = _PAIRED_QUOTE.sub("", _BLOCK.sub("", _INLINE_CODE.sub("", _FENCED_CODE.sub("", request or ""))))

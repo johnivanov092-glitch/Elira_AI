@@ -929,14 +929,110 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "csv",
-                "description": "Analyze a local CSV file and return shape, columns, sample rows, nulls and stats.",
+                "description": (
+                    "Read-only CSV tool. Without filters/aggregate: shape, columns, sample rows, stats. "
+                    "With them: exact decimal filter + count/sum/avg/min/max (+ group_by), e.g. paid "
+                    "orders count and amount sum."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
-                        "query": {"type": "string", "description": "Optional analysis question."},
+                        "filters": {"type": "array", "description": "AND conditions.", "items": {
+                            "type": "object", "properties": {
+                                "column": {"type": "string"},
+                                "op": {"type": "string", "enum": ["==", "!=", ">", ">=", "<", "<=", "contains",
+                                                                  "not_contains", "in", "empty", "not_empty"]},
+                                "value": {}},
+                            "required": ["column", "op"]}},
+                        "group_by": {"type": "array", "items": {"type": "string"}},
+                        "aggregate": {"type": "array", "description": "Default [{fn: count}].", "items": {
+                            "type": "object", "properties": {
+                                "fn": {"type": "string", "enum": ["count", "sum", "avg", "min", "max", "count_distinct"]},
+                                "column": {"type": "string"}},
+                            "required": ["fn"]}},
                     },
                     "required": ["file_path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "unit_convert",
+                "description": (
+                    "Exact unit conversion: length, mass, volume, area, time, data (KB=1000, KiB=1024, "
+                    "bit/byte), data rate, power, energy, frequency, speed, pressure, temperature. "
+                    "RU or EN names (кВт, ГБ, Мбит/с, дюйм, °C)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string", "description": "Number, e.g. '2' or '1 500,5'."},
+                        "from_unit": {"type": "string"},
+                        "to_unit": {"type": "string"},
+                    },
+                    "required": ["value", "from_unit", "to_unit"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "finance_calc",
+                "description": (
+                    "Exact money formulas, rounded half up to `places` (default 2). invoice: items "
+                    "[{name, qty, price}] + markup_percent, discount_percent, vat_percent, "
+                    "prices_include_vat; vat_add/vat_extract: amount, vat_percent; markup: cost, "
+                    "markup_percent; margin: cost, price; price_from_margin: cost, margin_percent; "
+                    "discount: amount, discount_percent; percent_change: old, new; percent_of: part, "
+                    "whole; loan_payment: amount, rate_percent (annual), months; split: amount, weights."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": [
+                            "invoice", "vat_add", "vat_extract", "markup", "margin", "price_from_margin",
+                            "discount", "percent_change", "percent_of", "loan_payment", "split"]},
+                        "items": {"type": "array", "items": {"type": "object", "properties": {
+                            "name": {"type": "string"}, "qty": {"type": "string"}, "price": {"type": "string"}},
+                            "required": ["price"]}},
+                        "amount": {"type": "string"}, "cost": {"type": "string"}, "price": {"type": "string"},
+                        "vat_percent": {"type": "string"}, "markup_percent": {"type": "string"},
+                        "margin_percent": {"type": "string"}, "discount_percent": {"type": "string"},
+                        "prices_include_vat": {"type": "boolean"},
+                        "old": {"type": "string"}, "new": {"type": "string"},
+                        "part": {"type": "string"}, "whole": {"type": "string"},
+                        "rate_percent": {"type": "string"}, "months": {"type": "string"},
+                        "weights": {"type": "array", "items": {"type": "string"}},
+                        "places": {"type": "integer", "minimum": 0, "maximum": 6},
+                    },
+                    "required": ["operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "calc",
+                "description": (
+                    "Exact calculator, no side effects. evaluate: arithmetic with exact decimals and "
+                    "fractions, 16% = 16/100, sqrt/round/min/max/floor/ceil/log/sin...; simplify, "
+                    "expand, factor, solve ('x**2 = 4'; systems separated by ';'), diff, integrate "
+                    "(lower/upper for definite)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "expression": {"type": "string", "description": "e.g. '125000 * 16%' or '2*x + y = 10; x - y = 2'"},
+                        "operation": {"type": "string", "enum": ["evaluate", "simplify", "expand", "factor",
+                                                                 "solve", "diff", "integrate"]},
+                        "variable": {"type": "string", "description": "Comma-separated for solve; default: free symbols."},
+                        "lower": {"type": "string"}, "upper": {"type": "string"},
+                        "order": {"type": "integer", "minimum": 1, "maximum": 10},
+                        "places": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Round result half up."},
+                    },
+                    "required": ["expression"],
                 },
             },
         },

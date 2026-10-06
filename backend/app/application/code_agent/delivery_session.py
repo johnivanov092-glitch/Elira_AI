@@ -39,6 +39,7 @@ from app.application.code_agent.loop_helpers import (
     session_user_inputs,
 )
 from app.application.code_agent.run_journal import RunJournal
+from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.application.code_agent.taskspec import derive_task_spec
 
 logger = logging.getLogger(__name__)
@@ -225,8 +226,8 @@ def build_continuation_kwargs(
     )
     if original_message:
         history.append({"role": "user", "content": original_message})
-    # These are accepted user clarifications, not facts inferred by tools. Keep
-    # them on the user channel when rebuilding a stopped/compacted run.
+    # Accepted user clarifications: the owner's answer stays on the user channel
+    # verbatim; the question Elira asked is runtime context (decision 2026-10-06).
     for workflow_input in state.get("workflow_inputs") or []:
         if not isinstance(workflow_input, dict) or not all(
             isinstance(workflow_input.get(key), str) and workflow_input[key].strip()
@@ -235,11 +236,13 @@ def build_continuation_kwargs(
             continue
         history.append({
             "role": "user",
-            "content": "[Ответ пользователя на уточнение Workflow]\n" + json.dumps(
-                {key: workflow_input[key] for key in ("request_id", "question", "answer")},
+            RUNTIME_BLOCK_KEY: "workflow_question",
+            "content": "[Уточнение Workflow] Вопрос к пользователю: " + json.dumps(
+                {key: workflow_input[key] for key in ("request_id", "question")},
                 ensure_ascii=False,
-            ),
+            ) + ". Его ответ — следующая реплика user.",
         })
+        history.append({"role": "user", "content": workflow_input["answer"]})
     last_response = str(state.get("last_response") or "").strip()
     if last_response:
         history.append({"role": "assistant", "content": last_response})

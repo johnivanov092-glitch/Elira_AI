@@ -31,6 +31,9 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("translator",  "Translator",   "text",    "Translate text with the local LLM",        60, 10000, True),
         ("regex",       "Regex",        "text",    "Test a regular expression against text",   15, 20000, True),
         ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
+        ("calc",        "Calculator",   "math",    "Exact arithmetic, percentages and algebra (no code execution)", 30, 20000, True),
+        ("unit_convert", "Unit Convert", "math",   "Exact unit conversion (data, power, length, temperature...)", 15, 5000, True),
+        ("finance_calc", "Finance Calc", "math",   "Exact invoices, VAT, markup/margin, discounts, loans", 15, 30000, True),
         ("bom_validate", "BOM Validate", "data",    "Validate catalog codes, stock, prices, VAT and totals deterministically", 60, 50000, True),
         ("converter",   "Converter",    "media",   "Convert files between supported formats",  60, 10000, True),
         ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
@@ -76,6 +79,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "web_query": ["fs.read"],   # reads the local corpus, no network
         "web_sitemap": ["net.outbound"],  # fetches sitemap.xml/robots.txt (SSRF-guarded)
         "csv": ["fs.read"], "converter": ["fs.read", "fs.write"],
+        "calc": [], "unit_convert": [], "finance_calc": [],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "runtime_control": ["shell.exec", "net.outbound", "fs.read", "fs.write"],

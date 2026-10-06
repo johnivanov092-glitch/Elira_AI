@@ -21,6 +21,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from _runtime_roles import runtime_section
 from app.application.code_agent.agent_loop import (  # noqa: E402
     _coerce_history,
     stream_code_agent,
@@ -65,13 +66,14 @@ class StrictSystemMessageOrderingTest(unittest.TestCase):
             if message.get("role") == "system"
         ]
         self.assertEqual(system_indices, [0])
-        carried_context = "\n".join(
-            str(message.get("content") or "")
-            for message in captured
-            if message.get("role") == "assistant"
-        )
+        # Prior-turn facts are runtime context in the system section, never
+        # text attributed to the model as an assistant reply.
+        carried_context = runtime_section(captured)
         self.assertIn("host: ai-server", carried_context)
         self.assertIn("service is active", carried_context)
+        assistant_text = "\n".join(str(message.get("content") or "")
+                                   for message in captured if message.get("role") == "assistant")
+        self.assertNotIn("host: ai-server", assistant_text)
 
 
 class CoerceHistoryRuntimeContextTest(unittest.TestCase):

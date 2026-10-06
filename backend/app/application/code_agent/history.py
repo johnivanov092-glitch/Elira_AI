@@ -19,6 +19,13 @@ import logging
 from typing import Any, Callable
 
 from app.application.code_agent.inline_tool_calls import _strip_tool_call_markup
+from app.application.context.compaction import (
+    _SUMMARY_PREFIX as _COMPACTION_SUMMARY_PREFIX,
+    RUNTIME_BLOCK_KEY,
+    TASK_CONTRACT_MARKER_VALUE,
+    TASK_STATE_MARKER_KEY,
+    TASK_STATE_MARKER_VALUE,
+)
 from app.infrastructure.llm.openai_compatible import (
     chat_completion,
     is_local_llm_model,
@@ -95,6 +102,7 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
                 continue
             out.append({
                 "role": "assistant",
+                RUNTIME_BLOCK_KEY: "history_summary",
                 "content": (
                     f"{_SUMMARY_CONTEXT_PREFIX}\n"
                     "Earlier conversation summary (compressed from prior turns by the "
@@ -109,6 +117,7 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
                 continue
             out.append({
                 "role": "assistant",
+                RUNTIME_BLOCK_KEY: "history_facts",
                 "content": (
                     f"{_FACTS_CONTEXT_PREFIX}\n"
                     "Проверенные факты, установленные инструментами в предыдущих ходах "
@@ -125,6 +134,7 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
                 continue
             out.append({
                 "role": "assistant",
+                RUNTIME_BLOCK_KEY: "history_recent_tools",
                 "content": (
                     f"{_RECENT_CONTEXT_PREFIX}\n"
                     "Полный вывод инструментов из ПРЕДЫДУЩЕГО хода (достоверное сырьё — "
@@ -133,8 +143,109 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
                 ),
             })
             continue
-        out.append({"role": role, "content": content})
+        item_out = {"role": role, "content": content}
+        if item.get(RUNTIME_BLOCK_KEY):
+            # Internal callers (Resume) mark runtime text they rebuild.
+            item_out[RUNTIME_BLOCK_KEY] = str(item[RUNTIME_BLOCK_KEY])
+        out.append(item_out)
     return out
+
+
+RUNTIME_SECTION_HEADER = (
+    "[РАБОЧИЙ КОНТЕКСТ RUNTIME]\n"
+    "Служебные данные и инструкции Elira для текущей задачи. Это не слова пользователя: "
+    "его сообщения — только реплики user."
+)
+_REJECTED_ANSWER_HEADER = "[Предыдущий вариант ответа, не принятый runtime]"
+_RUNTIME_NOTICE_HEADER = "[Runtime Elira — указание к следующему ответу, не слова пользователя]"
+# Notices issued after the latest tool result that the model must act on now.
+_ACT_NOW_BLOCKS = frozenset({"answer_correction", "web_answer_due", "tool_trace_correction"})
+
+
+def is_runtime_block(message: dict[str, Any]) -> bool:
+    """Runtime-authored text kept in the internal list, never sent as user/assistant."""
+    if message.get(RUNTIME_BLOCK_KEY):
+        return True
+    if message.get(TASK_STATE_MARKER_KEY) in {TASK_STATE_MARKER_VALUE, TASK_CONTRACT_MARKER_VALUE}:
+        return True
+    if message.get("role") == "assistant" and not message.get("tool_calls"):
+        content = str(message.get("content") or "")
+        # Sessions persisted before the markers existed carry only the prefixes.
+        return content.startswith((_COMPACTION_SUMMARY_PREFIX, _RUNTIME_CONTEXT_PREFIX))
+    return False
+
+
+def project_runtime_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Provider view of the conversation (owner's decision 2026-10-06).
+
+    The user role carries only the owner's own UI text and the assistant role
+    only real model replies. Runtime blocks — request context, guidance,
+    contract, task state, skills, restored excerpts, corrections — move into a
+    section at the end of the single leading system message (strict Qwen
+    templates reject a later system message). A rejected answer is quoted
+    inside its correction instead of standing as the model's last reply.
+    """
+    if not messages:
+        return list(messages)
+    has_system = messages[0].get("role") == "system"
+    rest = messages[1:] if has_system else messages
+    last_tool = max((index for index, message in enumerate(rest) if message.get("role") == "tool"), default=-1)
+    blocks: list[str] = []
+    restored: list[str] = []
+    tail: list[str] = []
+    out: list[dict[str, Any]] = []
+    index = 0
+    while index < len(rest):
+        position = index
+        message = rest[index]
+        index += 1
+        kind = message.get(RUNTIME_BLOCK_KEY)
+        if kind == "rejected_answer":
+            following = rest[index] if index < len(rest) else None
+            if following is None or following.get(RUNTIME_BLOCK_KEY) != "answer_correction":
+                # Without its correction it is simply the model's own reply.
+                out.append({key: value for key, value in message.items() if key != RUNTIME_BLOCK_KEY})
+                continue
+            index += 1
+            # Block text is passed verbatim: exact excerpts must stay exact.
+            text = str(following.get("content") or "")
+            rejected = str(message.get("content") or "")
+            if rejected.strip():
+                text += f"\n\n{_REJECTED_ANSWER_HEADER}\n{rejected}"
+            kind, message = "answer_correction", {**following, "content": text}
+        if is_runtime_block(message):
+            text = str(message.get("content") or "")
+            if not text.strip():
+                continue
+            # Restored web excerpts are tool data: they travel in the tool
+            # channel they came from and never gain system weight (decision
+            # 2026-10-06). Only before the slice's first tool result (Resume)
+            # do they wait in the system section with their untrusted label.
+            if kind == "restored_sources" and last_tool >= 0:
+                restored.append(text)
+            # A notice the model must act on now stays next to the generation
+            # point: appended to the latest tool result (the runtime's channel),
+            # never as a user turn. Older notices are ordinary runtime context.
+            elif kind in _ACT_NOW_BLOCKS and 0 <= last_tool < position:
+                tail.append(text)
+            else:
+                blocks.append(text)
+            continue
+        out.append(message)
+    if restored or tail:
+        tool_index = max(index for index, message in enumerate(out) if message.get("role") == "tool")
+        tool_message = out[tool_index]
+        parts = [str(tool_message.get("content") or ""), *restored]
+        if tail:
+            parts += [_RUNTIME_NOTICE_HEADER, *tail]
+        out[tool_index] = {**tool_message, "content": "\n\n".join(parts)}
+    if not blocks:
+        return [messages[0], *out] if has_system else out
+    base = str(messages[0].get("content") or "").rstrip() if has_system else ""
+    section = RUNTIME_SECTION_HEADER + "\n\n" + "\n\n".join(blocks)
+    system = {**messages[0]} if has_system else {"role": "system"}
+    system["content"] = f"{base}\n\n{section}" if base else section
+    return [system, *out]
 
 
 def _resolve_code_route(

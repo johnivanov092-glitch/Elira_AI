@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import pytest
 
+from _runtime_roles import base_system, runtime_section, user_texts
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.chat.local_chat import resolve_persona_mode
 from app.application.persona.service import build_persona_prompt, mode_temperature
@@ -51,7 +52,7 @@ def test_any_message_starts_with_work_tools_and_one_persona(tmp_path, query):
     assert {"capability_load", "runtime_control", "read_file", "web_search", "web_fetch"} <= names(call)
     assert "проверь результат" in str(call["messages"])
     assert "первичные источники" in str(call["messages"])
-    assert len(call["messages"][0]["content"]) <= 3000
+    assert len(base_system(call["messages"])) <= 3000
     assert "runtime" in str(call["tools"]) and "project" in str(call["tools"])
 
 
@@ -67,28 +68,27 @@ def test_memory_and_project_context_do_not_change_system(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "resolve_relevant_facts", facts)
     a = capture(tmp_path, "Кто такая Лолита?", profile_name="Личный")
     b = capture(tmp_path, "Проверь файл", profile_name="Инженерный", base_tools=["read_file"])
-    from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE
-    source_contract = "\n\n[Контракт ответа по прочитанным источникам]\n" + WEB_SOURCE_FIDELITY_GUIDANCE
-    assert a["messages"][0]["content"] == b["messages"][0]["content"] + source_contract
-    assert "Лолита" not in a["messages"][0]["content"]
-    assert "Лолита — жена пользователя." in str(a["messages"][1:])
+    # The stable persona prompt is shared; recalled memory is runtime context in
+    # the system section, never text in the owner's name.
+    assert base_system(a["messages"]) == base_system(b["messages"])
+    assert "Лолита" not in base_system(a["messages"])
+    assert "Лолита — жена пользователя." in runtime_section(a["messages"])
+    assert not any("Лолита — жена" in text for text in user_texts(a["messages"]))
     assert "Лолита — жена пользователя." not in str(b["messages"])
     assert seen == ["Кто такая Лолита?", "Проверь файл"]
 
 
-def test_current_message_follows_context_and_tone_without_changing_prefix(tmp_path, monkeypatch):
-    from app.application.persona import mood
-
+def test_current_message_follows_context_without_tone_or_prefix_change(tmp_path):
     history = [{"role": "user", "content": "Расскажи про вечер."},
                {"role": "assistant", "content": "За окном тихо."}]
     query = "Спасибо, на этом пока всё."
     calls = []
-    for tone in ("ровное", "оживлённое"):
-        monkeypatch.setattr(mood, "mood_overlay_line", lambda tone=tone: tone)
+    for _ in range(2):
         call = capture(tmp_path, query, conversation_history=history)
         calls.append(call)
-        assert call["messages"][-1]["content"].endswith("[Текущее сообщение пользователя]\n" + query)
-        assert tone in call["messages"][-1]["content"]
+        # The user role carries the owner's text verbatim (decision 2026-10-06).
+        assert call["messages"][-1] == {"role": "user", "content": query}
+        assert "[Текущий тон Elira]" not in str(call["messages"])
     assert calls[0]["messages"][:-1] == calls[1]["messages"][:-1]
     assert calls[0]["tools"] == calls[1]["tools"]
 
@@ -117,7 +117,7 @@ def test_discovery_loads_project_in_same_loop_and_reads_file(tmp_path):
     ))
     assert names(calls[0]) == {"capability_load", "ask_user", "workflow_request"}
     assert {"read_file", "write_file", "run_bash"} <= names(calls[1])
-    assert calls[0]["messages"][0] == calls[1]["messages"][0] == calls[2]["messages"][0]
+    assert base_system(calls[0]["messages"]) == base_system(calls[1]["messages"]) == base_system(calls[2]["messages"])
     assert any(m["role"] == "tool" and "проверенный факт" in m.get("content", "") for m in calls[2]["messages"])
     assert events[-1]["ok"]
 
@@ -198,7 +198,7 @@ def test_task_guidance_survives_real_loop_compaction(tmp_path, monkeypatch, summ
         for text in guidance.values():
             assert sum(text in message.get("content", "") for message in messages) == 1
         assert sum(work_guidance in message.get("content", "") for message in messages) == int(work_started)
-    assert all(messages[0] == calls[0][0] for messages in calls)
+    assert all(base_system(messages) == base_system(calls[0]) for messages in calls)
 
 
 def test_user_confirmation_guidance_is_pinned_before_work_and_restored_on_resume(tmp_path, monkeypatch):
@@ -212,10 +212,8 @@ def test_user_confirmation_guidance_is_pinned_before_work_and_restored_on_resume
 
     def chat(**kwargs):
         calls.append(deepcopy(kwargs["messages"]))
-        instructions = [message for message in kwargs["messages"]
-                        if ":guidance:" in message.get("_msg_id", "")]
-        assert len(instructions) == 1
-        content = instructions[0]["content"]
+        content = runtime_section(kwargs["messages"])
+        assert content.count("[Инструкции текущей задачи]") == 1
         assert "«Установить сейчас» или «Позже»" in content
         assert "Не вызывай confirm за пользователя и не имитируй его нажатие" in content
         assert "проверено, ожидает пользователя" in content
@@ -239,15 +237,15 @@ def test_user_confirmation_guidance_is_pinned_before_work_and_restored_on_resume
     assert initial[-1]["stop_reason"] == "cancelled"
     resumed = list(stream_code_agent(**build_continuation_kwargs(run_id, chat_fn=chat)))
     assert resumed[-1]["ok"] and len(calls) == 2
-    assert calls[0][0] == calls[1][0]
+    assert base_system(calls[0]) == base_system(calls[1])
     guidance = task_guidance_blocks({"read_file"})
     work_guidance = guidance.pop("work")
     assert all(work_guidance not in str(messages) for messages in calls)
     for text in guidance.values():
         for messages in calls:
-            owner = [message for message in messages if text in message.get("content", "")]
-            assert len(owner) == 1 and owner[0]["role"] == "user"
-            assert ":guidance:" in owner[0]["_msg_id"]
+            # Pinned guidance reaches the model once, in the runtime section.
+            assert runtime_section(messages).count(text) == 1
+            assert not any(text in user_text for user_text in user_texts(messages))
     assert any(event["type"] == "run_resumed" and event["from_step"] == 1 for event in resumed)
     assert not any(event["type"] == "tool_started" for event in resumed)
 
@@ -256,9 +254,12 @@ def test_web_work_loads_project_instructions_outside_stable_prefix(tmp_path):
     (tmp_path / ".elira").mkdir()
     (tmp_path / ".elira/agent.md").write_text("PROJECT_REVIEW_MARKER", encoding="utf-8")
     call = capture(tmp_path, "Проверь источник", base_tools=["web_search"])
-    assert "PROJECT_REVIEW_MARKER" not in call["messages"][0]["content"]
-    assert "PROJECT_REVIEW_MARKER" in str(call["messages"][1:])
-    assert "UNTRUSTED INSTRUCTIONS" in str(call["messages"][1:])
+    # Project-file text stays outside the stable persona prompt and keeps its
+    # untrusted label; it is runtime context, never text in the owner's name.
+    assert "PROJECT_REVIEW_MARKER" not in base_system(call["messages"])
+    assert "PROJECT_REVIEW_MARKER" in runtime_section(call["messages"])
+    assert "UNTRUSTED INSTRUCTIONS" in runtime_section(call["messages"])
+    assert not any("PROJECT_REVIEW_MARKER" in text for text in user_texts(call["messages"]))
 
 
 def test_wrong_initial_capability_can_recover_and_execute(tmp_path):
@@ -300,7 +301,6 @@ def test_late_web_activation_promotes_only_runtime_contract_to_first_system(tmp_
     user_marker = "USER_REQUEST_NOT_SYSTEM"
     history_marker = "ASSISTANT_HISTORY_NOT_SYSTEM"
     excerpt = "The report measured 17 observations. EXCERPT_NOT_SYSTEM."
-    suffix = "\n\n[Контракт ответа по прочитанным источникам]\n" + WEB_SOURCE_FIDELITY_GUIDANCE
     calls, reads = [], []
 
     def fetch(actual_url, limit):
@@ -320,7 +320,8 @@ def test_late_web_activation_promotes_only_runtime_contract_to_first_system(tmp_
         assert sum(message.get("role") == "system" for message in kwargs["messages"]) == 1
         system = kwargs["messages"][0]
         assert system["role"] == "system"
-        assert not any(value in system["content"] for value in (user_marker, history_marker, excerpt))
+        assert not any(value in base_system(kwargs["messages"]) for value in (user_marker, history_marker, excerpt))
+        assert not any(value in runtime_section(kwargs["messages"]) for value in (history_marker, excerpt))
         if index == 1:
             assert "capability_load" in names(calls[-1])
             assert not {"web_search", "web_fetch"} & names(calls[-1])
@@ -328,7 +329,7 @@ def test_late_web_activation_promotes_only_runtime_contract_to_first_system(tmp_
             function = {"name": "capability_load", "arguments": {"group": "web"}}
             call_id = "web-activate"
         else:
-            assert system["content"] == calls[0]["messages"][0]["content"] + suffix
+            assert base_system(kwargs["messages"]) == base_system(calls[0]["messages"])
             assert system["content"].count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
             assert {"capability_load", "web_search", "web_fetch"} <= names(calls[-1])
             if index == 2:

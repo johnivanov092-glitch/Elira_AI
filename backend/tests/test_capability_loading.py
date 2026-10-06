@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from _runtime_roles import runtime_text
 from app.application.code_agent.capabilities import (
     CAPABILITY_GROUPS,
     CORE_BUILTIN_TOOLS,
@@ -314,7 +315,7 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
         '"remote_process_identity_captured": true'
         in pid_content
     )
-    assert "Задачу нельзя завершать" in model_contexts[2][-1]["content"]
+    assert "Задачу нельзя завершать" in runtime_text(model_contexts[2])
     assert "SSH job completed successfully" in model_contexts[3][-1]["content"]
     ssh_event = next(
         event for event in events

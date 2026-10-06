@@ -49,6 +49,12 @@ TASK_STATE_MARKER_KEY = "_elira_internal_kind"
 TASK_STATE_MARKER_VALUE = "task_state_v1"
 TASK_CONTRACT_PREFIX = "[ТЕКУЩИЙ КОНТРАКТ ЗАДАЧИ — ДАННЫЕ RUNTIME]\n"
 TASK_CONTRACT_MARKER_VALUE = "task_contract_v1"
+# Runtime-authored blocks (instructions, contracts, restored data, corrections)
+# stay in the internal message list for compaction/resume bookkeeping, but the
+# provider projection (history.project_runtime_roles) moves them into the single
+# system message: the user role carries only the owner's own UI text and the
+# assistant role only real model replies (owner's decision 2026-10-06).
+RUNTIME_BLOCK_KEY = "_runtime_block"
 _MESSAGE_EXCERPT_CHARS = 300
 
 SummarizeFn = Callable[..., dict[str, Any]]
@@ -136,7 +142,8 @@ def _make_summary_message(summary: str, *, limit: int) -> dict[str, Any]:
     # message. A strict template (Qwen: "System message must be at the beginning")
     # 400s on a second system message — this removes the need for the server-side
     # lenient-template workaround.
-    return {"role": "assistant", "content": _SUMMARY_PREFIX + _cap_text(summary, limit)}
+    return {"role": "assistant", "content": _SUMMARY_PREFIX + _cap_text(summary, limit),
+            RUNTIME_BLOCK_KEY: "compaction_summary"}
 
 
 def extract_rolling_summary(messages: list[dict[str, Any]]) -> str:

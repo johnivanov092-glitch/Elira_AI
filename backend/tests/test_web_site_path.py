@@ -1,17 +1,18 @@
-"""John's web path: the model answers in prose; 2 sites → enough? : up to 5 → answer."""
+"""John's web path: the model answers in prose; 2 sites → enough? : up to 10 (deep 20) → answer."""
 
 from copy import deepcopy
 import re
 
 import pytest
 
+from _runtime_roles import runtime_text
 from app.application.code_agent import agent_loop
 from app.application.code_agent.answer_contracts import explicit_web_site_limit
 from app.application.code_agent.tools import _web
 from app.infrastructure.search.web_runtime import PageFetchResult
 
 
-URLS = [f"https://example.org/page{index}" for index in range(1, 8)]
+URLS = [f"https://example.org/page{index}" for index in range(1, 24)]
 TEXTS = {url: f"Факт номер {index}: на странице {index} указано значение {index * 10}."
          for index, url in enumerate(URLS, 1)}
 ANSWER_TURN = "[Ответ по прочитанному]"
@@ -111,28 +112,29 @@ def test_after_second_site_the_model_decides_whether_it_is_enough(tmp_path, read
 
     events = run(tmp_path, chat)
     notes = [text for text in tool_texts(calls[2]["messages"]) if "Прочитано сайтов" in text]
-    assert len(notes) == 1 and "Прочитано сайтов: 2 из 5." in notes[0]
+    assert len(notes) == 1 and "Прочитано сайтов: 2 из 10." in notes[0]
     assert "Если прочитанного хватает для ответа" in notes[0]
     assert final(events)["text"] == "Значения 10 и 20." and reads == URLS[:2]
 
 
-def test_fifth_site_stops_reading_and_the_next_turn_answers_without_tools(tmp_path, reads):
+def test_tenth_site_stops_reading_and_the_next_turn_answers_without_tools(tmp_path, reads):
     calls = []
 
     def chat(**kwargs):
         calls.append(snapshot(kwargs))
         if len(calls) == 1:
-            return turn(fetch_call(*URLS[:6]))
-        assert kwargs["tools"] == [] and ANSWER_TURN in kwargs["messages"][-1]["content"]
-        assert "лимит 5" in kwargs["messages"][-1]["content"]
-        return turn(content="По пяти прочитанным страницам значения 10–50; шестую не читал.")
+            return turn(fetch_call(*URLS[:5], call_id="a"), fetch_call(*URLS[5:11], call_id="b"))
+        assert kwargs["tools"] == [] and ANSWER_TURN in runtime_text(kwargs["messages"])
+        assert "лимит 10" in runtime_text(kwargs["messages"])
+        assert kwargs["messages"][-1]["role"] != "assistant"
+        return turn(content="По десяти прочитанным страницам значения 10–100; одиннадцатую не читал.")
 
     events = run(tmp_path, chat)
-    assert len(calls) == 2 and reads == URLS[:5]
+    assert len(calls) == 2 and reads == URLS[:10]
     note = tool_texts(calls[1]["messages"])[-1]
-    assert URLS[5] in note and "не прочитаны" in note
-    assert "Прочитано сайтов: 5 — лимит 5 на вопрос." in note
-    assert final(events)["text"].startswith("По пяти прочитанным") and events[-1]["stop_reason"] == "answer"
+    assert URLS[10] in note and "не прочитаны" in note
+    assert "Прочитано сайтов: 10 — лимит 10 на вопрос." in note
+    assert final(events)["text"].startswith("По десяти прочитанным") and events[-1]["stop_reason"] == "answer"
 
 
 def test_parallel_reads_never_go_past_the_limit(tmp_path, reads):
@@ -141,47 +143,48 @@ def test_parallel_reads_never_go_past_the_limit(tmp_path, reads):
     def chat(**kwargs):
         calls.append(snapshot(kwargs))
         if len(calls) == 1:
-            return turn(fetch_call(*URLS[:4]))
+            return turn(fetch_call(*URLS[:5], call_id="a"), fetch_call(*URLS[5:9], call_id="b"))
         if len(calls) == 2:
-            return turn(fetch_call(URLS[4], call_id="a"), fetch_call(URLS[5], call_id="b"))
+            return turn(fetch_call(URLS[9], call_id="c"), fetch_call(URLS[10], call_id="d"))
         assert kwargs["tools"] == []
-        return turn(content="Ответ по пяти страницам.")
+        return turn(content="Ответ по десяти страницам.")
 
     events = run(tmp_path, chat)
     rejected = [event for event in events if event["type"] == "tool_call" and not event["ok"]]
-    assert reads == URLS[:5]
+    assert reads == URLS[:10]
     assert [event["error"] for event in rejected] == ["web_site_limit"]
-    assert final(events)["text"] == "Ответ по пяти страницам."
+    assert final(events)["text"] == "Ответ по десяти страницам."
 
 
-def test_explicit_deep_analysis_allows_ten_sites(tmp_path, reads):
+def test_explicit_deep_analysis_allows_twenty_sites(tmp_path, reads):
     calls = []
 
     def chat(**kwargs):
         calls.append(snapshot(kwargs))
         if len(calls) == 1:
-            return turn(fetch_call(*URLS[:5]))
+            return turn(fetch_call(*URLS[:5], call_id="a"), fetch_call(*URLS[5:10], call_id="b"))
         if len(calls) == 2:
-            assert kwargs["tools"], "Deep analysis keeps reading past five"
-            assert "Прочитано сайтов: 5 из 10." in tool_texts(kwargs["messages"])[-1]
-            return turn(fetch_call(URLS[5], URLS[6]))
-        return turn(content="Глубокий разбор по семи страницам.")
+            assert kwargs["tools"], "Deep analysis keeps reading past ten"
+            assert "Прочитано сайтов: 10 из 20." in tool_texts(kwargs["messages"])[-1]
+            return turn(fetch_call(URLS[10], URLS[11]))
+        return turn(content="Глубокий разбор по двенадцати страницам.")
 
     events = run(tmp_path, chat, message="Сделай глубокий анализ: что означают значения на страницах?")
-    assert reads == URLS[:7] and final(events)["text"] == "Глубокий разбор по семи страницам."
+    assert reads == URLS[:12] and final(events)["text"] == "Глубокий разбор по двенадцати страницам."
 
 
 @pytest.mark.parametrize(("request_text", "limit"), [
-    ("Найди цену на ноутбук.", 5),
-    ("Сделай глубокий анализ рынка ноутбуков.", 10),
-    ("Нужен подробный обзор мнений.", 10),
-    ("Do a deep research on this topic.", 10),
-    ("Прочитай 8 сайтов и сравни.", 8),
-    ("Сравни 20 источников.", 10),
-    ("Прочитай 3 сайта.", 5),
-    ("Глубокий анализ не нужен, просто найди адрес.", 5),
-    ("Без подробного анализа: какая погода?", 5),
-    ("Пример запроса: `глубокий анализ`. Найди погоду.", 5),
+    ("Найди цену на ноутбук.", 10),
+    ("Сделай глубокий анализ рынка ноутбуков.", 20),
+    ("Нужен подробный обзор мнений.", 20),
+    ("Do a deep research on this topic.", 20),
+    ("Прочитай 8 сайтов и сравни.", 10),
+    ("Прочитай 15 сайтов и сравни.", 15),
+    ("Сравни 30 источников.", 20),
+    ("Прочитай 3 сайта.", 10),
+    ("Глубокий анализ не нужен, просто найди адрес.", 10),
+    ("Без подробного анализа: какая погода?", 10),
+    ("Пример запроса: `глубокий анализ`. Найди погоду.", 10),
 ])
 def test_site_limit_is_raised_only_by_an_explicit_user_request(request_text, limit):
     assert explicit_web_site_limit(request_text) == limit

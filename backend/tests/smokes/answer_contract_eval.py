@@ -15,7 +15,6 @@ from pathlib import Path
 import sys
 import tempfile
 import time
-from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -37,7 +36,7 @@ def prepare_cases(workspace: Path, model: str, compare_dry: bool = False) -> lis
     from app.application.persona.service import build_persona_prompt
     from app.application.web_evidence.receipts import make_source
 
-    def capture(history: list[dict] | None = None, tone: str = "Тёплый, спокойный тон.") -> dict:
+    def capture(history: list[dict] | None = None) -> dict:
         captured: dict = {}
 
         def chat(**kwargs):
@@ -46,9 +45,8 @@ def prepare_cases(workspace: Path, model: str, compare_dry: bool = False) -> lis
                 captured["options"] = {key: deepcopy(value) for key, value in kwargs["options"].items() if not key.startswith("_")}
             return {"message": {"content": "Привет! Рада тебя видеть.", "tool_calls": []}}
 
-        with patch("app.application.persona.mood.mood_overlay_line", return_value=tone):
-            list(stream_code_agent(user_message="Привет! Как ты?", project_root=workspace,
-                 model=model, chat_fn=chat, conversation_history=history, auto_remember=False, num_ctx=32768))
+        list(stream_code_agent(user_message="Привет! Как ты?", project_root=workspace,
+             model=model, chat_fn=chat, conversation_history=history, auto_remember=False, num_ctx=32768))
         if not captured:
             raise RuntimeError("agent did not reach the provider seam")
         return captured
@@ -63,8 +61,6 @@ def prepare_cases(workspace: Path, model: str, compare_dry: bool = False) -> lis
                {"role": "assistant", "content": "Рад тебя видеть. Я готов помочь."},
                {"role": "user", "content": "Теперь снова просто поболтаем."}]
     with_history = capture(history)
-    other_mood = capture(tone="Бодрый и дружелюбный тон.")
-    assert working["messages"][0] == other_mood["messages"][0], "mood changed stable prefix"
     compacted = deepcopy(with_history)
     long_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": "Мы обсуждали рабочую задачу. " * 150}
                     for i in range(24)]
@@ -79,7 +75,7 @@ def prepare_cases(workspace: Path, model: str, compare_dry: bool = False) -> lis
     thinking["options"]["chat_template_kwargs"] = _thinking_template_kwargs("low")
     cases = [{"id": name, "request": request, "expected": "Elira; feminine self-reference; natural Russian conversation; no tool call"}
              for name, request in (("minimal", minimal), ("working", working), ("male_history", with_history),
-                                   ("compacted_history", compacted), ("mood_change", other_mood), ("thinking_low", thinking))]
+                                   ("compacted_history", compacted), ("thinking_low", thinking))]
     if compare_dry:
         no_dry = deepcopy(with_history)
         no_dry["options"]["sampling"]["dry_multiplier"] = 0

@@ -195,6 +195,24 @@ def _looks_like_criterion(line: str) -> bool:
     return any(cue in low for cue in _CRITERIA_CUES)
 
 
+# A goal phrased as a question/request for an answer ("Сравни три фреймворка:",
+# "Какие есть варианты?"). Its list items are the subjects/aspects of the answer,
+# not readiness gates: "- React / - Vue / - Svelte" must not become criteria that
+# the runtime then tries to "confirm" with tools (golden chat-list-compare).
+_QUESTION_GOAL_RE = re.compile(
+    r"^\s*(?:сравни|сопостав|объясни|поясни|расскажи|опиши|перечисли|назови|посоветуй|ответь|"
+    r"подскажи|порекомендуй|что\b|как\b|какие\b|какой\b|какая\b|какое\b|каких\b|почему\b|"
+    r"зачем\b|чем\b|в\s+чём\b|в\s+чем\b|сколько\b|где\b|когда\b|compare|explain|describe|"
+    r"what\b|how\b|why\b|which\b|tell\s+me)",
+    re.IGNORECASE,
+)
+
+
+def _is_question_goal(goal_lines: list[str]) -> bool:
+    goal = " ".join(goal_lines).strip()
+    return bool(goal) and (bool(_QUESTION_GOAL_RE.match(goal)) or goal.rstrip(" :").endswith("?"))
+
+
 def _section_header(raw: str) -> tuple[str, str] | None:
     """Recognise ordinary ``Header: value`` and numbered document headings.
 
@@ -264,10 +282,17 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
         # section and dumps a Подвох rule in as a success criterion.
         # A bullet under the goal (no section header yet) is a criterion ONLY when the
         # task has no explicit criteria section; otherwise it's spec/detail, not a gate.
+        # Under a question-goal a bullet is an aspect of the answer unless it states a
+        # checkable requirement itself.
         goal_bullet_target = "details" if has_explicit_criteria else "criteria"
         if bullet:
-            _route(section if section != "goal" else goal_bullet_target,
-                   bullet.group(1).strip(), goal_lines, criteria, constraints, stop, details)
+            item = bullet.group(1).strip()
+            target = goal_bullet_target
+            if target == "criteria" and (item.rstrip().endswith("?") or (
+                    _is_question_goal(goal_lines) and not _looks_like_criterion(item))):
+                target = "details"
+            _route(section if section != "goal" else target,
+                   item, goal_lines, criteria, constraints, stop, details)
             if section == "criteria":
                 criteria_items_seen = True
             continue

@@ -4,8 +4,8 @@ from copy import deepcopy
 
 import pytest
 
+from _runtime_roles import base_system
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.persona import mood
 
 
 def _capture(tmp_path, message, *, history=None, memory_query=None, resource_refs=None):
@@ -33,20 +33,16 @@ def _capture(tmp_path, message, *, history=None, memory_query=None, resource_ref
 
 
 @pytest.mark.parametrize("message", ["Ну что красотка", "Объясни устройство локального проекта"])
-def test_mood_change_preserves_system_and_history_prefix(tmp_path, monkeypatch, message):
+def test_repeated_message_keeps_prefix_and_carries_no_tone_line(tmp_path, message):
+    # Persona mood was removed (owner's decision 2026-10-06): no tone line rides on the user's text.
     history = [{"role": "user", "content": "Привет"}, {"role": "assistant", "content": "Привет!"}]
-    captures = []
-    for label in ("ровная", "оживлённая"):
-        monkeypatch.setattr(mood, "mood_overlay_line", lambda label=label: f"Сейчас твоё состояние: {label}.")
-        captures.append(_capture(tmp_path, message, history=history))
+    captures = [_capture(tmp_path, message, history=history) for _ in range(2)]
 
     before, after = [call["messages"] for call in captures]
     assert before[:-1] == after[:-1]
     assert before[-1]["role"] == after[-1]["role"] == "user"
     assert before[-1]["content"].endswith(message)
-    assert after[-1]["content"].endswith(message)
-    assert "ровная" in before[-1]["content"]
-    assert "оживлённая" in after[-1]["content"]
+    assert not any("[Текущий тон Elira]" in str(turn.get("content")) for turn in before + after)
     assert captures[0]["tools"] == captures[1]["tools"]
 
 
@@ -60,8 +56,8 @@ def test_conversation_keeps_work_tools_and_stable_persona(tmp_path):
     ):
         call = _capture(tmp_path, message, history=history)
         assert {"read_file", "runtime_control", "web_search", "web_fetch"} <= {t["function"]["name"] for t in call["tools"]}
-        assert len(call["messages"][0]["content"]) < 3000
-        systems.append(call["messages"][0]["content"])
+        assert len(base_system(call["messages"])) < 3000
+        systems.append(base_system(call["messages"]))
         history.extend([{"role": "user", "content": message}, {"role": "assistant", "content": "Привет!"}])
     assert systems[0] == systems[1] == systems[2]
 
@@ -72,8 +68,8 @@ def test_compliment_and_social_followup_keep_conversation_prompt(tmp_path):
     for message in ("привет", "вау какая ты быстрая", "что предложишь?", "о чём поговорим?"):
         call = _capture(tmp_path, message, history=history)
         assert {"read_file", "runtime_control", "web_search", "web_fetch"} <= {t["function"]["name"] for t in call["tools"]}, message
-        assert len(call["messages"][0]["content"]) < 3000
-        systems.append(call["messages"][0]["content"])
+        assert len(base_system(call["messages"])) < 3000
+        systems.append(base_system(call["messages"]))
         history.extend([
             {"role": "user", "content": message},
             {"role": "assistant", "content": "Привет! Что будем делать?"},

@@ -10,6 +10,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from _runtime_roles import runtime_section, user_texts
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.media import execution, processing, resource_store
 
@@ -28,7 +29,7 @@ def test_transcription_guidance_leaves_placement_to_agent_without_server_probe(t
 
     def fake_chat(**kwargs):
         nonlocal seen_prompt
-        seen_prompt = "\n".join(m.get("content", "") for m in kwargs["messages"][1:])
+        seen_prompt = runtime_section(kwargs["messages"]) + "\n" + "\n".join(user_texts(kwargs["messages"]))
         return {"message": {"content": "ok", "tool_calls": []}}
 
     with patch.object(execution, "capability_catalog") as catalog:

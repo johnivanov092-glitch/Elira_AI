@@ -30,12 +30,12 @@ from app.application.code_agent.taskspec import (
     TaskSpec, derive_task_spec, is_continuation_message, merge_task_spec, taskspec_context,
 )
 from app.application.context.compaction import (
-    TASK_CONTRACT_PREFIX, TASK_CONTRACT_MARKER_VALUE, TASK_STATE_MARKER_KEY,
+    RUNTIME_BLOCK_KEY, TASK_CONTRACT_PREFIX, TASK_CONTRACT_MARKER_VALUE, TASK_STATE_MARKER_KEY,
 )
 from app.application.tool_providers import ToolRegistry
 from app.application.tool_providers.mcp_provider import creative_workflow_prompt
 from app.application.code_agent.task_guidance import (
-    DELIVERY_GUIDANCE, WEB_SOURCE_FIDELITY_GUIDANCE, task_guidance_blocks,
+    DELIVERY_GUIDANCE, task_guidance_blocks,
 )
 from app.application.code_agent.task_skills import (
     ADVISOR_CONTEXT_ID, CATALOG_ID, CONTEXT_ID, SkillContext,
@@ -45,7 +45,7 @@ from app.application.code_agent.task_skills import (
 
 logger = logging.getLogger(__name__)
 PromptBuilder = Callable[..., str]
-_WEB_CLOSING_CONTEXT_ID = "web-closing-context"
+REQUEST_CONTEXT_ID = "request-context"
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ def build_initial_turn(
     active_schemas: list[dict[str, Any]],
     system_prompt_builder: PromptBuilder = _build_system_prompt,
     turn_context_builder: PromptBuilder = _build_turn_context,
+    current_message_is_runtime: bool = False,
 ) -> InitialTurn:
     """Assemble the stable system/history prefix and current-request tail."""
     initial_tools = tuple(dict.fromkeys(
@@ -102,10 +103,11 @@ def build_initial_turn(
             request_context += "\n\n" + creative_prompt
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     messages.extend(_coerce_history(conversation_history))
-    # Keep the current request last; persona/context tails precede its raw text.
-    effective_user_message = ""
+    # The current request is the owner's raw text only; its runtime context is a
+    # separate block that the provider projection moves into the system message.
+    request_block = ""
     if request_context:
-        effective_user_message = "[Контекст текущего запроса]\n" + request_context
+        request_block = "[Контекст текущего запроса]\n" + request_context
     task_spec = derive_task_spec(user_message, project_root=root)
     task_spec_source = "current_message" if task_spec is not None else "none"
     document_page_count_contract = infer_expected_page_count(user_message)
@@ -134,20 +136,16 @@ def build_initial_turn(
                 if document_page_count_contract is not None:
                     break
     if task_spec is not None:
-        effective_user_message = f"{taskspec_context(task_spec)}\n\n{effective_user_message}"
-    # Capture transient tone once per run without rewriting the cached prefix.
-    try:
-        from app.application.persona.mood import mood_overlay_line
-
-        effective_user_message += "\n\n[Текущий тон Elira]\n" + mood_overlay_line()
-    except Exception:
-        logger.debug("transient persona tone unavailable", exc_info=True)
-    effective_user_message = (
-        effective_user_message.strip()
-        + "\n\n[Текущее сообщение пользователя]\n"
-        + user_message
-    ).lstrip()
-    messages.append({"role": "user", "content": effective_user_message})
+        request_block = f"{taskspec_context(task_spec)}\n\n{request_block}"
+    if request_block.strip():
+        messages.append({"role": "user", "content": request_block.strip(),
+                         "_msg_id": REQUEST_CONTEXT_ID, RUNTIME_BLOCK_KEY: "request_context"})
+    if current_message_is_runtime:
+        # A Resume slice carries a server-authored continuation instruction,
+        # not the owner's words: it is a runtime block, never a user message.
+        messages.append({"role": "user", "content": user_message, RUNTIME_BLOCK_KEY: "continuation"})
+    else:
+        messages.append({"role": "user", "content": user_message})
     return InitialTurn(
         messages, task_spec, task_spec_source, document_page_count_contract,
     )
@@ -263,11 +261,9 @@ class TurnContext:
         )
         if not work_started:
             guidance.pop("work", None)
-        if "web" in guidance and "web" not in self.sent_guidance:
-            self.messages[0] = {**self.messages[0], "content": (
-                str(self.messages[0].get("content") or "")
-                + "\n\n[Контракт ответа по прочитанным источникам]\n" + WEB_SOURCE_FIDELITY_GUIDANCE
-            )}
+        # The web guidance block (which opens with WEB_SOURCE_FIDELITY_GUIDANCE)
+        # is a pinned runtime block projected into the system section, so the
+        # source-fidelity contract is not appended to the system prompt twice.
         if request_route.download_requested or "resources" in guidance:
             guidance["file_delivery"] = DELIVERY_GUIDANCE
         if task_instructions:
@@ -283,7 +279,8 @@ class TurnContext:
         if new_guidance:
             block = "[Инструкции текущей задачи]\n" + "\n\n".join(new_guidance)
             message_id = f"{self.run_id}:guidance:{step}"
-            guidance_message = {"role": "user", "content": block, "_msg_id": message_id}
+            guidance_message = {"role": "user", "content": block, "_msg_id": message_id,
+                                RUNTIME_BLOCK_KEY: "guidance"}
             if step == 1:
                 # Put initial work instructions before the current request,
                 # so the model answers the user rather than the instructions.
@@ -311,9 +308,14 @@ class TurnContext:
         contract_message = {"role": "assistant", "content": TASK_CONTRACT_PREFIX + json.dumps(
             contract, ensure_ascii=False, separators=(",", ":")),
             TASK_STATE_MARKER_KEY: TASK_CONTRACT_MARKER_VALUE}
-        self.messages = [message for message in self.messages
-                         if message.get(TASK_STATE_MARKER_KEY) != TASK_CONTRACT_MARKER_VALUE]
-        self.messages.insert(1, contract_message)
+        # Replace in place: a stable block order keeps the projected system
+        # prefix unchanged while the contract text is unchanged.
+        existing = next((index for index, message in enumerate(self.messages)
+                         if message.get(TASK_STATE_MARKER_KEY) == TASK_CONTRACT_MARKER_VALUE), None)
+        if existing is None:
+            self.messages.insert(1, contract_message)
+        else:
+            self.messages[existing] = contract_message
         if (task_spec is not None or checklist_items) and self.refresh_task_state:
             self.messages = upsert_task_state_message(
                 self.messages, build_task_state_block(
@@ -335,29 +337,6 @@ class TurnContext:
         context_id = f"{self.run_id}:command-recovery"
         self.messages = insert_skill_context(self.messages, text, context_id)
         self.guidance_message_ids.add(context_id)
-
-    def refresh_web_closing_context(self, messages: list[dict[str, Any]], *,
-                                    read_pages: tuple[str, ...]) -> list[dict[str, Any]]:
-        """One input-side closing cue after complete result groups, never fact prose."""
-        messages = [message for message in messages
-                    if message.get("_msg_id") != _WEB_CLOSING_CONTEXT_ID]
-        pending = 0
-        for message in messages:
-            if message.get("role") == "assistant" and message.get("tool_calls"):
-                pending += len(message["tool_calls"])
-            elif message.get("role") == "tool":
-                pending = max(0, pending - 1)
-        if not read_pages or pending:
-            return messages
-        content = (
-            "[Следующий шаг: инструкция runtime, не выводи]\n"
-            "Прочитаны страницы: " + ", ".join(read_pages) + ".\n"
-            "Если исходный вопрос покрыт, дай итоговый ответ. Для файла или действия "
-            "продолжай до результата: чтение его не заменяет. Проверяй лишь конкретный "
-            "пробел исходной цели; другие источники доступны. Это список прочитанного, не выводы. "
-            + WEB_SOURCE_FIDELITY_GUIDANCE + " Промежуточная сводка не требуется."
-        )
-        return [*messages, {"role": "user", "content": content, "_msg_id": _WEB_CLOSING_CONTEXT_ID}]
 
     def provider_messages(self, *,
                           read_source_handles: Callable[[list[dict[str, Any]]], tuple[str, ...]] | None = None,
@@ -412,14 +391,11 @@ class TurnContext:
 
     def prepare(self, *, prepare_fn, num_ctx: int, model: str, chat_fn,
                 context_profile: dict, tool_schemas: list[dict], cancel_handle,
-                audit_sink, restore_source_context,
-                web_closing_sources: Callable[[list[dict[str, Any]]], tuple[str, ...]] | None = None):
-        from app.application.context.usage import get_context_usage
-
+                audit_sink, restore_source_context):
+        # No runtime closing cue follows a web read: a trailing user-role
+        # "next step, do not output" block made Qwen3.8 treat its finished
+        # answer as reasoning, emit </think> and write the answer twice.
         def restore(packed, *, compacted):
-            # A soft closing cue must never enter the history compactor.
-            packed = [message for message in packed
-                      if message.get("_msg_id") != _WEB_CLOSING_CONTEXT_ID]
             return restore_source_context(packed, compacted=compacted, max_chars=min(7000, num_ctx))
 
         self.messages, compacted, usage = prepare_fn(
@@ -429,27 +405,6 @@ class TurnContext:
             pinned_message_ids=self.guidance_message_ids | {"web-source-context"},
             restore_messages=restore,
         )
-        # Derive handles from the final packed payload, including any source
-        # blocks that were removed after restoration by the request packer.
-        pages = web_closing_sources(self.messages) if web_closing_sources is not None else ()
-        candidate = self.refresh_web_closing_context(self.messages, read_pages=pages)
-        if len(candidate) != len(self.messages):
-            candidate_usage = get_context_usage(
-                candidate, ctx_size=num_ctx,
-                reserved_output_tokens=int(context_profile["reserved_output_tokens"]),
-                reserved_system_tokens=int(context_profile.get("reserved_system_tokens") or 4096),
-                safety_margin_tokens=int(context_profile.get("safety_margin_tokens") or 2048),
-                extra_categories={"tools": list(tool_schemas)} if tool_schemas else None,
-            )
-            thresholds = context_profile.get("compaction_thresholds") or {}
-            compact_threshold = float((thresholds.get("auto") or {}).get("percent")
-                                      or (60.0 if num_ctx < 16_384 else 75.0))
-            safe_input_budget = int(context_profile.get("safe_input_budget") or 0)
-            # The cue is optional: it must never displace evidence or trigger
-            # compaction that the actual request payload did not require.
-            if float(candidate_usage["percent"]) < compact_threshold and (
-                    safe_input_budget <= 0 or int(candidate_usage["current_tokens"]) <= safe_input_budget):
-                self.messages, usage = candidate, candidate_usage
         return compacted, usage
 
     def activate_skill_result(self, *, name: str, args: dict, tool_meta: dict, status: str):

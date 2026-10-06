@@ -298,16 +298,14 @@ def analyze_csv(file_path: str, query: str = "") -> dict:
             desc = df[num_cols].describe()
             result["describe"] = desc.to_dict()
 
-        # Если есть запрос — выполняем eval
+        # A question is never executed as code: `eval` here let a read-only
+        # tool run arbitrary Python without approval (fixed 2026-10-06).
+        # Exact filtering/aggregation uses calculation.table via tool_csv.
         if query.strip():
-            try:
-                eval_result = df.eval(query) if not query.strip().startswith("df") else eval(query, {"df": df, "pd": pd})
-                if hasattr(eval_result, "to_dict"):
-                    result["query_result"] = eval_result.head(20).to_dict(orient="records") if hasattr(eval_result, "head") else eval_result.to_dict()
-                else:
-                    result["query_result"] = str(eval_result)
-            except Exception as e:
-                result["query_error"] = str(e)
+            result["query_note"] = (
+                "Запрос не исполняется как код. Для отбора и подсчётов используй параметры "
+                "filters / group_by / aggregate инструмента csv."
+            )
 
         return result
     except ImportError:

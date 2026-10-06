@@ -68,6 +68,7 @@ from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence
 from app.application.code_agent.tools._web import (
     WebArgumentFormatError, normalize_web_tool_arguments, project_search_without_snippets,
 )
+from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.application.context.usage import get_context_usage
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
@@ -129,6 +130,7 @@ from app.application.code_agent.history import (  # noqa: F401
     _coerce_history,
     _local_chat,
     _resolve_code_route,
+    project_runtime_roles,
     summarize_history,
 )
 # Project-prompt CRUD extracted to .project_prompt; a leaf. Re-exported (with
@@ -356,6 +358,7 @@ def _stream_code_agent_core(
             model=model, profile_name=profile_name, conversation_history=conversation_history,
             resource_refs=resource_refs, active_schemas=all_schemas,
             system_prompt_builder=_build_system_prompt, turn_context_builder=_build_turn_context,
+            current_message_is_runtime=resume,
         )
         task_spec, task_spec_source = initial_turn.task_spec, initial_turn.task_spec_source
         document_page_count_contract = initial_turn.document_page_count_contract
@@ -602,11 +605,10 @@ def _stream_code_agent_core(
             }
 
         if plan is not None:
-            # The plan is model-authored context, not higher-priority authority.
-            # Keep it in a normal user turn so it cannot elevate project-derived
-            # text into the system role and does not create assistant→assistant
-            # message ordering before the first execution call.
-            turn_context.messages.append({"role": "user", "content": plan_context_block(plan)})
+            # The plan is model-authored context: a runtime block (projected into
+            # the system section as data), never a message in the owner's name.
+            turn_context.messages.append({"role": "user", "content": plan_context_block(plan),
+                                          RUNTIME_BLOCK_KEY: "plan"})
         def _web_question() -> bool:
             """John's site path applies only without edits, deliveries or jobs."""
             return not (run_evidence.has_mutations or task_outcome.sources
@@ -689,9 +691,6 @@ def _stream_code_agent_core(
                     chat_fn=chat, context_profile=context_profile, tool_schemas=step_schemas,
                     cancel_handle=upstream_cancel_handle, audit_sink=compaction_audit_sink,
                     restore_source_context=run_evidence.restore_source_context,
-                    web_closing_sources=(run_evidence.read_source_pages
-                                         if not run_evidence.has_mutations
-                                         and not task_outcome.artifact_contract_seen else None),
                 )
                 provider_messages = turn_context.provider_messages(
                     read_source_handles=(run_evidence.read_source_handles
@@ -712,8 +711,12 @@ def _stream_code_agent_core(
                 if web_answer_due:
                     # The ordinary model answers in its own words from what it
                     # read; only this turn's input changes, history keeps no copy.
-                    provider_messages = [*provider_messages, {"role": "user", "content": web_answer_due}]
+                    provider_messages = [*provider_messages, {"role": "user", "content": web_answer_due,
+                                                              RUNTIME_BLOCK_KEY: "web_answer_due"}]
                     step_schemas = []
+                # The owner's UI text alone stays in the user role; every runtime
+                # block moves into the single system message (decision 2026-10-06).
+                provider_messages = project_runtime_roles(provider_messages)
                 if provider_messages is not turn_context.messages:
                     context_usage = get_context_usage(
                         provider_messages, ctx_size=safe_num_ctx,
@@ -976,6 +979,7 @@ def _stream_code_agent_core(
             if not web_answer_due and not tool_calls and _contains_tool_trace(content):
                 turn_context.messages.append({
                     "role": "user",
+                    RUNTIME_BLOCK_KEY: "tool_trace_correction",
                     "content": (
                         "[internal correction] Tool trace was malformed or unavailable. "
                         "Do not expose internal tool markup. Use a currently available "
@@ -1072,14 +1076,6 @@ def _stream_code_agent_core(
                     "source_status": source_status,
                     "task_outcome": task_outcome.snapshot(),
                 }
-                # Step B: drift Elira's mood from this exchange (auto, global,
-                # decaying). Fire-and-forget — never breaks the run.
-                try:
-                    from app.application.persona.mood import nudge_mood
-
-                    nudge_mood(user_message, final_text)
-                except Exception:
-                    pass
                 if auto_remember:
                     _try_remember_turn(
                         user_message=user_message,

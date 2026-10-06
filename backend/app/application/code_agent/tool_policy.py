@@ -11,7 +11,7 @@ BASE_TOOLS: tuple[str, ...] = (
     "capability_load", "runtime_control",
     "read_file", "write_file", "edit_file", "glob", "grep", "path_exists",
     "project_map", "todo_update", "delegate_task", "run_bash", "run_server",
-    "web_search", "web_fetch", "recall", "remember",
+    "web_search", "web_fetch", "recall", "remember", "calc",
 )
 # Legacy prompt grouping; persona never changes tool access.
 READONLY_TOOLS: tuple[str, ...] = (

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app.application.code_agent.answer_contracts import _quote_spans, is_name_like_quote
+from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.core.redaction import redact_text
 from app.application.web_evidence.receipts import (
     SOURCE_PATTERN, format_source, merge_sources, source_ids, valid_source,
@@ -622,11 +623,11 @@ class RunEvidence:
         if not context:
             return messages
         # This runs after complete tool-result groups, never between a call
-        # and its results. Ordinary history keeps its exact request prefix.
-        # A trailing assistant message becomes an assistant prefill in local
-        # chat templates, causing source text to leak as the answer. Keep this
-        # server-owned, explicitly untrusted data block on the input side.
-        return [*messages, {"role": "user", "content": context, "_msg_id": "web-source-context"}]
+        # and its results. The explicitly untrusted data block is a runtime
+        # block: projected into the system section, never sent in the owner's
+        # name nor as an assistant prefill.
+        return [*messages, {"role": "user", "content": context, "_msg_id": "web-source-context",
+                            RUNTIME_BLOCK_KEY: "restored_sources"}]
 
     def repeated_operation_hint(self, requested_ids: Iterable[str]) -> str:
         """Point a refused operation to its existing evidence without a model turn."""
@@ -656,8 +657,10 @@ class RunEvidence:
         return header + "\n\n".join(blocks) if blocks else ""
 
     def _source_ids_in_context(self, messages: Iterable[dict[str, Any]]) -> set[str]:
+        # Restored excerpts reach the model inside the projected system section.
         contents = [str(message.get("content") or "") for message in messages
-                    if message.get("role") == "tool" or message.get("_msg_id") == "web-source-context"]
+                    if message.get("role") in {"tool", "system"}
+                    or message.get("_msg_id") == "web-source-context"]
         return {
             source["id"] for source in self._sources
             if source["status"] == "excerpt" and source["quote"]
@@ -670,11 +673,6 @@ class RunEvidence:
         return tuple(source["id"] for source in self._sources
                      if source["id"] in present and source.get("quote_verified") is True
                      and valid_source(source))[-3:]
-
-    def read_source_pages(self, messages: Iterable[dict[str, Any]]) -> tuple[str, ...]:
-        """Pages behind ``read_source_handles``: what the answer may link to."""
-        handles = set(self.read_source_handles(messages))
-        return tuple(dict.fromkeys(source["url"] for source in self._sources if source["id"] in handles))
 
     def mark_sources_presented(self, messages: Iterable[dict[str, Any]]) -> None:
         """Called on the actual packed messages immediately before inference."""

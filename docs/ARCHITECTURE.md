@@ -152,12 +152,33 @@ a successfully completed run.
 - MCP/LSP remain per-run and appear only after a relevant `runtime_control`
   request. Typed IT Ops and SSH are discovered through that same adapter; domain
   routing hints neither preload schemas nor start an MCP server.
-- All conversation and work use one compact stable system prompt. There is no
-  greeting/compliment regex or separate conversational path. Current date,
-  persona development, relevant personal memory and mood follow history.
-- Ordinary file/shell, web search/reading, memory and runtime discovery tools
-  are visible from the first turn (`tool_policy.BASE_TOOLS`). Their work and
-  source-verification instructions are loaded before the current user request.
+- All conversation and work use one compact stable base system prompt. There
+  is no greeting/compliment regex or separate conversational path.
+- Role contract (owner's decision 2026-10-06): the `user` role carries only the
+  owner's own UI text, the `assistant` role only real model replies, `tool` only
+  tool results. Runtime-authored text — request context (date, workspace,
+  personal memory, resources), task contract and state, guidance, skills, plan,
+  restored excerpts, corrections, Resume instructions, prior-turn facts and
+  summaries — is marked `_runtime_block` in the internal list and
+  `history.project_runtime_roles` moves it into a `[РАБОЧИЙ КОНТЕКСТ RUNTIME]`
+  section at the end of the single leading system message right before each
+  provider call. Untrusted text (project files, web excerpts) keeps its explicit
+  untrusted label there and never enters the base prompt. A rejected answer is
+  quoted inside its correction, never left as the model's last reply. Runtime
+  blocks are replaced in place so an unchanged block keeps the system prefix.
+- Ordinary file/shell, web search/reading, memory, runtime discovery tools and
+  the exact calculator `calc` are visible from the first turn
+  (`tool_policy.BASE_TOOLS`). Their work and source-verification instructions
+  are runtime blocks in the system section.
+- Math contour (owner's decision 2026-10-06): the rule "check calculations with
+  a tool" is executed with read-only tools (`side_effect=False`, no approval
+  card in "ask"): `calc` (exact decimal/rational arithmetic, percentages,
+  algebra via SymPy built from an AST allowlist — input is never evaluated as
+  code), group `math` (`unit_convert`, `finance_calc`: invoices, VAT, markup vs
+  margin, discounts, loans, splits) and `csv` filters/aggregates (group `data`;
+  its old `eval` of the question was removed). Shared Decimal parsing lives in
+  `application/calculation/numbers.py` (also used by `bom_validate`). Scripts
+  remain for complex modelling and ask for approval in "ask" mode.
   Correct task execution takes priority over short-chat TTFT; the discovery-only
   default was reverted on 2026-09-06 after a live current-events refusal.
 - Task guidance arrives with tools, including Web and external MCP/SSH/LSP
@@ -196,10 +217,10 @@ a successfully completed run.
   Missing excerpts after compaction/Resume can be restored from the evidence
   ledger without another request or a recovery refusal. Another diagnostic can
   permit a bounded retry of a failed operation, not an already successful search
-  or read. Distinct arguments/inputs remain available. After complete result
-  groups, one input-side cue anchors the ordinary answer to the original goal
-  and the excerpts still present in the packed context; it adds no model call,
-  mandatory summary or tool restriction. File/action goals continue to delivery.
+  or read. Distinct arguments/inputs remain available. No runtime cue follows a
+  read: a trailing user-role "next step, do not output" block made Qwen3.8 treat
+  its finished answer as reasoning and write it twice (removed 2026-10-06).
+  File/action goals continue to delivery.
   Passive failed browser reads are guarded individually;
   interactive browser access remains visible.
   Source availability uses the existing web-corpus SQLite store, separately
@@ -243,7 +264,8 @@ a successfully completed run.
   excerpts are appended within a 7000-character restoration budget; compaction
   rebuilds that snapshot before context-budget accounting. This preserves the
   ordinary request prefix and does not add model calls or semantic validation.
-  Restored excerpts remain untrusted input, never an assistant-answer prefill.
+  Restored excerpts remain labelled untrusted data in the runtime section, never
+  an assistant-answer prefill nor text in the owner's name.
   An explicit user quote-word limit is checked at answer acceptance; numeric
   word-count labels are computed from the unchanged quote. One format correction
   is allowed and persists across Resume; repeated overflow is degraded.
@@ -282,9 +304,9 @@ a successfully completed run.
   vLLM receives only its supported explicitly configured sampling parameters;
   DRY and llama.cpp repeat settings are omitted and logged, never translated into
   a different penalty. Unknown backends do not receive backend-specific extras.
-- Transient persona mood is captured once per run and appended to the current
-  user message after history. It is excluded from the stable persona/system
-  prefix so a mood change does not invalidate cached instructions and schemas.
+- There is no transient persona mood (removed 2026-10-06 by the owner's
+  decision): tone comes only from the selected persona mode, and the runtime
+  never appends a tone line to the user's message.
 - No tool/path/asset/LAN authorization scope, internal ApprovalStore,
   feature dispatch gate, max steps or run deadline.
 - Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
@@ -553,9 +575,9 @@ templates and inherit `ask`, `accept_edits`, or `bypass`.
 - Context usage and prompt telemetry include the exact activated tool schemas;
   integrations can no longer fill the server window while the UI reports only
   message text. `context_prepared` updates the UI before prompt prefill starts.
-- Model payloads contain exactly one leading `system` message. Summaries,
-  verified facts and previous tool output remain assistant-shaped runtime
-  context because strict Qwen templates reject late system messages.
+- Model payloads contain exactly one leading `system` message (strict Qwen
+  templates reject late system messages). Summaries, verified facts and previous
+  tool output are runtime blocks projected into its runtime section.
 - Every chat payload sets `cache_prompt: true`.
 - The final llama.cpp SSE usage/timings event is preserved as
   `cached_prompt_tokens`, cache hit ratio, model TTFT, and separate prompt/output

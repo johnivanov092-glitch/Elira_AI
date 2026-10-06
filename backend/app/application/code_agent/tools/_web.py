@@ -469,6 +469,33 @@ def tool_web_search(
     }
 
 
+_LOGIN_PATH = re.compile(r"/(?:login|signin|sign-in|sign_in|auth/login|account/login|accounts/login)\b", re.I)
+_CHALLENGE_URL = re.compile(r"(?:[?&](?:js_challenge|__cf_chl[a-z_]*|cf_chl[a-z_]*)=|[?&]reason=lor)", re.I)
+_CHALLENGE_TEXT = re.compile(
+    r"verify you are (?:a )?human|checking (?:if the site connection is secure|your browser)|"
+    r"please wait for verification|just a moment\.\.\.|enable javascript and cookies to continue|"
+    r"attention required!|access denied|you have been blocked|проверка, что вы не робот|"
+    r"подтвердите, что вы не робот", re.I)
+_WALL_TEXT_LIMIT = 2500
+
+
+def _access_wall(requested: str, result: PageFetchResult) -> str:
+    """Why a fetched page is a login wall or bot check instead of content ('' if it is not).
+
+    Task 18 (2026-10-06): Reddit now answers anonymous reads with a JS challenge
+    or a login redirect; such pages were stored as read excerpts and the model
+    reasoned over junk instead of taking the next search result.
+    """
+    final = result.final_url or requested
+    if _LOGIN_PATH.search(urlsplit(final).path) and not _LOGIN_PATH.search(urlsplit(requested).path):
+        return "сайт перенаправил на вход в аккаунт"
+    if _CHALLENGE_URL.search(final):
+        return "страница проверки от ботов"
+    if len(result.text) < _WALL_TEXT_LIMIT and _CHALLENGE_TEXT.search(result.text):
+        return "страница проверки от ботов или запрета доступа"
+    return ""
+
+
 def _fetch_one(url: str, limit: int, *, force_refresh: bool = False) -> PageFetchResult:
     from app.application.web_evidence import availability
 
@@ -480,6 +507,11 @@ def _fetch_one(url: str, limit: int, *, force_refresh: bool = False) -> PageFetc
     except Exception:
         availability.finish(probe, ok=False)
         raise
+    wall = _access_wall(url, result) if result.ok else ""
+    if wall:
+        # Not content: never a read excerpt. The model takes the next result.
+        result = replace(result, text="", error=f"не открылась: {wall} ({result.final_url or url}) — "
+                                                f"возьми другой источник из выдачи")
     # Rendering is attempted only after an accessible static response. Its
     # independent browser outcome must not teach an HTTP transport failure.
     availability.finish(probe, ok=result.ok or result.rendered,

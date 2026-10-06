@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from _runtime_roles import original_tool_text, restored_sources
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
 from app.application.code_agent.delivery_session import build_continuation_kwargs
@@ -218,18 +219,15 @@ def test_web_tool_history_keeps_exact_wire_prefix_without_duplicate_excerpts(tmp
     assert len(captures) == 4
     assert not any(event["type"] == "context_compacted" for event in events)
     for previous, current in zip(captures, captures[1:]):
-        # The single trailing closing cue is refreshed after each result batch;
-        # every earlier instruction and tool receipt must retain its wire prefix.
-        previous_messages = previous["messages"]
-        if previous_messages[-1].get("_msg_id") == "web-closing-context":
-            previous_messages = previous_messages[:-1]
-        before = _normalize_messages_for_request(previous_messages)
+        # Every earlier instruction and tool receipt retains its wire prefix;
+        # no runtime cue is appended after a result batch.
+        before = _normalize_messages_for_request(previous["messages"])
         after = _normalize_messages_for_request(current["messages"])
         assert previous["tools"] == current["tools"]
         assert before == after[:len(before)]
-        assert current["messages"][-1].get("_msg_id") == "web-closing-context"
-        assert sum(message.get("_msg_id") == "web-closing-context"
-                   for message in current["messages"]) == 1
+        assert current["messages"][-1]["role"] == "tool"
+        assert not any(message.get("_msg_id") == "web-closing-context"
+                       for message in current["messages"])
     assert not any(message.get("_msg_id") == "web-source-context" for call in captures for message in call["messages"])
     final = next(event for event in events if event["type"] == "final_response")
     assert final["source_status"] == "matched"
@@ -247,8 +245,8 @@ def test_loop_restores_exact_excerpts_missing_from_truncated_tool_output(tmp_pat
                 "name": "web_fetch", "arguments": {"url": "https://example.org/long", "max_chars": 200000},
             }}]}}
         sources = next(event["sources"] for event in events if event["type"] == "tool_call")
-        tool_text = "\n".join(message["content"] for message in kwargs["messages"] if message["role"] == "tool")
-        restored_text = "\n".join(message["content"] for message in kwargs["messages"] if message.get("_msg_id") == "web-source-context")
+        tool_text = original_tool_text(kwargs["messages"])
+        restored_text = restored_sources(kwargs["messages"])
         omitted = [source for source in sources if source["quote"] not in tool_text]
         assert omitted, "fixture must exceed the canonical web tool text budget"
         restored = next(source for source in omitted if source["quote"] in restored_text)
@@ -312,8 +310,8 @@ def test_loop_restores_used_excerpt_after_real_compaction(tmp_path, monkeypatch)
             return {"message": {"content": reference, "tool_calls": [{"id": f"compact-call-{len(captures)}", "function": {
                 "name": "web_fetch", "arguments": {"url": f"https://example.org/{len(captures)}"},
             }}]}}
-        tool_text = "\n".join(message["content"] for message in kwargs["messages"] if message["role"] == "tool")
-        restored_text = "\n".join(message["content"] for message in kwargs["messages"] if message.get("_msg_id") == "web-source-context")
+        tool_text = original_tool_text(kwargs["messages"])
+        restored_text = restored_sources(kwargs["messages"])
         assert first_source["quote"] not in tool_text
         assert first_source["quote"] in restored_text
         return {"message": {"content": "Original exact fixture fact. " + reference, "tool_calls": []}}

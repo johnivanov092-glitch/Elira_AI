@@ -3,6 +3,7 @@ import hashlib
 
 import pytest
 
+from _runtime_roles import runtime_text, user_texts
 from app.application.code_agent.answer_acceptance import AcceptanceDecision, AnswerAcceptance
 from app.application.code_agent.answer_contracts import web_source_citation_violations
 from app.application.code_agent.run_evidence import RunEvidence
@@ -51,7 +52,7 @@ def test_unread_factual_citation_gets_one_correction_then_removes_unsafe_body():
     assert first.action == "retry"
     assert first.reason == "web_source"
     assert first.event["contract"] == "web_source_citation"
-    assert first.messages == ({"role": "user", "content": first.correction},)
+    assert first.messages == ({"role": "user", "content": first.correction, "_runtime_block": "answer_correction"},)
     assert not first.retain_rejected_answer
     assert unsafe not in str(first.messages)
     assert not outcome.decision
@@ -155,8 +156,8 @@ def test_malformed_url_is_unknown_instead_of_crashing():
 def test_ordinary_work_correction_retains_draft_by_default():
     decision = AcceptanceDecision("retry", "Result needing a code fix", reason="outcome", correction="Fix the file")
     assert decision.messages == (
-        {"role": "assistant", "content": decision.text},
-        {"role": "user", "content": decision.correction},
+        {"role": "assistant", "content": decision.text, "_runtime_block": "rejected_answer"},
+        {"role": "user", "content": decision.correction, "_runtime_block": "answer_correction"},
     )
 
 
@@ -183,8 +184,9 @@ def test_rejected_web_draft_does_not_reenter_model_context(tmp_path, monkeypatch
             return {"message": {"content": unsafe}}
         assert not any(row.get("role") == "assistant" and row.get("content") == unsafe
                        for row in kwargs["messages"])
-        assert any(row.get("role") == "user" and "Проверка прочитанных источников" in row.get("content", "")
-                   for row in kwargs["messages"])
+        assert "Проверка прочитанных источников" in runtime_text(kwargs["messages"])
+        assert not any("Проверка прочитанных источников" in text for text in user_texts(kwargs["messages"]))
+        assert unsafe not in runtime_text(kwargs["messages"])
         assert any(row.get("role") == "tool" and QUOTE in row.get("content", "")
                    for row in kwargs["messages"])
         return {"message": {"content": f"{QUOTE} [Источник]({READ_URL})."}}
