@@ -485,6 +485,43 @@ def test_three_installed_releases_preserve_forward_return_candidates_and_data(tm
         release.ReleaseManager(tmp_path, layout=manager.layout, storage=storage)
 
 
+def test_admission_retires_older_verified_copies_that_were_never_installed(tmp_path):
+    manager, _, storage = _protected_manager(tmp_path)
+    # verified_at order: a < x < b < y. x was verified but never installed;
+    # y was verified after b and may still be proposed.
+    for name, verified_at in (("a", 1.0), ("x", 1.5), ("b", 2.0), ("y", 10.0)):
+        source = _candidate(manager, name)
+        storage.publish(source, manager.path(name))
+        release._write_json(manager.record(name), {
+            "release_id": name, "status": "verified", "root": str(manager.path(name)),
+            "executable": "desktop.py", "sha256": manager.fingerprint(manager.path(name), executable="desktop.py"),
+            "verified_at": verified_at,
+        })
+    publishing = manager.layout.published / ".z.publishing-0001"
+    publishing.mkdir()
+    unrecorded = manager.layout.published / "unrecorded"
+    unrecorded.mkdir()
+    try:
+        _request_and_confirm(manager, "a")
+        assert manager.apply_pending()
+        assert manager.path("x").is_dir()  # Verified after the admitted release a.
+
+        _request_and_confirm(manager, "b")
+        assert manager.apply_pending()
+        assert manager.state()["installed_releases"] == list("ab")
+        assert not manager.path("x").exists()
+        receipt = release._read_json(manager.record("x"))
+        assert receipt["status"] == "retired" and receipt["retired_reason"] == "never_installed"
+        assert manager.path("y").is_dir()
+        assert release._read_json(manager.record("y"))["status"] == "verified"
+        assert manager.checked("a") and manager.checked("b") and manager.checked("y")
+        assert publishing.is_dir() and unrecorded.is_dir()
+        assert all(manager.candidate_path(name).is_dir() for name in "abxy")
+    finally:
+        manager._stop_ui()
+        manager._stop_backend()
+
+
 def _legacy_bootstrap_source(tmp_path):
     legacy = FixtureManager(tmp_path)
     source = _candidate(legacy, "legacy-active")

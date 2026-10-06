@@ -1247,6 +1247,7 @@ class ReleaseManager:
                 if len(keep) >= 3:
                     break
                 keep.add(item)
+            self._retire_unused_verified(history, keep, state.get("active"))
             if len(history) <= 3:
                 return
             # The hidden reserve must also be usable before an older copy goes.
@@ -1257,31 +1258,13 @@ class ReleaseManager:
                     continue
                 root = self.path(item)
                 receipt = _read_json(self.record(item))
-                if root.parent != self.layout.published or any(
-                    boundary == root or root in boundary.parents
-                    for boundary in (self.platform, self.store, self.data, self.journals,
-                                     self.layout.candidates, self.layout.config_root)
-                ):
-                    raise ValueError("Retention target overlaps persistent or editable paths")
+                self._check_retention_target(root)
                 if not receipt.get("retention_retiring"):
                     self.checked(item)
                     receipt["retention_retiring"] = True
                     _write_json(self.record(item), receipt)
                 if root.exists():
-                    # Include caches and bytecode: rmtree must never encounter a
-                    # junction or link hidden in fingerprint-excluded paths.
-                    _contained(root, self.layout.published)
-                    def walk_error(error: OSError) -> None:
-                        raise error
-
-                    for folder, directories, names in os.walk(root, onerror=walk_error):
-                        for name in [*directories, *names]:
-                            path = Path(folder) / name
-                            info = path.lstat()
-                            if (path.is_symlink() or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-                                    or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
-                                raise ValueError("Retention refuses linked or special release files")
-                    shutil.rmtree(root)
+                    self._remove_published_tree(root)
                 receipt.update(status="retired", retired_at=time.time())
                 _write_json(self.record(item), receipt)
                 history.remove(item)
@@ -1292,6 +1275,64 @@ class ReleaseManager:
             # Cleanup cannot turn a successfully admitted release into a rollback.
             # The durable retirement intent allows retry on the next admission.
             LOG.exception("Installed release retention incomplete; application and candidates retained")
+
+    def _retire_unused_verified(self, installed: list[str], keep: set[str], active: str | None) -> None:
+        """Verification seals a copy into published before anyone installs it, and
+        installed-release retention never sees a copy that was not installed, so such
+        copies stayed forever. Retire those verified BEFORE the admitted release; a copy
+        verified after it may still be proposed for installation and stays."""
+        if not active:
+            return
+        try:
+            admitted_at = _read_json(self.record(active), {}).get("verified_at")
+        except (OSError, ValueError):
+            LOG.exception("Unused verified releases retained: the admitted release record is unreadable")
+            return
+        if not isinstance(admitted_at, (int, float)) or not self.layout.published.is_dir():
+            return
+        for folder in sorted(self.layout.published.iterdir()):
+            item = folder.name
+            # Dot-folders are publications in progress (or interrupted ones): never touched here.
+            if item.startswith(".") or not _ID.fullmatch(item) or item in keep or item in installed:
+                continue
+            try:
+                root = self.path(item)
+                receipt = _read_json(self.record(item), {})
+                verified_at = receipt.get("verified_at")
+                if (receipt.get("status") != "verified" or not root.is_dir()
+                        or not isinstance(verified_at, (int, float)) or verified_at >= admitted_at):
+                    continue
+                self._check_retention_target(root)
+                self._remove_published_tree(root)
+                receipt.update(status="retired", retired_at=time.time(), retired_reason="never_installed")
+                _write_json(self.record(item), receipt)
+                LOG.info("Retired verified release %s that was never installed (older than %s)", item, active)
+            except Exception:
+                LOG.exception("Unused verified release %s retained; retry on the next admission", item)
+
+    def _check_retention_target(self, root: Path) -> None:
+        if root.parent != self.layout.published or any(
+            boundary == root or root in boundary.parents
+            for boundary in (self.platform, self.store, self.data, self.journals,
+                             self.layout.candidates, self.layout.config_root)
+        ):
+            raise ValueError("Retention target overlaps persistent or editable paths")
+
+    def _remove_published_tree(self, root: Path) -> None:
+        # Include caches and bytecode: rmtree must never encounter a
+        # junction or link hidden in fingerprint-excluded paths.
+        _contained(root, self.layout.published)
+        def walk_error(error: OSError) -> None:
+            raise error
+
+        for folder, directories, names in os.walk(root, onerror=walk_error):
+            for name in [*directories, *names]:
+                path = Path(folder) / name
+                info = path.lstat()
+                if (path.is_symlink() or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                        or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
+                    raise ValueError("Retention refuses linked or special release files")
+        shutil.rmtree(root)
 
     def recover(self) -> dict:
         state = self.state()
