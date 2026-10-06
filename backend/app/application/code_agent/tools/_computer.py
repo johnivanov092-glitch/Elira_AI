@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import time
 from typing import Any
 
 # ─── computer use (desktop control) ───────────────────────────────────────────
@@ -25,6 +27,63 @@ _DEFAULT_SCREEN_PROMPT = (
     "поля ввода, меню и их примерное расположение (слева/справа/сверху/снизу и "
     "приблизительные координаты в пикселях). Если есть текст — приведи его."
 )
+
+def _send_unicode_text(text: str) -> tuple[int, int]:
+    """Type ``text`` on Windows via SendInput(KEYEVENTF_UNICODE): (sent, expected) events.
+
+    pyautogui.write only maps ASCII 32–127 through the layout active at import, so
+    Cyrillic was silently dropped (and Latin could come out as «руддщ» under the
+    Russian layout) while the tool reported success. Unicode key events bypass the
+    layout; Enter/Tab are real virtual keys.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+    class _EVENT(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("event", _EVENT)]
+
+    input_keyboard, key_up, unicode_flag = 1, 0x0002, 0x0004
+    send = ctypes.windll.user32.SendInput
+
+    def press(vk: int = 0, scan: int = 0, flags: int = 0) -> int:
+        pair = (INPUT * 2)()
+        for item, extra in zip(pair, (0, key_up)):
+            item.type = input_keyboard
+            item.event.ki = KEYBDINPUT(vk, scan, flags | extra, 0, 0)
+        return int(send(2, pair, ctypes.sizeof(INPUT)))
+
+    sent = expected = 0
+    for index, char in enumerate(text):
+        if char == "\r" and text[index + 1:index + 2] == "\n":
+            continue
+        if char in "\r\n":
+            expected += 2
+            sent += press(vk=0x0D)
+        elif char == "\t":
+            expected += 2
+            sent += press(vk=0x09)
+        else:
+            encoded = char.encode("utf-16-le")
+            for offset in range(0, len(encoded), 2):  # surrogate pairs for non-BMP characters
+                expected += 2
+                sent += press(scan=int.from_bytes(encoded[offset:offset + 2], "little"), flags=unicode_flag)
+        time.sleep(0.005)
+    return sent, expected
+
 
 _VALID_ACTIONS = {
     "screenshot",
@@ -150,8 +209,20 @@ def tool_computer(
         if act == "type":
             if not text:
                 return {"ok": False, "error": "text_required", "text": "ERROR: action 'type' requires non-empty text."}
-            gui.write(str(text), interval=0.01)
-            return {"ok": True, "text": f"Введён текст ({len(str(text))} симв.)."}
+            value = str(text)
+            if os.name == "nt":
+                sent, expected = _send_unicode_text(value)
+                if sent < expected:
+                    return {"ok": False, "error": "input_rejected",
+                            "text": (f"ERROR: система приняла {sent} из {expected} событий ввода — текст введён "
+                                     "не полностью (окно другого уровня прав или блокировка ввода).")}
+            elif not value.isascii():
+                return {"ok": False, "error": "unsupported_text",
+                        "text": "ERROR: ввод не-ASCII текста (кириллица) на этой платформе не поддерживается; "
+                                "ничего не введено."}
+            else:
+                gui.write(value, interval=0.01)
+            return {"ok": True, "text": f"Введён текст ({len(value)} симв.)."}
 
         if act == "key":
             combo = keys if isinstance(keys, list) else ([keys] if isinstance(keys, str) and keys else [])

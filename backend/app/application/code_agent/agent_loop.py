@@ -146,6 +146,20 @@ from app.application.code_agent.project_prompt import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+# `_runtime_*` arguments are injected by this loop only (resource binding,
+# refusal reasons, the verified BOM snapshot). A model or prompt-injected page
+# must not supply them, and they are not part of any published event.
+_RUNTIME_ARGUMENT_PREFIX = "_runtime_"
+
+
+def _without_runtime_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in arguments.items() if not str(key).startswith(_RUNTIME_ARGUMENT_PREFIX)}
+
+
+def _public_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    return redact_secrets(_without_runtime_arguments(arguments))
+
+
 def _server_url_alive(url: str) -> bool:
     """R2 liveness gate: the remembered dev-server URL is backed by a tracked
     process that is alive AND listening. Module-level so tests patch it."""
@@ -1120,7 +1134,7 @@ def _stream_code_agent_core(
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
-                parsed_args = ToolRegistry._coerce_args(raw_args)
+                parsed_args = _without_runtime_arguments(ToolRegistry._coerce_args(raw_args))
                 try:
                     parsed_args = normalize_web_tool_arguments(name, parsed_args)
                 except WebArgumentFormatError as exc:
@@ -1129,7 +1143,7 @@ def _stream_code_agent_core(
                                                   "name": name, "content": json.dumps(denial, ensure_ascii=False)})
                     tool_round_trips += 1
                     yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": redact_secrets(parsed_args), "result": denial["text"],
+                           "arguments": _public_arguments(parsed_args), "result": denial["text"],
                            "ok": False, "error": "argument_format", "dispatched": False,
                            "state_changed": False, "execution_status": "rejected"}
                     continue
@@ -1138,7 +1152,7 @@ def _stream_code_agent_core(
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                                   "name": name, "content": denial})
                     yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": redact_secrets(parsed_args), "result": denial,
+                           "arguments": _public_arguments(parsed_args), "result": denial,
                            "ok": False, "error": "delegate_read_only", "dispatched": False,
                            "state_changed": False, "execution_status": "rejected"}
                     continue
@@ -1156,7 +1170,7 @@ def _stream_code_agent_core(
                         turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                                       "name": name, "content": denial})
                         yield {"type": "tool_call", "step": step, "tool": name,
-                               "arguments": redact_secrets(parsed_args), "result": denial,
+                               "arguments": _public_arguments(parsed_args), "result": denial,
                                "ok": False, "error": "web_site_limit", "dispatched": False,
                                "state_changed": False, "execution_status": "rejected"}
                         continue
@@ -1174,7 +1188,7 @@ def _stream_code_agent_core(
                         turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                                       "name": name, "content": _audience_denial})
                         yield {"type": "tool_call", "step": step, "tool": name,
-                               "arguments": redact_secrets(parsed_args), "result": _audience_denial,
+                               "arguments": _public_arguments(parsed_args), "result": _audience_denial,
                                "ok": False, "error": "audience_languages", "dispatched": False,
                                "state_changed": False, "execution_status": "rejected"}
                         continue
@@ -1305,7 +1319,7 @@ def _stream_code_agent_core(
                     tool_round_trips += 1
                     call_log.append(f"{name}(cached excerpts)")
                     yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": redact_secrets(parsed_args), "result": restored_read,
+                           "arguments": _public_arguments(parsed_args), "result": restored_read,
                            "ok": True, "cache_hit": True, "dispatched": False,
                            "state_changed": False, "execution_status": "ok"}
                     continue
@@ -1335,7 +1349,7 @@ def _stream_code_agent_core(
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                      "name": name, "content": json.dumps(recovery, ensure_ascii=False)})
                     yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": redact_secrets(parsed_args), "result": recovery["text"],
+                           "arguments": _public_arguments(parsed_args), "result": recovery["text"],
                            "ok": False, "error": recovery["reason"], "dispatched": False,
                            "state_changed": False, "execution_status": "rejected",
                            "command_progress": command_progress.snapshot()}
@@ -1378,7 +1392,7 @@ def _stream_code_agent_core(
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                                   "name": name, "content": denial})
                     yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": redact_secrets(parsed_args), "result": denial,
+                           "arguments": _public_arguments(parsed_args), "result": denial,
                            "ok": False, "error": "task_persistence_denied", "dispatched": False,
                            "state_changed": False, "execution_status": "rejected"}
                     continue
@@ -1561,10 +1575,7 @@ def _stream_code_agent_core(
                     "type": "tool_call",
                     "step": step,
                     "tool": name,
-                    "arguments": redact_secrets({
-                        key: value for key, value in parsed_args.items()
-                        if not key.startswith("_runtime_")
-                    }),
+                    "arguments": _public_arguments(parsed_args),
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                     # Server-owned mutation flag (ToolSpec.side_effect + real

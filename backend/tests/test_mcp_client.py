@@ -33,7 +33,8 @@ FAKE_SERVER = Path(__file__).parent / "_mcp_fake_server.py"
 def _client(*, fail_init: bool = False, hang_init: bool = False,
             tools_fail: bool = False, call_fail: bool = False,
             no_resources: bool = False, no_prompts: bool = False,
-            big_resource: bool = False, protocol_version: str | None = None) -> McpClient:
+            big_resource: bool = False, protocol_version: str | None = None,
+            call_delay: float = 0.0) -> McpClient:
     env = {}
     if fail_init:
         env["FAKE_MCP_FAIL_INIT"] = "1"
@@ -51,6 +52,8 @@ def _client(*, fail_init: bool = False, hang_init: bool = False,
         env["FAKE_MCP_BIG_RESOURCE"] = "1"
     if protocol_version:
         env["FAKE_MCP_PROTOCOL_VERSION"] = protocol_version
+    if call_delay:
+        env["FAKE_MCP_CALL_DELAY"] = str(call_delay)
     return McpClient(
         command=sys.executable,
         args=[str(FAKE_SERVER)],
@@ -156,6 +159,36 @@ class ToolCallTest(unittest.TestCase):
             self.assertIn("hello", chunks[0]["text"])
         finally:
             client.stop()
+
+    def test_long_tool_call_is_not_cut_by_a_fixed_deadline(self) -> None:
+        # Review defect 1503e626ff6b: tools/call was cut at 30 s while the server kept
+        # working, and the model repeated the non-idempotent action.
+        from unittest import mock
+
+        import app.application.tool_providers.mcp_client as mcp_client_module
+
+        client = _client(call_delay=1.5)
+        try:
+            client.start()
+            with mock.patch.object(client, "_request", wraps=client._request) as request:
+                result = client.call_tool("echo", {"text": "slow"})
+            self.assertIn("slow", result["content"][0]["text"])
+            self.assertIsNone(request.call_args.kwargs["timeout"])
+            self.assertGreater(mcp_client_module.DEFAULT_REQUEST_TIMEOUT, 0)
+        finally:
+            client.stop()
+
+    def test_stop_wakes_a_waiting_tool_call(self) -> None:
+        import threading
+        import time as _time
+
+        client = _client(call_delay=30)
+        client.start()
+        threading.Timer(0.5, client.stop).start()
+        started = _time.monotonic()
+        with self.assertRaises(McpError):
+            client.call_tool("echo", {"text": "never"})
+        self.assertLess(_time.monotonic() - started, 10)
 
     def test_call_tool_multiple_content_chunks(self) -> None:
         client = _client()

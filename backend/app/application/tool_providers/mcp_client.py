@@ -403,10 +403,17 @@ class McpClient:
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Invoke `tools/call` and return the server's result dict
         (the part inside the JSON-RPC `result` envelope, NOT the
-        envelope itself)."""
+        envelope itself).
+
+        No product deadline: a 30 s cut reported "timeout" while a long Blender
+        render / Unity build kept running, and the model repeated the
+        non-idempotent action. Stop (run cancel → stop_server) and server exit
+        wake this waiter with an error, so it cannot hang past either.
+        """
         response = self._request(
             "tools/call",
             {"name": tool_name, "arguments": arguments or {}},
+            timeout=None,
         )
         if "error" in response:
             err = response["error"] or {}
@@ -448,7 +455,7 @@ class McpClient:
         method: str,
         params: dict[str, Any],
         *,
-        timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
     ) -> dict[str, Any]:
         rid = self._next_request_id()
         pending = _PendingRequest()

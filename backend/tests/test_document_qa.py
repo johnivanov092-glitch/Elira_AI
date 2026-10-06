@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
@@ -12,6 +13,17 @@ from app.application.code_agent.document_validation import (
 )
 from app.application.code_agent.tools._content import tool_file_gen
 from app.application.code_agent.tools._resources import tool_resource_publish
+
+
+@pytest.fixture(autouse=True)
+def private_downloads(tmp_path, monkeypatch):
+    # The download namespace is checked for a taken name before QA; keep tests off the real one.
+    from app.core import config
+
+    generated = tmp_path / "generated-downloads"
+    generated.mkdir()
+    monkeypatch.setattr(config, "GENERATED_DIR", generated)
+    return generated
 
 
 def test_glued_centered_docx_heading_fails_validation(tmp_path) -> None:
@@ -302,3 +314,25 @@ def test_page_count_contract_is_inferred_only_from_explicit_document_wording() -
     assert infer_expected_page_count("Сделай одностраничный PDF") == 1
     assert infer_expected_page_count("Документ должен быть ровно 2 страницы") == 2
     assert infer_expected_page_count("Проверь страницу 2 сайта") is None
+
+
+def test_taken_download_name_is_refused_before_render_and_qa(tmp_path, private_downloads) -> None:
+    # Review defects 37e9fdf680d9 / 432e4a817120: destination_exists came only after the full QA.
+    (private_downloads / "proposal.docx").write_bytes(b"published earlier")
+    (private_downloads / "Report.docx").write_bytes(b"published earlier")
+    (tmp_path / "proposal.docx").write_bytes(b"new version")
+
+    with (
+        patch("app.application.code_agent.tools._resources.validate_document") as publish_qa,
+        patch("app.application.code_agent.tools._content.validate_document") as generate_qa,
+        patch("app.application.skills.generate_word") as generator,
+    ):
+        published = tool_resource_publish(tmp_path, project_path="proposal.docx")
+        generated = tool_file_gen(tmp_path, format="word", title="Report", content="Body", filename="Report.docx")
+
+    assert published["error"] == "destination_exists"
+    assert generated["error"] == "destination_exists"
+    publish_qa.assert_not_called()
+    generate_qa.assert_not_called()
+    generator.assert_not_called()
+

@@ -884,13 +884,52 @@ def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
 _GUI_VERIFY_SETTLE = 1.0  # extra seconds for a window/page to paint before the shot
 
 
-def _native_screenshot() -> dict[str, Any]:
-    """Grab the full primary screen to a PNG in the shared generated-files dir.
+def _process_window_rect(pid: int) -> tuple[int, int, int, int] | None:
+    """Screen rectangle of the started process's own foreground window, or None.
+
+    Only the window of this process (or its children: `cmd /c app.exe`) that is
+    currently in the foreground counts; a background process (bot, worker,
+    watcher) has none. Capturing anything else would send the user's other
+    windows (messengers, documents) to the vision model and the run journal.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        pids = {int(pid)}
+        try:
+            import psutil  # optional: resolve `cmd /c app.exe` children
+
+            pids |= {child.pid for child in psutil.Process(int(pid)).children(recursive=True)}
+        except Exception:
+            pass
+        user32 = ctypes.windll.user32
+        window = user32.GetForegroundWindow()
+        if not window or not user32.IsWindowVisible(window) or user32.IsIconic(window):
+            return None
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
+        if owner.value not in pids:
+            return None
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(window, ctypes.byref(rect)):
+            return None
+        if rect.right - rect.left < 8 or rect.bottom - rect.top < 8:
+            return None
+        return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        return None
+
+
+def _native_screenshot(bbox: tuple[int, int, int, int]) -> dict[str, Any]:
+    """Grab one window's rectangle to a PNG in the shared generated-files dir.
 
     Mirrors the dict shape of skills.runtime.screenshot_url (ok/path/filename)
     so the caller treats web and native captures uniformly. Best-effort: returns
     {"ok": False, "error": ...} instead of raising when Pillow is missing or the
-    grab fails (e.g. headless / no display)."""
+    grab fails (e.g. headless / no display). Never the whole desktop."""
     try:
         from PIL import ImageGrab
     except Exception as exc:  # pragma: no cover - optional dependency
@@ -903,7 +942,7 @@ def _native_screenshot() -> dict[str, Any]:
     fname = f"gui_native_{int(time.time())}.png"
     path = OUTPUT_DIR / fname
     try:
-        img = ImageGrab.grab()
+        img = ImageGrab.grab(bbox=bbox, all_screens=True)
         img.save(str(path))
     except Exception as exc:
         return {"ok": False, "error": f"native grab failed: {exc}"}
@@ -936,7 +975,17 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
             shot = {"ok": False, "error": str(exc)}
         kind = f"web (http://localhost:{handle.port})"
     else:
-        shot = _native_screenshot()
+        bbox = _process_window_rect(handle.pid)
+        if bbox is None:
+            # No window of this process in the foreground (background bot,
+            # worker, or a dev server that did not print its URL in time).
+            # The rest of the desktop belongs to the user and is not captured.
+            return (
+                "🖼 GUI verification: no foreground window of this process and no web port — "
+                "screen not captured. For a web UI pass port=…; for a desktop window use "
+                f"run_server(action='logs', pid={handle.pid}) or an explicit screenshot."
+            )
+        shot = _native_screenshot(bbox)
         kind = "native window"
 
     if not shot.get("ok"):

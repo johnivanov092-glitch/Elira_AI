@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Iterator
 import uuid
 
@@ -34,6 +35,16 @@ _ID = re.compile(r"[0-9a-f]{32}")
 _TRANSIENT = {".git", "__pycache__", ".pytest_cache"}
 _DEPENDENCIES = {".venv", "venv", "node_modules"}
 _CANCELLED: ContextVar[threading.Event | None] = ContextVar("skill_operation_cancelled", default=None)
+# validated_package runs for every loaded skill on every turn; re-reading a
+# 100 MB skill .venv cost ~3 s per message. A verified digest is reused only
+# while the tree's stat signature is unchanged, never for files modified within
+# the racy window, never for trees with links/reparse points, and the content is
+# re-hashed in full at least once per TTL.
+_DIGEST_CACHE: dict[str, tuple[str, str, float]] = {}
+_DIGEST_CACHE_LOCK = threading.Lock()
+_DIGEST_CACHE_TTL = 3600.0
+_RACY_WINDOW_NS = 2_000_000_000
+_REPARSE_POINT = 0x400  # stat.FILE_ATTRIBUTE_REPARSE_POINT (Windows symlinks and junctions)
 
 
 class _Cancelled(Exception):
@@ -296,6 +307,55 @@ def _digest(directory: Path, *, include_dependencies: bool = True) -> str:
     return digest.hexdigest()
 
 
+def _stat_signature(directory: Path) -> str | None:
+    """Cheap fingerprint of every entry's name, type, size, mtime and file id.
+
+    None means "do not trust a cached digest": a link or reparse point (its
+    target can change without changing the link) or a file modified so recently
+    that a same-timestamp rewrite could go unnoticed.
+    """
+    digest = hashlib.sha256()
+    newest = 0
+    for parent, directories, names in os.walk(directory, followlinks=False):
+        _check_cancelled()
+        directories[:] = sorted(name for name in directories if name not in _TRANSIENT)
+        for name in sorted([*directories, *names]):
+            if name in _TRANSIENT:
+                continue
+            path = os.path.join(parent, name)
+            entry = os.lstat(path)
+            if os.path.islink(path) or getattr(entry, "st_file_attributes", 0) & _REPARSE_POINT:
+                return None
+            digest.update(os.path.relpath(path, directory).encode("utf-8", "surrogatepass") + b"\0")
+            digest.update(f"{entry.st_mode}:{entry.st_size}:{entry.st_mtime_ns}:{entry.st_ino}:{entry.st_dev}\0"
+                          .encode("ascii"))
+            newest = max(newest, entry.st_mtime_ns)
+    if time.time_ns() - newest < _RACY_WINDOW_NS:
+        return None
+    return digest.hexdigest()
+
+
+def _verified_digest(directory: Path, verified: str) -> str:
+    """`_digest(directory)`, skipping the content re-read while nothing changed."""
+    key = str(directory)
+    signature = _stat_signature(directory)
+    now = time.monotonic()
+    with _DIGEST_CACHE_LOCK:
+        cached = _DIGEST_CACHE.get(key)
+    if signature is not None and cached is not None and cached[:2] == (signature, verified) \
+            and now - cached[2] < _DIGEST_CACHE_TTL:
+        return verified
+    observed = _digest(directory)
+    with _DIGEST_CACHE_LOCK:
+        # The pre-hash signature is stored: any change after it alters the next
+        # signature and forces a full re-hash.
+        if signature is not None and observed == verified:
+            _DIGEST_CACHE[key] = (signature, observed, now)
+        else:
+            _DIGEST_CACHE.pop(key, None)
+    return observed
+
+
 def _git(directory: Path, *arguments: str) -> str:
     from app.application.code_agent.tools._shell import (
         _kill_proc_tree, _new_process_group_kwargs, register_run_process, unregister_run_process,
@@ -418,7 +478,7 @@ def validated_package(
             raise ValueError("Saved skill package integrity check failed")
         if "directory" in expected and expected["directory"] != str(directory):
             raise ValueError("Saved skill package directory does not match its receipt")
-    observed = _digest(directory)
+    observed = _verified_digest(directory, digest)
     if observed != digest:
         raise PackageChanged({"name": name, "candidate_id": candidate_id, "directory": str(directory),
             "revision": revision, "verified_package_sha256": digest, "observed_package_sha256": observed,

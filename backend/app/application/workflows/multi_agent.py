@@ -6,6 +6,8 @@ seeding, multi-agent run orchestration, and legacy compatibility API.
 """
 from __future__ import annotations
 
+import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +20,7 @@ from app.application.workflows.store import (
     now_utc as _app_now_utc,
     upsert_workflow_template as _app_upsert_workflow_template,
 )
+from app.core.redaction import redact_text
 
 # Workflow ID constants (canonical definitions, re-exported by workflow_engine)
 MULTI_AGENT_DEFAULT_WORKFLOW_ID = "builtin.workflow.multi_agent.default"
@@ -306,6 +309,32 @@ def _build_multi_agent_timeline(template: dict[str, Any], step_results: dict[str
     return timeline
 
 
+# Directories we never scan — shared by the project overview and relevant-file
+# selection (same idea as the code-agent's internal grep). Pruned during the walk:
+# listing node_modules/.venv/.git first made both builders slow and wrong.
+_RELEVANCE_BLOCKED_PARTS = (".git", "node_modules", "__pycache__", ".venv", "dist", "build", ".mypy_cache",
+                            "logs", ".agent", ".runtime")
+# Secrets and logs never go into a model prompt (the Coding step's context ends
+# up in reports, chat history and exports). `.env.example`-style templates stay.
+_SECRET_FILE_RE = re.compile(
+    r"(?i)^(?:\.env(?!\.(?:example|sample|template|dist)$)(?:\..*)?|.*\.(?:pem|key|p12|pfx|jks|keystore|log)|"
+    r"id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|elira_api_token|credentials?(?:\..*)?|secrets?(?:\..*)?)$"
+)
+_MAX_CONTEXT_FILE_BYTES = 256 * 1024
+
+
+def _project_files(root: Path, *, limit: int) -> list[Path]:
+    """Up to ``limit`` files under ``root``, top-down and sorted, skipping blocked directories."""
+    found: list[Path] = []
+    for parent, directories, names in os.walk(root):
+        directories[:] = sorted(name for name in directories if name not in _RELEVANCE_BLOCKED_PARTS)
+        for name in sorted(names):
+            found.append(Path(parent) / name)
+            if len(found) >= limit:
+                return found
+    return found
+
+
 def _build_project_context_from_root(project_root: str | None) -> str:
     """Render a project overview (name + file list) for the selected folder.
 
@@ -322,13 +351,7 @@ def _build_project_context_from_root(project_root: str | None) -> str:
         root = Path(project_root)
         if not root.exists():
             return ""
-        file_list: list[str] = []
-        for file_path in sorted(root.rglob("*"))[:50]:
-            if not file_path.is_file():
-                continue
-            if any(blocked in str(file_path) for blocked in [".git", "node_modules", "__pycache__", ".venv", "dist"]):
-                continue
-            file_list.append(str(file_path.relative_to(root)))
+        file_list = [str(path.relative_to(root)) for path in _project_files(root, limit=50)]
         if not file_list:
             return ""
         return f"Открыт проект: {root.name}\nФайлы ({len(file_list)}):\n" + "\n".join("- " + item for item in file_list[:30])
@@ -336,9 +359,6 @@ def _build_project_context_from_root(project_root: str | None) -> str:
         return ""
 
 
-# Directories we never scan when picking relevant files — same ignore set as the
-# project-overview builder above and the code-agent's internal grep.
-_RELEVANCE_BLOCKED_PARTS = (".git", "node_modules", "__pycache__", ".venv", "dist", "build", ".mypy_cache")
 # Russian/English stop-words and generic verbs that carry no targeting signal —
 # keeping them would match nearly every file and drown out the real keywords.
 _RELEVANCE_STOPWORDS = frozenset(
@@ -399,12 +419,17 @@ def _build_file_context_from_root(
 
         scored: list[tuple[int, str, str]] = []  # (score, rel_path, text)
         scanned = 0
-        for file_path in sorted(root.rglob("*")):
+        for file_path in _project_files(root, limit=max_scan_files * 4):
             if scanned >= max_scan_files:
                 break
             if not file_path.is_file():
                 continue
-            if any(part in _RELEVANCE_BLOCKED_PARTS for part in file_path.parts):
+            if _SECRET_FILE_RE.match(file_path.name):
+                continue
+            try:
+                if file_path.stat().st_size > _MAX_CONTEXT_FILE_BYTES:
+                    continue
+            except OSError:
                 continue
             scanned += 1
             rel = str(file_path.relative_to(root)).replace("\\", "/")
@@ -421,8 +446,9 @@ def _build_file_context_from_root(
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
-                text = raw.decode("cp1252", errors="replace")
-            text = text.replace("\r\n", "\n").replace("\r", "\n")
+                # Legacy Windows files in this project are Russian (cp1251), not cp1252.
+                text = raw.decode("cp1251", errors="replace")
+            text = redact_text(text.replace("\r\n", "\n").replace("\r", "\n"))
             body_lower = text.lower()
             score += sum(body_lower.count(kw) for kw in keywords)
             if score > 0:

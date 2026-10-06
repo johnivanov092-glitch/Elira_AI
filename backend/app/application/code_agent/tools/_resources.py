@@ -336,6 +336,11 @@ def tool_resource_publish(
     name = _safe_download_name(chosen)
     if name is None:
         return _publish_refusal("invalid_download_name")
+    # The download namespace is shared by all chats and never overwritten: find a
+    # taken name BEFORE the expensive render/page-count/vision QA (publish_copy
+    # still re-checks atomically).
+    if (_Path(GENERATED_DIR) / name).exists():
+        return _publish_refusal("destination_exists")
 
     document_qa: dict[str, Any] | None = None
     if src.suffix.lower() in {".docx", ".pdf"}:

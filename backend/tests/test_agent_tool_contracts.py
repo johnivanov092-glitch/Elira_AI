@@ -160,6 +160,36 @@ def test_browser_reports_incomplete_multi_action_sequence() -> None:
     assert result["interacted"] is False
 
 
+def test_computer_type_sends_unicode_and_reports_partial_input(tmp_path: Path) -> None:
+    # Review defect 8a30d2a3f717: pyautogui.write dropped Cyrillic but reported success.
+    from unittest.mock import MagicMock
+
+    gui = MagicMock()
+    module = "app.application.code_agent.tools._computer"
+    with (
+        patch(f"{module}._load_pyautogui", return_value=(gui, None)),
+        patch(f"{module}.os.name", "nt"),
+        patch(f"{module}._send_unicode_text", return_value=(12, 12)) as send,
+    ):
+        ok = tool_computer(tmp_path, action="type", text="Привет")
+    send.assert_called_once_with("Привет")
+    gui.write.assert_not_called()
+    assert ok["ok"] is True
+
+    with (
+        patch(f"{module}._load_pyautogui", return_value=(gui, None)),
+        patch(f"{module}.os.name", "nt"),
+        patch(f"{module}._send_unicode_text", return_value=(4, 12)),
+    ):
+        partial = tool_computer(tmp_path, action="type", text="Привет")
+    assert partial["ok"] is False and partial["error"] == "input_rejected"
+
+    with patch(f"{module}._load_pyautogui", return_value=(gui, None)), patch(f"{module}.os.name", "posix"):
+        unsupported = tool_computer(tmp_path, action="type", text="Привет")
+    assert unsupported["ok"] is False and unsupported["error"] == "unsupported_text"
+    gui.write.assert_not_called()
+
+
 def test_computer_screenshot_requires_a_vision_description(tmp_path: Path) -> None:
     with (
         patch(

@@ -77,6 +77,33 @@ def is_trusted_host(host: str | None) -> bool:
         return False
 
 
+_LOCAL_ORIGIN_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
+
+
+def is_local_origin(origin: str | None) -> bool:
+    """True when a browser ``Origin`` belongs to the app itself (or is absent).
+
+    The user's browser reaches the backend from 127.0.0.1, so loopback trust
+    alone would let any page open in it (a router/NAS/IoT web UI on the LAN,
+    which CORS admits for mobile mode) drive the agent. Non-browser clients
+    send no Origin; ``null`` (file://, sandboxed frames) is foreign.
+    """
+    if origin is None or not origin.strip():
+        return True
+    value = origin.strip().lower()
+    if value in ("tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"):
+        return True
+    scheme, sep, rest = value.partition("://")
+    if not sep or scheme not in ("http", "https"):
+        return False
+    host = rest.split("/", 1)[0]
+    if host.startswith("["):
+        host = host.split("]", 1)[0] + "]"
+    else:
+        host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return host in _LOCAL_ORIGIN_HOSTS
+
+
 def extract_bearer(auth_header: str | None) -> str:
     """Return the token from an ``Authorization`` header (Bearer or raw)."""
     if not auth_header:
@@ -97,7 +124,8 @@ def make_auth_middleware(open_paths):
         if request.method == "OPTIONS" or request.url.path in open_paths:
             return await call_next(request)
         client_host = request.client.host if request.client else None
-        if not is_authorized(client_host, request.headers.get("authorization")):
+        if not is_authorized(client_host, request.headers.get("authorization"),
+                             origin=request.headers.get("origin")):
             return JSONResponse(
                 {"detail": "Unauthorized: API token required for non-local access"},
                 status_code=401,
@@ -113,18 +141,20 @@ def is_authorized(
     *,
     token: str | None = None,
     enabled: bool | None = None,
+    origin: str | None = None,
 ) -> bool:
     """Decide whether a request is allowed.
 
-    Loopback/local callers are always allowed. Everyone else must present a
-    token matching *token* (defaults to the server :data:`API_TOKEN`). When
-    enforcement is disabled, every request is allowed.
+    Loopback/local callers are allowed unless a browser marks the request as
+    coming from a foreign page (``Origin`` that is not the app). Everyone else
+    must present a token matching *token* (defaults to the server
+    :data:`API_TOKEN`). When enforcement is disabled, every request is allowed.
     """
     if enabled is None:
         enabled = auth_enabled()
     if not enabled:
         return True
-    if is_trusted_host(client_host):
+    if is_trusted_host(client_host) and is_local_origin(origin):
         return True
     presented = extract_bearer(auth_header)
     expected = API_TOKEN if token is None else token
