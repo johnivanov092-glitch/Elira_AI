@@ -215,3 +215,19 @@ def test_external_redirect_failure_does_not_block_original_origin(now, monkeypat
     assert row()["failures"] == 1
     assert row(origin=True) == {}
     assert health.begin("https://example.org/healthy")["allowed"]
+
+
+def test_access_wall_pauses_only_that_page_and_is_rechecked_later(now, monkeypatch):
+    thread = "https://www.reddit.com/r/worldwarzthegame/comments/abc/levels/"
+    monkeypatch.setattr(_web, "_fetch_one_untracked", lambda url, limit: PageFetchResult(
+        text="Welcome to Reddit", final_url="https://old.reddit.com/login/?reason=lor2", status_code=200))
+    first = _web._fetch_one(thread, 4000)
+    assert not first.ok and "не открылась" in first.error
+    assert row(thread)["reason"] == "access_wall" and row(thread)["retry_at"] == now[0] + 60
+    assert not row(thread, origin=True)  # the site itself is not condemned
+    assert health.begin("https://www.reddit.com/r/other/")["allowed"]
+    blocked = health.begin(thread)
+    assert "стены входа или проверки от ботов" in blocked["blocked"]
+    now[0] += 61
+    _web._fetch_one(thread, 4000)  # due again: rechecked, still a wall → next pause is a week
+    assert row(thread)["failures"] == 2 and row(thread)["retry_at"] == now[0] + 7 * 86400

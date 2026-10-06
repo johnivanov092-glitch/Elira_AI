@@ -6,12 +6,12 @@ Unrecognised/ambiguous wording establishes no inferred semantic contract.
 """
 from __future__ import annotations
 
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 import re
 from typing import Any
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urlsplit
 
 
 _FENCED_CODE = re.compile(r"```[^\n]*\n.*?(?:```|\Z)|~~~[^\n]*\n.*?(?:~~~|\Z)", re.DOTALL)
@@ -466,6 +466,99 @@ def web_source_citation_violations(
                 index, url, "unread_source" if target in known else "unknown_source",
             ))
     return tuple(problems)
+
+
+_URL_LIKE_ANCHOR = re.compile(r"https?://|^[\w.-]+\.[a-z]{2,}(?:[/:]\S*)?$", re.IGNORECASE)
+
+
+def _failed_read_mark(error: str) -> str:
+    """Short, human reason for a page whose reading failed in this run."""
+    text = str(error or "")
+    if match := re.search(r"не открылась:\s*([^(—\n]+)", text):
+        return "ссылка убрана: не открылась — " + match.group(1).strip()
+    if match := re.search(r"\b([45]\d\d)\b", text):
+        return f"ссылка убрана: не открылась — код {match.group(1)}"
+    if "временно пропущен" in text or "приостановлены" in text:
+        return "ссылка убрана: не открылась — пауза после прошлых сбоев"
+    if re.search(r"timeout|timed out|таймаут", text, re.IGNORECASE):
+        return "ссылка убрана: не открылась — таймаут"
+    return "ссылка убрана: не открылась"
+
+
+def mark_unread_web_links(
+    answer_text: str, violations: Collection[WebSourceCitationViolation], *, failed_errors: dict[str, str],
+) -> str:
+    """John 2026-10-06: the answer stays; a link to an unread page loses its address.
+
+    Each Markdown link named by ``violations`` becomes its anchor text plus a
+    mark about that exact page (not the site): «ссылка убрана: не открылась —
+    <причина>» for a failed read in this run, otherwise «ссылка убрана: страница
+    не прочитана». A URL-like anchor shrinks to the host, so no unread
+    address remains clickable or copyable (an invented address included).
+    """
+    targets = {_web_source_url_key(item.url) for item in violations}
+    failed = {_web_source_url_key(url): _failed_read_mark(error) for url, error in failed_errors.items()}
+    parts, last = [], 0
+    for start, end, url in _markdown_web_links(answer_text):
+        key = _web_source_url_key(url)
+        if key not in targets:
+            continue
+        anchor = answer_text[start + 1:answer_text.index("](", start)].strip()
+        if not anchor.strip("*_ ") or _URL_LIKE_ANCHOR.search(anchor.strip("*_ ")):
+            anchor = (urlsplit(url).hostname or "страница") if url else "страница"
+        parts.append(answer_text[last:start] + f"{anchor} ({failed.get(key, 'ссылка убрана: страница не прочитана')})")
+        last = end
+    return "".join(parts) + answer_text[last:]
+
+
+_REFERENCE_CITATION = re.compile(r"(?<!\[)\[([^\[\]\n]*[^\[\]\n\d\s,;][^\[\]\n]*)\]\[(\d{1,3})\]")
+_JOINED_NUMBERS = re.compile(r"\[(\d{1,3}(?:\s*[,;]\s*\d{1,3})*)\]\[(\d{1,3})\]")
+_BARE_CITATION = re.compile(r"(?<![\[\]\w])\[(\d{1,3}(?:\s*[,;]\s*\d{1,3})*)\](?![(\[])")
+
+
+def _short_label(url: str) -> str:
+    host = (urlsplit(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host or "источник"
+
+
+def _render_numbers_in_prose(text: str, pages: Sequence[tuple[str, str]]) -> str:
+    def url_of(number: int) -> str:
+        return pages[number - 1][0] if 1 <= number <= len(pages) else ""
+
+    previous = None
+    while previous != text:  # "[1][2]" → "[1, 2]" (numbers, not a labelled reference)
+        previous, text = text, _JOINED_NUMBERS.sub(lambda m: f"[{m.group(1)}, {m.group(2)}]", text)
+
+    def reference(match: re.Match[str]) -> str:
+        url = url_of(int(match.group(2)))
+        return f"[{match.group(1)}]({url})" if url else match.group(1)
+
+    def bare(match: re.Match[str]) -> str:
+        urls = [url for url in dict.fromkeys(url_of(int(n)) for n in re.split(r"\s*[,;]\s*", match.group(1))) if url]
+        return ", ".join(f"[{_short_label(url)}]({url})" for url in urls) or "\x00"
+
+    rendered = _BARE_CITATION.sub(bare, _REFERENCE_CITATION.sub(reference, text))
+    return re.sub(r"[ \t]*\x00", "", rendered)  # an unknown number leaves no gap
+
+
+def render_numbered_citations(answer_text: str, pages: Sequence[tuple[str, str]]) -> str:
+    """John 2026-10-06 (industry practice): the model cites READ pages by number.
+
+    ``pages[n-1]`` is (url, title) of the n-th page read in this run. The model
+    writes ``[Название][n]`` or ``[n]``; they become ``[Название](url)`` and
+    ``[host](url)`` — the 479bec3d look with addresses the model cannot pick.
+    Unknown numbers lose the marker (a label keeps its text). Code spans and
+    fenced blocks are never touched; nothing is appended to the answer.
+    """
+    if not answer_text or not pages:
+        return answer_text
+    parts, last = [], 0
+    for match in re.finditer(r"```.*?(?:```|\Z)|~~~.*?(?:~~~|\Z)|`[^`\n]*`", answer_text, re.DOTALL):
+        parts.append(_render_numbers_in_prose(answer_text[last:match.start()], pages))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(_render_numbers_in_prose(answer_text[last:], pages))
+    return "".join(parts)
 
 
 def _cadence_quantity_key(match: re.Match[str]) -> tuple[str, str, str]:

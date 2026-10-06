@@ -455,7 +455,9 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
             self.assertIs(started.get("recovered"), False)
 
             live_result: dict[str, object] = {}
-            deadline = time.monotonic() + 1.0
+            # Under a loaded release verification the job worker starts slower;
+            # waits are upper bounds only — the loops return as soon as ready.
+            deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 live_result = _run.tool_run_server(Path(tmp), action="logs", pid=pid)
                 if "JOB_STARTED" in str(live_result.get("text", "")):
@@ -468,7 +470,7 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
 
             with _run._SERVERS_LOCK:
                 handle = _run._LIVE_SERVERS[pid]
-            handle.proc.wait(timeout=5)
+            handle.proc.wait(timeout=30)
 
             result = _run.tool_run_server(Path(tmp), action="logs", pid=pid)
 

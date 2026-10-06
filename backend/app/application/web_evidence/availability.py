@@ -42,8 +42,11 @@ def _identity(url: str, channel: str) -> tuple[str, str, str] | None:
         return None
 
 
+_REASON_TEXT = {"access_wall": "стены входа или проверки от ботов"}
+
+
 def _notice(row: dict) -> str:
-    reason = row.get("reason") or "ошибка чтения"
+    reason = _REASON_TEXT.get(row.get("reason") or "", row.get("reason") or "ошибка чтения")
     if row.get("probing"):
         return "Источник уже проверяется другим чтением; используй другой источник или полученный результат."
     if row.get("stopped"):
@@ -81,6 +84,10 @@ def begin(url: str, *, channel: str = "http", force: bool = False) -> dict:
 
 
 def _failure(status: int | None, error: str) -> tuple[str, bool]:
+    if str(error or "").startswith("access_wall"):
+        # HTTP 200 with a login redirect, anti-bot check or JS stub (John 2026-10-06):
+        # a failure of this page only — a wall on one path never condemns a site.
+        return "access_wall", False
     if status in {401, 403, 404, 408, 410, 429, 500, 502, 503, 504}:
         return f"http_{status}", status == 429
     text = str(error or "").lower()

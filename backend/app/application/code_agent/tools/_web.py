@@ -264,6 +264,7 @@ def tool_web_search(
     categories: str = "",
     time_range: str = "",
     page: int = 1,
+    audience: str = "",  # noqa: ARG001 - declared environment; enforced per run in agent_loop
 ) -> dict[str, Any]:
     """Search the web through SearXNG. Returns ranked results
     with title + URL + snippet. Use `web_fetch` after to read a result in full.
@@ -509,9 +510,12 @@ def _fetch_one(url: str, limit: int, *, force_refresh: bool = False) -> PageFetc
         raise
     wall = _access_wall(url, result) if result.ok else ""
     if wall:
-        # Not content: never a read excerpt. The model takes the next result.
+        # Not content: never a read excerpt. The model takes the next result;
+        # the history pauses this page and rechecks it on its usual schedule.
         result = replace(result, text="", error=f"не открылась: {wall} ({result.final_url or url}) — "
                                                 f"возьми другой источник из выдачи")
+        availability.finish(probe, ok=False, error=f"access_wall: {wall}", final_url=result.final_url)
+        return result
     # Rendering is attempted only after an accessible static response. Its
     # independent browser outcome must not teach an HTTP transport failure.
     availability.finish(probe, ok=result.ok or result.rendered,

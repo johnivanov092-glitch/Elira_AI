@@ -739,8 +739,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "Call `web_fetch` after on URLs that look relevant. "
                     "Use `categories='images'` when relevant visuals materially help; "
                     "the runtime attaches sourced cards automatically. "
-                    "Present each source in your answer as a [Title](url) markdown "
-                    "link, never a bare URL on its own line."
+                    "In the answer cite pages you have READ by the number shown after "
+                    "each read: [Title][n] or [n]; never write URLs yourself — the "
+                    "runtime renders the links."
                 ),
                 "parameters": {
                     "type": "object",
@@ -764,8 +765,18 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "enum": ["day", "week", "month", "year"],
                             "description": "Bias toward recent results. Omit for no recency filter.",
                         },
+                        "audience": {
+                            "type": "string",
+                            "description": (
+                                "Search environment you choose by the topic (owner's rule): 'global' — a general "
+                                "topic (tech, games, science, software, world events): the run's queries must "
+                                "include BOTH Russian and English, take the most current from both; "
+                                "'regional:<country or region>' — a question about a specific country or region: "
+                                "queries in its audience's language, focus on its media (Kazakhstan → .kz sites)."
+                            ),
+                        },
                     },
-                    "required": [],
+                    "required": ["audience"],
                 },
             },
         },

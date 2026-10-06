@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -426,6 +427,8 @@ def _stream_code_agent_core(
         # read more, up to the site limit → then the model always answers from
         # what it read. Non-empty = the next turn is an answer turn without tools.
         web_answer_due = ""
+        web_language_hint_given = False
+        audience_rejections = 0
         _last_glob_matches: tuple[str, ...] = ()
         _read_file_failures: dict[str, int] = {}
         pending_redirected_jobs: set[int] = set()
@@ -1162,6 +1165,19 @@ def _stream_code_agent_core(
                         parsed_args["urls"] = [url for url in _targets if url not in _skipped]
                         _site_trim_note = (f"\n\n[Лимит {_site_limit} сайтов на вопрос: не прочитаны "
                                            + ", ".join(_skipped) + "]")
+                if name == "web_search" and _web_question() and audience_rejections < _AUDIENCE_REJECTION_LIMIT:
+                    _audience_denial = _audience_language_denial(parsed_args, run_evidence.web_operations)
+                    if _audience_denial:
+                        # John 2026-10-06 (variant «в»): the model declares the environment,
+                        # the runtime keeps the consequence; bounded so it never loops.
+                        audience_rejections += 1
+                        turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                                      "name": name, "content": _audience_denial})
+                        yield {"type": "tool_call", "step": step, "tool": name,
+                               "arguments": redact_secrets(parsed_args), "result": _audience_denial,
+                               "ok": False, "error": "audience_languages", "dispatched": False,
+                               "state_changed": False, "execution_status": "rejected"}
+                        continue
                 _read_requested_path = ""
                 _read_recovered_from = ""
                 if name == "read_file":
@@ -1655,6 +1671,7 @@ def _stream_code_agent_core(
                 if recovery_context:
                     _tool_content += "\n\n" + recovery_context
                 _tool_content += _site_trim_note
+                _tool_content += _read_numbers_note(run_evidence.read_site_urls, _sites_before)
                 _sites_read = len(run_evidence.read_site_urls)
                 if _sites_read > _sites_before and _web_question():
                     _site_limit = explicit_web_site_limit(turn_context.raw_user_message)
@@ -1670,6 +1687,15 @@ def _stream_code_agent_core(
                             "со ссылками на прочитанные источники. Если не хватает — прочитай "
                             "следующий сайт.]"
                         )
+                if (name == "web_search" and _web_question() and not web_language_hint_given
+                        and not _declared_audience(parsed_args)):
+                    # John's rule 2026-10-06: once per run, kept in this search
+                    # result so later searches still see it; the model decides
+                    # whether the topic is regional (one language is then right).
+                    _language_hint = _web_language_hint(run_evidence.web_operations)
+                    if _language_hint:
+                        web_language_hint_given = True
+                        _tool_content += "\n\n" + _language_hint
                 if _evidence_web_activated:
                     _tool_content += (
                         "\n\n[EVIDENCE ROUTER] Web tools are now available. Before retrying "
@@ -1717,12 +1743,84 @@ def _stream_code_agent_core(
 _WEB_SITE_TOOLS = frozenset({"web_search", "web_fetch", "browser"})
 
 
+_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+
+
+def _web_language_hint(operations: list[dict[str, Any]]) -> str:
+    """John's rule (2026-10-06): a general topic is searched in Russian and English.
+
+    One reminder when every successful query so far uses one script; a regional
+    topic (a country's media) legitimately stays in one language, so this never
+    blocks or repeats.
+    """
+    queries = [str(query) for operation in operations for query in operation.get("queries") or []]
+    if not queries:
+        return ""
+    cyrillic = [bool(_CYRILLIC.search(query)) for query in queries]
+    if all(cyrillic):
+        used, other = "русском", "английском"
+    elif not any(cyrillic):
+        used, other = "английском", "русском"
+    else:
+        return ""
+    return (
+        f"[Языки поиска] Все запросы пока только на {used}. Правило пользователя: общая тема "
+        f"(техника, игры, наука, софт, мировые события) — добавь в следующий пакет запросы на {other} "
+        "и бери самое актуальное из обеих сред; вопрос о конкретной стране или регионе — ищи на языке "
+        "её аудитории и в её СМИ, тогда так и оставь."
+    )
+
+
+_AUDIENCE_REJECTION_LIMIT = 2
+
+
+def _read_numbers_note(read_urls: tuple[str, ...], before: int) -> str:
+    """John 2026-10-06: each newly read page gets its citation number for the answer."""
+    new = read_urls[before:]
+    if not new:
+        return ""
+    pages = "; ".join(f"[{before + index}] {url}" for index, url in enumerate(new, 1))
+    return (f"\n\n[Номер для ссылок в ответе: {pages} — пиши [Название][n] или [n]; "
+            "адрес сам не пиши, Elira подставит ссылку]")
+
+
+def _declared_audience(arguments: dict[str, Any]) -> str:
+    """'global' | 'regional' | '' — the environment the model declared for web_search."""
+    value = str(arguments.get("audience") or "").strip().lower()
+    if value.startswith(("global", "общ")):
+        return "global"
+    if value.startswith(("regional", "регион")):
+        return "regional"
+    return ""
+
+
+def _audience_language_denial(arguments: dict[str, Any], operations: list[dict[str, Any]]) -> str:
+    """A declared general topic needs Russian and English among the run's queries."""
+    if _declared_audience(arguments) != "global":
+        return ""
+    batch = arguments.get("queries") or [arguments.get("query") or ""]
+    current = [str(query) for query in batch if str(query).strip()]
+    if not current:
+        return ""
+    previous = [str(query) for operation in operations for query in operation.get("queries") or []]
+    scripts = {bool(_CYRILLIC.search(query)) for query in previous + current}
+    if len(scripts) != 1:
+        return ""
+    used, other = ("русском", "английском") if True in scripts else ("английском", "русском")
+    return (
+        f"Поиск не выполнен: audience=\"global\" (общая тема) требует запросов и на русском, и на английском; "
+        f"сейчас все запросы на {used}. Повтори web_search, добавив в queries запросы на {other}. "
+        "Если вопрос о конкретной стране или регионе — укажи audience=\"regional:<страна>\" и ищи на языке "
+        "её аудитории."
+    )
+
+
 def _web_answer_instruction(reason: str) -> str:
     """One answer turn without tools: John's rule, never a dead end."""
     return (
         f"[Ответ по прочитанному] {reason} Больше сайтов не читай. Ответь на вопрос "
-        "пользователя своими словами по уже прочитанному, со ссылками [Название](url) на "
-        "прочитанные страницы. Чего в прочитанном нет — скажи прямо."
+        "пользователя своими словами по уже прочитанному, со ссылками на прочитанные страницы "
+        "по их номерам: [Название][n] или [n]. Чего в прочитанном нет — скажи прямо."
     )
 
 

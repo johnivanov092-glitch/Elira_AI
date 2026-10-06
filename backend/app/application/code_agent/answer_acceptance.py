@@ -13,7 +13,8 @@ from typing import Any, Literal
 from app.application.code_agent.answer_contracts import (
     explicit_quote_request, explicit_web_check_requested, normalize_quote_word_counts, quote_word_limit_correction,
     quote_word_limit_violations, web_cadence_citation_correction,
-    web_cadence_citation_violations, web_source_citation_violations,
+    mark_unread_web_links, render_numbered_citations, web_cadence_citation_violations,
+    web_source_citation_violations,
 )
 from app.application.code_agent.capabilities import (
     should_require_local_catalog_search, should_require_web_catalog_fallback,
@@ -266,17 +267,15 @@ class AnswerAcceptance:
             )
         web_source_failed = bool(web_source_problems)
         if web_source_failed:
-            # A warning below an unsupported assertion still leaves that
-            # assertion in the delivered answer. Replace the body instead.
-            final_text = (
-                "Подтвердить исходный ответ прочитанными источниками не удалось. "
-                "Непроверенные утверждения исключены."
-            )
-            read_urls = list(dict.fromkeys(source["url"] for source in run_evidence.presented_sources
-                                          if source.get("quote_verified") is True))[:5]
-            if read_urls:
-                final_text += "\n\nПрочитанные источники:\n" + "\n".join(
-                    f"- [Источник]({url})" for url in read_urls)
+            # John 2026-10-06 (like unconfirmed quotes, 2026-10-03): the answer
+            # stays; only links to unread pages lose their address and get a
+            # mark. The answer is reported as partial (degraded) below.
+            final_text = mark_unread_web_links(
+                final_text, web_source_problems,
+                failed_errors={source["url"]: str(source.get("error") or "")
+                               for source in run_evidence.sources if source.get("status") == "failed"})
+        # Numbers the model cited become links to the pages it actually read.
+        final_text = render_numbered_citations(final_text, run_evidence.numbered_read_pages())
         answer_verification = task_outcome.verify_answer(
             final_text, run_evidence, code_input_epoch, persistence_policy=persistence_policy,
             user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))

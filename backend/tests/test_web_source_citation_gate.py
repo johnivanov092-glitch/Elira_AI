@@ -45,7 +45,7 @@ def _evaluate(answer, evidence, *, owner=None, outcome=None):
     )
 
 
-def test_unread_factual_citation_gets_one_correction_then_removes_unsafe_body():
+def test_unread_factual_citation_gets_one_correction_then_keeps_answer_without_unread_address():
     evidence, owner, outcome = _evidence(), AnswerAcceptance(), TaskOutcome()
     unsafe = f"Погибли 14 человек. [Источник]({UNREAD_URL})."
     first = _evaluate(unsafe, evidence, owner=owner, outcome=outcome)
@@ -61,8 +61,9 @@ def test_unread_factual_citation_gets_one_correction_then_removes_unsafe_body():
     second = _evaluate(unsafe, evidence, owner=owner, outcome=outcome)
     assert second.action == "accept"
     assert second.answer_status == "degraded"
-    assert "Погибли" not in second.text and "14" not in second.text
-    assert UNREAD_URL not in second.text and READ_URL in second.text
+    # John 2026-10-06: the model's answer is kept; the unread page loses its address.
+    assert second.text == "Погибли 14 человек. Источник (ссылка убрана: страница не прочитана)."
+    assert UNREAD_URL not in second.text
     assert outcome.answer_verification["answer_sha256"] == hashlib.sha256(
         second.text.encode("utf-8")).hexdigest()
 
@@ -198,3 +199,22 @@ def test_rejected_web_draft_does_not_reenter_model_context(tmp_path, monkeypatch
     assert len(turns) == 3 and final["answer_status"] == "complete"
     assert "Погибли" not in final["text"] and "14" not in final["text"]
     assert len([row for row in events if row["type"] == "tool_call"]) == 1
+
+
+def test_unread_links_keep_text_and_name_the_failed_read():
+    from app.application.code_agent.answer_contracts import (
+        WebSourceCitationViolation, mark_unread_web_links)
+
+    answer = ("Таблица CVE с [nginx.org](https://nginx.org/en/security_advisories.html). "
+              "Детали: [CVE-2026-1](https://my.f5.com/k1), [https://my.f5.com/k2](https://my.f5.com/k2), "
+              "[ветка](https://www.reddit.com/r/x).")
+    violations = [WebSourceCitationViolation(1, "https://my.f5.com/k1", "unknown_source"),
+                  WebSourceCitationViolation(1, "https://my.f5.com/k2", "unknown_source"),
+                  WebSourceCitationViolation(1, "https://www.reddit.com/r/x", "unread_source")]
+    marked = mark_unread_web_links(answer, violations, failed_errors={
+        "https://www.reddit.com/r/x": "ERROR: не открылась: проверка от ботов (https://www.reddit.com/r/x) — возьми другой"})
+    assert "[nginx.org](https://nginx.org/en/security_advisories.html)" in marked  # read link untouched
+    assert "CVE-2026-1 (ссылка убрана: страница не прочитана)" in marked
+    assert "my.f5.com (ссылка убрана: страница не прочитана)" in marked and "my.f5.com/k2" not in marked
+    assert "ветка (ссылка убрана: не открылась — проверка от ботов)" in marked
+    assert "reddit.com/r/x" not in marked and "f5.com/k1" not in marked

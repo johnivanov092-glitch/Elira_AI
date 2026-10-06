@@ -230,6 +230,9 @@ a successfully completed run.
   crawler is scheduled. HTTP and browser histories are separate; missing paths
   do not block a domain, and cross-origin redirect failures remain path scoped.
   Rate limits respect Retry-After and never classify a site as permanently dead.
+  An access wall (HTTP 200 with a login redirect, anti-bot check or JS stub)
+  is a failure of that page only (`access_wall`) on the same schedule
+  (decision 2026-10-06), so a walled thread is not re-read in every run.
   Per-source probe leases prevent concurrent escalation; explicit force_refresh
   permits a requested recheck. Stored metadata is bounded to 10,000 host/hash
   records, contains no page/query text, and respects task memory permissions.

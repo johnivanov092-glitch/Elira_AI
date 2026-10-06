@@ -551,8 +551,10 @@ class ToolRegistrationTest(unittest.TestCase):
     def test_web_search_schema_offers_query_and_queries(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
         params = schemas["web_search"]["function"]["parameters"]
-        # query OR queries — neither is hard-required (the handler validates).
-        self.assertEqual(params["required"], [])
+        # query OR queries — neither is hard-required (the handler validates);
+        # the search environment is (John 2026-10-06, variant «в»).
+        self.assertEqual(params["required"], ["audience"])
+        self.assertIn("global", params["properties"]["audience"]["description"])
         self.assertIn("query", params["properties"])
         self.assertEqual(params["properties"]["queries"]["type"], "array")
         self.assertEqual(params["properties"]["queries"]["maxItems"], 5)
