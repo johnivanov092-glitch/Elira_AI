@@ -13,7 +13,6 @@ from app.application.projects.scope import (  # noqa: E402
     legacy_project_key,
     normalize_project_path,
     project_scope_id,
-    project_scope_slug,
 )
 
 
@@ -32,7 +31,6 @@ def test_same_basename_under_different_parents_gets_distinct_scope() -> None:
         first.mkdir(parents=True)
         second.mkdir(parents=True)
         assert project_scope_id(first) != project_scope_id(second)
-        assert project_scope_slug(first) != project_scope_slug(second)
         assert legacy_project_key(first) == legacy_project_key(second) == "shared"
 
 

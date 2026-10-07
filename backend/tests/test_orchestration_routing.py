@@ -15,7 +15,6 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.core.config import (  # noqa: E402
     DEFAULT_MODEL,
     ModelRouteDecision,
-    effective_context_limit,
     is_auto_route,
     pick_model_for_route,
     resolve_model_for_route,
@@ -283,29 +282,6 @@ class ResolveModelForRouteTest(unittest.TestCase):
             pick_model_for_route("research", "auto", ["research-model"]),
             resolve_model_for_route("research", "auto", ["research-model"]).model,
         )
-
-
-class EffectiveContextLimitTest(unittest.TestCase):
-    def test_returns_requested_when_no_caps(self):
-        self.assertEqual(effective_context_limit(8192), 8192)
-
-    def test_capped_by_monitoring(self):
-        self.assertEqual(effective_context_limit(99999, monitoring_max_context=8192), 8192)
-
-    def test_capped_by_profile(self):
-        self.assertEqual(
-            effective_context_limit(99999, monitoring_max_context=16384, profile_context_limit=4096),
-            4096,
-        )
-
-    def test_capped_by_known_model_safe_ctx(self):
-        self.assertEqual(effective_context_limit(32768, model="local-model"), 32768)
-
-    def test_unknown_model_not_cut_to_default(self):
-        self.assertEqual(effective_context_limit(8192, model="totally-unknown:1b"), 8192)
-
-    def test_never_increases_requested(self):
-        self.assertEqual(effective_context_limit(2048, monitoring_max_context=8192), 2048)
 
 
 if __name__ == "__main__":

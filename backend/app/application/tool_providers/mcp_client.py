@@ -40,8 +40,6 @@ from typing import Any, Optional
 
 from app.application.tool_providers.mcp_sanitize import (
     DEFAULT_CONTEXT_RESULT_LIMIT,
-    bounded_text as _bounded_text,
-    mark_untrusted as _mark_untrusted,
     sanitize_prompt_messages as _sanitize_prompt_messages,
     sanitize_resource_contents as _sanitize_resource_contents,
 )

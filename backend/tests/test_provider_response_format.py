@@ -68,14 +68,12 @@ def invoke(mode, options, *, tools=None):
     kwargs = {"model": "local-model", "messages": MESSAGES, "options": options}
     if mode == "sync":
         return provider.chat_completion(**kwargs, tools=tools)["message"]["content"]
-    if mode == "tokens":
-        return "".join(provider.chat_completion_stream(**kwargs))
     events = list(provider.chat_completion_event_stream(**kwargs, tools=tools))
     return next(event["response"]["message"]["content"] for event in events
                 if event["type"] == "message")
 
 
-@pytest.mark.parametrize("mode", ["sync", "tokens", "events"])
+@pytest.mark.parametrize("mode", ["sync", "events"])
 def test_schema_is_forwarded_at_top_level_and_deeply_detached(mode, transport):
     calls, response = transport
     response_format = deepcopy(FORMAT)
@@ -96,7 +94,7 @@ def test_schema_is_forwarded_at_top_level_and_deeply_detached(mode, transport):
         assert response.closed
 
 
-@pytest.mark.parametrize("mode", ["sync", "tokens", "events"])
+@pytest.mark.parametrize("mode", ["sync", "events"])
 def test_absent_response_format_preserves_the_exact_default_payload(mode, transport):
     calls, _ = transport
     assert invoke(mode, {}) == '{"facts":[]}'
@@ -122,7 +120,7 @@ def test_format_does_not_hide_tools_or_alter_existing_reasoning_options(mode, tr
     assert "tool_choice" not in payload
 
 
-@pytest.mark.parametrize("mode", ["sync", "tokens", "events"])
+@pytest.mark.parametrize("mode", ["sync", "events"])
 @pytest.mark.parametrize("invalid", [
     None, "json_schema", [], {}, {"type": "json_object"},
     {"type": "json_schema", "json_schema": None},

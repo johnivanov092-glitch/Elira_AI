@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from pathlib import Path
 
 
@@ -19,14 +18,6 @@ def project_scope_id(project_root: Path | str) -> str:
     normalized = normalize_project_path(project_root)
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return f"scope:{digest}"
-
-
-def project_scope_slug(project_root: Path | str) -> str:
-    """Filesystem-safe sandbox directory name with a collision-resistant suffix."""
-    root = Path(project_root).expanduser().resolve()
-    label = re.sub(r"[^a-z0-9_-]+", "_", (root.name or "project").strip().lower()).strip("_")
-    digest = project_scope_id(root).removeprefix("scope:")[:16]
-    return f"{label or 'project'}-{digest}"
 
 
 def legacy_project_key(project_root: Path | str) -> str:

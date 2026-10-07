@@ -25,10 +25,6 @@ def migrate_toolspec_columns(*, conn_factory: Callable[[], Any]) -> None:
                 con.execute(f"ALTER TABLE tools ADD COLUMN {col_name} {col_def}")
 
 
-def now_utc_iso(now_func: Callable[[], str]) -> str:
-    return now_func()
-
-
 def init_db(
     *,
     conn_factory: Callable[[], Any],

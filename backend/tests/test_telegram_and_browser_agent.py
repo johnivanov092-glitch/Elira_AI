@@ -15,7 +15,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import app.application.telegram.runtime as tg_rt  # noqa: E402
 import app.application.telegram.store as tg_store  # noqa: E402
-from app.infrastructure.browser.agent import BrowserAgent  # noqa: E402
 
 
 class TelegramStoreCRUDTest(unittest.TestCase):
@@ -200,43 +199,6 @@ class TelegramRuntimeConfigTest(unittest.TestCase):
         log = tg_store.get_telegram_log(chat_id=222)
         self.assertEqual(log["count"], 1)
         self.assertEqual(log["log"][0]["text"], "canary")
-
-
-class BrowserAgentTest(unittest.TestCase):
-    """The browser agent is real (Playwright/SSRF-guarded); these cover the
-    deterministic, offline-verifiable paths only — no live network calls."""
-
-    def setUp(self) -> None:
-        self._agent = BrowserAgent()
-
-    # ----- input validation: empty inputs are rejected without touching IO ---
-
-    def test_search_empty_query_not_ok(self) -> None:
-        result = self._agent.search("   ")
-        self.assertFalse(result["ok"])
-        self.assertIn("error", result)
-
-    def test_run_empty_start_url_not_ok(self) -> None:
-        result = self._agent.run("")
-        self.assertFalse(result["ok"])
-        self.assertIn("error", result)
-
-    def test_screenshot_empty_url_not_ok(self) -> None:
-        result = self._agent.screenshot()
-        self.assertFalse(result["ok"])
-        self.assertIn("error", result)
-
-    # ----- contract: every method returns a dict carrying an "ok" key --------
-
-    def test_all_methods_return_structured_dict(self) -> None:
-        results = [
-            self._agent.search(""),
-            self._agent.run("http://127.0.0.1/"),
-            self._agent.screenshot("http://127.0.0.1/"),
-        ]
-        for result in results:
-            self.assertIsInstance(result, dict)
-            self.assertIn("ok", result)
 
 
 if __name__ == "__main__":

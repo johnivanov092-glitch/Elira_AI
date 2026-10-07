@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from _runtime_roles import runtime_section, user_texts
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.media import execution, processing, resource_store
+from app.application.media import processing, resource_store
 
 
 def _tool_call(name: str, arguments: dict) -> dict:
@@ -32,23 +32,22 @@ def test_transcription_guidance_leaves_placement_to_agent_without_server_probe(t
         seen_prompt = runtime_section(kwargs["messages"]) + "\n" + "\n".join(user_texts(kwargs["messages"]))
         return {"message": {"content": "ok", "tool_calls": []}}
 
-    with patch.object(execution, "capability_catalog") as catalog:
-        list(stream_code_agent(
-            user_message="Сделай расшифровку",
-            project_root=tmp_path,
-            run_id="placement-prompt",
-            resource_refs=[{
-                "resource_id": "a" * 32,
-                "name": "voice.ogg",
-                "kind": "audio",
-                "content_type": "audio/ogg",
-                "size": 4,
-            }],
-            base_tools=["resource_process"],
-            chat_fn=fake_chat,
-            auto_remember=False,
-            permission_mode="bypass",
-        ))
+    list(stream_code_agent(
+        user_message="Сделай расшифровку",
+        project_root=tmp_path,
+        run_id="placement-prompt",
+        resource_refs=[{
+            "resource_id": "a" * 32,
+            "name": "voice.ogg",
+            "kind": "audio",
+            "content_type": "audio/ogg",
+            "size": 4,
+        }],
+        base_tools=["resource_process"],
+        chat_fn=fake_chat,
+        auto_remember=False,
+        permission_mode="bypass",
+    ))
 
     assert "[COMPUTE PLACEMENT]" not in seen_prompt
     assert "Где выполнить расшифровку?" not in seen_prompt
@@ -56,7 +55,6 @@ def test_transcription_guidance_leaves_placement_to_agent_without_server_probe(t
     assert "восстановление локальной GPU-среды" in seen_prompt
     assert "resource_process auto перебирает только локальные GPU/CPU, server_cpu выбирается" in seen_prompt
     assert "Объяви все требования исходной задачи через task_decide" not in seen_prompt
-    catalog.assert_not_called()
 
 
 def test_existing_ask_user_still_emits_workflow_input_for_real_ambiguity(tmp_path) -> None:

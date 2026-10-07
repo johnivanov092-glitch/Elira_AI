@@ -70,13 +70,3 @@ def classify_tier(url: str) -> str:
     if dom in _OFFICIAL_DOMAINS:
         return "official"
     return "unknown"
-
-
-def tier_note(tier: str) -> str:
-    """Short RU annotation used in search output."""
-    return {
-        "official": "official — вендор/стандарт/гос",
-        "primary": "primary — реестр/первоисточник",
-        "secondary": "secondary — энциклопедия/агрегатор",
-        "ugc": "UGC — форум/соцсеть, перепроверяй",
-    }.get(tier, "")

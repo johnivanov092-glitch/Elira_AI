@@ -28,11 +28,6 @@ def estimate_tokens(value: Any) -> int:
     return max(0, (len(text) + 3) // 4)
 
 
-def count_tokens(value: Any) -> int:
-    """Compatibility name used by the context packer."""
-    return estimate_tokens(value)
-
-
 def calculate_budget(
     *,
     ctx_size: int,

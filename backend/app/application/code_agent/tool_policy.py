@@ -15,7 +15,3 @@ BASE_TOOLS: tuple[str, ...] = (
     # head (golden math-solve-system, 2026-10-07), against the math-contour rule.
     "calc",
 )
-# Legacy prompt grouping; persona never changes tool access.
-READONLY_TOOLS: tuple[str, ...] = (
-    "capability_load", "read_file", "glob", "grep",
-)

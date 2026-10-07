@@ -620,11 +620,6 @@ def get_context_files() -> dict[str, Any]:
     return {"ok": True, "items": [dict(row) for row in rows], "count": len(rows)}
 
 
-def list_library_files() -> dict[str, Any]:
-    files = _public_rows(active_key=True)
-    return {"ok": True, "files": files, "count": len(files)}
-
-
 def read_library_file(
     file_id: int,
     *,
@@ -662,44 +657,6 @@ def read_library_file(
         "has_more": has_more,
         "next_offset": next_offset if has_more else None,
     }
-
-
-def set_library_active(filename: str, active: bool) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        row = conn.execute("SELECT id, name FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
-        if not row:
-            return {"ok": False, "error": f"Файл не найден: {filename}"}
-    finally:
-        conn.close()
-    result = toggle_context(int(row["id"]), enabled=active)
-    return {**result, "filename": filename, "active": bool(active)}
-
-
-def delete_library_file(filename: str) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        row = conn.execute("SELECT id, stored_path FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
-        if not row:
-            return {"ok": False, "error": f"Файл не найден: {filename}"}
-        conn.execute("DELETE FROM files WHERE id = ?", (row["id"],))
-        remaining_refs = int(conn.execute(
-            "SELECT COUNT(*) FROM files WHERE stored_path = ?",
-            (str(row["stored_path"] or ""),),
-        ).fetchone()[0])
-        conn.commit()
-    finally:
-        conn.close()
-
-    stored_path = row["stored_path"] or ""
-    if stored_path and remaining_refs == 0:
-        try:
-            path = Path(stored_path)
-            if path.exists() and path.is_file():
-                path.unlink()
-        except Exception:
-            pass
-    return {"ok": True, "filename": filename}
 
 
 def _relevance_terms(query: str) -> tuple[str, ...]:

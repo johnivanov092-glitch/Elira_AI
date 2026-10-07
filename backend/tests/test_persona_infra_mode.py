@@ -11,7 +11,7 @@ class InfraModeTest(unittest.TestCase):
         mode = PERSONA_MODES.get("Инфраструктура")
         self.assertIsNotNone(mode)
         self.assertIn("ПО ФАКТАМ", mode["overlay"])        # diagnose from facts, not memory
-        self.assertIn("runtime_control(itops_assets)", mode["overlay"])
+        self.assertIn("itops_registry", mode["overlay"])
         self.assertIn("typed", mode["overlay"])
         self.assertIn("режимом Workflow", mode["overlay"])
         self.assertNotIn("ask_user", mode["overlay"])

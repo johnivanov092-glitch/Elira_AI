@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 import unittest
@@ -241,51 +240,6 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
             "tool_call_id": tool_call["id"],
             "content": "ok",
         })
-
-    def test_stream_yields_tokens_and_closes_response(self) -> None:
-        response = _Response(
-            {},
-            lines=[
-                'data: {"choices": [{"delta": {"content": "O"}}]}',
-                'data: {"choices": [{"delta": {"content": "K"}}]}',
-                "data: [DONE]",
-            ],
-        )
-        with patch.dict(os.environ, _llama_env(), clear=False), patch(
-            "app.infrastructure.llm.openai_compatible.requests.post",
-            return_value=response,
-        ):
-            tokens = list(
-                openai_compatible.chat_completion_stream(
-                    model="local-model",
-                    messages=[{"role": "user", "content": "hi"}],
-                )
-            )
-
-        self.assertEqual(tokens, ["O", "K"])
-        self.assertTrue(response.closed)
-
-    def test_stream_decodes_utf8_sse_bytes(self) -> None:
-        response = _Response(
-            {},
-            lines=[
-                'data: {"choices": [{"delta": {"content": "Привет"}}]}'.encode("utf-8"),
-                b"data: [DONE]",
-            ],
-        )
-        with patch.dict(os.environ, _llama_env(), clear=False), patch(
-            "app.infrastructure.llm.openai_compatible.requests.post",
-            return_value=response,
-        ):
-            tokens = list(
-                openai_compatible.chat_completion_stream(
-                    model="local-model",
-                    messages=[{"role": "user", "content": "hi"}],
-                )
-            )
-
-        self.assertEqual(tokens, ["Привет"])
-        self.assertTrue(response.closed)
 
     def test_event_stream_assembles_fragmented_tool_call(self) -> None:
         response = _Response(

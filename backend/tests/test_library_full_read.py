@@ -157,14 +157,14 @@ def test_import_resource_reuses_the_existing_library_owner(
     )
 
     imported = runtime.import_resource(record.resource_id, use_in_context=True)
-    listed = runtime.list_library_files()
+    listed = runtime.list_files()
 
     assert imported["ok"] is True
     assert imported["name"] == "resource.txt"
     assert imported["active"] is True
     assert listed["count"] == 1
-    assert listed["files"][0]["status"] == "ready"
-    assert listed["files"][0]["content_chars"] == len("полный текст ресурса")
+    assert listed["items"][0]["status"] == "ready"
+    assert listed["items"][0]["content_chars"] == len("полный текст ресурса")
 
 
 def test_import_resource_rejects_unknown_id(tmp_path, monkeypatch) -> None:

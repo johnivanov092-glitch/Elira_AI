@@ -282,13 +282,6 @@ def _build_corpus_files(root: Path, patterns: list[str]) -> tuple[list[CorpusFil
     return sorted(records.values(), key=lambda item: item.source_uri.casefold()), errors
 
 
-def _iter_project_files(project_root: Path, patterns: list[str]) -> Iterator[Path]:
-    """Compatibility iterator used by older imports/tests."""
-    records, _errors = _build_corpus_files(project_root.resolve(), patterns)
-    for record in records:
-        yield record.path
-
-
 def _source_bytes(path: Path) -> bytes:
     with path.open("rb") as fh:
         content = fh.read(INDEX_MAX_FILE_BYTES + 1)

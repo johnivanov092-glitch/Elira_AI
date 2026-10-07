@@ -645,39 +645,6 @@ def _is_interaction(text: str) -> bool:
     return _has((text or "").lower(), _INTERACTION_CUES)
 
 
-# Value-introducing cues only — NOT "в поле" (that locates the FIELD, not the value:
-# "в поле `CIDR` введите `X`" — the value is after "введите", the quote after "в поле"
-# is the field name).
-_FILL_CUES = ("ввод", "введ", "впиш", "заполн", "type ", "fill", "набер")
-_CLICK_CUES = ("нажат", "нажми", "клик", "click", "кнопк", "button", "submit")
-
-
-def interaction_spec(text: str) -> dict:
-    """The (fill value, click target) an interaction criterion implies — the quoted
-    token right after a fill/click cue. Result tokens (the expected DOM text) are
-    excluded from both, and the click target is excluded from the fill, so a prose value
-    with only the button quoted ("Введите CIDR и нажмите `Calculate`") doesn't grab the
-    button, and a prose button with only the result quoted doesn't grab the result.
-    Empty when absent → the closure emits a `<value>`/`<кнопка>` placeholder."""
-    low = (text or "").lower()
-    quotes = [(m.start(), m.group(1).strip()) for m in _QUOTED_RE.finditer(text or "")]
-    result_toks = {t.lower() for t in _dom_targets(text)}  # expected DOM text — never fill/click
-
-    def _after(cues: tuple[str, ...], exclude: set[str]) -> str:
-        positions = [low.find(c) for c in cues if c in low]
-        if not positions:
-            return ""
-        pos = min(positions)
-        for start, q in quotes:
-            if start > pos and q and q.lower() not in exclude:
-                return q
-        return ""
-
-    click = _after(_CLICK_CUES, result_toks)
-    fill = _after(_FILL_CUES, result_toks | ({click.lower()} if click else set()))
-    return {"fill": fill, "click": click}
-
-
 # ── CLI command-output (Batch A) ─────────────────────────────────
 # A criterion asserting a COMMAND prints something ("`node index.js sample.log` выводит
 # `INFO: 2`"), verified by run_bash stdout/stderr — NOT a bundle grep or a code read.
@@ -1365,11 +1332,6 @@ def _run_bash_verdict(cmd: str) -> dict | None:
                               "import", "smoke", "lint", "npm run", "cargo", "go "))):
             return None
     return {"intents": {"command_check"}, "command_kind": kind, "files": set()}
-
-
-def is_run_check_command(command: str) -> bool:
-    """Return whether a shell command is server-classified verification."""
-    return _run_bash_verdict(command) is not None
 
 
 def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: dict | None = None) -> dict | None:

@@ -506,22 +506,6 @@ def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, A
     }
 
 
-# When the caller sets no max_tokens, reserve a realistic output budget in the
-# pre-send guard anyway. Without this an at-the-limit prompt passed the gate,
-# the server context-shifted mid-generation and returned empty/garbled content —
-# which downstream looks like "the model repeated its previous answer".
-_DEFAULT_OUTPUT_RESERVE_TOKENS = 1024
-
-
-def _estimate_tokens(text: str) -> int:
-    """Coarse char→token estimate. Cyrillic tokenizes ~2.8 chars/token (vs ~4 for
-    ASCII/code); a flat /4 under-counted Russian prompts by ~30%, letting
-    over-limit prompts through the guard."""
-    cyr = sum(1 for ch in text if "Ѐ" <= ch <= "ӿ")
-    ascii_like = len(text) - cyr
-    return int(cyr / 2.8 + ascii_like / 4) + 1
-
-
 def _guard_context_request(
     messages: list[dict[str, Any]],
     *,
@@ -713,75 +697,6 @@ def chat_completion(
         raise RuntimeError(f"OpenAI-compatible request failed after retries: {last_exc}") from last_exc
 
     return _local_llm_response(data, elapsed_ns=time.monotonic_ns() - started)
-
-
-def chat_completion_stream(
-    *,
-    model: str,
-    messages: list[dict[str, Any]],
-    options: dict[str, Any] | None = None,
-    timeout: float | None = None,
-) -> Generator[str, None, None]:
-    cfg = local_llm_config()
-    if not cfg.enabled:
-        raise RuntimeError("local llama-server provider is disabled")
-
-    normalized_messages = _normalize_messages_for_request(messages)
-    payload: dict[str, Any] = {
-        "model": model or cfg.model,
-        "messages": normalized_messages,
-        "stream": True,
-        "cache_prompt": True,
-    }
-    opts = options or {}
-    _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
-    if "temperature" in opts:
-        payload["temperature"] = opts["temperature"]
-    _apply_thinking_option(payload, opts)
-    _apply_response_format(payload, opts)
-    _apply_sampling_extra(payload, opts)
-    _guard_context_request(
-        normalized_messages,
-        max_tokens=payload.get("max_tokens"),
-        requested_ctx=_request_context_limit(opts, configured_context=cfg.context_window),
-    )
-
-    response: requests.Response | None = None
-    cancel_handle = _stream_cancel_handle(opts)
-    try:
-        response = requests.post(
-            f"{cfg.base_url}/chat/completions",
-            headers=_headers(cfg),
-            json=payload,
-            timeout=_chat_http_timeout(timeout, cfg.timeout_seconds),
-            stream=True,
-        )
-        _bind_cancelable_response(response, cancel_handle)
-        response.raise_for_status()
-        for raw_line in response.iter_lines(decode_unicode=False):
-            if not raw_line:
-                continue
-            line = _decode_sse_line(raw_line).strip()
-            if line.startswith("data:"):
-                line = line[5:].strip()
-            if line == "[DONE]":
-                break
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            choices = data.get("choices") if isinstance(data.get("choices"), list) else []
-            first = choices[0] if choices and isinstance(choices[0], dict) else {}
-            delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
-            token = str(delta.get("content") or "")
-            if token:
-                yield token
-    except requests.HTTPError as exc:
-        raise RuntimeError(_http_error_message(exc)) from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(f"OpenAI-compatible stream failed: {exc}") from exc
-    finally:
-        _close_cancelable_response(response, cancel_handle)
 
 
 def chat_completion_event_stream(

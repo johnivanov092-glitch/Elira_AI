@@ -23,7 +23,6 @@ from app.application.workflows.store import (
     list_workflow_templates as _app_list_workflow_templates,
     now_utc as _app_now_utc,
     update_workflow_template as _app_update_workflow_template,
-    upsert_workflow_template as _app_upsert_workflow_template,
 )
 
 DB_PATH: Path = get_workflow_db_path()
@@ -48,14 +47,6 @@ def _init_db() -> None:
 
 
 _init_db()
-
-
-def _upsert_workflow_template(template: dict[str, Any]) -> dict[str, Any]:
-    return _app_upsert_workflow_template(
-        db_path=_resolved_db_path(),
-        template=template,
-        now_func=_now,
-    )
 
 
 def create_workflow_template(template: dict[str, Any]) -> dict[str, Any]:

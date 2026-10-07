@@ -39,13 +39,6 @@ class CidrContractTest(unittest.TestCase):
             ni.parse_cidr_v1("fd00::/120")
         self.assertEqual(ipv6.exception.reason, "ipv6_not_supported")
 
-    def test_compatibility_authorization_accepts_every_ipv4_destination(self) -> None:
-        self.assertTrue(ni.cidr_authorized("192.168.88.0/24"))
-        self.assertTrue(ni.cidr_authorized("8.8.8.0/24"))
-        self.assertFalse(ni.cidr_authorized("fd00::/120"))
-        self.assertFalse(ni.cidr_authorized("not-a-cidr"))
-        self.assertEqual(ni.allowed_cidrs(), [])
-
 
 class ProfileContractTest(unittest.TestCase):
     def test_profile_has_no_port_count_or_work_budget_cap(self) -> None:

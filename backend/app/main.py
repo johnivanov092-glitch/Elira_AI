@@ -148,6 +148,31 @@ try:
 except Exception as exc:
     logger.warning("workflow trigger scheduler startup failed: %s", exc)
 
+def _prune_observability() -> None:
+    """Retention for agent_monitor.db and event_bus.db (45 days, then VACUUM).
+
+    The daily call was lost with the old task-recovery scheduler (668b5d0);
+    once per backend start in the background keeps both files bounded.
+    """
+    from app.application.event_bus.runtime import prune_events
+    from app.application.monitoring.runtime import prune_metrics
+
+    for label, prune in (("metrics", prune_metrics), ("events", prune_events)):
+        try:
+            logger.info("%s retention: %s", label, prune())
+        except Exception as exc:
+            logger.warning("%s retention failed: %s", label, exc)
+
+
+try:
+    import sys as _sys
+    import threading as _threading
+
+    if "pytest" not in _sys.modules and not release_runtime.is_staging():
+        _threading.Thread(target=_prune_observability, name="observability-retention", daemon=True).start()
+except Exception as exc:
+    logger.warning("observability retention startup failed: %s", exc)
+
 from app.application.tool_registry.runtime import seed_builtin_tools
 seed_builtin_tools()
 

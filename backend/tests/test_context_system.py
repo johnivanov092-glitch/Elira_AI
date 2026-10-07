@@ -17,23 +17,13 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.context.compaction import maybe_compact
-from app.application.context.memory import (
-    add_ledger_entry,
-    include_pinned_in_context,
-    pin_item,
-    rollback_compression,
-    unpin_item,
-    validate_after_compression,
-)
-from app.application.context.packer import build_final_messages, pack_context, pack_message_context
-from app.application.context.policy import prepare_compression, should_compress
+from app.application.context.memory import add_ledger_entry, validate_after_compression
 from app.application.context.profile import get_active_context_profile
 from app.application.context.rolling_summary import (
     ROLLING_SUMMARY_FIELDS,
     generate_rolling_summary,
-    validate_rolling_summary,
 )
-from app.application.context.usage import calculate_budget, check_context_limit, get_context_usage
+from app.application.context.usage import calculate_budget, get_context_usage
 
 
 class ContextProfileAndBudgetTest(unittest.TestCase):
@@ -78,20 +68,6 @@ class ContextProfileAndBudgetTest(unittest.TestCase):
 
 
 class CompressionPolicyTest(unittest.TestCase):
-    def test_thresholds_match_acceptance_policy(self) -> None:
-        expected = {
-            59: ("normal", False, True),
-            60: ("monitor", False, True),
-            75: ("prepare", False, True),
-            85: ("auto_compression", True, True),
-            90: ("strong_compression", True, True),
-            95: ("critical", True, False),
-        }
-        for percent, (status, compress, allowed) in expected.items():
-            usage = {"percent": percent}
-            self.assertEqual(check_context_limit(usage)["status"], status)
-            self.assertEqual(should_compress(usage), compress)
-            self.assertEqual(prepare_compression(usage)["allowed"], allowed)
 
     def test_compaction_audit_and_pinned_order(self) -> None:
         messages = [{"role": "system", "content": "rules"}]
@@ -125,37 +101,7 @@ class CompressionPolicyTest(unittest.TestCase):
 
 
 class ContextPackerAndMemoryTest(unittest.TestCase):
-    def test_packer_keeps_protected_and_prioritises_current_request(self) -> None:
-        packed = pack_context([
-            {"id": "rag", "category": "rag", "content": "R" * 4000},
-            {"id": "system", "category": "system", "content": "rules", "protected": True},
-            {"id": "user", "category": "user_input", "content": "fix it", "protected": True},
-        ], safe_input_budget=20)
-        ids = [block["id"] for block in packed["blocks"]]
-        self.assertIn("system", ids)
-        self.assertIn("user", ids)
-        self.assertTrue(packed["compressed_blocks"] or packed["dropped_blocks"])
-        self.assertEqual([message["content"] for message in build_final_messages(packed)][:2], ["rules", "fix it"])
 
-    def test_message_packer_preserves_tool_order_and_artifact_reference(self) -> None:
-        messages = [
-            {"role": "system", "content": "rules"},
-            {"role": "user", "content": "inspect"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "read_file", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "c1", "content": "result"},
-            {"role": "user", "content": "finish"},
-        ]
-        packed = pack_message_context(messages, safe_input_budget=1000)
-        final = build_final_messages(packed)
-        self.assertEqual([message["role"] for message in final], ["system", "user", "assistant", "tool", "user"])
-        self.assertEqual(final[2]["tool_calls"][0]["id"], "c1")
-
-        artifact = pack_context([{
-            "id": "code", "category": "code", "content": "X" * 4000,
-            "artifact_ref": "artifacts/large.py",
-        }], safe_input_budget=100)
-        self.assertIn("artifacts/large.py", artifact["referenced_artifacts"])
-        self.assertIn("[Artifact: artifacts/large.py]", artifact["blocks"][0]["content"])
 
     def test_structured_summary_preserves_profile_files_errors_and_tests(self) -> None:
         profile = {
@@ -172,25 +118,9 @@ class ContextPackerAndMemoryTest(unittest.TestCase):
             task_ledger=ledger,
         )
         self.assertEqual(set(summary), set(ROLLING_SUMMARY_FIELDS))
-        self.assertTrue(validate_rolling_summary(summary)["ok"])
         self.assertIn("2944 passed", summary["test_results"])
         self.assertIn("HTTP 404", summary["known_errors"])
         self.assertIn("http://192.168.88.15:8000/v1", summary["active_endpoints"])
-
-    def test_pin_unpin_and_consistency_rollback(self) -> None:
-        pins = pin_item([], content="pytest -q", kind="command", source_id="m1")
-        self.assertIn("pytest -q", include_pinned_in_context(pins))
-        self.assertEqual(unpin_item(pins, pins[0]["id"]), [])
-        before = {
-            "rolling_summary": {"task_goal": "ship"},
-            "active_context_profile": {"active_model": "m", "ctx_size": 131072, "main_endpoint": "http://x/v1"},
-            "pinned_items": pins,
-            "task_ledger": [{"step_id": 1}],
-        }
-        after = {"rolling_summary": {}, "active_context_profile": {}, "pinned_items": [], "task_ledger": []}
-        check = validate_after_compression(before, after)
-        self.assertFalse(check["ok"])
-        self.assertEqual(rollback_compression(before, after)["rolling_summary"]["task_goal"], "ship")
 
     def test_consistency_checks_endpoints_and_structured_memory(self) -> None:
         before = {
@@ -262,7 +192,6 @@ class PersistentTaskContextTest(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         from app.api.routes.code_agent_routes import router
-        from app.application.context.memory import pin_item
         from app.application.context.task_state import load_task_context, save_task_context
 
         session = self.sessions.create_session(title="task", model="local-model", num_ctx=131_072)
@@ -275,7 +204,8 @@ class PersistentTaskContextTest(unittest.TestCase):
         state = load_task_context(session["id"])
         self.assertIsNotNone(state)
         assert state is not None
-        state["pinned_items"] = pin_item([], content="keep this", source_id="u1")
+        state["pinned_items"] = [{"id": "pin-1", "timestamp": 1, "kind": "fact", "source_id": "u1",
+                                  "content": "keep this", "reason": ""}]
         save_task_context(session["id"], state)
         pin_id = state["pinned_items"][0]["id"]
 

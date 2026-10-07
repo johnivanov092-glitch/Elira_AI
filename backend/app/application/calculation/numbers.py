@@ -4,7 +4,6 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-MONEY = Decimal("0.01")
 _CURRENCY_TOKENS = ("₸", "тг.", "тг", "тенге", "KZT", "kzt", "₽", "руб.", "руб", "RUB", "$", "USD", "€", "EUR")
 
 

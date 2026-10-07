@@ -524,28 +524,11 @@ def upsert_asset(*, asset_id: str, label: str, kind: str, endpoint: str = "",
     return _wrap(op)
 
 
-def get_asset(asset_id: str) -> dict[str, Any] | None:
-    def op(conn):
-        r = conn.execute("SELECT * FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
-        return _asset_row(r) if r else None
-    return _wrap(op)
-
-
 def list_assets() -> list[dict[str, Any]]:
     def op(conn):
         rows = conn.execute("SELECT * FROM assets ORDER BY created_at ASC").fetchall()
         return [_asset_row(r) for r in rows]
     return _wrap(op)
-
-
-def set_asset_lifecycle(asset_id: str, lifecycle_state: str) -> None:
-    _check(lifecycle_state, _dom.ASSET_LIFECYCLE, "asset lifecycle_state")
-
-    def op(conn):
-        conn.execute("UPDATE assets SET lifecycle_state=?, updated_at=? WHERE asset_id=?",
-                     (lifecycle_state, _now(), asset_id))
-        conn.commit()
-    _wrap(op)
 
 
 def delete_asset(asset_id: str) -> bool:
@@ -615,14 +598,6 @@ def list_connection_profiles(asset_id: str | None = None) -> list[dict[str, Any]
     return _wrap(op)
 
 
-def set_profile_health(profile_id: str, health: dict) -> None:
-    def op(conn):
-        conn.execute("UPDATE connection_profiles SET last_health=?, updated_at=? WHERE profile_id=?",
-                     (json.dumps(health or {}, ensure_ascii=False), _now(), profile_id))
-        conn.commit()
-    _wrap(op)
-
-
 def delete_connection_profile(profile_id: str) -> bool:
     def op(conn):
         cur = conn.execute(
@@ -653,65 +628,6 @@ def record_evidence(*, run_id: str, target_identity: str, scanner_vantage: str,
              json.dumps(result or {}, ensure_ascii=False), str(exit_status or ""), _now()))
         conn.commit()
         return eid
-    return _wrap(op)
-
-
-def _evidence_row(r: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "evidence_id": r["evidence_id"], "run_id": r["run_id"],
-        "change_run_id": r["change_run_id"], "target_identity": r["target_identity"],
-        "scanner_vantage": r["scanner_vantage"], "operation": r["operation"],
-        "result": _loads(r["result"], {}), "exit_status": r["exit_status"],
-        "captured_at": r["captured_at"],
-    }
-
-
-def list_evidence(run_id: str | None = None) -> list[dict[str, Any]]:
-    def op(conn):
-        if run_id:
-            rows = conn.execute(
-                "SELECT * FROM evidence WHERE run_id=? ORDER BY captured_at ASC", (run_id,)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM evidence ORDER BY captured_at ASC").fetchall()
-        return [_evidence_row(r) for r in rows]
-    return _wrap(op)
-
-
-def _evidence_status(ev: dict[str, Any]) -> str:
-    """ok / failed / unsupported for one evidence record. Inventory records carry
-    result.status; older health records have none, so fall back to exit_status
-    (exactly "0" → ok, anything else → failed)."""
-    st = str((ev.get("result") or {}).get("status") or "").strip()
-    if st in ("ok", "failed", "unsupported"):
-        return st
-    return "ok" if str(ev.get("exit_status") or "").strip() == "0" else "failed"
-
-
-def list_evidence_runs(limit: int = 50) -> list[dict[str, Any]]:
-    """Read-only summary of recent diagnostic runs (grouped by run_id): target,
-    adapter (the operation prefix), time window, and ok/failed/unsupported counts.
-    Bounded scan + at most `limit` (<=50) runs, newest first."""
-    lim = max(1, min(int(limit or 50), 50))
-
-    def op(conn):
-        rows = conn.execute("SELECT * FROM evidence ORDER BY captured_at DESC LIMIT 2000").fetchall()
-        runs: dict[str, dict[str, Any]] = {}
-        for r in rows:
-            ev = _evidence_row(r)
-            rid = ev["run_id"]
-            g = runs.get(rid)
-            if g is None:
-                g = runs[rid] = {
-                    "run_id": rid, "target_identity": ev["target_identity"],
-                    "adapter": ev["operation"].split(":", 1)[0] if ev["operation"] else "",
-                    "first_at": ev["captured_at"], "last_at": ev["captured_at"],
-                    "ok": 0, "failed": 0, "unsupported": 0, "count": 0,
-                }
-            g[_evidence_status(ev)] += 1
-            g["count"] += 1
-            g["first_at"] = min(g["first_at"], ev["captured_at"])
-            g["last_at"] = max(g["last_at"], ev["captured_at"])
-        return sorted(runs.values(), key=lambda x: x["last_at"], reverse=True)[:lim]
     return _wrap(op)
 
 
@@ -793,15 +709,6 @@ def set_secret_backend(secret_ref: str, backend: str) -> None:
             raise ValueError(f"unknown secret_ref: {secret_ref}")
         conn.commit()
 
-    _wrap(op)
-
-
-def delete_secret_ref(secret_ref: str) -> None:
-    """Remove the state row entirely — used by the vault's atomicity compensation
-    (metadata write failed → nothing should remain)."""
-    def op(conn):
-        conn.execute("DELETE FROM secret_refs WHERE secret_ref=?", (secret_ref,))
-        conn.commit()
     _wrap(op)
 
 
@@ -894,60 +801,3 @@ def delete_claimed_recovery(secret_ref: str) -> bool:
 
 
 # ── change_runs (TWO axes — never merged) ───────────────────────────────────
-
-def create_change_run(*, change_run_id: str, run_id: str, asset_id: str,
-                       plan: dict | None = None, rollback_kind: str = "none") -> None:
-    _check(rollback_kind, _dom.ROLLBACK_KINDS, "rollback_kind")
-
-    def op(conn):
-        now = _now()
-        conn.execute(
-            "INSERT INTO change_runs (change_run_id, run_id, asset_id, plan,"
-            " snapshot_id, rollback_kind, change_run_status, completion_status, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (change_run_id, run_id, asset_id, json.dumps(plan or {}, ensure_ascii=False),
-             None, rollback_kind, "planned", None, now, now))
-        conn.commit()
-    _wrap(op)
-
-
-def update_change_run(change_run_id: str, *, change_run_status: str | None = None,
-                      completion_status: str | None = None,
-                      snapshot_id: str | None = None) -> None:
-    """Update either/both axes INDEPENDENTLY. Each value is validated against its
-    OWN axis before SQL — the two are never coerced into one another."""
-    if change_run_status is not None:
-        _check(change_run_status, _dom.CHANGE_RUN_STATUS, "change_run_status")
-    if completion_status is not None:
-        _check(completion_status, _dom.COMPLETION_STATUS, "completion_status")
-
-    sets, vals = [], []
-    if change_run_status is not None:
-        sets.append("change_run_status=?"); vals.append(change_run_status)
-    if completion_status is not None:
-        sets.append("completion_status=?"); vals.append(completion_status)
-    if snapshot_id is not None:
-        sets.append("snapshot_id=?"); vals.append(snapshot_id)
-    if not sets:
-        return
-    sets.append("updated_at=?"); vals.append(_now())
-    vals.append(change_run_id)
-
-    def op(conn):
-        conn.execute(f"UPDATE change_runs SET {', '.join(sets)} WHERE change_run_id=?", vals)
-        conn.commit()
-    _wrap(op)
-
-
-def get_change_run(change_run_id: str) -> dict[str, Any] | None:
-    def op(conn):
-        r = conn.execute("SELECT * FROM change_runs WHERE change_run_id=?", (change_run_id,)).fetchone()
-        if not r:
-            return None
-        return {"change_run_id": r["change_run_id"], "run_id": r["run_id"],
-                "asset_id": r["asset_id"], "plan": _loads(r["plan"], {}),
-                "snapshot_id": r["snapshot_id"],
-                "rollback_kind": r["rollback_kind"],
-                "change_run_status": r["change_run_status"],
-                "completion_status": r["completion_status"]}
-    return _wrap(op)

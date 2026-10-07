@@ -587,17 +587,3 @@ def _find_spec_locked(server_id: str) -> dict[str, Any] | None:
         if normalized and normalized["id"] == server_id:
             return normalized
     return None
-
-
-def start_all_enabled() -> dict[str, Any]:
-    """Explicit batch operation for maintenance; never called at app startup.
-
-    Normal agent runs select one server through ``mcp(action='start')``.
-    Failures are captured per server and never abort the batch.
-    """
-    results: dict[str, Any] = {}
-    for spec in list_servers():
-        if not spec.get("enabled", True):
-            continue
-        results[spec["id"]] = start_server(spec["id"])
-    return {"started": results}

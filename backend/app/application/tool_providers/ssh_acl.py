@@ -45,31 +45,6 @@ def get_allowed_hosts() -> list[str]:
     return [h.strip() for h in hosts if isinstance(h, str) and h.strip()]
 
 
-def set_allowed_hosts(hosts: list[str]) -> list[str]:
-    """Replace the favorites atomically. Returns the persisted list
-    after normalization (whitespace stripped, duplicates removed,
-    order preserved)."""
-    seen: set[str] = set()
-    clean: list[str] = []
-    for h in hosts or []:
-        if not isinstance(h, str):
-            continue
-        h = h.strip()
-        if not h or h in seen:
-            continue
-        seen.add(h)
-        clean.append(h)
-    payload = {"allowed_hosts": clean}
-    ACL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ACL_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return clean
-
-
-def is_host_allowed(host: str) -> bool:
-    """Return whether a non-empty host token can be passed to SSH."""
-    return bool(isinstance(host, str) and host.strip())
-
-
 def resolve_allowed_host(host: str) -> str | None:
     """Resolve a human-facing host name to one existing saved alias.
 

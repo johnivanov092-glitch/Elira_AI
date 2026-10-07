@@ -28,9 +28,6 @@ __all__ = [
     "parse_plan_from_text",
     "build_planning_messages",
     "plan_context_block",
-    "error_fingerprint",
-    "recovery_hint",
-    "recovery_next_step",
 ]
 
 PLANNING_SYSTEM_PROMPT = (
@@ -242,92 +239,3 @@ def plan_context_block(plan: PlanArtifact) -> str:
         "без обратной связи."
     )
     return "\n".join(lines)
-
-
-# ── Bounded recovery: normalized error fingerprint + precise diagnostics ─────
-
-_NUM_RE = re.compile(r"\d+")
-
-
-def error_fingerprint(tool: str, args: dict[str, Any], tool_meta: dict[str, Any]) -> str:
-    """Stable identity of a FAILURE for bounded recovery: tool + operation/path
-    + stable error/exit. Numbers are normalized so a shifting line number does
-    not defeat the match. Returns '' when the call did not fail."""
-    ok = (tool_meta or {}).get("ok") is True
-    exit_code = (tool_meta or {}).get("exit_code")
-    failed = (not ok) or (isinstance(exit_code, int) and exit_code != 0)
-    if not failed:
-        return ""
-    a = args or {}
-    target = str(a.get("path") or a.get("command") or a.get("pattern") or "").strip()
-    error = str((tool_meta or {}).get("error") or "").strip()
-    if not error:
-        text = str((tool_meta or {}).get("text") or "")
-        error = text.split("\n", 1)[0][:80]
-    stable = _NUM_RE.sub("N", f"{error}").lower().strip()
-    if isinstance(exit_code, int):
-        stable = f"exit={exit_code}|{stable}"
-    return f"{tool}|{target}|{stable}"
-
-
-def recovery_hint(
-    *, tool: str, path: str, error_text: str, times: int, already_read: bool, open_criterion: str = "",
-) -> str:
-    """A PRECISE, diagnosis-driven recovery message after a repeated identical
-    failure — never the generic «прочитай файл или используй примитив» when the
-    journal shows the file was already read."""
-    head = (
-        f"[recovery] Повторная ошибка ({times}×) на {tool}({path}): {error_text[:160]}. "
-    )
-    old_string_missing = bool(re.search(
-        r"old[_ ]string[_ ]not[_ ]found", error_text.lower(), re.I,
-    ))
-    if tool == "edit_file" and old_string_missing:
-        if already_read:
-            body = (
-                f"Файл {path} уже читался в этом прогоне, но old_string не совпадает — "
-                "значит содержимое отличается от того, что ты подставляешь. "
-                f"Перечитай ТЕКУЩЕЕ содержимое {path} прямо сейчас (read_file) и скопируй "
-                "old_string дословно из свежего вывода, либо перезапиши файл целиком "
-                "через write_file. Хватит повторять ту же замену."
-            )
-        else:
-            body = (
-                f"Сначала прочитай {path} (read_file), затем возьми old_string дословно "
-                "из его текущего содержимого."
-            )
-    elif isinstance_exit_failure(error_text):
-        body = (
-            "Прочитай точную диагностику команды выше (первая ошибка/стек), исправь "
-            "именно её, затем повтори эту же проверку — не переходи к другой стратегии, "
-            "пока не понял конкретную причину."
-        )
-    else:
-        body = (
-            "Прочитай точную ошибку выше и исправь конкретную причину, затем повтори "
-            "эту же операцию один раз."
-        )
-    tail = f" Оставшийся критерий: {open_criterion}." if open_criterion else ""
-    return head + body + tail
-
-
-def recovery_next_step(
-    *, tool: str, path: str, error_text: str, already_read: bool,
-) -> str:
-    """Concrete deterministic continuation for a stopped failed operation."""
-    target = path or "целевой объект"
-    if tool == "edit_file" and re.search(
-        r"old[_ ]string[_ ]not[_ ]found", error_text.lower(), re.I,
-    ):
-        prefix = "Перечитай текущее содержимое" if already_read else "Прочитай содержимое"
-        return (
-            f"{prefix} {target}, возьми old_string дословно из свежего вывода и "
-            "повтори одну точную замену; если замена неуместна, перезапиши файл целиком."
-        )
-    detail = error_text.strip() or "операция завершилась ошибкой"
-    return f"Исправь причину сбоя {tool} для {target}: {detail[:160]}; затем повтори проверку."
-
-
-def isinstance_exit_failure(error_text: str) -> bool:
-    low = (error_text or "").lower()
-    return "exit=" in low or "traceback" in low or "error ts" in low or "failed" in low

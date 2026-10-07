@@ -1,8 +1,4 @@
-"""Tests for pure helpers across three modules.
-
-  core/llm.py
-    — build_system_prompt
-    — get_available_models
+"""Tests for pure helpers across two modules.
 
   application/workflows/store.py
     — _row_to_template
@@ -25,7 +21,6 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.core.llm import build_system_prompt, get_available_models  # noqa: E402
 from app.application.workflows.store import (  # noqa: E402
     _row_to_template,
     _row_to_run,
@@ -40,110 +35,10 @@ from app.application.workflows.execution import (  # noqa: E402
 # core/llm.py — build_system_prompt
 # ─────────────────────────────────────────────────────────────────────────────
 
-class BuildSystemPromptTest(unittest.TestCase):
-
-    def _call(self, profile="Аналитик", file_ctx="", proj_ctx="", web_ctx="",
-              mem_ctx="", use_web=False, use_memory=False) -> str:
-        return build_system_prompt(profile, file_ctx, proj_ctx, web_ctx, mem_ctx,
-                                   use_web, use_memory)
-
-    # ── return type ───────────────────────────────────────────────────────────
-
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(self._call(), str)
-
-    def test_nonempty_without_contexts(self) -> None:
-        self.assertGreater(len(self._call()), 0)
-
-    # ── file context ──────────────────────────────────────────────────────────
-
-    def test_file_context_included(self) -> None:
-        result = self._call(file_ctx="file content here")
-        self.assertIn("file content here", result)
-
-    def test_empty_file_context_not_injected(self) -> None:
-        # If file_ctx is blank, the section should not appear
-        result = self._call(file_ctx="")
-        self.assertNotIn("Контекст из загруженных файлов", result)
-
-    # ── project context ───────────────────────────────────────────────────────
-
-    def test_project_context_included(self) -> None:
-        result = self._call(proj_ctx="project info")
-        self.assertIn("project info", result)
-
-    def test_empty_project_context_not_injected(self) -> None:
-        result = self._call(proj_ctx="")
-        self.assertNotIn("Контекст из папки проекта", result)
-
-    # ── web context gating ────────────────────────────────────────────────────
-
-    def test_web_context_excluded_when_use_web_false(self) -> None:
-        result = self._call(web_ctx="web data", use_web=False)
-        self.assertNotIn("web data", result)
-
-    def test_web_context_included_when_use_web_true(self) -> None:
-        result = self._call(web_ctx="web data", use_web=True)
-        self.assertIn("web data", result)
-
-    def test_web_context_excluded_even_if_nonempty_and_flag_false(self) -> None:
-        result = self._call(web_ctx="important web stuff", use_web=False)
-        self.assertNotIn("important web stuff", result)
-
-    # ── memory context gating ─────────────────────────────────────────────────
-
-    def test_memory_context_excluded_when_use_memory_false(self) -> None:
-        result = self._call(mem_ctx="memory data", use_memory=False)
-        self.assertNotIn("memory data", result)
-
-    def test_memory_context_included_when_use_memory_true(self) -> None:
-        result = self._call(mem_ctx="memory data", use_memory=True)
-        self.assertIn("memory data", result)
-
-    # ── unknown profile fallback ──────────────────────────────────────────────
-
-    def test_unknown_profile_returns_string(self) -> None:
-        result = self._call(profile="NonExistentProfile999")
-        self.assertIsInstance(result, str)
-
-    def test_unknown_profile_result_nonempty(self) -> None:
-        result = self._call(profile="NonExistentProfile999")
-        self.assertGreater(len(result), 0)
-
-    # ── all contexts together ─────────────────────────────────────────────────
-
-    def test_all_contexts_combined(self) -> None:
-        result = build_system_prompt(
-            "Аналитик", "F", "P", "W", "M", True, True
-        )
-        for token in ("F", "P", "W", "M"):
-            self.assertIn(token, result)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # core/llm.py — get_available_models
 # ─────────────────────────────────────────────────────────────────────────────
-
-class GetAvailableModelsTest(unittest.TestCase):
-
-    def test_returns_dict(self) -> None:
-        self.assertIsInstance(get_available_models(), dict)
-
-    def test_nonempty(self) -> None:
-        # At minimum the static models from config must be present
-        self.assertGreater(len(get_available_models()), 0)
-
-    def test_all_keys_strings(self) -> None:
-        for key in get_available_models():
-            self.assertIsInstance(key, str)
-
-    def test_all_values_strings(self) -> None:
-        for val in get_available_models().values():
-            self.assertIsInstance(val, str)
-
-    def test_deterministic(self) -> None:
-        # get_available_models is @lru_cache — same object returned
-        self.assertIs(get_available_models(), get_available_models())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

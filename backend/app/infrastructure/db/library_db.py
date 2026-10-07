@@ -53,33 +53,6 @@ def list_files() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def insert_file(
-    name: str,
-    size: int,
-    file_type: str,
-    preview: str,
-    use_in_context: bool,
-    stored_path: str,
-    sha256: str,
-) -> int:
-    c = _conn()
-    cur = c.execute(
-        "INSERT INTO files (name, size, type, preview, use_in_context, source, stored_path, sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (name, size, file_type, preview, 1 if use_in_context else 0, "upload", stored_path, sha256),
-    )
-    file_id = cur.lastrowid
-    c.commit()
-    c.close()
-    return file_id
-
-
-def toggle_file(file_id: int, enabled: bool) -> None:
-    c = _conn()
-    c.execute("UPDATE files SET use_in_context = ? WHERE id = ?", (1 if enabled else 0, file_id))
-    c.commit()
-    c.close()
-
-
 def delete_file(file_id: int) -> str | None:
     c = _conn()
     row = c.execute("SELECT stored_path FROM files WHERE id = ?", (file_id,)).fetchone()

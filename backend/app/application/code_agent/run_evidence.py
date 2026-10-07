@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -236,38 +235,6 @@ _EXTERNAL_UNCERTAINTY_RE = re.compile(
     r"not\s+(?:verified|confirmed))",
     re.IGNORECASE | re.UNICODE,
 )
-_DEGRADED_SENTENCE_SPLIT_RE = re.compile(
-    r"(?<=[.!?])\s+|\n+|[;:]\s*|(?:,\s*|\s+)(?=(?:но|однако|зато|but)\b)",
-    re.IGNORECASE | re.UNICODE,
-)
-_DEGRADED_SAFE_UNCERTAINTY_RE = re.compile(
-    r"^(?:(?:поэтому\s+)?(?:над[её]жн\w+\s+)?источник(?:\s+по\s+.+?)?\s+"
-    r"не\s+найден\w*|(?:поэтому\s+)?подтвержд\w+\s+.+?\s+нет|"
-    r"(?:поэтому\s+)?(?:точн\w+\s+)?(?:бонус\w*|данн\w*|факт\w*|"
-    r"цифр\w*|детал\w*|рекомендац\w*)\s+(?:я\s+)?не\s+"
-    r"(?:подтвержда\w*|называ\w*|утвержда\w*|уверен\w*)|"
-    r"не\s+(?:подтвержда\w*|могу\s+подтвердить)|"
-    r"нет\s+(?:ни\s+одного\s+)?подтвержд\w+|"
-    r"(?:the\s+requested\s+)?(?:current\s+)?fact\s+is\s+not\s+"
-    r"(?:confirmed|verified)(?:\s+by\s+(?:the\s+)?available\s+sources?)?|"
-    r"(?:the\s+)?source(?:\s+for\s+.+?)?\s+(?:was\s+)?not\s+found|"
-    r"not\s+(?:confirmed|verified))\.?$",
-    re.IGNORECASE | re.UNICODE,
-)
-_DEGRADED_SAFE_GUIDANCE_RE = re.compile(
-    r"^(?:как\s+(?:общее\s+)?(?:предполож\w*|гипотез\w*).+|"
-    r"(?:но\s+)?(?:перед\s+[^,;:]{1,40}\s+)?"
-    r"(?:проверь\w*|сравн\w*|уточн\w*|пришли\w*).+|"
-    r"(?:можно|возможно|вероятно|если)\b.+|"
-    r"(?:as\s+(?:a\s+)?(?:general\s+)?(?:hypothesis|assumption)|"
-    r"check|compare|verify|you\s+can|if)\b.+)$",
-    re.IGNORECASE | re.UNICODE,
-)
-_DEGRADED_NUMBER_RE = re.compile(r"(?<!\w)[+−-]?\d+(?:[.,]\d+)?\s*%?", re.UNICODE)
-_DEGRADED_NAMED_ENTITY_RE = re.compile(
-    r"(?:,\s*|\s+)(?:[А-ЯЁ][А-Яа-яЁё-]{2,}|[A-Z][A-Za-z-]{2,})\b",
-    re.UNICODE,
-)
 _LOCAL_FACT_CONTEXT_RE = re.compile(
     r"\b(?:файл\w*|код\w*|класс\w*|функци\w*|компонент\w*|коммит\w*|"
     r"ветк\w*|репозитор\w*|проект\w*|сервер\w*|хост\w*|ssh|папк\w*|"
@@ -317,8 +284,6 @@ def _basename(path: str) -> str:
     return re.split(r"[\\/]", path)[-1]
 
 
-
-
 def _receipt_target_unchanged(receipt: EvidenceReceipt) -> bool:
     if receipt.status != "passed" or not receipt.sha256:
         return True
@@ -364,29 +329,6 @@ def answer_admits_missing_external_source(answer: str) -> bool:
     return bool(_EXTERNAL_UNCERTAINTY_RE.search(answer or ""))
 
 
-def degraded_answer_has_unsupported_specifics(answer: str) -> bool:
-    """Reject assertive specifics hidden beside an uncertainty disclaimer."""
-    for sentence in _DEGRADED_SENTENCE_SPLIT_RE.split(answer or ""):
-        text = sentence.strip()
-        if not text:
-            continue
-        # Concrete numbers remain unsupported even when the same clause contains
-        # "возможно" or "проверь": a disclaimer must not leak +30%.
-        if _DEGRADED_NUMBER_RE.search(text):
-            return True
-        if _DEGRADED_SAFE_UNCERTAINTY_RE.fullmatch(text):
-            continue
-        if (
-            _DEGRADED_SAFE_GUIDANCE_RE.fullmatch(text)
-            and not _DEGRADED_NAMED_ENTITY_RE.search(text)
-        ):
-            continue
-        # Fail closed: after removing explicit uncertainty and next-step clauses,
-        # any remaining prose is an unsupported factual assertion.
-        return True
-    return False
-
-
 def tool_provides_external_source(tool_name: str, text_result: str) -> bool:
     tool = str(tool_name or "").strip()
     if not str(text_result or "").strip():
@@ -397,14 +339,6 @@ def tool_provides_external_source(tool_name: str, text_result: str) -> bool:
         "browser_snapshot",
         "browser_network_requests",
     }
-
-
-def external_source_backstop() -> str:
-    return (
-        "Не удалось прочитать надёжный внешний источник, поэтому я не могу "
-        "подтвердить фактический ответ. Можно повторить поиск другим запросом "
-        "или проверить данные в первичном источнике."
-    )
 
 
 def ungrounded_file_claims(
@@ -714,7 +648,6 @@ class RunEvidence:
             receipt.passed and _receipt_target_unchanged(receipt)
             for receipt in latest.values()
         )
-
 
     @property
     def has_external_source(self) -> bool:

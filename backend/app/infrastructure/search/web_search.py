@@ -90,10 +90,6 @@ def is_strict_web_only_query(user_input: str) -> bool:
     return web_query.is_strict_web_only_query(user_input)
 
 
-def _default_tl(timeline: list, step: str, title: str, status: str, detail: str) -> None:
-    web_runtime.default_tl(timeline, step, title, status, detail)
-
-
 def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
     return web_runtime.build_single_web_subquery_context(subquery)
 

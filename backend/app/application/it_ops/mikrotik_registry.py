@@ -170,11 +170,6 @@ def prepare_identity(*, host: str, label: str = "", asset_id: str = "", router_i
     }
 
 
-def existing_auth_ref(*, host: str, router_id: str = "", asset_id: str = "") -> str:
-    existing = _find_router(host=host, router_id=router_id, asset_id=asset_id)
-    return str((existing or {}).get("auth_ref") or "")
-
-
 def ssh_target(router: dict[str, Any]) -> str:
     alias = str(router.get("ssh_alias") or "").strip()
     if alias:

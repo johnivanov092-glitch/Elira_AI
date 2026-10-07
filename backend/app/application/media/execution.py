@@ -152,37 +152,6 @@ def _detect_nvidia_gpu() -> str | None:
     return _cached("nvidia_gpu", _probe)
 
 
-def _detect_local_gpu_transcribe() -> tuple[bool, str, tuple[str, ...]]:
-    """(available, device_label, runtimes) for a LOCAL GPU transcription runtime.
-    Cheap: module presence + GPU presence, never imports/loads a model."""
-    def _probe() -> tuple[bool, str, tuple[str, ...]]:
-        gpu = _detect_nvidia_gpu()
-        runtimes: list[str] = []
-        if _has_module("faster_whisper") and _has_module("ctranslate2"):
-            runtimes.append("faster-whisper")
-        available = bool(gpu) and bool(runtimes)
-        return available, (gpu or "local-gpu"), tuple(runtimes)
-
-    return _cached("local_gpu_transcribe", _probe)
-
-
-def _detect_local_cpu_transcribe() -> tuple[bool, str, tuple[str, ...]]:
-    """(available, device_label, runtimes) for a LOCAL CPU transcription runtime."""
-    def _probe() -> tuple[bool, str, tuple[str, ...]]:
-        runtimes: list[str] = []
-        if _has_module("faster_whisper"):
-            runtimes.append("faster-whisper")
-        # "main" is intentionally excluded: it is far too generic to prove a
-        # whisper.cpp runtime and caused false-positive local_cpu capability.
-        for binary in ("whisper-cli", "whisper.cpp"):
-            if shutil.which(binary):
-                runtimes.append("whisper.cpp")
-                break
-        return (bool(runtimes), "cpu", tuple(runtimes))
-
-    return _cached("local_cpu_transcribe", _probe)
-
-
 def _server_stt_available() -> bool:
     """Return live readiness of the server-owned STT endpoint.
 
@@ -350,10 +319,6 @@ class ServerCpuTranscribeAdapter:
         return _transcript_result(record, text, self.target)
 
 
-# Compatibility for imports only. Instances use the canonical server_cpu target.
-ServerGpuTranscribeAdapter = ServerCpuTranscribeAdapter
-
-
 @dataclass
 class _LocalTranscribeAdapter:
     """Local transcription with injectable runtime discovery and execution.
@@ -502,43 +467,6 @@ def normalize_execution_target(target: str) -> str:
     if value == ExecutionTarget.SERVER_GPU.value:
         return ExecutionTarget.SERVER_CPU.value
     return value
-
-
-def capability_catalog(adapters: AdapterSet | None = None) -> list[dict[str, Any]]:
-    """Public projection of every execution target. local_cpu always lists the
-    pure-local ops it can always do (inspect/extract_text) plus transcribe when a
-    local CPU runtime exists."""
-    adapter_set = _adapter_set(adapters)
-    catalog: list[dict[str, Any]] = []
-    for target in (ExecutionTarget.LOCAL_GPU.value, ExecutionTarget.SERVER_CPU.value,
-                   ExecutionTarget.LOCAL_CPU.value):
-        adapter = adapter_set.get(ResourceOperation.TRANSCRIBE.value, target)
-        cap = adapter_capability(adapter) if adapter is not None else Capability(target, False, "unknown")
-        ops = list(cap.operations)
-        available = cap.available
-        if target == ExecutionTarget.LOCAL_CPU.value:
-            # inspect/extract_text always run on the local CPU.
-            ops = sorted(set(ops) | set(_LOCAL_ONLY_OPERATIONS))
-            available = True
-        catalog.append({
-            "target": target, "available": available, "device": cap.device,
-            "runtimes": list(cap.runtimes), "operations": ops,
-            "limitations": list(cap.limitations),
-        })
-    return catalog
-
-
-def available_execution_targets(
-    operation: str,
-    adapters: AdapterSet | None = None,
-) -> tuple[str, ...]:
-    """Canonical targets currently available for one operation, in route order."""
-    op = str(operation or "").strip().lower()
-    return tuple(
-        str(item["target"])
-        for item in capability_catalog(adapters)
-        if item.get("available") is True and op in set(item.get("operations") or ())
-    )
 
 
 def select(operation: str, requested_target: str,

@@ -10,7 +10,7 @@
 
 ```text
 Запрос пользователя
-  -> core tools + начальные подсказки route_request_capabilities
+  -> core tools + подсказка file_delivery_requested
   -> Qwen выбирает навыки и раскрывает нужные capability groups
   -> OpenAI-compatible tool schemas
   -> ToolRegistry: единственный владелец dispatch

@@ -258,38 +258,6 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
     return True
 
 
-def evidence_for_registered_target(target_id: str) -> SafetyEvidence:
-    """Return the reviewed safety profile for an executor-owned target id.
-
-    New registry targets default to high impact, so ``accept_edits`` asks. The
-    explicit ``bypass`` mode remains blanket authorization.
-    """
-    if target_id == "ai-server-netdata":
-        # Non-critical restart with executor-owned pre/post health checks.
-        return SafetyEvidence(
-            impact="material",
-            reversibility="staged_rollback",
-            authoritative=True,
-            postcheck=True,
-        )
-    if target_id == "ai-server-netdata-config":
-        return SafetyEvidence(
-            impact="high",
-            reversibility="staged_rollback",
-            authoritative=True,
-            postcheck=True,
-            rollback_verified=True,
-        )
-    if target_id == "phase6-sqlite-canary":
-        return SafetyEvidence(
-            impact="high",
-            reversibility="transactional",
-            authoritative=True,
-            postcheck=True,
-        )
-    return SafetyEvidence(impact="high")
-
-
 def evidence_for_tool_call(tool_name: str, args: dict[str, Any] | None) -> SafetyEvidence:
     """Classify one tool call from trusted tool identity and command text only.
 
@@ -330,8 +298,6 @@ def evidence_for_tool_call(tool_name: str, args: dict[str, Any] | None) -> Safet
         return SafetyEvidence(impact="material") if action in {"start", "stop", "restart"} else SafetyEvidence()
     if name in _LOW_RISK_REVERSIBLE_TOOLS:
         return SafetyEvidence.low_risk_reversible()
-    if name == "itops_change_apply":
-        return evidence_for_registered_target(str(payload.get("target_id") or "").strip())
     if name in _REMOTE_WRITE_TOOLS:
         return SafetyEvidence(impact="high")
     if name == "run_server":

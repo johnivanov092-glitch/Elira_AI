@@ -6,13 +6,12 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from .files import truncate_text
+from app.infrastructure.text import truncate_text
 from .redaction import redact_text
 
 
 SUPPORTED_SEARCH_ENGINES = ("searxng",)
 DEFAULT_SEARCH_ENGINES = SUPPORTED_SEARCH_ENGINES
-CURRENT_WORLD_ENGINES = {"searxng"}
 ENGINE_PRIORITY = {
     "searxng": 0,
     "duckduckgo": 1,
@@ -121,10 +120,6 @@ def searxng_url() -> str:
     """Base URL of the self-hosted SearXNG metasearch (e.g.
     http://192.168.88.15:8003). Missing configuration fails search explicitly."""
     return os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
-
-
-def engine_available(engine: str) -> bool:
-    return engine == "searxng" and bool(searxng_url())
 
 
 def resolve_search_engines(engines: Iterable[str] | None = None) -> tuple[str, ...]:
@@ -250,9 +245,3 @@ def search_searxng(
 
     ranked = rerank_results(filter_site_results(query, results), query=query)
     return SearchResults(ranked[:max_results], engine_warnings=warnings)
-
-
-def re_sub_html(snippet: str) -> str:
-    import re
-
-    return re.sub(r"<[^>]+>", "", snippet)

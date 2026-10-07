@@ -89,10 +89,6 @@ def update_chat(chat_id: int, title=None, pinned=None, memory_saved=None):
     )
 
 
-def rename_chat(chat_id, title):
-    return update_chat(chat_id, title=title)
-
-
 def set_chat_pinned(chat_id, pinned):
     return update_chat(chat_id, pinned=pinned)
 

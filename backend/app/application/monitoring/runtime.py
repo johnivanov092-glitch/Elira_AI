@@ -24,8 +24,8 @@ _init_db()
 
 def prune_metrics(max_age_days: int = 45) -> dict[str, Any]:
     """Retention for agent_monitor.db — delete telemetry older than max_age_days
-    and VACUUM. Called on a daily cadence from the task-recovery scheduler so the
-    DB stops growing monotonically."""
+    and VACUUM. Run in the background on each backend start
+    (main._prune_observability) so the DB stops growing monotonically."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
     return monitoring_store.prune_old_metrics(DB_PATH, cutoff_iso=cutoff)
 
@@ -222,14 +222,6 @@ def list_model_profiles(*, role: str | None = None, enabled_only: bool = False) 
 
 def get_model_profile(profile_id: str) -> dict[str, Any] | None:
     return monitoring_store.get_model_profile(DB_PATH, profile_id)
-
-
-def enable_model_profile(profile_id: str) -> dict[str, Any] | None:
-    return monitoring_store.set_model_profile_enabled(DB_PATH, profile_id, enabled=True)
-
-
-def disable_model_profile(profile_id: str) -> dict[str, Any] | None:
-    return monitoring_store.set_model_profile_enabled(DB_PATH, profile_id, enabled=False)
 
 
 def get_profile_for_role(role: str) -> dict[str, Any] | None:

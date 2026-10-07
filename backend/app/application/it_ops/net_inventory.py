@@ -103,18 +103,6 @@ def usable_host_count(network: ipaddress.IPv4Network) -> int:
     return max(0, network.num_addresses - 2)
 
 
-def allowed_cidrs() -> list[ipaddress.IPv4Network]:
-    """Compatibility surface: no authorization subnet list exists."""
-    return []
-
-
-def cidr_authorized(cidr: str) -> bool:
-    try:
-        return ipaddress.ip_network(str(cidr).strip(), strict=False).version == 4
-    except ValueError:
-        return False
-
-
 def local_source_ip(dest: str) -> str:
     if not dest:
         return ""

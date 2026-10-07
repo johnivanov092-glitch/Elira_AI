@@ -12,14 +12,8 @@ from __future__ import annotations
 # importing build_tool_schemas from tools unchanged.
 from app.application.code_agent.tool_schemas import build_tool_schemas  # noqa: F401
 
-from app.application.code_agent.tools._sandbox import (  # noqa: F401
-    SandboxError,
-    _resolve_safe,
-    _truncate_middle,
-)
+from app.application.code_agent.tools._sandbox import SandboxError  # noqa: F401
 from app.application.code_agent.tools._shell import (  # noqa: F401
-    _kill_proc_tree,
-    _new_process_group_kwargs,
     get_current_run_id,
     cancel_run_callbacks,
     kill_run_processes,

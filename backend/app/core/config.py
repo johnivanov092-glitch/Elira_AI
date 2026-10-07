@@ -4,17 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT_DIR      = Path(__file__).resolve().parents[3]
-BACKEND_DIR   = ROOT_DIR / "backend"
 # DATA_DIR honours ELIRA_DATA_DIR (falls back to <repo>/data) so tests and alt
 # deployments never touch the live data/ tree — every derived path below inherits
 # the redirect. conftest.py sets ELIRA_DATA_DIR to a temp dir before app modules
 # import, so the whole suite writes there instead of the developer's real data/.
 DATA_DIR      = Path(os.getenv("ELIRA_DATA_DIR") or (ROOT_DIR / "data")).resolve()
-APP_DIR       = DATA_DIR
 UPLOAD_DIR    = DATA_DIR / "uploads"
 CHAT_DIR      = DATA_DIR / "chats"
 OUTPUT_DIR    = DATA_DIR / "outputs"
-SETTINGS_PATH = DATA_DIR / "settings.json"
 BROWSER_DIR   = DATA_DIR / "browser_downloads"
 GENERATED_DIR = DATA_DIR / "generated"
 
@@ -28,21 +25,8 @@ for _d in [UPLOAD_DIR, CHAT_DIR, OUTPUT_DIR, BROWSER_DIR, GENERATED_DIR]:
 # bodies with HTTP 413. 25 MiB mirrors chat.py's attachment limit.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-STATIC_MODEL_DESCRIPTIONS = {
-    "local-model":                "Local llama-server - OpenAI-compatible endpoint",
-    "qwen3-coder:480b-cloud":   "Qwen3 Coder 480B — облачный кодер",
-    "deepseek-v3.1:671b-cloud": "DeepSeek V3.1 671B — облачный флагман",
-    "qwen3-coder-next:latest":  "Qwen3 Coder Next 51B — для мощного железа",
-}
 DEFAULT_MODEL = "local-model"
 
-MODEL_SAFE_CTX: dict[str, int] = {
-    "local-model":              131072,
-    "qwen3-coder:480b-cloud":  32768,
-    "deepseek-v3.1:671b-cloud":32768,
-    "qwen3-coder-next:latest": 16384,
-}
-DEFAULT_SAFE_CTX = 4096
 DEFAULT_PROFILE = "Универсальный"
 
 # ═══════════════════════════════════════════════════════════════
@@ -231,30 +215,6 @@ def resolve_model_for_route(
         fallback_reason=(fallback_reason or "empty_route_map"),
         cloud_consent_required=cloud_required, cloud_skipped=cloud_skipped,
     )
-
-
-def effective_context_limit(
-    requested_num_ctx: int,
-    *,
-    monitoring_max_context: int | None = None,
-    profile_context_limit: int | None = None,
-    model: str | None = None,
-) -> int:
-    """min(requested, monitoring cap, profile cap, model safe-ctx если известен).
-
-    Неизвестная модель НЕ режется автоматически до DEFAULT_SAFE_CTX — model cap
-    применяется только когда известен (MODEL_SAFE_CTX). Возвращает requested,
-    если ни одного положительного ограничения нет. Никогда не увеличивает
-    requested — только ограничивает (явный выбор не обходит лимиты).
-    """
-    caps: list[int] = []
-    for value in (requested_num_ctx, monitoring_max_context, profile_context_limit):
-        if isinstance(value, int) and value > 0:
-            caps.append(value)
-    model_cap = MODEL_SAFE_CTX.get(model) if model else None
-    if isinstance(model_cap, int) and model_cap > 0:
-        caps.append(model_cap)
-    return min(caps) if caps else requested_num_ctx
 
 
 def pick_model_for_route(route: str, user_model: str, available_models: list[str] | None = None) -> str:

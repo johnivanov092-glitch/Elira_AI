@@ -61,21 +61,9 @@ class SavedHostDiscoveryTest(SshProviderTestBase):
     def test_empty_favorites_do_not_disable_ssh(self) -> None:
         self.assertEqual(self.ssh_acl.get_allowed_hosts(), [])
         self.assertTrue(self.ssh_acl.is_ssh_enabled())
-        self.assertTrue(self.ssh_acl.is_host_allowed("10.0.0.12"))
-
-    def test_saved_hosts_are_normalized_and_persisted(self) -> None:
-        saved = self.ssh_acl.set_allowed_hosts(
-            ["  prod  ", "staging.example", "prod", ""]
-        )
-        self.assertEqual(saved, ["prod", "staging.example"])
-        importlib.reload(self.ssh_acl)
-        self.assertEqual(
-            self.ssh_acl.get_allowed_hosts(),
-            ["prod", "staging.example"],
-        )
 
     def test_saved_alias_has_friendly_matching(self) -> None:
-        self.ssh_acl.set_allowed_hosts(["elira-ai-server"])
+        self.ssh_acl.ACL_PATH.write_text('{"allowed_hosts": ["elira-ai-server"]}', encoding="utf-8")
         self.assertEqual(
             self.ssh_acl.resolve_allowed_host("Elira AI Server"),
             "elira-ai-server",
@@ -306,7 +294,7 @@ class SshExecutionTest(SshProviderTestBase):
         self.assertEqual(runner.call_args.kwargs["input"], b"payload")
 
     def test_saved_friendly_name_resolves_before_execution(self) -> None:
-        self.ssh_acl.set_allowed_hosts(["elira-ai-server"])
+        self.ssh_acl.ACL_PATH.write_text('{"allowed_hosts": ["elira-ai-server"]}', encoding="utf-8")
         with patch.object(
             self.ssh,
             "run_registered_process",

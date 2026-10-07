@@ -10,7 +10,6 @@ from app.application.it_ops import mikrotik_registry
 
 
 logger = logging.getLogger(__name__)
-TOOL_NAME = "itops_mikrotik_inventory"
 OPERATION = "mikrotik_inventory"
 VANTAGE = "ssh:mikrotik"
 _ROUTER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

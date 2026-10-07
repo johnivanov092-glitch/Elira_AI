@@ -33,6 +33,33 @@ MAX_ROWS = 100_000
 _CURRENCY = ("₸", "тг.", "тг", "тенге", "KZT", "kzt", "₽", "руб.", "руб", "RUB", "$", "USD", "€", "EUR")
 
 
+def _plain_number(raw: str) -> str:
+    """Separators of a price-list number -> a plain decimal string.
+
+    The last separator of two different ones is the decimal point ("1.234,56",
+    "1,234.56"); a separator repeated twice or more groups thousands ("1 234 567"
+    after spaces, "1.234.567"). A single separator followed by exactly three
+    digits after a non-zero integer part ("1,234", "12.500") may be either and
+    is refused — a wrong guess would scale the price by 1000.
+    """
+    commas, dots = raw.count(","), raw.count(".")
+    if commas and dots:
+        decimal_sep = "," if raw.rfind(",") > raw.rfind(".") else "."
+        group_sep = "." if decimal_sep == "," else ","
+        if raw.count(decimal_sep) > 1:
+            raise InvalidOperation
+        return raw.replace(group_sep, "").replace(decimal_sep, ".")
+    sep = "," if commas else "." if dots else ""
+    if not sep:
+        return raw
+    if raw.count(sep) > 1:
+        return raw.replace(sep, "")
+    whole, _, fraction = raw.partition(sep)
+    if len(fraction) == 3 and whole.lstrip("+-").lstrip("0"):
+        raise InvalidOperation
+    return whole + "." + fraction
+
+
 def number(value: Any) -> Decimal:
     """Число как в прайсе: пробелы, валюта, запятая как дробная часть."""
     if isinstance(value, bool) or value is None:
@@ -43,10 +70,7 @@ def number(value: Any) -> Decimal:
         raw = str(value).strip().replace(" ", "").replace(" ", "").replace(" ", "")
         for token in _CURRENCY:
             raw = raw.replace(token, "")
-        if "," in raw and "." not in raw:
-            raw = raw.replace(",", ".")
-        elif "," in raw and "." in raw:
-            raw = raw.replace(",", "")
+        raw = _plain_number(raw)
         result = Decimal(raw)
     if not result.is_finite():
         raise InvalidOperation
@@ -163,7 +187,7 @@ def check(spec: dict[str, Any], base: Path) -> dict[str, Any]:
             stock = number(row.get(cols["stock_column"]))
             price = money(number(row.get(cols["price_column"])))
         except InvalidOperation:
-            issues.append(f"{code}: количество, остаток или цена не число")
+            issues.append(f"{code}: количество, остаток или цена не число или записаны неоднозначно (1,234 — тысяча или дробь?)")
             continue
         if qty > stock:
             issues.append(f"{code}: нужно {qty}, на остатке {stock}")

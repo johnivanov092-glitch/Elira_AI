@@ -9,7 +9,6 @@ from typing import Any
 from app.application.context.rolling_summary import empty_rolling_summary
 
 MAX_LEDGER_ENTRIES = 500
-MAX_PINNED_ITEMS = 200
 MAX_COMPRESSION_EVENTS = 200
 
 
@@ -79,86 +78,8 @@ def add_ledger_entry(
     return items[-MAX_LEDGER_ENTRIES:]
 
 
-def get_task_ledger(task_context: dict[str, Any]) -> list[dict[str, Any]]:
-    return [dict(item) for item in (task_context.get("task_ledger") or []) if isinstance(item, dict)]
-
-
-def summarize_ledger(ledger: list[dict[str, Any]], limit: int = 20) -> str:
-    rows: list[str] = []
-    for entry in ledger[-max(1, int(limit)):]:
-        rows.append(
-            f"#{entry.get('step_id', '?')} [{entry.get('type', 'step')}] "
-            f"{_bounded_text(entry.get('action'), 240)} — {_bounded_text(entry.get('result'), 500)}"
-        )
-    return "\n".join(rows)
-
-
-def restore_from_ledger(ledger: list[dict[str, Any]]) -> dict[str, Any]:
-    errors: list[str] = []
-    files: list[str] = []
-    commands: list[str] = []
-    next_step = ""
-    for entry in ledger:
-        errors.extend(str(value) for value in (entry.get("errors") or []))
-        files.extend(str(value) for value in (entry.get("files") or []))
-        commands.extend(str(value) for value in (entry.get("commands") or []))
-        if entry.get("next_step"):
-            next_step = str(entry["next_step"])
-    return {
-        "last_step_id": max((int(entry.get("step_id") or 0) for entry in ledger), default=0),
-        "errors": list(dict.fromkeys(errors)),
-        "files": list(dict.fromkeys(files)),
-        "commands": list(dict.fromkeys(commands)),
-        "next_step": next_step,
-    }
-
-
-def pin_item(
-    pinned_items: list[dict[str, Any]] | None,
-    *,
-    content: str,
-    kind: str = "fact",
-    source_id: str = "",
-    reason: str = "",
-) -> list[dict[str, Any]]:
-    items = [dict(item) for item in (pinned_items or []) if isinstance(item, dict)]
-    clean = _bounded_text(content, 20_000)
-    if not clean:
-        return items
-    existing = next((item for item in items if source_id and item.get("source_id") == source_id), None)
-    payload = {
-        "id": str(existing.get("id")) if existing else uuid.uuid4().hex,
-        "timestamp": int(time.time() * 1000),
-        "kind": str(kind or "fact"),
-        "source_id": str(source_id or ""),
-        "content": clean,
-        "reason": _bounded_text(reason, 1000),
-    }
-    if existing:
-        items[items.index(existing)] = payload
-    else:
-        items.append(payload)
-    return items[-MAX_PINNED_ITEMS:]
-
-
 def unpin_item(pinned_items: list[dict[str, Any]] | None, item_id: str) -> list[dict[str, Any]]:
     return [dict(item) for item in (pinned_items or []) if str(item.get("id") or "") != str(item_id)]
-
-
-def list_pinned_items(task_context: dict[str, Any]) -> list[dict[str, Any]]:
-    return [dict(item) for item in (task_context.get("pinned_items") or []) if isinstance(item, dict)]
-
-
-def include_pinned_in_context(pinned_items: list[dict[str, Any]], max_chars: int = 6000) -> str:
-    rows: list[str] = []
-    used = 0
-    for item in pinned_items:
-        row = f"- [{item.get('kind', 'fact')}] {_bounded_text(item.get('content'), 2000)}"
-        if used + len(row) > max_chars:
-            break
-        rows.append(row)
-        used += len(row)
-    return "\n".join(rows)
 
 
 def log_compression_event(
@@ -171,10 +92,6 @@ def log_compression_event(
     payload.setdefault("timestamp", int(time.time() * 1000))
     items.append(payload)
     return items[-MAX_COMPRESSION_EVENTS:]
-
-
-def get_compression_history(task_context: dict[str, Any]) -> list[dict[str, Any]]:
-    return [dict(item) for item in (task_context.get("compression_events") or []) if isinstance(item, dict)]
 
 
 def validate_after_compression(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:

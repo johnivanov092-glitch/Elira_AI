@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 from app.application.web_evidence.analyzer import tokenize
 
-from .files import truncate_text
+from app.infrastructure.text import truncate_text
 from .web_engines import (
     ENGINE_LABELS,
     ENGINE_PRIORITY,

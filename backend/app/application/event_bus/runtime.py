@@ -12,35 +12,6 @@ from app.infrastructure.db.connection import connect_sqlite
 
 DB_PATH: Path = sqlite_data_file("event_bus.db")
 
-SUPPORTED_EVENT_TYPES = (
-    "agent.run.started",
-    "agent.run.completed",
-    "tool.executed",
-    "workflow.run.started",
-    "workflow.run.paused",
-    "workflow.run.resumed",
-    "workflow.run.completed",
-    "workflow.run.cancelled",
-    "workflow.step.started",
-    "workflow.step.completed",
-    "workflow.step.failed",
-    "item/started",
-    "item/request",
-    "serverRequest/resolved",
-    "item/completed",
-    "workflow/started",
-    "workflow/resumed",
-    "workflow/waiting",
-    "workflow/completed",
-    "workflow/cancelled",
-    "task.recovery.rescheduled",
-    "task.recovery.dead_letter",
-    "task.checklist.updated",
-    "task.subagent.started",
-    "task.subagent.completed",
-    "task.subagent.failed",
-)
-
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -98,7 +69,7 @@ _init_db()
 
 def prune_events(max_age_days: int = 45) -> dict[str, Any]:
     """Retention for event_bus.db — delete events/messages older than max_age_days
-    and VACUUM. Driven on a daily cadence from the task-recovery scheduler."""
+    and VACUUM. Run in the background on each backend start (main._prune_observability)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
     return event_bus_store.prune_old_events(conn_factory=_conn, cutoff_iso=cutoff)
 

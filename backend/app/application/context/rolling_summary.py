@@ -126,12 +126,3 @@ def update_rolling_summary(
         else:
             merged[field] = str(update.get(field) or current.get(field) or "")
     return merged
-
-
-def validate_rolling_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    missing = [field for field in ROLLING_SUMMARY_FIELDS if field not in summary]
-    invalid_lists = [
-        field for field in ROLLING_SUMMARY_FIELDS
-        if isinstance(empty_rolling_summary()[field], list) and not isinstance(summary.get(field), list)
-    ]
-    return {"ok": not missing and not invalid_lists, "missing": missing, "invalid_lists": invalid_lists}

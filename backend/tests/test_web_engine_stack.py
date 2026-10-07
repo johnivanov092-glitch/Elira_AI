@@ -63,12 +63,12 @@ class WebEngineStackTest(unittest.TestCase):
     def test_missing_url_fails_general_news_and_wrappers_without_egress(self) -> None:
         from app.core.web import search_news
         from app.core import web_engines
-        from app.infrastructure.search.multisearch import multi_search, news_search, news_multi_search
+        from app.infrastructure.search.multisearch import multi_search, news_search
         with patch.dict(os.environ, {"SEARXNG_URL": ""}), patch.object(web_engines, "session") as client:
             for operation in (search_web, search_news):
                 with self.subTest(operation=operation.__name__), self.assertRaisesRegex(RuntimeError, "SEARXNG_URL"):
                     operation("current release")
-            for operation in (multi_search, news_search, news_multi_search):
+            for operation in (multi_search, news_search):
                 result = operation("current release")
                 self.assertIs(result["ok"], False)
                 self.assertIn("SEARXNG_URL", result["error"])

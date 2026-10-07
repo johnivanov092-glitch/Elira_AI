@@ -25,8 +25,7 @@ def truncate_middle(text: str, limit: int) -> str:
     )
 
 
-def truncate_head(text: str, limit: int) -> str:
-    """Simple head-only truncation with a dropped-chars marker."""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n[... truncated {len(text) - limit} chars]"
+def truncate_text(text: str, max_chars: int = 12000) -> str:
+    """Head-only cut for page/search text shown to the model, with a visible mark."""
+    text = (text or "").strip()
+    return text if len(text) <= max_chars else text[:max_chars] + "\n\n[Текст обрезан]"

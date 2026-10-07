@@ -16,7 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.infrastructure.text import truncate_head, truncate_middle  # noqa: E402
+from app.infrastructure.text import truncate_middle  # noqa: E402
 
 
 class TruncateTest(unittest.TestCase):
@@ -30,11 +30,6 @@ class TruncateTest(unittest.TestCase):
 
     def test_middle_short_unchanged(self):
         self.assertEqual(truncate_middle("short output", 1000), "short output")
-
-    def test_head_only(self):
-        out = truncate_head("A" * 5000, 100)
-        self.assertTrue(out.startswith("A" * 100))
-        self.assertIn("truncated", out)
 
     def test_old_call_sites_alias_the_shared_fn(self):
         from app.application.code_agent.tools._sandbox import _truncate_middle

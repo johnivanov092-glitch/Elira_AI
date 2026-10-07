@@ -21,56 +21,6 @@ DEFAULT_ROUTE_MAP = {
 }
 
 
-def _ensure_planner_keywords_column():
-    init_state_db()
-    conn = _connect()
-    try:
-        columns = [row["name"] for row in conn.execute("PRAGMA table_info(settings)").fetchall()]
-        if "planner_keywords" not in columns:
-            conn.execute("ALTER TABLE settings ADD COLUMN planner_keywords TEXT DEFAULT '{}'")
-            conn.commit()
-    finally:
-        conn.close()
-
-
-def get_planner_keywords() -> dict[str, list[str]]:
-    """User-overridden keyword bags. Empty dict ↦ planner uses defaults."""
-    _ensure_planner_keywords_column()
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT planner_keywords FROM settings WHERE id = 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return {}
-    raw = row["planner_keywords"] or "{}"
-    try:
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            return {}
-        return {str(k): [str(x) for x in v] for k, v in parsed.items() if isinstance(v, list)}
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-
-def save_planner_keywords(bags: dict[str, list[str]]) -> dict[str, list[str]]:
-    """Persist user-customised keyword bags. Pass {} to revert to defaults."""
-    _ensure_planner_keywords_column()
-    payload = json.dumps(bags or {}, ensure_ascii=False)
-    conn = _connect()
-    try:
-        conn.execute(
-            "UPDATE settings SET planner_keywords = ? WHERE id = 1",
-            (payload,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return get_planner_keywords()
-
-
 def _connect():
     return connect_sqlite(
         DB_PATH,
@@ -99,10 +49,6 @@ def _ensure_settings_columns():
             conn.commit()
     finally:
         conn.close()
-
-
-def _ensure_route_map_column():
-    _ensure_settings_columns()
 
 
 def get_settings():

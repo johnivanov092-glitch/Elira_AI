@@ -275,13 +275,6 @@ def _qualify(server_id: str, tool_name: str) -> str:
     return f"{server_id}{_NAMESPACE_DELIM}{tool_name}"
 
 
-def _unqualify(qualified: str, server_id: str) -> str:
-    prefix = f"{server_id}{_NAMESPACE_DELIM}"
-    if qualified.startswith(prefix):
-        return qualified[len(prefix):]
-    return qualified
-
-
 def _describe_inline_image(chunk: dict[str, Any], image_index: int) -> str:
     """Validate and describe one MCP ImageContent without exposing its payload."""
     mime_type = str(chunk.get("mimeType") or chunk.get("mime_type") or "").strip().lower()

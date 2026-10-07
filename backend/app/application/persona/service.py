@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from copy import deepcopy
 from dataclasses import dataclass, field
 
 from app.application.persona import evolution as persona_evolution

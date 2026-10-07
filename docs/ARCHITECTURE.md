@@ -451,10 +451,11 @@ permission decision. A hidden built-in schema does not remove its canonical
 dispatch owner; if a valid native/inline call reaches the runtime, it still uses
 the same ToolExecutor and handler.
 
-`route_request_capabilities()` supplies task/evidence and file-delivery hints only;
-`task_outcomes.py` owns model-declared delivery and current publication receipts.
-Legacy domain metadata in `DOMAIN_CAPABILITY_GROUPS` remains a compatibility
-hint, not a persona switch or schema-activation policy. The HTTP adapter's
+`capabilities.file_delivery_requested()` only notes that the user asked for a
+downloadable file (it adds file-delivery guidance); `task_outcomes.py` owns
+model-declared delivery and current publication receipts. The former domain
+routing (domain groups, domain guidance, evidence reasons) never fired and was
+removed in track 4 (2026-10-07). The HTTP adapter's
 `application/chat/local_chat.py:resolve_persona_mode()` returns `DEFAULT_PROFILE`,
 which the agent loop also applies. No hint grants permission
 or creates an executor/provider. TCP checks use `itops_network_inventory` with an

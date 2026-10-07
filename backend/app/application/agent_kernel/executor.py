@@ -24,12 +24,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.application.agent_kernel.execution_context import (
-    reset_execution_channel,
-    reset_permission_mode,
-    set_execution_channel,
-    set_permission_mode,
-)
 from app.application.agent_kernel.tool_result import ensure_tool_result
 
 DispatchFn = Callable[[str, dict[str, Any]], dict[str, Any]]
@@ -201,32 +195,16 @@ def execute_tool(
         # interrupted otherwise. Best-effort: tools that don't use it are
         # unaffected, and a missing helper must never break dispatch.
         _run_token = None
-        _channel_token = None
-        _permission_token = None
         try:
             from app.application.code_agent.tools import set_current_run_id
             _run_token = set_current_run_id(request.run_id)
         except Exception:
             _run_token = None
         try:
-            _channel_token = set_execution_channel(
-                "remote" if request.agent_id == "telegram" else "local"
-            )
-            _permission_token = set_permission_mode(request.permission_mode)
             _result_box["raw"] = dispatch_fn(tool_name, request.args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model as tool error
             _result_box["raw"] = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
         finally:
-            if _permission_token is not None:
-                try:
-                    reset_permission_mode(_permission_token)
-                except Exception:
-                    pass
-            if _channel_token is not None:
-                try:
-                    reset_execution_channel(_channel_token)
-                except Exception:
-                    pass
             if _run_token is not None:
                 try:
                     from app.application.code_agent.tools import reset_current_run_id

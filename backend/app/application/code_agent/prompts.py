@@ -89,7 +89,6 @@ def _shell_guidance(platform: str | None = None) -> str:
 # This tuple is not an authorization boundary.
 _CODE_AGENT_BASE_TOOLS = tool_policy.BASE_TOOLS
 
-_CODE_AGENT_READONLY_TOOLS = tool_policy.READONLY_TOOLS
 
 def _persona_section(model_name: str = "", profile_name: str = "Инженерный") -> str:
     try:

@@ -40,46 +40,6 @@ def multi_search(
         return {"ok": False, "error": str(e), "results": [], "count": 0}
 
 
-def news_multi_search(
-    query: str,
-    max_results: int = 10,
-    *,
-    local_first: bool = False,
-    geo_scope: str = "",
-    preferred_domains: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
-    """News search with per-engine diagnostics for scheduled pipelines."""
-    from app.core.web import format_search_results
-    from app.core.web_engines import KZ_LOCAL_NEWS_DOMAINS
-    from app.core.web_runtime import search_news
-
-    engines_attempted = ["searxng"]
-    engine_errors: dict[str, str] = {}
-    domains = preferred_domains if preferred_domains is not None else (KZ_LOCAL_NEWS_DOMAINS if local_first else ())
-    try:
-        results = search_news(query, max_results=max_results, intent_kind="geo_news",
-                              geo_scope=geo_scope, local_first=local_first, preferred_domains=domains)
-    except Exception as exc:
-        results = []
-        engine_errors["searxng"] = str(exc)
-
-    engines_used = sorted({item.get("engine", "") for item in results if item.get("engine")})
-
-    return {
-        "ok": bool(results),
-        "query": query,
-        "mode": "local_news" if local_first else "news",
-        "results": results,
-        "count": len(results),
-        "engines": engines_used,
-        "engines_attempted": engines_attempted,
-        "engines_used": engines_used,
-        "engine_errors": engine_errors,
-        **({"error": engine_errors["searxng"]} if engine_errors else {}),
-        "formatted": format_search_results(results),
-    }
-
-
 def deep_search(
     query: str,
     engines: tuple[str, ...] = ("searxng",),
@@ -135,20 +95,3 @@ def fetch_page(url: str, max_chars: int = 10000) -> dict[str, Any]:
         return {"ok": True, "url": url, "text": text, "length": len(text) if text else 0}
     except Exception as e:
         return {"ok": False, "url": url, "error": str(e), "text": ""}
-
-
-class WebMultiSearchService:
-    def search(self, query: str, max_results: int = 10, engines: tuple[str, ...] | None = None) -> dict[str, Any]:
-        return multi_search(query, engines=engines or ("searxng",), max_results=max_results)
-
-    def deep_search(
-        self,
-        query: str,
-        max_results: int = 8,
-        pages_to_read: int = 3,
-        engines: tuple[str, ...] | None = None,
-    ) -> dict[str, Any]:
-        return deep_search(query, engines=engines or ("searxng",), max_results=max_results, pages_to_read=pages_to_read)
-
-    def news(self, query: str, max_results: int = 5) -> dict[str, Any]:
-        return news_search(query, max_results=max_results)

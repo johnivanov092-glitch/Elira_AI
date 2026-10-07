@@ -60,22 +60,6 @@ def get_task_context_state(session_id: str) -> dict[str, Any] | None:
     return load_task_context(session_id)
 
 
-def restore_chat_state(session_id: str) -> dict[str, Any] | None:
-    session = _session_store().get_session(session_id)
-    if not session:
-        return None
-    return {"turns": list(session.get("turns") or []), "task_context": _normalise_state(session)}
-
-
-def update_task_context(session_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
-    current = load_task_context(session_id)
-    if current is None:
-        return None
-    merged = {**current, **copy.deepcopy(patch), "updated_at": int(time.time() * 1000)}
-    saved = save_task_context(session_id, merged)
-    return _normalise_state(saved) if saved else None
-
-
 def _turn_messages(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     for turn in turns:

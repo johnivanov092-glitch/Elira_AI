@@ -164,11 +164,3 @@ def convert(value: Any, from_unit: str, to_unit: str) -> dict[str, Any]:
     shown = plain(result if exact else result.quantize(D("1e-12")))
     return {"ok": True, "value": plain(number), "from": from_unit, "to": to_unit, "dimension": dimension,
             "result": shown, "approximate": not exact}
-
-
-def known_units() -> dict[str, list[str]]:
-    by_dimension: dict[str, list[str]] = {}
-    for name, (dimension, _factor) in _UNITS.items():
-        by_dimension.setdefault(dimension, []).append(name)
-    by_dimension["temperature"] = sorted(set(_TEMPERATURE.values()))
-    return by_dimension

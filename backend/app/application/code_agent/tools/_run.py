@@ -28,7 +28,6 @@ from app.application.code_agent.tools._shell import (
     _CURRENT_RUN_ID,
     _KILLED_RUN_IDS,
     _LIVE_SHELL_LOCK,
-    _LIVE_SHELL_PROCS,
     _SHELL_STDERR_LIMIT,
     _SHELL_STDOUT_LIMIT,
     _kill_proc_tree,

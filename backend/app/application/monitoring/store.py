@@ -577,21 +577,6 @@ def list_model_profiles(
     return [p for p in (row_to_profile(r) for r in rows) if p]
 
 
-def set_model_profile_enabled(
-    db_path: str | Path,
-    profile_id: str,
-    *,
-    enabled: bool,
-) -> dict[str, Any] | None:
-    now = now_utc()
-    with get_connection(db_path) as con:
-        con.execute(
-            "UPDATE model_profiles SET enabled = ?, updated_at = ? WHERE id = ?",
-            (1 if enabled else 0, now, profile_id),
-        )
-    return get_model_profile(db_path, profile_id)
-
-
 def get_profile_for_role(
     db_path: str | Path, role: str
 ) -> dict[str, Any] | None:

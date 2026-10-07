@@ -334,17 +334,6 @@ def get_document(run_id: str, doc_id: str) -> dict[str, Any] | None:
     return _wrap(op)
 
 
-def corpus_texts(run_id: str) -> list[str]:
-    """Canonical texts of a run's live documents — the intent-binding taint check
-    scans these for verbatim overlap with side-effect tool arguments."""
-    def op(conn):
-        _expire(conn)
-        conn.commit()
-        return [r[0] for r in conn.execute(
-            "SELECT canonical_text FROM documents WHERE run_id=?", (run_id,)).fetchall()]
-    return _wrap(op)
-
-
 def has_documents(run_id: str) -> bool:
     def op(conn):
         _expire(conn)

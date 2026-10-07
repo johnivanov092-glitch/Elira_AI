@@ -105,13 +105,6 @@ def _resolve_inside(base: Path, relative_path: str) -> tuple[Path | None, str | 
     return full_path, None
 
 
-def _resolve_inside_project(relative_path: str) -> tuple[Path | None, str | None]:
-    root = _project_root()
-    if root is None:
-        return None, "Project is not open"
-    return _resolve_inside(root, relative_path)
-
-
 def _is_blocked_relative(path: Path) -> bool:
     return any(part in BLOCKED_DIRS for part in path.parts)
 

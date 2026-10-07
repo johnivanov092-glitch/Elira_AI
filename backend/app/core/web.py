@@ -6,23 +6,15 @@ import logging
 from typing import Dict, Iterable, List
 
 from .web_engines import (
-    CURRENT_WORLD_ENGINES,
     DEFAULT_SEARCH_ENGINES,
     ENGINE_LABELS,
-    ENGINE_PRIORITY,
-    FINANCE_HIGH_CONFIDENCE_DOMAINS,
-    KZ_LOCAL_NEWS_DOMAINS,
     SUPPORTED_SEARCH_ENGINES,
-    clean_url as _clean_url,
-    domain_matches as _domain_matches,
-    extract_domain as _extract_domain,
     get_web_engine_status,
     resolve_search_engines,
     search_searxng as _search_searxng,
 )
 from .web_runtime import (
     count_preferred_domain_hits,
-    dedupe_results as _dedupe_results,
     fetch_page_text,
     format_search_results,
     rerank_results as _rerank_results,
