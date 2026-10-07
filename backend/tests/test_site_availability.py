@@ -218,16 +218,50 @@ def test_external_redirect_failure_does_not_block_original_origin(now, monkeypat
 
 
 def test_access_wall_pauses_only_that_page_and_is_rechecked_later(now, monkeypatch):
-    thread = "https://www.reddit.com/r/worldwarzthegame/comments/abc/levels/"
+    thread = "https://forum.example.net/t/worldwarz/abc/levels/"
     monkeypatch.setattr(_web, "_fetch_one_untracked", lambda url, limit: PageFetchResult(
-        text="Welcome to Reddit", final_url="https://old.reddit.com/login/?reason=lor2", status_code=200))
+        text="Welcome", final_url="https://forum.example.net/login/?next=abc", status_code=200))
     first = _web._fetch_one(thread, 4000)
     assert not first.ok and "не открылась" in first.error
     assert row(thread)["reason"] == "access_wall" and row(thread)["retry_at"] == now[0] + 60
     assert not row(thread, origin=True)  # the site itself is not condemned
-    assert health.begin("https://www.reddit.com/r/other/")["allowed"]
+    assert health.begin("https://forum.example.net/t/other/")["allowed"]
     blocked = health.begin(thread)
     assert "стены входа или проверки от ботов" in blocked["blocked"]
     now[0] += 61
     _web._fetch_one(thread, 4000)  # due again: rechecked, still a wall → next pause is a week
     assert row(thread)["failures"] == 2 and row(thread)["retry_at"] == now[0] + 7 * 86400
+
+
+def test_walls_on_two_pages_pause_the_whole_site(now, monkeypatch):
+    monkeypatch.setattr(_web, "_fetch_one_untracked", lambda url, limit: PageFetchResult(
+        text="Welcome", final_url="https://forum.example.net/login/?next=x", status_code=200))
+    _web._fetch_one("https://forum.example.net/t/first/", 4000)
+    assert not row("https://forum.example.net/t/first/", origin=True)
+    _web._fetch_one("https://forum.example.net/t/second/", 4000)
+    site = row("https://forum.example.net/t/second/", origin=True)
+    assert site["reason"] == "access_wall" and site["retry_at"] > now[0]
+    other = "https://forum.example.net/t/third/"
+    assert "пропущен" in health.begin(other)["blocked"]
+    assert other in health.notes([other])  # search results mark the whole site
+
+
+def test_render_failure_is_a_failed_page_not_an_unknown_error(now):
+    fail(status=None, error="browser fallback failed: Page.content: Unable to retrieve content "
+                            "because the page is navigating and changing the content.")
+    assert row()["reason"] == "render_failure" and row()["failures"] == 1
+    assert "ошибки отрисовки страницы" in health.begin(URL)["blocked"]
+
+
+def test_reddit_is_neither_searched_nor_read(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_web, "_fetch_one_untracked", lambda url, limit: calls.append(url))
+    result = _web._fetch_one("https://www.reddit.com/r/worldwarzthegame/comments/abc/levels/", 4000)
+    assert not result.ok and "reddit.com не читается" in result.error and calls == []
+
+    monkeypatch.setattr("app.infrastructure.search.web_search.search_web", lambda *a, **kw: {"sources": [
+        {"title": "thread", "href": "https://www.reddit.com/r/x/comments/1/"},
+        {"title": "docs", "href": "https://docs.example.org/page"},
+    ]})
+    found = _web._run_search("query", 5, "", "")
+    assert [item["href"] for item in found] == ["https://docs.example.org/page"]

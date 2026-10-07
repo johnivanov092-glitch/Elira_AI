@@ -76,12 +76,25 @@ def normalize_web_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> d
     return normalized
 
 
+# Sites that never open for anonymous automatic reading (John 2026-10-07: Reddit
+# answers with a login/JS wall or a navigating page). They are dropped from search
+# results and refused by web_fetch without a network round trip.
+_UNREADABLE_SITES = ("reddit.com",)
+
+
+def _unreadable_site(url: str) -> str:
+    host = (urlsplit(str(url or "")).hostname or "").lower()
+    return next((site for site in _UNREADABLE_SITES if host == site or host.endswith("." + site)), "")
+
+
 def _run_search(query: str, limit: int, cat: str, tr: str) -> list[dict]:
     """Run one query through the web stack; transport failures propagate."""
     from app.infrastructure.search.web_search import search_web
     result = search_web(query, max_results=limit, categories=cat or None, time_range=tr or None)
     _check_search_result(result)
-    return SearchResults(result.get("sources") or [], engine_warnings=result.get("engine_warnings") or [])
+    sources = [item for item in result.get("sources") or []
+               if not _unreadable_site(item.get("href") or item.get("url") or "")]
+    return SearchResults(sources, engine_warnings=result.get("engine_warnings") or [])
 
 
 def _check_search_result(result: dict) -> None:
@@ -500,6 +513,10 @@ def _access_wall(requested: str, result: PageFetchResult) -> str:
 def _fetch_one(url: str, limit: int, *, force_refresh: bool = False) -> PageFetchResult:
     from app.application.web_evidence import availability
 
+    site = _unreadable_site(url)
+    if site:
+        return PageFetchResult(final_url=url, error=f"не открылась: {site} не читается без входа в аккаунт "
+                                                     "— возьми другой источник из выдачи")
     probe = availability.begin(url, force=force_refresh)
     if probe.get("blocked"):
         return PageFetchResult(final_url=url, error=probe["blocked"])

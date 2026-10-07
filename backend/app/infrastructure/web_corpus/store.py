@@ -203,6 +203,18 @@ def site_access_rows(keys: list[str]) -> dict[str, dict[str, Any]]:
     return _wrap(op)
 
 
+def walled_pages(host: str, *, since: float, exclude_key: str = "") -> int:
+    """Other pages of this host that recently failed with a wall or render failure."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT COUNT(*) FROM site_availability WHERE host=? AND target_key<>? AND failures>0 "
+            "AND reason IN ('access_wall','render_failure') AND checked_at>=?",
+            (host, exclude_key, since),
+        ).fetchone()
+        return int(row[0] or 0)
+    return _wrap(op)
+
+
 def begin_site_access(target_key: str, origin_key: str, host: str, *, force: bool = False) -> dict[str, Any]:
     """Claim one due probe atomically; a lookup never increments failure history."""
     def op(conn):

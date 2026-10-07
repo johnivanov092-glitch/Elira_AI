@@ -42,7 +42,13 @@ def _identity(url: str, channel: str) -> tuple[str, str, str] | None:
         return None
 
 
-_REASON_TEXT = {"access_wall": "стены входа или проверки от ботов"}
+_REASON_TEXT = {
+    "access_wall": "стены входа или проверки от ботов",
+    "render_failure": "ошибки отрисовки страницы",
+}
+# A wall on one page does not condemn a site; walls on two different pages of
+# the same site within this window pause the whole site (John 2026-10-07).
+_SITE_WALL_WINDOW = 7 * 86400
 
 
 def _notice(row: dict) -> str:
@@ -93,6 +99,10 @@ def _failure(status: int | None, error: str) -> tuple[str, bool]:
     text = str(error or "").lower()
     if any(marker in text for marker in ("cancelled", "canceled", "ssrf", "invalid url", "fragment")):
         return "", False
+    if "browser fallback failed" in text:
+        # The page answered but never settled into readable content (e.g. it
+        # keeps navigating to a login): a failure of this page, like a wall.
+        return "render_failure", False
     if any(marker in text for marker in ("name or service not known", "name resolution", "getaddrinfo", "err_name_not_resolved")):
         return "dns_failure", True
     if any(marker in text for marker in ("connection refused", "err_connection_refused", "connecttimeout", "connect timeout")):
@@ -112,6 +122,12 @@ def finish(probe: dict, *, ok: bool, status: int | None = None, error: str = "",
         if final is None or final[1] != probe["origin_key"]:
             origin_scope = False
     origin_failure = origin_failure and origin_scope
+    if reason in {"access_wall", "render_failure"} and origin_scope and not ok:
+        try:
+            origin_failure = store.walled_pages(probe["host"], since=time.time() - _SITE_WALL_WINDOW,
+                                                exclude_key=probe["target_key"]) >= 1
+        except store.StoreUnavailable as exc:
+            logger.warning("Site availability lookup unavailable: %s", exc)
     delay = 0.0
     if retry_after:
         try:
