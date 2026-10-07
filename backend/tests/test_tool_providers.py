@@ -253,7 +253,6 @@ class BuiltinToolProviderTest(unittest.TestCase):
             "read_file", "write_file", "edit_file",
             "glob", "grep", "run_bash", "recall",
             "web_search", "web_fetch",
-            "sandbox_run", "sandbox_reset",
         ):
             self.assertIn(required, names)
 

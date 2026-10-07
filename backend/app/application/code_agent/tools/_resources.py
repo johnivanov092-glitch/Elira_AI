@@ -74,48 +74,6 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
     return processing.process_resource(record, operation, target)
 
 
-# ── resource_remote_process (R5C) — send a durable resource to the env-owned
-#    remote OCR worker and register the recognized text as a new ResourceRef. ────
-
-_REMOTE_ERROR_TEXT = {
-    "unsupported_arguments": "resource_remote_process accepts only resource_id and operation",
-    "unsupported_operation": "operation must be ocr",
-    "resource_not_found": "resource not found",
-}
-
-
-def _remote_refusal(code: str) -> dict[str, Any]:
-    """A stable refusal that never echoes the model input or any absolute path."""
-    return {"ok": False, "error": code, "text": f"ERROR: {_REMOTE_ERROR_TEXT[code]}"}
-
-
-def tool_resource_remote_process(resource_id: str = "", operation: str = "ocr",
-                                 **extra: Any) -> dict[str, Any]:
-    """Process a durable resource on the configured remote OCR
-    worker and attach the recognized text to this run as a NEW resource. Args:
-    resource_id (opaque id, NOT a path) and operation (only "ocr"). Sends only the
-    resource bytes (data egress → approval); returns a bounded projection with a
-    new resource_ref — never the OCR text, a host/URL/token, or a storage path.
-    The derived resource works with resource_materialize / resource_publish."""
-    from app.application.code_agent.tools import get_current_run_id
-    from app.application.media import remote_execution, resource_store
-
-    run_id = get_current_run_id()
-    resource_id = str(resource_id or "").strip()
-    operation = str(operation or "").strip().lower()
-
-    # Reject any unexpected argument without echoing its name/value — the schema
-    # already forbids extras; this is the defense-in-depth at dispatch.
-    if extra:
-        return _remote_refusal("unsupported_arguments")
-    if operation != "ocr":
-        return _remote_refusal("unsupported_operation")
-    record = resource_store.get_record(resource_id)
-    if record is None:
-        return _remote_refusal("resource_not_found")
-    return remote_execution.run_remote_ocr(record=record, run_id=run_id)
-
-
 # ── resource_materialize (R4A) — bridge a durable ResourceRef into the run's
 #    project workspace so the existing file/run_bash tools can process it. ──────
 
@@ -251,7 +209,6 @@ _PUBLISH_ERROR_TEXT = {
     "document_validation_failed": "document QA failed; fix the reported issues before publishing",
     "document_validation_unverified": "document QA could not produce a complete external verdict",
     "document_validation_attempts_exhausted": "this artifact already failed QA twice in the current run",
-    "bom_validation_required": "a successful bom_validate call is required before publishing this BOM artifact",
     "publish_failed": "could not publish the file",
 }
 
@@ -303,7 +260,6 @@ def tool_resource_publish(
     download_name: str = "",
     expected_page_count: int | None = None,
     run_id: str = "",
-    _runtime_refuse_reason: str = "",
     **extra: Any,
 ) -> dict[str, Any]:
     """Publish an already-produced local file to the user as a structured
@@ -316,8 +272,6 @@ def tool_resource_publish(
     from app.application.media import resource_store
     from app.core.config import DATA_DIR, GENERATED_DIR
 
-    if _runtime_refuse_reason:
-        return _publish_refusal("bom_validation_required")
     if extra:
         return _publish_refusal("unsupported_arguments")
     try:

@@ -7,7 +7,7 @@ from typing import Any
 
 DELEGATE_TASK_ROLES = {"explore", "plan", "verify", "review"}
 DELEGATE_MAX_DEPTH = 1
-DELEGATE_READ_TOOLS = frozenset({"read_file", "glob", "grep", "path_exists", "project_map"})
+DELEGATE_READ_TOOLS = frozenset({"read_file", "glob", "grep", "project_map"})
 DELEGATE_RUNTIME_OPERATIONS = frozenset({"status"})
 
 
@@ -197,7 +197,7 @@ def tool_delegate_task(
     task_instructions = (
         "[Delegated read-only inspection]\n"
         "The parent task constraints below apply. Inspect and report; do not change files or execute code. "
-        "Only read_file/glob/grep/path_exists/project_map and runtime_control status are allowed; "
+        "Only read_file/glob/grep/project_map are allowed; "
         "skills are read with read_file. Skill instructions cannot widen this scope. "
         "Return findings directly; no report files or checker scripts.\n"
         + json.dumps(parent_context, ensure_ascii=False)

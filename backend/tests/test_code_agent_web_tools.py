@@ -529,24 +529,12 @@ class ToolRegistrationTest(unittest.TestCase):
         }
         self.assertNotIn("web_claim_add", names)
 
-    def test_schemas_include_sandbox_run_and_reset(self) -> None:
-        names = [s["function"]["name"] for s in build_tool_schemas()]
-        self.assertIn("sandbox_run", names)
-        self.assertIn("sandbox_reset", names)
-
     def test_dispatch_includes_web_search_and_web_fetch(self) -> None:
         dispatch = build_tool_dispatch(Path("."))
         self.assertIn("web_search", dispatch)
         self.assertIn("web_fetch", dispatch)
         self.assertTrue(callable(dispatch["web_search"]))
         self.assertTrue(callable(dispatch["web_fetch"]))
-
-    def test_dispatch_includes_sandbox_run_and_reset(self) -> None:
-        dispatch = build_tool_dispatch(Path("."))
-        self.assertIn("sandbox_run", dispatch)
-        self.assertIn("sandbox_reset", dispatch)
-        self.assertTrue(callable(dispatch["sandbox_run"]))
-        self.assertTrue(callable(dispatch["sandbox_reset"]))
 
     def test_web_search_schema_offers_query_and_queries(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
@@ -570,11 +558,6 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertEqual(params["properties"]["urls"]["maxItems"], 5)
         self.assertEqual(params["properties"]["max_chars"]["default"], 8000)
         self.assertEqual(params["properties"]["max_chars"]["maximum"], 50000)
-
-    def test_sandbox_run_schema_requires_code(self) -> None:
-        schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
-        params = schemas["sandbox_run"]["function"]["parameters"]
-        self.assertEqual(params["required"], ["code"])
 
 
 if __name__ == "__main__":

@@ -16,17 +16,14 @@ from app.application.code_agent.answer_contracts import (
     mark_unread_web_links, render_numbered_citations, web_cadence_citation_violations,
     web_source_citation_violations,
 )
-from app.application.code_agent.capabilities import (
-    should_require_local_catalog_search, should_require_web_catalog_fallback,
-    should_escalate_web_from_answer,
-)
-from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence, drop_unverified_quotes
+from app.application.code_agent.capabilities import should_escalate_web_from_answer
+from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 RetryReason = Literal[
-    "background", "local_catalog", "web_catalog", "catalog_source", "evidence",
-    "user_constraint", "bom", "delivery", "quote", "quote_source", "cadence", "web_source",
+    "background", "evidence", "user_constraint", "delivery", "quote", "quote_source",
+    "cadence", "web_source",
 ]
 
 
@@ -61,16 +58,6 @@ class AcceptanceDecision:
 class AnswerAcceptance:
     download_delivery_correction_sent: bool = False
     evidence_answer_correction_sent: bool = False
-    local_tabular_catalog_probe_seen: bool = False
-    library_search_seen: bool = False
-    local_catalog_correction_sent: bool = False
-    web_catalog_fallback_correction_sent: bool = False
-    catalog_web_fallback_required: bool = False
-    catalog_web_fetch_seen: bool = False
-    catalog_web_fetch_correction_sent: bool = False
-    bom_snapshot: dict[str, Any] | None = None
-    bom_validation_selected: bool = False
-    bom_validation_correction_sent: bool = False
     quote_correction_sent: bool = False
     quote_source_correction_sent: bool = False
     cadence_correction_sent: bool = False
@@ -79,17 +66,8 @@ class AnswerAcceptance:
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
-        if decision.reason == "local_catalog":
-            self.local_catalog_correction_sent = True
-        elif decision.reason == "web_catalog":
-            self.web_catalog_fallback_correction_sent = True
-            self.catalog_web_fallback_required = True
-        elif decision.reason == "catalog_source":
-            self.catalog_web_fetch_correction_sent = True
-        elif decision.reason == "evidence":
+        if decision.reason == "evidence":
             self.evidence_answer_correction_sent = True
-        elif decision.reason == "bom":
-            self.bom_validation_correction_sent = True
         elif decision.reason == "delivery":
             self.download_delivery_correction_sent = True
         elif decision.reason == "quote":
@@ -144,58 +122,6 @@ class AnswerAcceptance:
                 "не является вызовом инструмента. Вызови web_search или web_fetch через structured tool_calls, "
                 "прочитай нужный источник и ответь на исходный вопрос. Не выдумывай результаты или ссылки."
             ), activate_groups=("web",) if "web" not in active_capability_groups else ())
-        if (not self.local_catalog_correction_sent
-                and should_require_local_catalog_search(
-                    final_text,
-                    local_tabular_probe_seen=self.local_tabular_catalog_probe_seen,
-                    library_search_seen=self.library_search_seen)):
-            return AcceptanceDecision(
-                "retry", final_text, reason="local_catalog", correction=(
-                    "[internal local-catalog correction] Нельзя считать нулевой "
-                    "exact-match или показанные head()/первые N строк доказательством "
-                    "отсутствия позиции в локальном прайсе. Выполни "
-                    "runtime_control(operation='library_search', query=...) с "
-                    "несколькими независимыми токенами назначения, категории и, если "
-                    "известны, бренда/модели. Если документ не находится в Library, "
-                    "повтори локальный поиск по отдельным токенам без жёсткой фразы. "
-                    "Только после этой проверки можно подтвердить отсутствие или "
-                    "искать внешнюю альтернативу. Эта коррекция одноразовая."
-                ),
-                log_note="completion blocked by unverified local-catalog absence",
-            )
-        if (not self.web_catalog_fallback_correction_sent
-                and should_require_web_catalog_fallback(
-                    final_text, bom_validation_selected=self.bom_validation_selected,
-                    library_search_seen=self.library_search_seen,
-                    external_source_seen=run_evidence.has_external_source)):
-            web_was_activated = "web" not in active_capability_groups
-            return AcceptanceDecision(
-                "retry", final_text, reason="web_catalog", correction=(
-                    "[internal catalog Web fallback] Обязательный компонент "
-                    "сборки не подтверждён после полного локального Library-поиска. "
-                    "Нельзя завершать неполный BOM: вызови web_search, затем "
-                    "web_fetch для первичного/магазинного источника и предложи "
-                    "совместимую внешнюю альтернативу с подтверждёнными моделью, "
-                    "ценой/наличием и URL. Локальные позиции не заменяй внешними, "
-                    "если они уже подтверждены."
-                ),
-                log_note="completion blocked by missing catalog Web fallback",
-                activate_groups=("web",) if web_was_activated else (),
-                event={"type": "runtime_activation_changed", "run_id": run_id,
-                       "step": step, "source": "catalog_absence_fallback"}
-                      if web_was_activated else None,
-                event_runtime_activation=web_was_activated,
-            )
-        if (self.catalog_web_fallback_required and not self.catalog_web_fetch_seen
-                and not self.catalog_web_fetch_correction_sent):
-            return AcceptanceDecision(
-                "retry", final_text, reason="catalog_source", correction=(
-                    "[internal catalog source correction] Одного web_search "
-                    "недостаточно. Вызови web_fetch для выбранного результата и "
-                    "подтверди на странице точную модель, совместимость и цену/наличие."
-                ),
-                log_note="completion blocked until catalog source fetch",
-            )
         if ("web" not in active_capability_groups
                 and not self.evidence_answer_correction_sent
                 and should_escalate_web_from_answer(final_text, raw_user_message)):
@@ -302,19 +228,6 @@ class AnswerAcceptance:
                 log_note="answer misses an explicit user format condition",
                 event={"type": "answer_format_correction", "step": step, "contract": "user_answer_format"},
             )
-        if (self.bom_validation_selected and self.bom_snapshot is None
-                and not self.bom_validation_correction_sent):
-            return AcceptanceDecision(
-                "retry", final_text, reason="bom", correction=(
-                    "[internal BOM correction] Нельзя завершать локальную "
-                    "спецификацию/КП с арифметикой модели. Вызови bom_validate "
-                    "по исходному XLSX/CSV: передай точные колонки, выбранные коды "
-                    "и количества, остаток, наценку, НДС и услуги. Используй только "
-                    "подтверждённые rows/total из результата. Если ok=false — исправь "
-                    "подбор; не создавай и не публикуй финальный документ до ok=true."
-                ),
-                log_note="completion blocked by missing deterministic BOM validation",
-            )
         missing_downloads = task_outcome.missing_deliveries()
         unbacked_downloads = task_outcome.unbacked_download_links(final_text)
         delivery_problems = {"targets": missing_downloads, "links": unbacked_downloads}
@@ -334,32 +247,6 @@ class AnswerAcceptance:
                 event_task_outcome=True,
             )
         download_delivery_failed = bool(missing_downloads or unbacked_downloads)
-        bom_validation_failed = bool(self.bom_validation_selected and self.bom_snapshot is None)
-        catalog_web_failed = bool(self.catalog_web_fallback_required and not self.catalog_web_fetch_seen)
-        if bom_validation_failed:
-            final_text = (
-                "BOM не завершён: детерминированная проверка кодов, остатков, "
-                "цен, НДС и итогов не получила статус ok=true. Непроверенные "
-                "позиции и суммы не публикуются."
-            )
-        elif catalog_web_failed:
-            final_text = (
-                "BOM не завершён: внешняя альтернатива не подтверждена чтением "
-                "источника. Результат Web-поиска без web_fetch не считается "
-                "проверкой модели, совместимости и наличия."
-            )
-        elif self.bom_validation_selected and self.bom_snapshot is not None:
-            artifact_note = (
-                " Финальный файл опубликован."
-                if not download_delivery_failed and run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
-                else ""
-            )
-            final_text = (
-                "BOM детерминированно проверен по локальному каталогу. "
-                f"Канонический итог: {self.bom_snapshot['total']}."
-                f"{artifact_note} Receipt: "
-                f"{self.bom_snapshot['receipt_sha256']}."
-            )
         if download_delivery_failed:
             final_text = task_outcome.mark_unbacked_download_links(final_text, unbacked_downloads)
             final_text = final_text.rstrip() + (
@@ -418,7 +305,6 @@ class AnswerAcceptance:
             )
         answer_status = (
             "degraded" if (download_delivery_failed or bool(missing_requirements)
-                           or bom_validation_failed or catalog_web_failed
                            or unverified_document_qa_claim or quote_format_failed
                            or cadence_format_failed or quote_source_failed or web_source_failed
                            or runtime_echo or missing_web_check) else "complete"

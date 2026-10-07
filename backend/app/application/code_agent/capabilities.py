@@ -19,39 +19,31 @@ CORE_BUILTIN_TOOLS = frozenset(CORE_BUILTIN_TOOL_ORDER)
 
 CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "project": frozenset({
-        "read_file", "write_file", "edit_file", "glob", "grep", "path_exists",
+        "read_file", "write_file", "edit_file", "glob", "grep",
         "project_map", "todo_update", "delegate_task", "run_bash", "run_server",
     }),
     "runtime": frozenset({"runtime_control"}),
     "web": frozenset({
-        "web_search", "web_fetch", "web_query", "web_sitemap", "http_api",
-        "browser", "screenshot",
+        "web_search", "web_fetch", "web_query", "http_api", "browser",
     }),
     "desktop": frozenset({"computer"}),
     "resources": frozenset({
-        "resource_process", "resource_remote_process", "resource_materialize",
-        "resource_publish", "read_image", "ocr_file", "file_gen",
-    }),
-    "data": frozenset({
-        "sandbox_run", "sandbox_reset", "translator", "regex", "csv",
-        "bom_validate", "converter", "sql", "encrypt", "archiver",
+        "resource_process", "resource_materialize", "resource_publish",
+        "read_image", "file_gen",
     }),
     "memory": frozenset({"recall", "remember"}),
-    "operations": frozenset({"reconcile_server_facts", "webhook"}),
-    "math": frozenset({"calc", "unit_convert", "finance_calc"}),
+    "math": frozenset({"calc", "unit_convert", "finance_calc", "csv"}),
 }
 
 
 CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "project": "local files, code, shell commands, processes, tests and task planning",
     "runtime": "discover/manage MCP, LSP, SSH, IT Ops, Telegram, Library and user memory",
-    "web": "internet search, page reading, HTTP APIs, JS browser and URL screenshots",
+    "web": "internet search, page reading, HTTP APIs and a JS browser",
     "desktop": "local Windows desktop screenshots, mouse and keyboard control",
-    "resources": "attachments, OCR/vision, generated DOCX/XLSX/PDF and downloads",
-    "data": "sandboxed code, regex, CSV, conversion, SQLite, encryption and archives",
+    "resources": "attachments, vision, generated DOCX/XLSX/PDF and downloads",
     "memory": "project RAG recall; save durable user facts/corrections only on explicit request, never transient chat preferences",
-    "operations": "inference-server facts and webhooks",
-    "math": "unit conversion and money formulas (invoices/VAT/markup/margin/discounts/loans); calc is always loaded, table sums: csv in data",
+    "math": "exact calculator, unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums",
 }
 
 
@@ -68,9 +60,9 @@ DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "Личный": frozenset({"memory"}),
     "Баланс": frozenset(),
     "Инженерный": frozenset(),  # project/code tools are already in the core
-    "Деловой": frozenset({"math", "data"}),
+    "Деловой": frozenset({"math"}),
     "Инфраструктура": frozenset({"web"}),
-    "Научный": frozenset({"web", "data", "math"}),
+    "Научный": frozenset({"web", "math"}),
     "Медицина": frozenset({"web"}),
 }
 
@@ -104,22 +96,6 @@ _MODEL_EXTERNAL_ACCESS_DENIAL_RE = re.compile(
     r"[^.!?\n]{0,160}(?:интернет\w*|веб\w*|актуальн\w*|новост\w*|"
     r"реальн\w*\s+времен\w*|\b(?:internet|web|current|news|real.time)\b)",
     re.IGNORECASE,
-)
-_LOCAL_TABULAR_READ_RE = re.compile(
-    r"\b(?:pd\.|pandas\.)?(?:read_excel|read_csv)\s*\(|"
-    r"\b(?:openpyxl\.)?load_workbook\s*\(",
-    re.IGNORECASE,
-)
-_LOCAL_CATALOG_ABSENCE_RE = re.compile(
-    r"(?:\b(?:прайс|каталог|таблиц)\w*\b[^\n.!?]{0,180}"
-    r"\b(?:нет|не\s+(?:наш\w*|найд\w*)|отсутств\w*)\b|"
-    r"\b(?:нет|не\s+(?:наш\w*|найд\w*)|отсутств\w*)\b"
-    r"[^\n.!?]{0,180}\b(?:прайс|каталог|таблиц)\w*\b|"
-    r"\b(?:price\s*list|catalog|spreadsheet)\b[^\n.!?]{0,180}"
-    r"\b(?:no|not\s+found|absent)\b|"
-    r"\b(?:no|not\s+found|absent)\b[^\n.!?]{0,180}"
-    r"\b(?:price\s*list|catalog|spreadsheet)\b)",
-    re.IGNORECASE | re.UNICODE,
 )
 _EXTERNAL_FAILURE_TOOLS = frozenset({
     "web_fetch", "http_api", "browser", "ssh_run",
@@ -231,56 +207,6 @@ def should_escalate_web_from_answer(answer: str, user_message: str = "") -> bool
     text = re.sub(r'```[\s\S]*?(?:```|$)|`[^`\n]*`|«[^»]*»|“[^”]*”|"[^"\n]*"', "", text)
     text = re.sub(r"(?m)^\s*>.*$", "", text)
     return bool(_MODEL_EXTERNAL_ACCESS_DENIAL_RE.search(text))
-
-
-def is_local_tabular_catalog_probe(
-    tool_name: str,
-    arguments: dict[str, object] | None = None,
-) -> bool:
-    """Detect ad-hoc reads of local tabular data through the Python sandbox.
-
-    Writing a workbook is deliberately excluded: the completion guard is only
-    relevant when the model queried local source data before claiming absence.
-    """
-    if str(tool_name or "").strip().lower() != "sandbox_run":
-        return False
-    code = str((arguments or {}).get("code") or "")
-    return bool(_LOCAL_TABULAR_READ_RE.search(code))
-
-
-def should_require_local_catalog_search(
-    answer: str,
-    *,
-    local_tabular_probe_seen: bool,
-    library_search_seen: bool,
-) -> bool:
-    """Block one unsupported local-catalog absence conclusion.
-
-    The caller owns the one-shot retry flag. Keeping that state out of this
-    predicate makes the matching rule deterministic and easy to regression-test.
-    """
-    if not local_tabular_probe_seen or library_search_seen:
-        return False
-    return bool(_LOCAL_CATALOG_ABSENCE_RE.search(str(answer or "")))
-
-
-def should_require_web_catalog_fallback(
-    answer: str,
-    *,
-    bom_validation_selected: bool,
-    library_search_seen: bool,
-    external_source_seen: bool,
-) -> bool:
-    """Recover missing catalog items only for an explicitly selected BOM tool.
-
-    The caller records selection from the actual typed operation, never from
-    request keywords: BOM also denotes a text encoding marker in CSV tasks.
-    """
-    if not bom_validation_selected:
-        return False
-    if not library_search_seen or external_source_seen:
-        return False
-    return bool(_LOCAL_CATALOG_ABSENCE_RE.search(str(answer or "")))
 
 
 def capability_groups_for_profile(profile_name: str) -> frozenset[str]:

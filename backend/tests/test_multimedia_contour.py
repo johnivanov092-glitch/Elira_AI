@@ -20,7 +20,6 @@ from app.application.code_agent.tools import _vision  # noqa: E402
 class RegistrationTest(unittest.TestCase):
     def test_vision_tools_do_not_bloat_the_stable_prompt_order(self):
         self.assertNotIn("read_image", BASE_TOOLS)
-        self.assertNotIn("ocr_file", BASE_TOOLS)
 
     def test_vision_tools_registered_in_builtin_specs(self):
         from app.application.tool_registry.runtime import seed_builtin_tools
@@ -29,17 +28,14 @@ class RegistrationTest(unittest.TestCase):
         tools = list_tools()["tools"]
         names = {str(t.get("name") or t.get("tool_name") or "") for t in tools}
         self.assertIn("read_image", names)
-        self.assertIn("ocr_file", names)
 
     def test_vision_tools_have_schemas_and_dispatch(self):
         from app.application.code_agent.tool_schemas import build_tool_schemas
         schema_names = {str((s.get("function") or {}).get("name")) for s in build_tool_schemas()}
         self.assertIn("read_image", schema_names)
-        self.assertIn("ocr_file", schema_names)
         from app.application.code_agent.tools._dispatch import build_tool_dispatch
         dispatch = build_tool_dispatch(Path("."))
         self.assertIn("read_image", dispatch)
-        self.assertIn("ocr_file", dispatch)
 
     def test_no_video_tools_exist(self):
         # Video is OUT OF SCOPE by decision — pin that none sneaks in silently.
@@ -79,14 +75,14 @@ class ErrorPathTest(unittest.TestCase):
         self.assertIn("ERROR", out["text"])
 
     def test_missing_ocr_file_is_ok_false(self):
-        out = _vision.tool_ocr_file(Path("."), path="x.png")
+        out = _vision.ocr_file_text(Path("."), "x.png")
         self.assertFalse(out["ok"])
         self.assertIn("ERROR", out["text"])
 
     def test_missing_file_is_ok_false(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertFalse(_vision.tool_read_image(Path(tmp), path="no.png")["ok"])
-            self.assertFalse(_vision.tool_ocr_file(Path(tmp), path="no.png")["ok"])
+            self.assertFalse(_vision.ocr_file_text(Path(tmp), "no.png")["ok"])
 
     def test_unreachable_service_is_ok_false_not_false_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,7 +93,7 @@ class ErrorPathTest(unittest.TestCase):
             self.assertFalse(out["ok"])
             self.assertIn("ERROR", out["text"])
             with patch("app.infrastructure.llm.vision_ocr.ocr_document", return_value=None):
-                out = _vision.tool_ocr_file(Path(tmp), path="a.png")
+                out = _vision.ocr_file_text(Path(tmp), "a.png")
             self.assertFalse(out["ok"])
             self.assertIn("ERROR", out["text"])
 

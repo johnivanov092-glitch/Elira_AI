@@ -138,8 +138,7 @@ def shell_command_is_high_impact(command: str) -> bool:
 
 
 _LOW_RISK_REVERSIBLE_TOOLS = frozenset({
-    "write_file", "edit_file", "file_gen", "converter", "archiver",
-    "sandbox_reset", "git_commit",
+    "write_file", "edit_file", "file_gen", "git_commit",
     "resource_materialize", "resource_publish",
 })
 _REMOTE_WRITE_TOOLS = frozenset({"ssh_write", "ssh_replace"})
@@ -329,12 +328,8 @@ def evidence_for_tool_call(tool_name: str, args: dict[str, Any] | None) -> Safet
         return SafetyEvidence.low_risk_reversible()
     if name == "itops_change_apply":
         return evidence_for_registered_target(str(payload.get("target_id") or "").strip())
-    if name == "sql" or name in _REMOTE_WRITE_TOOLS:
+    if name in _REMOTE_WRITE_TOOLS:
         return SafetyEvidence(impact="high")
-    if name == "resource_remote_process":
-        # Bounded egress to an operator-configured worker: material, not a local
-        # filesystem edit. accept_edits asks; local bypass may proceed.
-        return SafetyEvidence(impact="material")
     if name == "run_server":
         action = str(payload.get("action") or "start").strip().lower()
         if action in {"list", "logs", "stop"}:

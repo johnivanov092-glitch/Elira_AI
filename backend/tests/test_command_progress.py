@@ -106,15 +106,6 @@ def test_incomplete_or_rejected_receipts_are_not_inferred_from_text() -> None:
     assert restored.observe("run_server", {}, _job("a")) is None
 
 
-def test_sandbox_checks_structured_outputs_without_parsing_false() -> None:
-    tracker = CommandProgress()
-    arguments = {"code": "print(False)"}
-    output = {"ok": True, "exit_code": 0, "stdout": "False\n", "stderr": ""}
-    assert tracker.observe("sandbox_run", arguments, output, cwd="D:/work") is None
-    hint = tracker.observe("sandbox_run", arguments, output, cwd="D:/work")
-    assert hint is not None and "exit=0" in hint
-
-
 def test_unchanged_commands_require_new_diagnosis_and_bound_rechecks_across_resume() -> None:
     tracker = CommandProgress()
     args = {"command": "find evidence"}

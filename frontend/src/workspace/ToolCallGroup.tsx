@@ -48,7 +48,6 @@ const ACTIVE_LABELS: Record<string, string> = {
   glob: "Ищу файлы в проекте",
   grep: "Ищу в проекте",
   run_bash: "Выполняю команду",
-  sandbox_run: "Выполняю код",
   web_search: "Ищу в интернете",
   web_fetch: "Читаю страницу",
   browser: "Работаю в браузере",

@@ -41,7 +41,6 @@ _OBSERVATION_TOOLS = frozenset({
     "glob",
     "http_api",
     "paper_search",
-    "path_exists",
     "project_map",
     "read_file",
     "search_files",
@@ -57,7 +56,6 @@ _VERIFICATION_TOOLS = frozenset({
     "http_api",
     "file_gen",
     "resource_publish",
-    "path_exists",
     "ssh_assert_contains",
     "ssh_assert_not_contains",
     "ssh_exists",
@@ -77,7 +75,6 @@ _WEB_RESEARCH_TOOLS = frozenset({
     "web_fetch",
     "web_query",
     "web_search",
-    "web_sitemap",
 })
 _GROUNDING_FRAGMENT_LIMIT = 64
 _GROUNDING_FRAGMENT_CHARS = 16_000

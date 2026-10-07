@@ -108,38 +108,6 @@ def _format_runtime_result(label: str, result: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def tool_translator(
-    project_root: Path,
-    *,
-    text: str,
-    target_lang: str = "english",
-    model: str = "local-model",
-) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import translate_text
-
-    result = translate_text(text, target_lang=target_lang, model=model)
-    if not result.get("ok"):
-        return {
-            "ok": False,
-            "error": "translation_failed",
-            "text": f"ERROR: translation failed: {result.get('error') or 'unknown error'}",
-        }
-    translated = result.get("translated") or result.get("translation") or result.get("text") or ""
-    return {"ok": True, "text": str(translated).strip() or json.dumps(result, ensure_ascii=False)}
-
-
-def tool_regex(
-    project_root: Path,
-    *,
-    pattern: str,
-    text: str,
-    flags: str = "",
-) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import test_regex
-
-    return _format_runtime_result("Regex result", test_regex(pattern, text, flags=flags))
-
-
 def tool_csv(
     project_root: Path,
     *,
@@ -163,20 +131,6 @@ def tool_csv(
             return {"ok": False, "error": "csv_query_error", "text": f"ERROR: {exc}"}
         return _format_runtime_result("CSV query", result)
     return _format_runtime_result("CSV analysis", analyze_csv(str(target), query=query))
-
-
-def tool_converter(
-    project_root: Path,
-    *,
-    source_path: str,
-    target_format: str,
-) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import convert_file
-
-    target = _resolve_safe(project_root, source_path)
-    if not target.is_file():
-        return {"ok": False, "error": "file_not_found", "text": f"ERROR: not a file or does not exist: {source_path}"}
-    return _format_runtime_result("Conversion result", convert_file(str(target), target_format=target_format))
 
 
 def tool_http_api(
@@ -211,122 +165,6 @@ def tool_http_api(
     }
 
 
-def tool_sql(
-    project_root: Path,
-    *,
-    action: str,
-    db_path: str = "",
-    query: str = "",
-    params: list[Any] | None = None,
-    max_rows: int = 100,
-) -> dict[str, Any]:
-    from app.application.skills.runtime import describe_db, list_databases, run_sql
-
-    mode = (action or "").strip().lower()
-    if mode == "list":
-        result = list_databases()
-    elif mode == "describe":
-        if not db_path.strip():
-            return {"ok": False, "error": "db_path_required", "text": "ERROR: db_path is required for action=describe"}
-        result = describe_db(db_path)
-    elif mode == "query":
-        if not db_path.strip() or not query.strip():
-            return {"ok": False, "error": "query_arguments_required", "text": "ERROR: db_path and query are required for action=query"}
-        result = run_sql(db_path, query, params=params, max_rows=int(max_rows))
-    else:
-        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be one of: list, describe, query"}
-    return _format_runtime_result("SQL result", result)
-
-
-def tool_encrypt(
-    project_root: Path,
-    *,
-    action: str,
-    text: str = "",
-    token: str = "",
-) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import decrypt_text, encrypt_text
-
-    mode = (action or "").strip().lower()
-    if mode == "encrypt":
-        if not text:
-            return {"ok": False, "error": "text_required", "text": "ERROR: text is required for action=encrypt"}
-        result = encrypt_text(text)
-    elif mode == "decrypt":
-        if not token:
-            return {"ok": False, "error": "token_required", "text": "ERROR: token is required for action=decrypt"}
-        result = decrypt_text(token)
-    else:
-        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be encrypt or decrypt"}
-    return _format_runtime_result("Encryption result", result)
-
-
-def tool_archiver(
-    project_root: Path,
-    *,
-    action: str,
-    source_path: str = "",
-    zip_path: str = "",
-    dest: str = "",
-    output_name: str = "",
-) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import create_zip, extract_zip
-
-    mode = (action or "").strip().lower()
-    if mode == "create":
-        if not source_path:
-            return {"ok": False, "error": "source_path_required", "text": "ERROR: source_path is required for action=create"}
-        source = _resolve_safe(project_root, source_path)
-        result = create_zip(str(source), output_name=output_name)
-    elif mode == "extract":
-        if not zip_path:
-            return {"ok": False, "error": "zip_path_required", "text": "ERROR: zip_path is required for action=extract"}
-        archive = _resolve_safe(project_root, zip_path)
-        safe_dest = str(_resolve_safe(project_root, dest)) if dest else ""
-        result = extract_zip(str(archive), dest=safe_dest)
-    else:
-        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be create or extract"}
-    return _format_runtime_result("Archive result", result)
-
-
-def tool_webhook(
-    project_root: Path,
-    *,
-    action: str,
-    data: dict[str, Any] | None = None,
-    source: str = "code-agent",
-    limit: int = 20,
-) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import clear_webhooks, list_webhooks, store_webhook
-
-    mode = (action or "").strip().lower()
-    if mode == "store":
-        result = store_webhook(data or {}, source=source)
-    elif mode == "list":
-        result = list_webhooks(limit=int(limit))
-    elif mode == "clear":
-        result = clear_webhooks()
-    else:
-        return {"ok": False, "error": "unknown_action", "text": "ERROR: action must be store, list, or clear"}
-    return _format_runtime_result("Webhook result", result)
-
-
-def tool_screenshot(
-    project_root: Path,
-    *,
-    url: str,
-    width: int = 1280,
-    height: int = 800,
-    full_page: bool = False,
-) -> dict[str, Any]:
-    from app.application.skills.runtime import screenshot_url
-
-    return _format_runtime_result(
-        "Screenshot result",
-        screenshot_url(url, width=int(width), height=int(height), full_page=bool(full_page)),
-    )
-
-
 def tool_file_gen(
     project_root: Path,
     *,
@@ -338,15 +176,7 @@ def tool_file_gen(
     filename: str = "",
     expected_page_count: int | None = None,
     run_id: str = "",
-    _runtime_refuse_reason: str = "",
-    _runtime_bom_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if _runtime_refuse_reason:
-        return {
-            "ok": False,
-            "error": "bom_validation_required",
-            "text": f"ERROR: {_runtime_refuse_reason}",
-        }
     try:
         expected_page_count = normalize_expected_page_count(expected_page_count)
     except ValueError:
@@ -363,24 +193,6 @@ def tool_file_gen(
             "error": "unsupported_format",
             "text": f"ERROR: unsupported format '{format}'. Use 'word', 'excel', or 'pdf'.",
         }
-    if _runtime_bom_snapshot is not None:
-        from app.application.code_agent.tools._bom import canonical_bom_file_inputs
-
-        try:
-            canonical_inputs = canonical_bom_file_inputs(
-                _runtime_bom_snapshot,
-                format=fmt,
-            )
-        except (TypeError, ValueError):
-            return {
-                "ok": False,
-                "error": "invalid_bom_snapshot",
-                "text": "ERROR: canonical BOM receipt is invalid.",
-            }
-        title = str(canonical_inputs["title"])
-        content = str(canonical_inputs["content"] or "")
-        headers = canonical_inputs["headers"]
-        data = canonical_inputs["data"]
     fname = _generated_download_name(fmt, filename)
     if fname is None:
         return {
@@ -530,10 +342,6 @@ def tool_file_gen(
         "size": size,
         "sha256": sha256,
     }
-    if _runtime_bom_snapshot is not None:
-        out["bom_receipt_sha256"] = str(
-            _runtime_bom_snapshot.get("receipt_sha256") or ""
-        )
     # Structured delivery fields — the UI renders a deterministic download artifact
     # from these (it does NOT depend on the model echoing the URL in its answer).
     if rel:

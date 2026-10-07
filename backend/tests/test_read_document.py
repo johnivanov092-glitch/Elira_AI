@@ -92,7 +92,7 @@ class ReadDocumentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "scan.jpeg").write_bytes(b"\xff\xd8\xff\xe0 fake\x00\x01 jpeg")
             with mock.patch(
-                "app.application.code_agent.tools._vision.tool_ocr_file",
+                "app.application.code_agent.tools._vision.ocr_file_text",
                 return_value={"text": "РАСПОЗНАННЫЙ текст со скана 42"},
             ):
                 r = tool_read_file(Path(tmp), path="scan.jpeg")
@@ -104,7 +104,7 @@ class ReadDocumentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "photo.png").write_bytes(b"\x89PNG\r\n fake\x00\x01")
             with mock.patch(
-                "app.application.code_agent.tools._vision.tool_ocr_file",
+                "app.application.code_agent.tools._vision.ocr_file_text",
                 return_value={"text": "   "},
             ):
                 r = tool_read_file(Path(tmp), path="photo.png")

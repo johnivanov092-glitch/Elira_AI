@@ -19,25 +19,18 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("capability_load", "Load Capability", "system", "Expose one optional built-in tool group for the current run", 15, 10000, True),
         ("read_file",   "Read File",    "project", "Read a file in the project root",         15, 50000, True),
         ("glob",        "Glob",         "project", "List files matching a glob pattern",       15, 20000, True),
-        ("path_exists", "Path Exists",  "project", "Check whether a local file or directory exists (verifier for 'папка/файл создан')", 15, 5000, True),
         ("grep",        "Grep",         "project", "Search files by content pattern",          15, 20000, True),
         ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
         ("recall",      "Recall",       "memory",  "Recall from project RAG memory",           15, 20000, True),
         ("web_search",  "Web Search",   "web",     "Search the web",                          30, 50000, True),
         ("web_fetch",   "Web Fetch",    "web",     "Fetch and parse a web page",              30, 50000, True),
         ("web_query",   "Web Query",    "web",     "Search the run's saved web-evidence corpus for relevant excerpts (web_fetch store)", 30, 20000, True),
-        ("web_sitemap",  "Web Sitemap",  "web",     "Discover URLs from a site sitemap.xml (bounded, same-domain, robots-respected)", 30, 20000, True),
         ("browser",     "Browser",      "web",     "Open a URL in a real headless browser (renders JS) and return page text", 90, 50000, True),
-        ("translator",  "Translator",   "text",    "Translate text with the local LLM",        60, 10000, True),
-        ("regex",       "Regex",        "text",    "Test a regular expression against text",   15, 20000, True),
         ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
         ("calc",        "Calculator",   "math",    "Exact arithmetic, percentages and algebra (no code execution)", 30, 20000, True),
         ("unit_convert", "Unit Convert", "math",   "Exact unit conversion (data, power, length, temperature...)", 15, 5000, True),
         ("finance_calc", "Finance Calc", "math",   "Exact invoices, VAT, markup/margin, discounts, loans", 15, 30000, True),
-        ("bom_validate", "BOM Validate", "data",    "Validate catalog codes, stock, prices, VAT and totals deterministically", 60, 50000, True),
-        ("converter",   "Converter",    "media",   "Convert files between supported formats",  60, 10000, True),
         ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
-        ("ocr_file",    "OCR File",     "vision",  "Extract text from a scanned document/image",   120, 50000, True),
         ("resource_process", "Resource Process", "media", "Process a file attached to this run by resource_id on a chosen execution target (auto/local_gpu/server_cpu/local_cpu; legacy server_gpu alias accepted): inspect metadata, extract document text, or transcribe audio/video (mp4/ogg). Read-only, no path.", 3630, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
@@ -46,21 +39,12 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("edit_file",      "Edit File",      "project", "Apply text replacement in a file",      15,  5000, False),
         ("run_bash",       "Run Bash",       "system",  "Execute a shell command in project",   120, 20000, False),
         ("run_server",     "Run Server",     "system",  "Start/manage a long-lived background server", 30, 20000, False),
-        ("sandbox_run",    "Sandbox Run",    "code",    "Run code in the project sandbox",       60, 20000, False),
-        ("sandbox_reset",  "Sandbox Reset",  "code",    "Reset the project sandbox",             30,  5000, False),
         ("http_api",       "HTTP API",       "web",     "Send an outbound HTTP API request",      30, 30000, False),
-        ("sql",            "SQL",            "data",    "Query allowed local SQLite databases",   30, 50000, False),
-        ("encrypt",        "Encrypt",        "security", "Encrypt or decrypt local text",         30, 10000, False),
-        ("archiver",       "Archiver",       "media",   "Create or extract ZIP archives",        60, 20000, False),
-        ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
-        ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
         ("file_gen",       "File Gen",       "media",   "Generate and validate a Word/Excel/PDF file", 120, 10000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Validate and publish an already-produced project file as a downloadable artifact (streaming, hash-bound, no overwrite) via the existing download route", 120, 10000, True),
-        ("resource_remote_process", "Remote OCR Process", "media", "Send a file attached to this run to the trusted remote OCR worker, verify the result, and attach the recognized text as a new resource (data egress; approval required)", 900, 5000, False),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
         ("runtime_control", "Runtime Control", "system", "Manage integration runtimes through Workflow UI", 900, 50000, False),
-        ("reconcile_server_facts", "Reconcile Server Facts", "system", "Probe the live inference server, persist the observation and report configuration drift", 30, 10000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
@@ -72,24 +56,21 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     # ToolExecutor never interprets them as authorization scopes.
     _legacy_scope_labels = {
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
-        "path_exists": ["fs.read"],
-        "project_map": ["fs.read"], "reconcile_server_facts": ["net.outbound"],
+        "project_map": ["fs.read"],
         "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"], "browser": ["net.outbound"],
         "web_query": ["fs.read"],   # reads the local corpus, no network
-        "web_sitemap": ["net.outbound"],  # fetches sitemap.xml/robots.txt (SSRF-guarded)
-        "csv": ["fs.read"], "converter": ["fs.read", "fs.write"],
+        "csv": ["fs.read"],
         "calc": [], "unit_convert": [], "finance_calc": [],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "runtime_control": ["shell.exec", "net.outbound", "fs.read", "fs.write"],
         "remember": ["task.write"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
-        "run_bash": ["shell.exec"], "run_server": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
-        "http_api": ["net.outbound"], "sql": ["fs.read", "fs.write"],
-        "archiver": ["fs.read", "fs.write"], "screenshot": ["net.outbound", "fs.write"],
+        "run_bash": ["shell.exec"], "run_server": ["shell.exec"],
+        "http_api": ["net.outbound"],
         "file_gen": ["fs.write"],
-        "read_image": ["fs.read", "net.outbound"], "ocr_file": ["fs.read", "net.outbound"],
+        "read_image": ["fs.read", "net.outbound"],
         # Reads the run-bound resource blob (fs.read) and may call remote STT (net.outbound).
         "resource_process": ["fs.read", "net.outbound"],
         # Reads the run-bound resource blob (fs.read) and writes a new workspace file (fs.write).
@@ -99,7 +80,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         # Reads the run-bound resource blob (fs.read), sends it to the remote OCR
         # worker (net.outbound), and registers the recognized text as a new
         # durable resource — a blob + meta sidecar written under the data root.
-        "resource_remote_process": ["fs.read", "fs.write", "net.outbound"],
         # Desktop control is shell-level power and is classified by Workflow impact.
         "computer": ["shell.exec", "net.outbound"],
     }
@@ -135,18 +115,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         }
-        if name == "resource_remote_process":
-            # Persist the same strict boundary advertised to the model.  The
-            # executor enforces this before creating an approval record.
-            tool_def["parameters_schema"] = {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-                    "operation": {"type": "string", "enum": ["ocr"]},
-                },
-                "required": ["resource_id", "operation"],
-            }
         result.append(tool_def)
 
     # Russian descriptions keep provider metadata readable in diagnostics.
@@ -181,13 +149,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "Скачать, дать ссылку на скачивание результата: publish, download, скачать, "
             "отдай файл, пришли файл, ссылка на скачивание, готовый файл, результат, "
             "artifact, deliver file, download link, workspace file",
-        ),
-        "resource_remote_process": (
-            "Удалённое распознавание текста (OCR) прикреплённого файла на воркере",
-            "Распознать текст из прикреплённого скана PDF или изображения на удалённом "
-            "OCR-воркере: удалённый OCR, распознать текст, распознавание, OCR, "
-            "remote ocr, recognize text, скан, PDF, изображение, картинка, вложение, "
-            "ресурс, attachment, resource, обработать удалённо, на воркере, remote worker",
         ),
     }
     for _spec in result:

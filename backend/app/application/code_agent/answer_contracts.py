@@ -84,9 +84,9 @@ def explicit_web_answer_constraints(request: str) -> dict[str, Any]:
     if literals:
         result["contains"] = literals
     tool_clause = re.search(r"(?:используй\s+только|use\s+only|only\s+use)\s+"
-                            r"((?:web_search|web_fetch|web_query|web_sitemap)\b[^.!?;\n]*)", prose, re.I)
+                            r"((?:web_search|web_fetch|web_query)\b[^.!?;\n]*)", prose, re.I)
     if tool_clause and not negated(re.split(r"[.!?;\n]", prose[:tool_clause.end()])[-1]):
-        result["allowed"] = re.findall(r"\b(?:web_search|web_fetch|web_query|web_sitemap)\b", tool_clause[1])
+        result["allowed"] = re.findall(r"\b(?:web_search|web_fetch|web_query)\b", tool_clause[1])
     return result
 
 

@@ -1,9 +1,8 @@
-import { Brain, Calculator, Code2, FileText, GitBranch, Globe, ListChecks, Monitor, Ruler, Search, Server, Sheet, TerminalSquare, Wrench, type LucideIcon } from "lucide-react";
+import { Brain, Calculator, FileText, GitBranch, Globe, ListChecks, Monitor, Ruler, Search, Server, Sheet, TerminalSquare, Wrench, type LucideIcon } from "lucide-react";
 
 /** Map a tool name to an existing lucide icon (no new icon set). */
 export function toolIcon(tool: string): LucideIcon {
   if (tool === "web_search" || tool === "web_fetch" || tool === "browser") return Globe;
-  if (tool === "sandbox_run") return Code2;
   if (tool === "run_bash") return TerminalSquare;
   if (tool === "read_file" || tool === "write_file" || tool === "edit_file") return FileText;
   if (tool === "glob" || tool === "grep") return Search;

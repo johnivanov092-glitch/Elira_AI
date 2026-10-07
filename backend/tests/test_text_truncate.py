@@ -38,9 +38,7 @@ class TruncateTest(unittest.TestCase):
 
     def test_old_call_sites_alias_the_shared_fn(self):
         from app.application.code_agent.tools._sandbox import _truncate_middle
-        from app.application.code_agent.sandbox import _truncate as sandbox_truncate
         self.assertIs(_truncate_middle, truncate_middle)
-        self.assertIs(sandbox_truncate, truncate_head)
 
     def test_ssh_truncate_keeps_tail_now(self):
         from app.application.tool_providers.ssh_provider import _truncate_for_llm

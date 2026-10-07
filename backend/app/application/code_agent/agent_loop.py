@@ -40,7 +40,7 @@ from app.application.tool_providers import (
 )
 from app.application.code_agent.capabilities import (
     ALL_BUILTIN_TOOLS, normalize_capability_groups, route_request_capabilities,
-    is_local_tabular_catalog_probe, should_escalate_web_after_failure,
+    should_escalate_web_after_failure,
 )
 from app.application.code_agent.runtime_activation import (
     RuntimeActivation, _load_runtime_activation_state,
@@ -477,7 +477,6 @@ def _stream_code_agent_core(
             task_outcome.set_contract(turn_context.original_goal, task_outcome.contract.get("requirements", []))
         mutated_files, verification_log = observations.mutated_files, observations.verifications
         durable_failures = observations.failed_attempts
-        acceptance.bom_validation_selected = bool(durable_state.get("bom_validation_selected"))
         quote_word_limit = infer_quote_word_limit(raw_user_message)
         saved_quote_word_limit = durable_state.get("quote_word_limit")
         if resume and type(saved_quote_word_limit) is int and 0 < saved_quote_word_limit < 10_000:
@@ -1268,20 +1267,6 @@ def _stream_code_agent_core(
                     # Bind document-QA retry accounting to this run. The schema does
                     # not expose run_id, so the model cannot choose or reuse it.
                     parsed_args["run_id"] = rid
-                    if acceptance.bom_validation_selected:
-                        if acceptance.bom_snapshot is None:
-                            parsed_args["_runtime_refuse_reason"] = (
-                                "Сначала вызови bom_validate и получи ok=true; затем "
-                                "создавай финальный BOM-документ."
-                            )
-                        elif name == "file_gen":
-                            parsed_args["_runtime_bom_snapshot"] = dict(acceptance.bom_snapshot)
-                        else:
-                            parsed_args["_runtime_refuse_reason"] = (
-                                "Произвольный файл нельзя связать с BOM receipt. "
-                                "Создай финальный документ через file_gen: runtime "
-                                "подставит только канонические rows/total."
-                            )
                 if document_page_count_contract is not None:
                     is_generated_document = (
                         name == "file_gen"
@@ -1490,24 +1475,6 @@ def _stream_code_agent_core(
                         _read_file_failures[_read_requested_path] = (
                             _read_file_failures.get(_read_requested_path, 0) + 1
                         )
-                if name == "bom_validate":
-                    acceptance.bom_validation_selected = True
-                    acceptance.bom_snapshot = None
-                    if _tool_ok:
-                        from app.application.code_agent.tools._bom import make_bom_snapshot
-
-                        acceptance.bom_snapshot = make_bom_snapshot(tool_meta)
-                        if acceptance.bom_snapshot is None:
-                            _tool_ok = False
-                            tool_meta.update({
-                                "ok": False,
-                                "error": "invalid_bom_snapshot",
-                                "text": (
-                                    "ERROR: bom_validate returned no immutable "
-                                    "rows/total/catalog receipt."
-                                ),
-                            })
-                            text_result = str(tool_meta["text"])
                 if _read_recovered_from:
                     _recovery_note = (
                         "[runtime: однозначно восстановил обрезанный путь из результата "
@@ -1518,22 +1485,6 @@ def _stream_code_agent_core(
                     tool_meta["text"] = text_result
                     tool_meta["recovered_from"] = _read_recovered_from
                     tool_meta["recovered_path"] = str(parsed_args.get("path") or "")
-                if _tool_ok and is_local_tabular_catalog_probe(name, parsed_args):
-                    acceptance.local_tabular_catalog_probe_seen = True
-                if (
-                    _tool_ok
-                    and name == "runtime_control"
-                    and str(parsed_args.get("operation") or "").strip().lower()
-                    == "library_search"
-                    and str(parsed_args.get("query") or "").strip()
-                ):
-                    acceptance.library_search_seen = True
-                if (
-                    _tool_ok
-                    and name == "web_fetch"
-                    and acceptance.catalog_web_fallback_required
-                ):
-                    acceptance.catalog_web_fetch_seen = True
                 _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
                 _evidence_web_activated = False
                 if _failed_call:
@@ -1634,7 +1585,6 @@ def _stream_code_agent_core(
                 observed_fields = observations.observe_result(
                     name=name, args=parsed_args, output=tool_meta, status=_exec_result.status,
                     text=text_result, state_changed=_state_changed, root=root,
-                    bom_selected=acceptance.bom_validation_selected,
                 )
                 event.update(observed_fields)
                 recovery_context = observed_fields.get("recovery_context", "")

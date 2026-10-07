@@ -16,16 +16,8 @@ from app.application.tool_registry.runtime import get_tool, seed_builtin_tools
 
 
 STAGE1_TOOLS = {
-    "translator": ("auto", False, []),
-    "regex": ("auto", False, []),
     "csv": ("auto", False, ["fs.read"]),
-    "converter": ("auto", False, ["fs.read", "fs.write"]),
     "http_api": ("require_approval", True, ["net.outbound"]),
-    "sql": ("require_approval", True, ["fs.read", "fs.write"]),
-    "encrypt": ("require_approval", True, []),
-    "archiver": ("require_approval", True, ["fs.read", "fs.write"]),
-    "webhook": ("require_approval", True, []),
-    "screenshot": ("require_approval", True, ["net.outbound", "fs.write"]),
     "file_gen": ("require_approval", True, ["fs.write"]),
 }
 
@@ -55,29 +47,13 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
 
     provider = BuiltinToolProvider(tmp_path)
     checks: list[tuple[str, dict]] = [
-        ("regex", provider.dispatch("regex", {"pattern": "a+", "text": "aa bb"})),
         ("csv", provider.dispatch("csv", {"file_path": "data.csv"})),
-        ("converter", provider.dispatch("converter", {"source_path": "data.json", "target_format": "csv"})),
-        ("sql", provider.dispatch("sql", {"action": "list"})),
-        ("encrypt", provider.dispatch("encrypt", {"action": "encrypt", "text": "secret"})),
-        ("archiver", provider.dispatch("archiver", {"action": "create", "source_path": "note.txt"})),
-        ("webhook", provider.dispatch("webhook", {"action": "store", "data": {"ok": True}})),
     ]
-    with patch(
-        "app.application.skills_extra.runtime.translate_text",
-        return_value={"ok": True, "translated": "hello"},
-    ):
-        checks.append(("translator", provider.dispatch("translator", {"text": "privet"})))
     with patch(
         "app.application.skills.runtime.http_request",
         return_value={"ok": True, "status": 200, "body": "ok"},
     ):
         checks.append(("http_api", provider.dispatch("http_api", {"url": "https://example.com"})))
-    with patch(
-        "app.application.skills.runtime.screenshot_url",
-        return_value={"ok": True, "filename": "shot.png", "view_url": "/view"},
-    ):
-        checks.append(("screenshot", provider.dispatch("screenshot", {"url": "https://example.com"})))
     with (
         patch(
             "app.application.skills.generate_word",

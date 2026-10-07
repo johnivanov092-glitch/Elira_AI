@@ -52,7 +52,7 @@ def test_capability_inventory_has_one_schema_owner_and_toolspec(tmp_path: Path) 
     assert set(dispatch_names) == ALL_BUILTIN_TOOLS
     assert set(build_tool_dispatch(tmp_path)) == ALL_BUILTIN_TOOLS
     assert set(spec_names) == ALL_BUILTIN_TOOLS
-    assert specs["reconcile_server_facts"]["side_effect"] is True
+    assert specs["todo_update"]["side_effect"] is True
 
 
 def test_capability_groups_are_complete_and_non_overlapping() -> None:
@@ -75,7 +75,6 @@ def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Pa
         "edit_file": {},
         "glob": {"pattern": ""},
         "grep": {"pattern": "("},
-        "path_exists": {"path": ""},
         "project_map": {"path": "missing-directory"},
         "todo_update": {"run_id": ""},
         "delegate_task": {"run_id": "", "task": ""},
@@ -84,35 +83,20 @@ def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Pa
         "web_search": {"query": ""},
         "web_fetch": {"url": ""},
         "web_query": {"query": ""},
-        "web_sitemap": {"url": ""},
         "http_api": {"url": ""},
         "browser": {"url": ""},
-        "screenshot": {},
         "computer": {"action": "__invalid__"},
         "resource_process": {},
-        "resource_remote_process": {},
         "resource_materialize": {},
         "resource_publish": {},
         "read_image": {},
-        "ocr_file": {"path": "missing.png"},
         "file_gen": {"format": "__invalid__"},
-        "sandbox_run": {"code": ""},
-        "sandbox_reset": {"unexpected": True},
-        "translator": {},
-        "regex": {},
         "csv": {"file_path": "missing.csv"},
         "calc": {"expression": ""},
         "unit_convert": {"value": "x", "from_unit": "?", "to_unit": "?"},
         "finance_calc": {"operation": "__invalid__"},
-        "bom_validate": {},
-        "converter": {"source_path": "missing.bin", "target_format": "txt"},
-        "sql": {"action": "__invalid__"},
-        "encrypt": {"action": "__invalid__"},
-        "archiver": {"action": "__invalid__"},
         "recall": {},
         "remember": {"fact": ""},
-        "reconcile_server_facts": {},
-        "webhook": {"action": "__invalid__"},
     }
     missing_cases = ALL_BUILTIN_TOOLS - set(safe_calls)
     assert missing_cases == set()
@@ -123,14 +107,10 @@ def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Pa
     }
 
     provider = BuiltinToolProvider(tmp_path)
-    with patch(
-        "app.application.drift.runtime.reconcile",
-        return_value={"reachable": False},
-    ):
-        results = {
-            name: provider.dispatch(name, args)
-            for name, args in safe_calls.items()
-        }
+    results = {
+        name: provider.dispatch(name, args)
+        for name, args in safe_calls.items()
+    }
 
     invalid = {
         name: result

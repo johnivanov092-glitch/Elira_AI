@@ -176,7 +176,7 @@ class TaskOutcome:
         operations = evidence.tool_operations
         key = lambda item: (item["tool_name"] + ":" + item["operation"]
                             if item["tool_name"] == "runtime_control" else item["tool_name"])
-        readonly = {"web_search", "web_fetch", "web_query", "web_sitemap", "capability_load"}
+        readonly = {"web_search", "web_fetch", "web_query", "capability_load"}
         if (self.artifact_contract_seen or user_request is None
                 or self.sources
                 or epoch != 0 or evidence.has_mutations

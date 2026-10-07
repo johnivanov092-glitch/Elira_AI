@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Brain, Code2, Cpu, Globe, PanelRight,
+  Brain, Cpu, Globe, PanelRight,
   Package, Palette, Search, Send, Server, TerminalSquare, type LucideIcon,
 } from "lucide-react";
 import { cn } from "../ui/cn";
@@ -15,7 +15,6 @@ type Item = { id: string; group: string; label: string; sub: string; icon: Lucid
 
 const ITEMS: Item[] = [
   { id: "web", group: "Инструменты", label: "Веб-поиск", sub: "web_search", icon: Globe, action: { kind: "prefill", text: "Найди в интернете: " } },
-  { id: "sandbox", group: "Инструменты", label: "Python-песочница", sub: "sandbox_run", icon: Code2, action: { kind: "prefill", text: "Запусти в песочнице Python: " } },
   { id: "bash", group: "Инструменты", label: "Shell", sub: "run_bash", icon: TerminalSquare, action: { kind: "prefill", text: "Выполни команду: " } },
   { id: "recall", group: "Инструменты", label: "Поиск по памяти", sub: "recall", icon: Brain, action: { kind: "prefill", text: "Вспомни из памяти: " } },
   { id: "mcp", group: "Плагины", label: "Плагины и MCP", sub: "управление через агента", icon: Package, action: { kind: "prefill", text: "Настрой или подключи MCP-интеграцию через workflow: " } },

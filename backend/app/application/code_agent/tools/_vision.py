@@ -82,12 +82,8 @@ def tool_read_image(
     return out
 
 
-def tool_ocr_file(
-    project_root: Path,
-    *,
-    path: str,
-    language: str = "",
-) -> dict[str, Any]:
+def ocr_file_text(project_root: Path, path: str, language: str = "") -> dict[str, Any]:
+    """OCR one local image/scan through the OCR service (read_file's image fallback)."""
     try:
         from app.infrastructure.llm.vision_ocr import ocr_document
     except Exception as exc:  # pragma: no cover - import guard

@@ -319,14 +319,14 @@ class CommandProgress:
                     "observed_attempts": row["count"], "result_sha256": row["result"],
                     "source_ids": row.get("source_ids", []),
                     "business_outcome": "not_assessed", "text": text}
-        if tool_name not in {"run_bash", "run_server", "sandbox_run"}:
+        if tool_name not in {"run_bash", "run_server"}:
             return None
         if tool_name == "run_server" and arguments.get("action", "start") != "start":
             return None
-        command = arguments.get("code" if tool_name == "sandbox_run" else "command")
+        command = arguments.get("command")
         if not isinstance(command, str) or not command or not cwd:
             return None
-        command_hash = command_digest(command if tool_name == "sandbox_run" else command.strip())
+        command_hash = command_digest(command.strip())
         key = _digest({"tool": tool_name, "command": command_hash, "cwd": cwd})
         row = self._results.get(key)
         if row is None or row["count"] < 3:
@@ -387,7 +387,7 @@ class CommandProgress:
             return self._web_repeat_hint(tool_name, arguments, output)
         # The kernel reports an executed nonzero process as "error". Typed
         # terminal evidence below distinguishes it from dispatch/preflight errors.
-        if execution_status not in {"ok", "error"} or tool_name not in {"run_server", "run_bash", "sandbox_run"}:
+        if execution_status not in {"ok", "error"} or tool_name not in {"run_server", "run_bash"}:
             return None
 
         attempt = None
@@ -417,7 +417,7 @@ class CommandProgress:
             return None
         command_hash = output.get("command_sha256")
         if not _valid_digest(command_hash):
-            command = arguments.get("code" if tool_name == "sandbox_run" else "command")
+            command = arguments.get("command")
             if not isinstance(command, str) or not command:
                 return None
             command_hash = command_digest(command)

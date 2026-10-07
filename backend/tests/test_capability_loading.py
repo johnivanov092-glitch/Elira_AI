@@ -45,8 +45,8 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
     assert {"web_search", "web_fetch", "browser", "computer"}.isdisjoint(names)
 
     hidden_result = registry.dispatch_raw(
-        "regex",
-        {"pattern": "a+", "text": "caa"},
+        "unit_convert",
+        {"value": "1", "from_unit": "KB", "to_unit": "B"},
     )
     assert "unknown tool" not in str(hidden_result.get("text") or "").lower()
 
@@ -157,7 +157,7 @@ def test_planner_preloads_selected_group_before_first_execution_turn(
     ))
 
     assert seen_execution_tools
-    assert {"browser", "screenshot", "web_search"} <= seen_execution_tools[0]
+    assert {"browser", "web_search"} <= seen_execution_tools[0]
     activation = next(
         event for event in events
         if event.get("type") == "runtime_activation_changed"
@@ -182,7 +182,7 @@ def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
 
     names = _tool_names(registry)
     assert {"resource_process", "read_image", "file_gen"} <= names
-    assert {"web_search", "computer", "sql", "remember"}.isdisjoint(names)
+    assert {"web_search", "computer", "csv", "remember"}.isdisjoint(names)
 
 
 def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path) -> None:
@@ -191,8 +191,8 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         {
             "message": {
                 "content": (
-                    '{"name":"regex","arguments":'
-                    '{"pattern":"a+","text":"caa"}}'
+                    '{"name":"unit_convert","arguments":'
+                    '{"value":"1","from_unit":"KB","to_unit":"B"}}'
                 ),
                 "tool_calls": [],
             },
@@ -205,7 +205,7 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         return next(responses)
 
     events = list(stream_code_agent(
-        user_message="Проверь регулярное выражение",
+        user_message="Сколько байт в килобайте?",
         project_root=tmp_path,
         run_id="capability-hidden-inline-call",
         chat_fn=fake_chat,
@@ -213,10 +213,10 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         permission_mode="ask",
     ))
 
-    assert "regex" not in seen_tool_names[0]
+    assert "unit_convert" not in seen_tool_names[0]
     assert any(
         event.get("type") == "tool_call"
-        and event.get("tool") == "regex"
+        and event.get("tool") == "unit_convert"
         and event.get("ok") is True
         for event in events
     )

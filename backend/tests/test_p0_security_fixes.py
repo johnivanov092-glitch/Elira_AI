@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -29,36 +27,6 @@ class AgentChildEnvTest(unittest.TestCase):
         self.assertEqual(env, {**fake, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
         self.assertEqual(env.get("PATH"), "/usr/bin")   # toolchain preserved
         self.assertEqual(env.get("NORMAL_VAR"), "1")
-
-
-class SandboxEnvLeakTest(unittest.TestCase):
-    """sandbox_run receives the same current-token environment as run_bash."""
-
-    def test_sandbox_child_env_has_no_secrets(self):
-        from app.application.code_agent import sandbox as sb
-        captured: dict = {}
-
-        def fake_run(cmd, **kw):
-            captured["env"] = kw.get("env")
-            return subprocess.CompletedProcess(cmd, 0), b"ok", b"", False
-
-        with tempfile.TemporaryDirectory() as tmp:
-            box = Path(tmp) / "box"
-            (box / "work").mkdir(parents=True)
-            with patch.dict(os.environ, {
-                "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_LEAK",
-                "PATH": os.environ.get("PATH", "/usr/bin"),
-            }, clear=False), \
-                    patch.object(sb, "_ensure_sandbox", return_value=box), \
-                    patch.object(sb, "_venv_python", return_value=box / "python"), \
-                    patch.object(sb, "_run_cancellable", side_effect=fake_run):
-                sb.run_in_sandbox(box, code="print(1)", timeout=5)
-
-        env = captured["env"]
-        self.assertIsNotNone(env)
-        self.assertEqual(env.get("GITHUB_PERSONAL_ACCESS_TOKEN"), "ghp_LEAK")
-        self.assertIn("PATH", env)                             # toolchain kept
-        self.assertEqual(env.get("PYTHONUTF8"), "1")           # utf-8 knob layered
 
 
 class PinnedPatchTest(unittest.TestCase):

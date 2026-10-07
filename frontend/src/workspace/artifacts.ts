@@ -100,7 +100,7 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
           && (!server?.pid || Number(c.arguments?.pid) === server.pid)) {
           server = undefined;
         }
-      } else if (c.tool === "sandbox_run" || c.tool === "run_bash") {
+      } else if (c.tool === "run_bash") {
         consoleOut = c.result;
       }
     }

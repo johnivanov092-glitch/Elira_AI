@@ -432,12 +432,6 @@ def taskspec_context(spec: TaskSpec) -> str:
         parts.append("Чем проверять: " + "; ".join(spec.verifiers[:8]))
     if spec.constraints:
         parts.append("Ограничения: " + "; ".join(spec.constraints))
-    _intents = {_criterion_intent(c) for c in spec.success_criteria}
-    if _intents & {"file_exists", "file_not_exists"}:
-        parts.append(
-            "Существование локальных файлов/папок доказывай инструментом `path_exists` "
-            "если его схема доступна, а не grep/read."
-        )
     # Tool-economy route — only on a browser-observable (frontend/page) task, so it
     # never nudges ssh/backend runs. browser proves page_open AND the visible text in
     # one call; a bundle grep proves neither. Keeps a small frontend verify lean.
@@ -535,15 +529,6 @@ def _path_tokens_from_text(text: str) -> set[str]:
             toks.add(q)
             toks.add(re.split(r"[\\/]", q)[-1])
     return toks
-
-
-def _path_tokens_from_arg(path: str) -> set[str]:
-    """File/dir tokens from a raw tool path argument (`subnet-helper`,
-    `subnet-helper/package.json`) — full normalised token + basename."""
-    p = (path or "").strip().strip("`\"'").replace("\\", "/").rstrip("/").lower()
-    if not p:
-        return set()
-    return {p, p.split("/")[-1]}
 
 
 def _criterion_lifecycle(text: str) -> str:
@@ -1416,9 +1401,6 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
     if tool_name == "ssh_exists":  # present(ok)→file_exists, absent(not ok)→file_not_exists
         return {**ssh_identity, "intents": {"file_exists", "file_not_exists"},
                 "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
-    if tool_name == "path_exists":  # LOCAL existence probe — same contract as ssh_exists
-        return {"intents": {"file_exists", "file_not_exists"},
-                "files": _path_tokens_from_arg(str(a.get("path", ""))), "present_when_ok": True}
     if tool_name == "ssh_not_exists":  # EXPLICIT cleanup assertion: absent (ok) proves
         # file_not_exists, and a still-present path is a real FAIL (asserts="absent").
         return {**ssh_identity, "intents": {"file_exists", "file_not_exists"}, "files": _file_tokens(str(a.get("path", ""))),

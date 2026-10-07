@@ -100,7 +100,7 @@ class RunObservations:
         return f"{self.code_input_epoch}:{len(self.outcome.contract.get('clarifications', []))}"
 
     def observe_result(self, *, name: str, args: dict, output: dict, status: str,
-                       text: str, state_changed: bool, root: Path, bom_selected: bool) -> dict:
+                       text: str, state_changed: bool, root: Path) -> dict:
         self.project_root = root.resolve()
         self.evidence.record_tool_result(
             tool_name=name, arguments=args, execution_status=status,
@@ -116,8 +116,7 @@ class RunObservations:
         )
         fields = {"task_outcome": self.outcome.snapshot(),
                   "command_progress": self.commands.snapshot(),
-                  "code_input_epoch": self.code_input_epoch,
-                  "bom_validation_selected": bom_selected}
+                  "code_input_epoch": self.code_input_epoch}
         if recovery:
             fields["recovery_context"] = recovery
         if state_changed:

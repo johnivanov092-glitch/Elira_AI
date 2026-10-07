@@ -50,30 +50,6 @@ _WEB_QUERY_SCHEMA = {
 }
 
 
-_WEB_SITEMAP_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "web_sitemap",
-        "description": (
-            "Discover URLs from a site's sitemap.xml so you can then read the "
-            "relevant ones with web_fetch(store=true). This does NOT crawl links — "
-            "it only lists sitemap URLs (with lastmod), never leaves the site's "
-            "registrable domain, respects robots.txt, and is bounded. Use `contains` "
-            "to filter URLs by a substring (e.g. a section path)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "Site or sitemap URL (http(s))."},
-                "contains": {"type": "string", "description": "Optional substring URLs must contain."},
-                "max_urls": {"type": "integer", "description": "Max URLs to return (default 30, max 50)."},
-            },
-            "required": ["url"],
-        },
-    },
-}
-
-
 _WEB_SEARCH_PAGE_PROP = {
     "type": "integer",
     "description": (
@@ -96,7 +72,6 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         elif name == "web_search":
             schema["function"]["parameters"]["properties"]["page"] = dict(_WEB_SEARCH_PAGE_PROP)
     schemas.append(copy.deepcopy(_WEB_QUERY_SCHEMA))
-    schemas.append(copy.deepcopy(_WEB_SITEMAP_SCHEMA))
     return schemas
 
 
@@ -242,21 +217,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "reconcile_server_facts",
-                "description": (
-                    "Verify the live LLM server's authoritative facts and report any drift. "
-                    "Use when the conversation is about the SERVER, the ACTIVE MODEL, the MODEL "
-                    "FILE, the CONTEXT WINDOW (n_ctx), or a config/doc that might be stale: it "
-                    "probes the running llama-server (/props) and returns the current model_path "
-                    "and n_ctx plus any values that changed since the last check. Read-only; "
-                    "prefer it over trusting a doc when the question is what is running now."
-                ),
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "read_file",
                 "description": "Read a file from the project. Returns lines with line numbers.",
                 "parameters": {
@@ -318,25 +278,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "path_exists",
-                "description": (
-                    "Check whether a LOCAL file or directory exists. Deterministic "
-                    "verifier for 'создана папка X' / 'файл X существует' / 'проект "
-                    "внутри X' criteria — the local counterpart of ssh_exists. Use this "
-                    "(not grep/read) to prove a path was created."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File or directory path, relative to the project root."},
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "resource_process",
                 "description": (
                     "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) по явному запросу: "
@@ -364,34 +305,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
                         "execution_target": {"type": "string", "enum": list(accepted_execution_targets()), "description": "Where to run compute. Honor an explicit user device with the corresponding strict target. auto uses local GPU then local CPU; it never uses server STT. server_gpu is a deprecated alias for explicitly selected server_cpu."},
-                    },
-                    "required": ["resource_id", "operation"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "resource_remote_process",
-                "description": (
-                    "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) на доверенном "
-                    "удалённом OCR-воркере: распознать текст из скана PDF/изображения и "
-                    "приложить результат к этому запуску как новый ресурс. Process an "
-                    "attached resource (by resource_id) on the trusted remote OCR worker: "
-                    "recognize text from a scanned PDF/image and attach it to THIS run as a "
-                    "new resource. operation is only 'ocr'. Takes a resource_id (NOT a "
-                    "path); the file must be attached to THIS run. Sends the file to the "
-                    "worker (data egress → requires approval); returns a new resource_ref "
-                    "you can then materialize or publish. Never returns the text itself or "
-                    "any host/URL/path. Use ONLY when the user asks to OCR / recognize / "
-                    "распознать text from an attached scan remotely."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque durable resource id (never a filesystem path)."},
-                        "operation": {"type": "string", "enum": ["ocr"], "description": "What to do remotely. Only 'ocr' (recognize text from a scanned PDF/image)."},
                     },
                     "required": ["resource_id", "operation"],
                 },
@@ -812,79 +725,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "sandbox_run",
-                "description": (
-                    "Execute Python code in an isolated per-project venv. "
-                    "Use this (NOT run_bash) for: experimenting with a "
-                    "library, prototyping a snippet, anything that needs "
-                    "`pip install` of packages you don't want in the user's "
-                    "main environment. The sandbox PERSISTS between calls — "
-                    "installed packages and files in ./work/ stay. cwd is "
-                    "the work/ directory; the user's project tree is NOT "
-                    "touched."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "code": {"type": "string", "description": "Python source to execute."},
-                        "install": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional list of pip package specs to install before running (e.g. ['requests', 'rich>=13']).",
-                        },
-                    },
-                    "required": ["code"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "sandbox_reset",
-                "description": (
-                    "Wipe the project's sandbox: removes the venv AND "
-                    "everything in work/. Use when the sandbox has gotten "
-                    "into a broken state or you want a clean slate. Next "
-                    "sandbox_run rebuilds from scratch (~3-5s for the venv)."
-                ),
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "translator",
-                "description": "Translate text to another language using the local LLM.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string", "description": "Text to translate."},
-                        "target_lang": {"type": "string", "description": "Target language, e.g. 'english', 'russian', 'spanish'."},
-                        "model": {"type": "string", "description": "Optional local model name. Default local-model."},
-                    },
-                    "required": ["text"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "regex",
-                "description": "Test a regular expression against text and return matches with offsets and groups.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string", "description": "Regular expression pattern."},
-                        "text": {"type": "string", "description": "Text to test."},
-                        "flags": {"type": "string", "description": "Optional flags: i, m, s."},
-                    },
-                    "required": ["pattern", "text"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "csv",
                 "description": (
                     "Read-only CSV tool. Without filters/aggregate: shape, columns, sample rows, stats. "
@@ -996,83 +836,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "bom_validate",
-                "description": (
-                    "Детерминированно проверить спецификацию/BOM по локальному XLSX/CSV: "
-                    "точные коды, наименования, цены, числовой остаток, количество, наценку, "
-                    "НДС и итог. Используй результат rows/total как единственный источник "
-                    "цифр для КП; при ok=false исправь подбор и вызови снова. Модель не должна "
-                    "сама пересчитывать суммы. Service items не ищутся в каталоге и не получают "
-                    "наценку. prices_include_vat=true означает, что входные цены уже содержат НДС."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "catalog_path": {"type": "string", "description": "Project-relative or absolute path to a local .xlsx, .xlsm or .csv price list."},
-                        "sheet_name": {"type": "string", "description": "Optional XLSX sheet name; default is the active sheet."},
-                        "header_row": {"type": "integer", "minimum": 1, "description": "One-based header row; default 1."},
-                        "code_column": {"type": "string", "description": "Exact header containing product/article codes."},
-                        "name_column": {"type": "string", "description": "Exact header containing product names."},
-                        "price_column": {"type": "string", "description": "Exact header containing numeric unit prices."},
-                        "stock_column": {"type": "string", "description": "Exact header containing numeric available quantities."},
-                        "items": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "code": {"type": "string"},
-                                    "quantity": {"type": "integer", "minimum": 1},
-                                },
-                                "required": ["code", "quantity"],
-                            },
-                        },
-                        "service_items": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "code": {"type": "string"},
-                                    "name": {"type": "string"},
-                                    "quantity": {"type": "integer", "minimum": 1},
-                                    "unit_price": {"type": "number", "minimum": 0},
-                                },
-                                "required": ["code", "name", "quantity", "unit_price"],
-                            },
-                        },
-                        "markup_percent": {"type": "number", "minimum": 0, "description": "Markup applied only to catalog unit prices; default 0."},
-                        "vat_rate": {"type": "number", "minimum": 0, "maximum": 100, "description": "VAT percent; default 12."},
-                        "prices_include_vat": {"type": "boolean", "description": "True when catalog and service prices already include VAT; default true."},
-                        "expected_total": {"type": "number", "minimum": 0, "description": "Optional total from the generated document; mismatch makes ok=false."},
-                    },
-                    "required": [
-                        "catalog_path", "code_column", "name_column", "price_column",
-                        "stock_column", "items",
-                    ],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "converter",
-                "description": "Convert a local file using built-in converters: CSV to XLSX, JSON to CSV, MD to DOCX, XLSX to CSV.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "source_path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
-                        "target_format": {"type": "string", "description": "Target extension: xlsx, csv, or docx."},
-                    },
-                    "required": ["source_path", "target_format"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "http_api",
                 "description": "Send an outbound HTTP request. Use only for user-requested API calls.",
                 "parameters": {
@@ -1083,92 +846,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "headers": {"type": "object", "description": "Optional request headers."},
                         "body": {"description": "Optional request body for POST/PUT."},
                         "timeout": {"type": "integer", "description": "Timeout seconds. Default 15."},
-                    },
-                    "required": ["url"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "sql",
-                "description": "List known SQLite databases or describe/query any local SQLite database by path.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "description": "One of: list, describe, query."},
-                        "db_path": {"type": "string", "description": "SQLite DB path for describe/query."},
-                        "query": {"type": "string", "description": "SQL query for action=query."},
-                        "params": {"type": "array", "description": "Optional positional SQL parameters."},
-                        "max_rows": {"type": "integer", "description": "Max returned rows for SELECT. Default 100."},
-                    },
-                    "required": ["action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "encrypt",
-                "description": "Encrypt or decrypt short text using the local Fernet key.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "description": "encrypt or decrypt."},
-                        "text": {"type": "string", "description": "Plain text for action=encrypt."},
-                        "token": {"type": "string", "description": "Encrypted token for action=decrypt."},
-                    },
-                    "required": ["action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "archiver",
-                "description": "Create or extract ZIP archives from local filesystem paths.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "description": "create or extract."},
-                        "source_path": {"type": "string", "description": "File or directory path for action=create."},
-                        "zip_path": {"type": "string", "description": "ZIP path for action=extract."},
-                        "dest": {"type": "string", "description": "Optional extraction destination; relative paths start at project root and absolute paths are accepted."},
-                        "output_name": {"type": "string", "description": "Optional output ZIP filename for action=create."},
-                    },
-                    "required": ["action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "webhook",
-                "description": "Store, list, or clear local webhook payloads in the in-memory webhook buffer.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "description": "store, list, or clear."},
-                        "data": {"type": "object", "description": "Payload for action=store."},
-                        "source": {"type": "string", "description": "Optional source label for action=store."},
-                        "limit": {"type": "integer", "description": "Max items for action=list. Default 20."},
-                    },
-                    "required": ["action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "screenshot",
-                "description": "Capture a screenshot of an http(s) URL and return view/download URLs.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "Absolute http(s) URL to capture."},
-                        "width": {"type": "integer", "description": "Viewport width. Default 1280."},
-                        "height": {"type": "integer", "description": "Viewport height. Default 800."},
-                        "full_page": {"type": "boolean", "description": "Capture full page instead of viewport."},
                     },
                     "required": ["url"],
                 },
@@ -1234,27 +911,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "prompt": {"type": "string", "description": "Optional instruction for what to focus on. Defaults to a full description."},
                     },
                     "required": [],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ocr_file",
-                "description": (
-                    "Extract text from a scanned document or image file in the project "
-                    "(PDF scans, photographed pages, screenshots of text) via the OCR "
-                    "service. Returns the recognized text. Use this for documents where "
-                    "read_file shows only binary/garbage. Requires the OCR service to be "
-                    "enabled; returns an error otherwise."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Path to the document/image; relative paths start at project root, absolute paths are accepted."},
-                        "language": {"type": "string", "description": "Optional OCR language hint (e.g. 'ru', 'en'). Defaults to auto-detect."},
-                    },
-                    "required": ["path"],
                 },
             },
         },

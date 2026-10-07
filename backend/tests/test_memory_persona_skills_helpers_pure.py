@@ -1,4 +1,4 @@
-"""Tests for memory, persona version and encryption helpers."""
+"""Tests for memory and persona version helpers."""
 from __future__ import annotations
 
 import sys
@@ -13,10 +13,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.rag_memory.service import _cosine_sim  # noqa: E402
 from app.application.persona.store import row_to_version  # noqa: E402
-from app.application.skills_extra.runtime import (  # noqa: E402
-    encrypt_text,
-    decrypt_text,
-)
 
 
 # application/rag_memory_service/runtime.py — _cosine_sim
@@ -99,55 +95,6 @@ class RowToVersionTest(unittest.TestCase):
         # Falls back to {} default
         self.assertEqual(result["payload"], {})
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# application/skills_extra/runtime.py — encrypt_text / decrypt_text
-# ─────────────────────────────────────────────────────────────────────────────
-
-class EncryptDecryptTest(unittest.TestCase):
-
-    def test_encrypt_returns_dict(self) -> None:
-        self.assertIsInstance(encrypt_text("hello"), dict)
-
-    def test_encrypt_ok_true_for_valid_input(self) -> None:
-        result = encrypt_text("hello world")
-        self.assertTrue(result["ok"])
-
-    def test_encrypt_has_encrypted_key(self) -> None:
-        result = encrypt_text("test")
-        self.assertIn("encrypted", result)
-
-    def test_encrypt_original_length_preserved(self) -> None:
-        text = "hello"
-        result = encrypt_text(text)
-        self.assertEqual(result.get("original_length"), len(text))
-
-    def test_encrypt_produces_nonempty_token(self) -> None:
-        result = encrypt_text("test message")
-        self.assertGreater(len(result.get("encrypted", "")), 0)
-
-    def test_decrypt_returns_dict(self) -> None:
-        token = encrypt_text("x")["encrypted"]
-        self.assertIsInstance(decrypt_text(token), dict)
-
-    def test_decrypt_ok_for_valid_token(self) -> None:
-        token = encrypt_text("hello")["encrypted"]
-        result = decrypt_text(token)
-        self.assertTrue(result["ok"])
-
-    def test_decrypt_roundtrip(self) -> None:
-        original = "secret message 42"
-        encrypted = encrypt_text(original)["encrypted"]
-        decrypted = decrypt_text(encrypted)["decrypted"]
-        self.assertEqual(decrypted, original)
-
-    def test_decrypt_invalid_token_ok_false(self) -> None:
-        result = decrypt_text("not-a-valid-fernet-token")
-        self.assertFalse(result["ok"])
-
-    def test_decrypt_invalid_token_has_error(self) -> None:
-        result = decrypt_text("bad-token")
-        self.assertIn("error", result)
 
 
 if __name__ == "__main__":
