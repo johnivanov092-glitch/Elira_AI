@@ -2,7 +2,7 @@
 
 John 2026-10-07: a skill is a plain folder. The model reads, writes, edits and runs
 skills with its ordinary tools; there are no skill operations, candidates or receipts.
-The runtime only (1) lists the catalog "name — description — path" in the prompt,
+The runtime only (1) lists the catalog "name — description" in the prompt,
 (2) pins a SKILL.md the model read so it survives context compaction, and (3) keeps a
 git history of the folder. Built-in skills are seeded from the release once and then
 belong to the folder like any other skill; a release never overwrites them.
@@ -196,14 +196,17 @@ def skill_for_path(path: Any) -> str | None:
 
 def catalog_context() -> str:
     catalog = discover_skills()
-    lines = "\n".join(f"- {item['name']}: {item['description']} — {item['path']}" for item in catalog["skills"])
+    # One line per skill without its path: the folder is stated once (the catalog
+    # also lists every MCP server's skill, and it goes into every request).
+    lines = "\n".join(f"- {item['name']}: {item['description']}" for item in catalog["skills"])
     return (
         "[Навыки Elira]\n"
         f"Папка навыков: {SKILLS_ROOT} — по папке на навык: SKILL.md (что умеет, когда применять, "
         "как запускать), скрипты и при необходимости своя .venv. Это твоя папка: читай, пиши и правь "
         "её обычными инструментами (read_file, write_file, edit_file, run_bash).\n"
         "1) Перед тем как писать свой скрипт или инструмент, проверь каталог ниже и прочитай SKILL.md "
-        "подходящего навыка (read_file); для кода обычно нужны навык языка и code-change, для сбоев — "
+        f"подходящего навыка: read_file({SKILLS_ROOT / '<имя>' / 'SKILL.md'}); для кода обычно нужны "
+        "навык языка и code-change, для сбоев — "
         "diagnostics. 2) Подходящего нет — сделай нужное сразу навыком: папка <имя>, SKILL.md с "
         "frontmatter name/description и скрипт; проверь запуском. 3) Нашла способ лучше — поправь навык. "
         "Для повторяющейся задачи сначала навык, потом разовая работа. Навык не меняет требования "

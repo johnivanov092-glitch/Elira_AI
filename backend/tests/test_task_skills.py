@@ -60,13 +60,14 @@ def test_seed_never_overwrites_a_skill_the_agent_changed(data):
     assert "Улучшено Elira." in (data / "skills" / "python" / "SKILL.md").read_text(encoding="utf-8")
 
 
-def test_catalog_lists_name_description_and_path_and_reports_invalid_folders(data):
+def test_catalog_lists_name_and_description_once_with_the_folder_and_reports_invalid_folders(data):
     root = skills.ensure_skills_root()
     (root / "broken").mkdir()
     (root / "broken" / "SKILL.md").write_text("no frontmatter", encoding="utf-8")
     text = skills.catalog_context()
     assert text.startswith("[Навыки Elira]") and str(root) in text
-    assert f"- python: " in text and str(root / "python" / "SKILL.md") in text
+    assert "- python: " in text and str(root / "<имя>" / "SKILL.md") in text
+    assert str(root / "python" / "SKILL.md") not in text  # no per-skill paths
     assert "broken" in text.split("Ошибки навыков:")[1]
     assert "skill_load" not in text and "skill_create" not in text
 
@@ -175,7 +176,8 @@ def test_real_loop_reads_a_skill_pins_it_once_and_resume_keeps_it(data, tmp_path
         if not kwargs.get("tools"):
             return {"message": {"content": "Summary"}}
         seen.append(deepcopy(kwargs["messages"]))
-        assert any(path in str(message.get("content", "")) for message in seen[0])  # the catalog shows the path
+        template = str(root / "<имя>" / "SKILL.md")  # the catalog shows the folder once
+        assert any(template in str(message.get("content", "")) for message in seen[0])
         return _reply("read_file", {"path": path}) if len(seen) <= 2 else _reply()
 
     events = list(agent_loop.stream_code_agent(user_message="Исправь функцию Python", project_root=tmp_path,
