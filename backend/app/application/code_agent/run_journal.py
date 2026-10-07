@@ -717,13 +717,22 @@ def _pid_alive(pid: int) -> bool:
         import ctypes
 
         process_query_limited_information = 0x1000
+        still_active = 259
         handle = ctypes.windll.kernel32.OpenProcess(
             process_query_limited_information, False, pid
         )
         if not handle:
             return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
+        try:
+            # OpenProcess also succeeds for a process that already exited while
+            # another handle (the parent, a supervisor) keeps its object open; a
+            # crashed run would then hold agent.lock forever.
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == still_active
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:

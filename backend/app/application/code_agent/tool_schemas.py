@@ -178,7 +178,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file from the project. Returns lines with line numbers.",
+                "description": "Read a file from the project. Returns lines with line numbers. "
+                               "PDF, DOCX, PPTX, XLS/XLSX and image scans return their extracted text.",
                 "parameters": {
                     "type": "object",
                     "properties": {

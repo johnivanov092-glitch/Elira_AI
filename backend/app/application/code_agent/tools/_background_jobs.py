@@ -178,6 +178,9 @@ def process_identity(pid: int) -> str | None:
             )
             if not ok:
                 return None
+            if exited.low or exited.high:
+                # Exited, though a handle still keeps the process object open.
+                return None
             return f"win:{(int(created.high) << 32) | int(created.low)}"
         finally:
             kernel32.CloseHandle(handle)
