@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookMarked, Brain, Cpu, MessageSquare, Palette, Plug, Sparkles, Volume2, X, type LucideIcon } from "lucide-react";
+import { BookMarked, Brain, Cpu, KeyRound, MessageSquare, Palette, Plug, Send, Sparkles, Volume2, X, type LucideIcon } from "lucide-react";
 import { cn } from "../ui/cn";
 import { ModelSection } from "./settings/ModelSection";
 import { PersonaSection } from "./settings/PersonaSection";
@@ -9,10 +9,12 @@ import { ChatMemorySection } from "./settings/ChatMemorySection";
 import { VoiceSection } from "./settings/VoiceSection";
 import { ThemeSection } from "./settings/ThemeSection";
 import { McpSection } from "./settings/McpSection";
+import { TelegramSection } from "./settings/TelegramSection";
+import { VaultSection } from "./settings/VaultSection";
 
 export type SettingsSection =
   | "model" | "persona" | "memory" | "library" | "chatmemory"
-  | "voice" | "theme" | "mcp";
+  | "voice" | "theme" | "mcp" | "telegram" | "vault";
 
 const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
@@ -21,6 +23,8 @@ const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "library", label: "Библиотека", icon: BookMarked },
   { id: "chatmemory", label: "Память чата", icon: MessageSquare },
   { id: "mcp", label: "MCP", icon: Plug },
+  { id: "telegram", label: "Telegram", icon: Send },
+  { id: "vault", label: "Секреты", icon: KeyRound },
   { id: "voice", label: "Голос", icon: Volume2 },
   { id: "theme", label: "Тема", icon: Palette },
 ];
@@ -58,6 +62,8 @@ export function Settings({ model, onModel, onClose, project, initialSection }: {
           {section === "library" && <LibrarySection />}
           {section === "chatmemory" && <ChatMemorySection />}
           {section === "mcp" && <McpSection />}
+          {section === "telegram" && <TelegramSection />}
+          {section === "vault" && <VaultSection />}
           {section === "voice" && <VoiceSection />}
           {section === "theme" && <ThemeSection />}
         </div>

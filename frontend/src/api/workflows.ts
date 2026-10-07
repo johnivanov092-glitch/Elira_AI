@@ -296,3 +296,15 @@ export async function streamWorkflowEvents(
     throw error;
   }
 }
+
+export async function backupPortableVault(path: string): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>("/api/agent-os/vault/backup", { method: "POST", body: { path } });
+}
+
+export async function restorePortableVault(path: string): Promise<PortableVaultStatus> {
+  return request<PortableVaultStatus>("/api/agent-os/vault/restore", { method: "POST", body: { path } });
+}
+
+export async function rotatePortableVaultRecovery(): Promise<PortableVaultStatus> {
+  return request<PortableVaultStatus>("/api/agent-os/vault/rotate-recovery", { method: "POST" });
+}

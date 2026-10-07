@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Brain, Cpu, Globe, PanelRight,
+  Brain, Cpu, Globe, KeyRound, PanelRight,
   Package, Palette, Search, Send, Server, TerminalSquare, type LucideIcon,
 } from "lucide-react";
 import { cn } from "../ui/cn";
@@ -17,11 +17,12 @@ const ITEMS: Item[] = [
   { id: "web", group: "Инструменты", label: "Веб-поиск", sub: "web_search", icon: Globe, action: { kind: "prefill", text: "Найди в интернете: " } },
   { id: "bash", group: "Инструменты", label: "Shell", sub: "run_bash", icon: TerminalSquare, action: { kind: "prefill", text: "Выполни команду: " } },
   { id: "recall", group: "Инструменты", label: "Поиск по памяти", sub: "recall", icon: Brain, action: { kind: "prefill", text: "Вспомни из памяти: " } },
-  { id: "mcp", group: "Плагины", label: "Плагины и MCP", sub: "управление через агента", icon: Package, action: { kind: "prefill", text: "Настрой или подключи MCP-интеграцию через workflow: " } },
+  { id: "mcp", group: "Плагины", label: "MCP", sub: "настройки", icon: Package, action: { kind: "settings", section: "mcp" } },
   { id: "model", group: "Возможности", label: "Модель и провайдер", sub: "настройки", icon: Cpu, action: { kind: "settings", section: "model" } },
   { id: "memory", group: "Возможности", label: "Память", sub: "настройки", icon: Brain, action: { kind: "settings", section: "memory" } },
-  { id: "tg", group: "Возможности", label: "Telegram", sub: "управление через агента", icon: Send, action: { kind: "prefill", text: "Настрой Telegram-интеграцию через workflow: " } },
-  { id: "ssh", group: "Возможности", label: "SSH / MCP", sub: "управление через агента", icon: Server, action: { kind: "prefill", text: "Настрой SSH или MCP через workflow: " } },
+  { id: "tg", group: "Возможности", label: "Telegram", sub: "настройки", icon: Send, action: { kind: "settings", section: "telegram" } },
+  { id: "vault", group: "Возможности", label: "Хранилище секретов", sub: "настройки", icon: KeyRound, action: { kind: "settings", section: "vault" } },
+  { id: "ssh", group: "Возможности", label: "SSH", sub: "через агента", icon: Server, action: { kind: "prefill", text: "Подключись по SSH к " } },
   { id: "theme", group: "Возможности", label: "Тема", sub: "настройки", icon: Palette, action: { kind: "settings", section: "theme" } },
   { id: "prev", group: "Возможности", label: "Превью", sub: "панель артефактов", icon: PanelRight, action: { kind: "preview" } },
 ];

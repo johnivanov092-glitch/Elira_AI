@@ -14,6 +14,7 @@ from app.api.routes.persona import router as persona_router
 from app.api.routes.profiles import router as profiles_router
 from app.api.routes.release_routes import router as release_router
 from app.api.routes.skills_routes import router as skills_router
+from app.api.routes.telegram_routes import router as telegram_router
 from app.api.routes.voice_routes import router as voice_router
 from app.api.routes.workflow_routes import router as workflow_router
 
@@ -32,6 +33,7 @@ ALL_ROUTERS = (
     event_bus_router,
     workflow_router,
     voice_router,
+    telegram_router,
     code_agent_router,
     drift_router,
 )
