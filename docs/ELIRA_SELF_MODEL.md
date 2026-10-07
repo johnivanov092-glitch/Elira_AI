@@ -134,7 +134,6 @@ Thread-local: `run_id`, `execution_channel`, `permission_mode`
 - `engine.py` → alias → `workflow_engine/runtime.py` (monolith, backward-compat)
 - `store.py`: SQLite CRUD (templates + runs)
 - `runtime.py`: start/resume/cancel
-- `multi_agent.py`: мультиагентная оркестрация
 - `triggers.py`: scheduler (cron-like)
 - `execution.py`: `WorkflowExecutionState` dataclass + metrics
 

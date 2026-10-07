@@ -7,7 +7,7 @@
 
 ## Итог
 
-Цель достигнута: обычный и multi-agent Workflow используют один code-agent core,
+Цель достигнута: обычный прогон и Workflow-шаги используют один code-agent core,
 один ToolExecutor, один provider registry и один UI permission selector.
 Интеграции перенесены за `runtime_control`; Windows elevation проходит через
 Workflow request и Tauri UAC bridge; активный vault не зависит от WinCred/DPAPI.
@@ -33,7 +33,7 @@ Workflow request и Tauri UAC bridge; активный vault не зависит
 | Проверка | Состояние | Владелец |
 |---|---|---|
 | Single-agent и chat compatibility используют `run_code_agent` | Готово | `application/chat/runtime.py` |
-| Multi-agent step возвращается в тот же core | Готово | `domain/workflows/step_executor.py` |
+| Workflow agent step возвращается в тот же core | Готово | `domain/workflows/step_executor.py` |
 | Все tool calls проходят через один executor | Готово | `agent_kernel/executor.py` |
 | Providers собраны одним runtime registry | Готово | `tool_providers/runtime_registry.py` |
 | Все подключённые schemas видимы сразу | Готово | `code_agent/agent_loop.py` |

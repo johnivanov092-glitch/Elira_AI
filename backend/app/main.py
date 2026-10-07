@@ -129,8 +129,9 @@ for router in ALL_ROUTERS:
 init_db()
 init_runtime_state()
 
-from app.application.workflow_engine.runtime import seed_builtin_workflows
-seed_builtin_workflows()
+from app.application.workflows.db_path import get_workflow_db_path
+from app.application.workflows.store import init_db as init_workflow_db
+init_workflow_db(db_path=get_workflow_db_path())
 
 if not release_runtime.is_staging():
     _recover_workflow_requests()

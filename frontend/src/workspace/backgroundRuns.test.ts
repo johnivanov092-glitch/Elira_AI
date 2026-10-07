@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamCodeAgentArgs, StreamHandlers } from "../api/codeAgent";
-import type { AdvancedMultiAgentRequest, AdvancedMultiAgentStreamHandlers } from "../api/project";
 
 const fake = vi.hoisted(() => ({ handlers: [] as StreamCodeAgentArgs[], cancels: [] as string[], input: vi.fn(), cancel: vi.fn(),
-  resumed: [] as (StreamHandlers & { signal?: AbortSignal })[],
-  multi: [] as { body: AdvancedMultiAgentRequest; handlers: AdvancedMultiAgentStreamHandlers; signal?: AbortSignal }[] }));
+  resumed: [] as (StreamHandlers & { signal?: AbortSignal })[] }));
 vi.mock("../api/codeAgent", () => ({
   sendCodeAgentInput: fake.input,
   streamCodeAgent: (args: StreamCodeAgentArgs) => {
@@ -20,13 +18,7 @@ vi.mock("../api/codeAgent", () => ({
     return fake.cancel(id);
   },
 }));
-vi.mock("../api/project", () => ({
-  streamAdvancedMultiAgent: (body: AdvancedMultiAgentRequest, handlers: AdvancedMultiAgentStreamHandlers, signal?: AbortSignal) => {
-    fake.multi.push({ body, handlers, signal });
-    return new Promise<void>(() => {});
-  },
-}));
-import { send, sendMultiAgent, resume, stop, steer, getSnapshot, seed, setPersist } from "./backgroundRuns";
+import { send, resume, stop, steer, getSnapshot, seed, setPersist } from "./backgroundRuns";
 import { isAcceptedAnswer } from "./answerLifecycle";
 import { uploadResource } from "../api/resources";
 
@@ -312,27 +304,6 @@ describe("confirmed Stop", () => {
     handlers.onRunId?.("resumed-run");
     await stopping;
     expect(fake.cancels).toEqual(["resumed-run"]);
-    expect(getSnapshot(sessionId).runControlState).toBe("stopped");
-  });
-
-  it("requires cleanup acknowledgment for multi-agent even before its first stream event", async () => {
-    const sessionId = "multi-stop-retry";
-    sendMultiAgent({ sessionId, text: "проверь", useOrchestrator: true, useReflection: true });
-    const stream = fake.multi.at(-1)!;
-    const runId = stream.body.run_id!;
-    expect(runId).toMatch(/^[a-f0-9]{32}$/);
-    fake.cancel.mockResolvedValueOnce({ ok: false, state: "cancel_failed", run_id: runId, error: "child cleanup refused" });
-    await stop(sessionId);
-    expect(getSnapshot(sessionId).runControlState).toBe("cancel_failed");
-    expect(stream.signal!.aborted).toBe(false);
-    stream.handlers.onDone?.({ ok: true, report: "late report" });
-    const count = fake.multi.length;
-    sendMultiAgent({ sessionId, text: "новый прогон", useOrchestrator: false, useReflection: false });
-    expect(fake.multi).toHaveLength(count);
-    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ runId, text: "", running: false });
-    await stop(sessionId);
-    expect(fake.cancels).toEqual([runId, runId]);
-    expect(stream.signal!.aborted).toBe(true);
     expect(getSnapshot(sessionId).runControlState).toBe("stopped");
   });
 

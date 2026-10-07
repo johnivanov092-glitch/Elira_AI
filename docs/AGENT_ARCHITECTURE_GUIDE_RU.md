@@ -324,15 +324,14 @@ backend явно подставляет scratch workspace и противопо�
 lifecycle, не защита от прямой записи с правами того же пользователя.
 Подробные границы: [`RELEASE_LIFECYCLE.md`](RELEASE_LIFECYCLE.md).
 
-## 4. Multi-agent — не второй агентный движок
+## 4. Подагент — инструмент, а не режим
 
-Multi-agent — это Workflow-шаблон, который последовательно вызывает тот же core.
+Отдельного мультиагентного режима нет (чип «Планирование/Саморевью» и
+`/api/advanced/multi-agent` удалены 2026-10-07). Подагента основной агент
+вызывает сам инструментом `delegate_task`, когда это нужно. Шаги `agent` в
+Workflow-шаблонах идут в тот же core:
 
 ```text
-Composer «Мульти-агент»
-    ↓
-/api/advanced/multi-agent/stream
-    ↓
 workflow_engine.db: template → run → steps
     ↓
 step_executor
@@ -821,7 +820,7 @@ Qwen chat template с ошибкой `System message must be at the beginning`.
 |---|---|
 | `/api/code-agent` | stream/resume/cancel, sessions, project prompt, RAG helpers |
 | `/api/agent-os` | Workflow templates/runs/requests, event SSE, portable vault |
-| `/api/advanced` | multi-agent Workflow, projects, advanced RAG |
+| `/api/advanced` | projects, advanced RAG |
 | `/api/media` | durable resource intake |
 | `/api/lib` | curated library |
 | `/api/chat-agent` | memory compatibility API |

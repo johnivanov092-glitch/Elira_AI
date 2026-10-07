@@ -1,6 +1,5 @@
-"""Tests for pure helpers across three modules.
+"""Tests for pure helpers across two modules.
 
-  application/workflows/multi_agent.py    — _builtin_workflow_templates
   application/web_query_planner/runtime.py — _build_search_query
   application/response_cache/runtime.py   — _normalize_query, _query_hash
 
@@ -19,9 +18,6 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.workflows.multi_agent import (  # noqa: E402
-    _builtin_workflow_templates,
-)
 from app.application.web_query_planner.runtime import (  # noqa: E402
     _build_search_query,
 )
@@ -29,97 +25,6 @@ from app.application.response_cache.runtime import (  # noqa: E402
     _normalize_query,
     _query_hash,
 )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# workflows/multi_agent.py — _builtin_workflow_templates
-# ─────────────────────────────────────────────────────────────────────────────
-
-class BuiltinWorkflowTemplatesTest(unittest.TestCase):
-
-    def _templates(self) -> list:
-        return _builtin_workflow_templates()
-
-    # ── return type & count ───────────────────────────────────────────────────
-
-    def test_returns_list(self) -> None:
-        self.assertIsInstance(self._templates(), list)
-
-    def test_returns_exactly_four_templates(self) -> None:
-        self.assertEqual(len(self._templates()), 4)
-
-    def test_each_item_is_dict(self) -> None:
-        for t in self._templates():
-            self.assertIsInstance(t, dict)
-
-    # ── required keys ─────────────────────────────────────────────────────────
-
-    def test_each_has_id(self) -> None:
-        for t in self._templates():
-            self.assertIn("id", t)
-
-    def test_each_has_name(self) -> None:
-        for t in self._templates():
-            self.assertIn("name", t)
-
-    def test_each_has_graph(self) -> None:
-        for t in self._templates():
-            self.assertIn("graph", t)
-
-    def test_each_has_enabled(self) -> None:
-        for t in self._templates():
-            self.assertIn("enabled", t)
-
-    def test_each_has_version(self) -> None:
-        for t in self._templates():
-            self.assertIn("version", t)
-
-    def test_each_has_source(self) -> None:
-        for t in self._templates():
-            self.assertIn("source", t)
-
-    # ── field values ──────────────────────────────────────────────────────────
-
-    def test_ids_start_with_builtin_workflow(self) -> None:
-        for t in self._templates():
-            self.assertTrue(str(t["id"]).startswith("builtin.workflow.multi_agent."))
-
-    def test_all_enabled_true(self) -> None:
-        for t in self._templates():
-            self.assertTrue(t["enabled"])
-
-    def test_all_version_1(self) -> None:
-        for t in self._templates():
-            self.assertEqual(t["version"], 1)
-
-    def test_all_source_builtin(self) -> None:
-        for t in self._templates():
-            self.assertEqual(t["source"], "builtin")
-
-    # ── graph structure ───────────────────────────────────────────────────────
-
-    def test_each_graph_is_dict(self) -> None:
-        for t in self._templates():
-            self.assertIsInstance(t["graph"], dict)
-
-    def test_each_graph_has_steps(self) -> None:
-        for t in self._templates():
-            self.assertIn("steps", t["graph"])
-
-    def test_each_graph_has_at_least_one_step(self) -> None:
-        for t in self._templates():
-            self.assertGreater(len(t["graph"]["steps"]), 0)
-
-    # ── uniqueness ────────────────────────────────────────────────────────────
-
-    def test_ids_are_unique(self) -> None:
-        ids = [t["id"] for t in self._templates()]
-        self.assertEqual(len(ids), len(set(ids)))
-
-    # ── determinism ───────────────────────────────────────────────────────────
-
-    def test_deterministic_count(self) -> None:
-        self.assertEqual(len(self._templates()), len(self._templates()))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

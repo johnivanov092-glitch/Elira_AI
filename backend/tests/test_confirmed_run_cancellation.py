@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import os
-import asyncio
 import subprocess
 import sys
 import uuid
 from pathlib import Path
-import threading
 from unittest import mock
 
 import psutil
@@ -16,7 +14,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.api.routes import advanced_routes, code_agent_routes
+from app.api.routes import code_agent_routes
 from app.application.code_agent import run_control
 from app.application.code_agent.tools import _shell
 from app.infrastructure.llm.openai_compatible import LLMStreamCancelHandle
@@ -127,70 +125,3 @@ def test_resume_stop_after_headers_before_lazy_registration() -> None:
     finally:
         run_control._unregister_run(run_id)
         _shell.clear_run_stop_marker(run_id)
-
-
-def test_multi_agent_bridge_retains_failed_workflow_cleanup_for_retry(monkeypatch) -> None:
-    from app.application.workflows import multi_agent, runtime
-
-    run_id = f"multi-stop-{uuid.uuid4().hex}"
-    finished = threading.Event()
-    workflow_id = "workflow-multi-stop"
-    attempts: list[str] = []
-
-    def workflow(**kwargs):
-        kwargs["run_created_callback"](workflow_id)
-        kwargs["progress_callback"](1, 1, "test step")
-        assert finished.wait(5), "multi-agent cancellation did not reach its workflow"
-        return {"ok": False, "error": "Cancelled by user"}
-
-    def cancel_workflow(value):
-        attempts.append(value)
-        if len(attempts) == 1:
-            raise RuntimeError("child transport cleanup refused")
-        finished.set()
-        return {"status": "cancelled", "run_id": value}
-
-    monkeypatch.setattr(multi_agent, "run_multi_agent_workflow", workflow)
-    monkeypatch.setattr(runtime, "cancel_workflow_run", cancel_workflow)
-    response = advanced_routes.run_multi_stream(advanced_routes.MultiAgentRequest(query="test", run_id=run_id))
-    assert response.headers["X-Run-Id"] == run_id
-
-    async def scenario():
-        iterator = response.body_iterator
-        try:
-            first = await iterator.__anext__()
-            assert '"type": "step"' in first
-            failed = code_agent_routes.cancel(code_agent_routes.CodeAgentCancelRequest(run_id=run_id))
-            assert failed["state"] == "cancel_failed"
-            assert run_id in run_control._CANCEL_REGISTRY
-            retried = code_agent_routes.cancel(code_agent_routes.CodeAgentCancelRequest(run_id=run_id))
-            assert retried["state"] == "stopped"
-            async for _ in iterator:
-                pass
-        finally:
-            finished.set()
-            await iterator.aclose()
-
-    asyncio.run(scenario())
-    assert attempts == [workflow_id, workflow_id]
-    assert run_id not in run_control._CANCEL_REGISTRY
-    _shell.clear_run_stop_marker(run_id)
-
-
-def test_multi_agent_stop_before_generator_starts_does_not_launch_workflow(monkeypatch) -> None:
-    from app.application.workflows import multi_agent
-
-    run_id = f"early-multi-stop-{uuid.uuid4().hex}"
-    start = mock.Mock(side_effect=AssertionError("workflow started after Stop"))
-    monkeypatch.setattr(multi_agent, "run_multi_agent_workflow", start)
-    response = advanced_routes.run_multi_stream(advanced_routes.MultiAgentRequest(query="test", run_id=run_id))
-    assert code_agent_routes.cancel(code_agent_routes.CodeAgentCancelRequest(run_id=run_id))["state"] == "stopped"
-
-    async def drain():
-        return [item async for item in response.body_iterator]
-
-    events = asyncio.run(drain())
-    assert events and "Cancelled by user" in events[0]
-    start.assert_not_called()
-    assert run_id not in run_control._CANCEL_REGISTRY
-    _shell.clear_run_stop_marker(run_id)

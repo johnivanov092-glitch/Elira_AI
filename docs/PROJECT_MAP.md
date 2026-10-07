@@ -100,10 +100,10 @@ frontend/src
 │  ├─ codeAgent.ts       code-agent SSE/client types
 │  ├─ chatFolders.ts     shared chat-folder state and atomic operations
 │  ├─ workflows.ts       Workflow requests/events/UAC bridge
-│  └─ project.ts         projects + multi-agent API
+│  └─ project.ts         projects API
 └─ workspace/
    ├─ WorkspaceShell.tsx application workspace
-   ├─ Composer.tsx       permission/reasoning/multi-agent controls
+   ├─ Composer.tsx       permission/reasoning controls
    ├─ backgroundRuns.ts  one owner for live run state
    ├─ chatFolders.ts     server-confirmed folder store and legacy-cache migration
    ├─ AgentTurn.tsx      agent result rendering

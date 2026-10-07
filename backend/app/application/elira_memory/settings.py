@@ -17,7 +17,6 @@ DEFAULT_ROUTE_MAP = {
     "research": ["local-model"],
     "chat": ["local-model"],
     "code_agent": ["local-model"],
-    "multi_agent": ["local-model"],
     "image": ["__skill_image_gen"],  # special: handled by image skill, not LLM model
 }
 

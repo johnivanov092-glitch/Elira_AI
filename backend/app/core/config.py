@@ -264,21 +264,3 @@ def pick_model_for_route(route: str, user_model: str, available_models: list[str
     т.д.); общий порядок маршрутизации и поведение полностью совпадают.
     """
     return resolve_model_for_route(route, user_model, available_models).model
-
-
-SESSION_DEFAULTS: dict = {
-    "messages": [], "file_context": "", "uploaded_files": [],
-    "last_uploaded_signature": "", "web_context": "", "last_answer": "",
-    "last_report": "", "auto_log": [], "project_context": "",
-    "project_path": "", "project_summary": "", "project_index": [],
-    "project_dependencies": [], "last_terminal_output": "",
-    "web_results": [], "last_generated_code": "", "last_run_output": "",
-    "browser_result": "", "browser_trace": [], "multi_agent_result": {},
-    "last_image_path": "", "last_image_prompt": "",
-    "last_image_prompt_original": "", "last_image_prompt_prepared": "",
-    "last_image_log": "", "last_image_mode": "turbo",
-    "build_loop_history": [], "confirm_clear_memory": False,
-    "confirm_clear_chat": False, "active_mem_profile": "default",
-    "ctx_override": None, "active_chat_folder": "Общее",
-    "active_chat_file": "", "active_chat_title": "",
-}

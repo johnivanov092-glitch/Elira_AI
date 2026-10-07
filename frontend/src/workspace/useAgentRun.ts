@@ -40,13 +40,6 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName: "Авто", permissionMode, reasoningEffort });
   }, [sessionId, projectRoot, model]);
 
-  // Multi-agent run: streams per-step progress from the pipeline endpoint via
-  // the background manager. Forwards the two run-mode flags. Independent of
-  // `agent_profile`.
-  const sendMultiAgent = useCallback((text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) => {
-    bg.sendMultiAgent({ sessionId, text, useOrchestrator, useReflection, projectRoot, permissionMode, reasoningEffort });
-  }, [sessionId, projectRoot]);
-
   const resume = useCallback((agentId: string, runId: string) => {
     bg.resume(sessionId, agentId, runId);
   }, [sessionId]);
@@ -66,5 +59,5 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     });
   }, [sessionId, model]);
 
-  return { turns, running, runControlState, cancelError, send, sendMultiAgent, resume, stop, reset, contextUsage, taskLedger };
+  return { turns, running, runControlState, cancelError, send, resume, stop, reset, contextUsage, taskLedger };
 }

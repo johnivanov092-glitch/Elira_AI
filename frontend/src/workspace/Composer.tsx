@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Library, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Library, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode, ReasoningEffort } from "../api/codeAgent";
 import { importResourceToLibrary } from "../api/library";
 import { uploadResource, type ResourceAttachment } from "../api/resources";
@@ -29,7 +29,7 @@ export type ComposerAttachControls = {
  *  (opened in the
  *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
 export function Composer({
-  value, onChange, sessionId, onPlus, onPlugins, onSend, onSendMultiAgent, running, runControlState, cancelError, onStop, contextUsage, onAttachReady,
+  value, onChange, sessionId, onPlus, onPlugins, onSend, running, runControlState, cancelError, onStop, contextUsage, onAttachReady,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -39,9 +39,6 @@ export function Composer({
   onPlus: () => void;
   onPlugins: () => void;
   onSend: (text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => Promise<boolean>;
-  /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
-   *  pick one of the 4 backend workflow templates. */
-  onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) => void;
   running: boolean;
   runControlState?: RunControlState;
   cancelError?: string | null;
@@ -52,15 +49,8 @@ export function Composer({
   onAttachReady?: (controls: ComposerAttachControls) => void;
 }) {
   const [mode, setMode] = useState<Mode>("code");
-  // "Мульти-агент" is a run MODE, not a profile: when on, submit() routes to the
-  // multi-agent pipeline instead of the code-agent stream. The two flags map to
-  // the backend's 4 workflow templates. Local state only — never touches the
-  // global `agent_profile` setting.
-  const [multiAgent, setMultiAgent] = useState(false);
-  const [useOrchestrator, setUseOrchestrator] = useState(true);
-  const [useReflection, setUseReflection] = useState(true);
   // Approval policy for the run (Спрашивать / Контроль риска / Без ограничений).
-  // Local run-mode like multiAgent — passed per-send into the code-agent stream;
+  // Local run-mode — passed per-send into the code-agent stream;
   // the backend approval gate enforces it. Persisted across chats/restarts (the
   // chip used to reset to "ask" every mount). New local installs default to
   // bypass; an explicit stored choice is preserved.
@@ -167,15 +157,8 @@ export function Composer({
     const text = value.trim();
     if (!text || submittingRef.current || stopPending) return;
     setSendError(null);
-    if (running && (multiAgent || attachments.length > 0 || uploading.length > 0)) {
-      setSendError("Во время работы можно отправить текстовое уточнение. Вложения и мульти-агент доступны для следующей задачи.");
-      return;
-    }
-    // Multi-agent runs through a separate pipeline endpoint that takes only the
-    // query (no chat attachments). Route there and keep any staged files intact.
-    if (multiAgent) {
-      onSendMultiAgent(text, useOrchestrator, useReflection, permissionMode, reasoningEffort);
-      onChange("");
+    if (running && (attachments.length > 0 || uploading.length > 0)) {
+      setSendError("Во время работы можно отправить текстовое уточнение. Вложения доступны для следующей задачи.");
       return;
     }
     // Variant Б: files still uploading/transcribing — defer this send. The
@@ -290,14 +273,6 @@ export function Composer({
             onChange={setReasoningEffort}
           />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={submitting} />
-          <MultiAgentChip
-            active={multiAgent}
-            useOrchestrator={useOrchestrator}
-            useReflection={useReflection}
-            onToggleActive={() => setMultiAgent((v) => !v)}
-            onChangeOrchestrator={setUseOrchestrator}
-            onChangeReflection={setUseReflection}
-          />
           <button
             type="button"
             onClick={onPlugins}
@@ -531,116 +506,6 @@ function ReasoningEffortChip({
         </div>
       )}
     </div>
-  );
-}
-
-/** "Мульти-агент" run-mode chip: icon + caption below it. Clicking the body
- *  toggles the mode (when on, the Composer routes submit() to the multi-agent
- *  pipeline instead of the code-agent stream). The chevron opens a popover with
- *  two checkboxes — «Планирование» (use_orchestrator) and «Саморевью»
- *  (use_reflection) — which together pick one of the 4 backend workflow
- *  templates. This is NOT a profile: it never writes the global agent_profile. */
-function MultiAgentChip({
-  active, useOrchestrator, useReflection, onToggleActive, onChangeOrchestrator, onChangeReflection,
-}: {
-  active: boolean;
-  useOrchestrator: boolean;
-  useReflection: boolean;
-  onToggleActive: () => void;
-  onChangeOrchestrator: (on: boolean) => void;
-  onChangeReflection: (on: boolean) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  // Close the popover on any outside click.
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <div
-        className={cn(
-          "flex h-7 shrink-0 items-center gap-1 rounded-full border pl-2 pr-1.5 transition-colors",
-          active ? "border-acl bg-acs text-ac" : "border-line text-t2 hover:bg-hover hover:text-tx",
-        )}
-      >
-        <button
-          type="button"
-          onClick={onToggleActive}
-          title={active ? "Мульти-агент включён — следующий запрос пойдёт по пайплайну" : "Включить мульти-агентный режим"}
-          aria-pressed={active}
-          aria-label="Мульти-агент"
-          className="flex items-center leading-none"
-        >
-          <Users size={13} />
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          title="Настройки мульти-агента"
-          aria-label="Настройки мульти-агента"
-          className="shrink-0 rounded text-mut transition-colors hover:text-tx"
-        >
-          <ChevronDown size={12} className="shrink-0" />
-        </button>
-      </div>
-      {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-[220px] rounded-lg border border-line bg-card p-1 shadow-lg">
-          <MultiAgentOption
-            checked={useOrchestrator}
-            onChange={onChangeOrchestrator}
-            label="Планирование"
-            hint="Оркестратор разбивает задачу на шаги перед исполнением"
-          />
-          <MultiAgentOption
-            checked={useReflection}
-            onChange={onChangeReflection}
-            label="Саморевью"
-            hint="Ревьюер проверяет и уточняет итоговый ответ"
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** One checkbox row inside the MultiAgentChip popover. */
-function MultiAgentOption({
-  checked, onChange, label, hint,
-}: {
-  checked: boolean;
-  onChange: (on: boolean) => void;
-  label: string;
-  hint: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      role="checkbox"
-      aria-checked={checked}
-      className="flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
-    >
-      <span
-        className={cn(
-          "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border",
-          checked ? "border-acl bg-acs text-ac" : "border-line text-transparent",
-        )}
-      >
-        <Check size={11} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-[12.5px] text-tx">{label}</span>
-        <span className="block text-[11px] text-mut">{hint}</span>
-      </span>
-    </button>
   );
 }
 

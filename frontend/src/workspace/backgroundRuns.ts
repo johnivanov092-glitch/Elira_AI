@@ -17,7 +17,6 @@ import {
   type WorkflowInput,
 } from "../api/codeAgent";
 import { toWireResource, type ResourceAttachment } from "../api/resources";
-import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, FileEntry, RunControlState, Turn } from "./types";
 import { latestUserTaskLabel } from "./taskHistory";
 import { isAcceptedAnswer } from "./answerLifecycle";
@@ -662,109 +661,6 @@ export function send(args: SendArgs): void {
     streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort, runId: entry.runId || undefined,
       sourceRunIds: entry.snapshot.turns.filter((t): t is AgentTurnData => t.kind === "agent" && isAcceptedAnswer(t) && Boolean(t.citations?.length && t.runId)).map(t => t.runId!).slice(-8),
       ...handlers }));
-}
-
-/** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`
- *  runs a pipeline of 3–5 chained LLM calls and emits one SSE `step` event per
- *  workflow step before the final `done` event carries the combined report. So
- *  we append the user + a "working…" agent turn (running:true), then drive that
- *  turn from the stream: each `step` updates `activeTool` to a "Шаг N/total: …"
- *  status, `done` writes the whole report as one block, `error` surfaces the
- *  message. Stop aborts the SSE fetch (entry.abort); the backend then cancels
- *  the pipeline between steps. Late events after a stop are ignored. */
-export function sendMultiAgent(
-  args: { sessionId: string; text: string; useOrchestrator: boolean; useReflection: boolean; projectRoot?: string; permissionMode?: PermissionMode; reasoningEffort?: ReasoningEffort },
-): void {
-  const { sessionId, text, useOrchestrator, useReflection, projectRoot, permissionMode, reasoningEffort } = args;
-  const msg = text.trim();
-  const entry = ensureEntry(sessionId);
-  if (!msg || entry.snapshot.running || stopUnconfirmed(entry.snapshot)) return;
-
-  const agentId = nid();
-  entry.runId = crypto.randomUUID().replace(/-/g, "");
-  entry.resuming = false;
-  entry.startError = undefined;
-  entry.lastMode = null;
-  entry.persistedAtDone = false;
-  // The existing cancellation endpoint confirms Workflow child cleanup before
-  // Stop tears down this reader; the ID is known before the first stream event.
-  const ctrl = new AbortController();
-  entry.abort = ctrl;
-  entry.activeAgentId = agentId;
-  // After a stop, a late event (a `done` already in flight) must not overwrite
-  // the turn or re-flip persistence. stop() aborts the controller and clears
-  // activeAgentId, so either guard catches a stale callback.
-  const stopped = () => ctrl.signal.aborted || entry.activeAgentId !== agentId || stopUnconfirmed(entry.snapshot);
-  update(entry, (s) => ({
-    ...s,
-    running: true,
-    runControlState: "running",
-    cancelError: null,
-    turns: [
-      ...s.turns,
-      { kind: "user", id: nid(), text: msg },
-      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true, runId: entry.runId || undefined },
-    ],
-  }));
-
-  void streamAdvancedMultiAgent(
-    {
-      query: msg,
-      run_id: entry.runId || undefined,
-      use_orchestrator: useOrchestrator,
-      use_reflection: useReflection,
-      permission_mode: permissionMode ?? "bypass",
-      reasoning_effort: reasoningEffort ?? "none",
-      ...(projectRoot ? { project_root: projectRoot } : {}),
-    },
-    {
-      onRunId: (runId) => {
-        if (entry.abort !== ctrl) return;
-        entry.runId = runId;
-        patchAgent(entry, agentId, a => ({ ...a, runId }));
-      },
-      onStep: (index, total, label) => {
-        if (stopped()) return;
-        patchAgent(entry, agentId, (a) => ({
-          ...a,
-          activeTool: `Шаг ${index}/${total}: ${label}`,
-        }));
-      },
-      onDone: (res) => {
-        if (stopped()) return;
-        const ok = res.ok !== false;
-        const report = typeof res.report === "string" ? res.report : "";
-        const errMsg = typeof res.error === "string" ? res.error : "";
-        patchAgent(entry, agentId, (a) => ({
-          ...a,
-          running: false,
-          activeTool: undefined,
-          text: ok ? (report || "Мульти-агент не вернул ответ.") : a.text,
-          error: ok ? undefined : (errMsg || "Мульти-агент завершился с ошибкой."),
-        }));
-      },
-      onError: (e) => {
-        if (stopped()) return;
-        patchAgent(entry, agentId, (a) => ({
-          ...a,
-          running: false,
-          activeTool: undefined,
-          error: e instanceof Error ? e.message : "Не удалось выполнить мульти-агентный запуск.",
-        }));
-      },
-    },
-    ctrl.signal,
-  ).finally(() => {
-    if (stopped()) return; // Stop already reset running/turn state.
-    if (entry.abort === ctrl) entry.abort = null;
-    entry.runId = null;
-    entry.activeAgentId = null;
-    update(entry, (s) => ({ ...s, running: false, runControlState: "idle" }));
-    if (!entry.persistedAtDone) {
-      entry.persistedAtDone = true;
-      entry.persist?.(entry.snapshot);
-    }
-  });
 }
 
 /** Resume a persisted interrupted/partial run for a session's agent turn. */

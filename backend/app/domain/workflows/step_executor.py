@@ -98,21 +98,8 @@ def _render_prompt_template(template: str, values: dict[str, Any]) -> str:
     return template.format_map(_SafeFormatDict(prepared))
 
 
-def _determine_profile_name(agent_id: str, config: dict[str, Any]) -> str:
-    profile_name = str(config.get("profile_name", "")).strip()
-    if profile_name:
-        return profile_name
-
-    fallback_map = {
-        "builtin-universal": "Универсальный",
-        "builtin-researcher": "Исследователь",
-        "builtin-programmer": "Программист",
-        "builtin-analyst": "Аналитик",
-        "builtin-socrat": "Сократ",
-        "builtin-orchestrator": "Универсальный",
-        "builtin-reviewer": "Аналитик",
-    }
-    return fallback_map.get(agent_id, "Универсальный")
+def _determine_profile_name(config: dict[str, Any]) -> str:
+    return str(config.get("profile_name", "")).strip() or "Универсальный"
 
 
 def _execute_agent_step(
@@ -163,7 +150,7 @@ def _execute_agent_step(
     # P9.3: fall back to the "auto" sentinel (not a hardcoded model) so run_agent's
     # shared profile routing engages; an explicit step/context model is preserved.
     model_name = str(config.get("model_name") or run_context.get("model_name") or "auto")
-    profile_name = _determine_profile_name(str(step.get("agent_id", "")), config)
+    profile_name = _determine_profile_name(config)
     # Thread the selected project folder + context window from the run context so the
     # agent's file tools scope to the user's project (not the default workspace) and
     # the full production context window is used. Only forward when present/positive
@@ -186,22 +173,6 @@ def _execute_agent_step(
         agent_id=str(step.get("agent_id", "")).strip() or None,
         use_memory=bool(config.get("use_memory", False)),
         use_library=bool(config.get("use_library", False)),
-        use_reflection=bool(config.get("use_reflection", False)),
-        use_web_search=bool(config.get("use_web_search", False)),
-        use_python_exec=bool(config.get("use_python_exec", False)),
-        use_image_gen=bool(config.get("use_image_gen", False)),
-        use_file_gen=bool(config.get("use_file_gen", False)),
-        use_http_api=bool(config.get("use_http_api", False)),
-        use_sql=bool(config.get("use_sql", False)),
-        use_screenshot=bool(config.get("use_screenshot", False)),
-        use_encrypt=bool(config.get("use_encrypt", False)),
-        use_archiver=bool(config.get("use_archiver", False)),
-        use_converter=bool(config.get("use_converter", False)),
-        use_regex=bool(config.get("use_regex", False)),
-        use_translator=bool(config.get("use_translator", False)),
-        use_csv=bool(config.get("use_csv", False)),
-        use_webhook=bool(config.get("use_webhook", False)),
-        use_plugins=bool(config.get("use_plugins", False)),
         permission_mode=permission_mode,
         reasoning_effort=reasoning_effort,
         code_agent_run_id=code_agent_run_id,

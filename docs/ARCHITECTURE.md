@@ -24,8 +24,11 @@ Workflow request
   <- workflow_engine.db + /api/agent-os/events/stream
 ```
 
-Multi-agent uses `application/workflows` as a coordinator but every agent step
-returns to the same `run_code_agent`, executor and provider registry.
+Workflow `agent` steps use `application/workflows` as a coordinator but every
+step returns to the same `run_code_agent`, executor and provider registry. The
+multi-agent mode (Composer «Планирование/Саморевью», `/api/advanced/multi-agent`)
+was removed on 2026-10-07; a sub-agent is the `delegate_task` tool the main
+agent calls itself.
 
 Managed application updates use `scripts/elira_release.py` to prepare and verify
 a backend/UI candidate, then switch after active work drains, with restart and
@@ -40,8 +43,7 @@ are separate statuses; see `RELEASE_LIFECYCLE.md` and
 `research/FOUNDATION_WINDOWS_ACCEPTANCE_RU.md`.
 
 The disconnected `domain/agents` V8 graph runtime and `application/project_brain`
-chat/LLM chain were removed after a caller audit. The UI's `use_orchestrator`
-option still selects a Workflow planning step; it does not refer to V8.
+chat/LLM chain were removed after a caller audit.
 
 ## Agent loop module boundaries
 

@@ -150,6 +150,11 @@ def init_db(*, db_path: str | Path) -> None:
             WHERE status IN ('pending', 'resolving', 'needs_reconciliation')
             """
         )
+        # The multi-agent mode was removed; drop the templates it used to seed.
+        connection.execute(
+            "DELETE FROM workflow_templates "
+            "WHERE source = 'builtin' AND id LIKE 'builtin.workflow.multi_agent.%'"
+        )
 
 
 def _dumps(value: Any) -> str:
