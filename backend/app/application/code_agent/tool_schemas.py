@@ -550,12 +550,24 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "web_search",
                 "description": (
-                    "Search the web for current or external facts (news, versions, "
-                    "docs, prices) - results are {title, url, snippet}. Pass `queries` "
-                    "(up to 5) to search several angles in one call, or one `query`; "
-                    "then read relevant pages with web_fetch. In the answer cite only "
-                    "pages you have READ, by the number shown after each read: "
-                    "[Title][n] or [n]; never type URLs - the runtime renders links."
+                    "Search the web for current information. Returns ranked "
+                    "list of {title, url, snippet}. Use this BEFORE answering "
+                    "any question that depends on facts you don't already "
+                    "know — current events, library versions, niche docs. "
+                    "For academic / peer-reviewed papers use a connected paper-search "
+                    "provider when its schema is available; otherwise use web_search. "
+                    "Pass `queries` (a list) to run SEVERAL searches in PARALLEL "
+                    "in one call (faster than one-by-one; merged + de-duped); "
+                    "otherwise pass a single `query`. "
+                    "Optionally target engine `categories` (e.g. 'it' for "
+                    "github/stackoverflow/pypi, 'science' for arxiv/pubmed, "
+                    "'news') and/or `time_range` for recency. "
+                    "Call `web_fetch` after on URLs that look relevant. "
+                    "Use `categories='images'` when relevant visuals materially help; "
+                    "the runtime attaches sourced cards automatically. "
+                    "In the answer cite pages you have READ by the number shown after "
+                    "each read: [Title][n] or [n]; never write URLs yourself — the "
+                    "runtime renders the links."
                 ),
                 "parameters": {
                     "type": "object",
@@ -565,19 +577,19 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "array",
                             "items": {"type": "string"},
                             "maxItems": 5,
-                            "description": "Several queries in one call (up to 5, run concurrently).",
+                            "description": "Several queries in one call (up to 5, run concurrently). Long batches return a fair summary within 12000 characters, with omitted counts; full source metadata is retained.",
                         },
                         "top_k": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5,
-                                  "description": "Max results per query (default 5, max 10)."},
+                                  "description": "Max results per query (default 5, max 10). Read complete pages via web_fetch(store=true) and web_query."},
                         "categories": {
                             "type": "string",
                             "enum": ["general", "news", "it", "science", "images", "videos", "map", "music", "files"],
-                            "description": "'it' = github/stackoverflow/pypi, 'science' = arxiv/pubmed, 'news', 'images' (attaches sourced picture cards). Omit for general web.",
+                            "description": "Focus engines: 'it'=github/stackoverflow/pypi/mdn, 'science'=arxiv/pubmed/scholar, 'news', 'images' (also attaches a sourced answer gallery), 'map', etc. Omit for general web.",
                         },
                         "time_range": {
                             "type": "string",
                             "enum": ["day", "week", "month", "year"],
-                            "description": "Recent results only.",
+                            "description": "Bias toward recent results. Omit for no recency filter.",
                         },
                         "audience": {
                             "type": "string",
@@ -599,10 +611,15 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "web_fetch",
                 "description": (
-                    "Read web pages as clean text (JS pages are rendered). Pass `urls` "
-                    "(up to 5) to read several in one call, or one `url`. The reply fits "
-                    "12000 characters; to read around a known phrase use `find` instead "
-                    "of raising max_chars. Very large pages: store=true, then web_query."
+                    "Fetch a web page and extract the main readable text "
+                    "(navigation, ads, scripts stripped; JS-rendered pages are "
+                    "auto-rendered). Use AFTER `web_search` to actually read "
+                    "pages, not just snippets. Pass `urls` (a list) to fetch "
+                    "SEVERAL pages in PARALLEL in one call (far faster than one "
+                    "at a time); otherwise pass a single `url`. Plain text up to "
+                    "max_chars per page. Model-facing text is fitted within 12000 characters; "
+                    "Use find to read the passage around a known phrase in HTML, plain text or PDF without persistent storage; do not increase max_chars repeatedly or guess PDF #page anchors. "
+                    "For complete large pages use store=true then web_query only when task persistence permits."
                 ),
                 "parameters": {
                     "type": "object",
@@ -612,13 +629,13 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "array",
                             "items": {"type": "string"},
                             "maxItems": 5,
-                            "description": "Several http(s) URLs in one call (up to 5, read concurrently).",
+                            "description": "Several http(s) URLs in one call (up to 5, fetched concurrently). store=true ingests sequentially. Batch text shares a 12000-character budget; use store=true then web_query for full pages.",
                         },
                         "max_chars": {"type": "integer", "minimum": 500, "maximum": 50000, "default": 8000,
-                                      "description": "Chars per page (default 8000)."},
-                        "force_refresh": {"type": "boolean", "description": "Recheck a paused site only when the user asks; otherwise use another source."},
+                                      "description": "Extract up to this many chars per page (default 8000, max 50000); model-facing excerpts share the 12000-character response budget."},
+                        "force_refresh": {"type": "boolean", "description": "Recheck a paused source only when the user explicitly requests a new availability check. Otherwise respect its next-probe date and use another source."},
                         "find": {"type": "string", "maxLength": 200,
-                                 "description": "Return the passage around this phrase (words in the page's language, not a question). Single url, store=false."},
+                                 "description": "Read the passage around the first match of this phrase (case-insensitive, flexible whitespace), scanning up to 200000 extracted characters. Use words in the source language, not a question. Single url only; works without memory; requires store=false. Missing match is reported explicitly."},
                     },
                     "required": [],
                 },

@@ -46,11 +46,11 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "ssh": "SSH to saved or explicit hosts: run bash/PowerShell, read/write/replace remote files, port check",
     "itops": "IT Ops: saved assets, connection profiles, MikroTik routers and typed health/inventory checks",
     "telegram": "send a Telegram message or read the bot log",
-    "web": "internet search, page reading, HTTP APIs and a JS browser",
+    "web": "extra web tools: web_query (search saved pages), http_api, a JS browser; web_search and web_fetch are always loaded",
     "desktop": "local Windows desktop screenshots, mouse and keyboard control",
     "resources": "attachments, vision, generated DOCX/XLSX/PDF and downloads",
     "memory": "long-term facts about the user (memory) and the user's document Library (library)",
-    "math": "exact calculator, unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums",
+    "math": "unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums; calc is always loaded",
 }
 
 
