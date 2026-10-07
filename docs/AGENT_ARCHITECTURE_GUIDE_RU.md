@@ -73,7 +73,7 @@ Transcript + Workflow request card
 | Capability catalog | Группирует необязательные builtin-схемы для загрузки моделью | `application/code_agent/capabilities.py` |
 | Runtime control | Управляет скрытыми интеграциями из Workflow | `application/code_agent/tools/_runtime_control.py` |
 | TaskOutcome | Решение о повторном использовании, свежие проверки и receipts выдачи файлов | `application/code_agent/task_outcomes.py` |
-| Навыки и опыт | Загруженные инструкции, локальные Git-пакеты и рекомендательные модели | `application/code_agent/task_skills.py`, `skill_development.py`, `skill_advisor.py` |
+| Навыки | Папка `data/skills`: каталог в промпте, закрепление прочитанного SKILL.md, git-история | `application/code_agent/task_skills.py` |
 | Самообновление | Проверка и переключение цельного backend/UI с восстановлением | `scripts/elira_release.py` стабильной платформы |
 | LLM client | OpenAI-compatible HTTP, reasoning kwargs, prompt cache | `infrastructure/llm/openai_compatible.py` |
 | Vault | Переносимые секреты AES-256-GCM | `infrastructure/secrets/vault.py` |
@@ -101,8 +101,7 @@ Transcript + Workflow request card
 После canonical tool result обновляются evidence, версия входов, outcome,
 recovery и инвалидирование критериев, затем публикуются события результата.
 Поздний criterion verdict и добавление tool message выполняются после yield:
-закрытие stream на этой границе не должно выполнять позднюю стадию. Binding
-`result_verify` захватывается до dispatch и заново после ожидания approval.
+закрытие stream на этой границе не должно выполнять позднюю стадию.
 Три epoch-счётчика и формат старых журналов сохраняют прежние значения.
 
 ## 3. Обычный запуск — по шагам
@@ -306,20 +305,17 @@ backend явно подставляет scratch workspace и противопо�
 
 ### 3.3. Результат, навыки и самообновление
 
-Qwen сама решает `one_off/reuse/develop` через `task_decide`; локальный CPU
-`skill_advisor` только ранжирует рекомендации из проверенного опыта. Он не
-управляет tools или разрешениями. `result_verify` связывает результат с текущими
-входами, выходами, отчётом, версией навыка и `code_input_epoch`; успешный процесс
-сам по себе не подтверждает содержательную правильность. Проверенные пакеты
-публикуются в локальном Git через прежний runtime. Контракт и ограничения:
-[`TASK_SKILLS.md`](TASK_SKILLS.md).
+Модель ничего не объявляет runtime (`task_decide`/`result_verify` удалены по решению
+Джона 2026-10-07): результат проверяется запуском — тестами, сборкой, самим скриптом
+через `run_bash`; успешный процесс сам по себе не подтверждает содержательную
+правильность. Навыки и их повторное использование: [`TASK_SKILLS.md`](TASK_SKILLS.md).
 
-Выдача готового файла в чат объявляется отдельно в `task_decide.config.delivery`.
-Слова о скачивании не устанавливают её автоматически: задача сделать кнопку
-архива не равна запросу самого архива в этом чате. Receipt проверяет конкретные
-байты target и канонической опубликованной копии, включая Resume. Явные попытки
-публикации и выданные download-ссылки также проверяются; простого `ARTIFACT`
-недостаточно. Подробнее: [`ANSWER_CONTRACT.md`](ANSWER_CONTRACT.md).
+Выдача готового файла в чат — факт `resource_publish` (или `file_gen`), а не объявление.
+Слова о скачивании ничего не устанавливают: задача сделать кнопку архива не равна
+запросу самого архива в этом чате. Receipt проверяет конкретные байты target и
+канонической опубликованной копии, включая Resume; неудачная попытка публикации и
+выданная download-ссылка без публикации тоже проверяются. Подробнее:
+[`ANSWER_CONTRACT.md`](ANSWER_CONTRACT.md).
 
 Самоизменение backend/UI выполняется в отдельном кандидате. Стабильный
 `scripts/elira_release.py` проверяет его, ждёт завершения работы и переключает

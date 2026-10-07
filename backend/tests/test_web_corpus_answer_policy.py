@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from app.application.code_agent.run_evidence import RunEvidence
-from app.application.code_agent.task_outcomes import TaskOutcome, task_decide
+from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.tools._web import tool_web_fetch
 from app.application.web_evidence.receipts import format_source, make_source
 
@@ -13,38 +13,6 @@ from app.application.web_evidence.receipts import format_source, make_source
 URL = "https://nginx.org/en/security_advisories.html"
 TEXT = "Проверь версию nginx и условия из бюллетеня безопасности."
 POLICY = {"rag": True, "learning": False, "direct_memory": False, "direct_memory_scope": "none"}
-
-
-def test_allowed_corpus_query_can_verify_chat_answer_without_artifact_report(tmp_path):
-    evidence = RunEvidence()
-    passport = make_source(run_id="cache-policy", tool="web_fetch", url=URL, status="fetched",
-                           doc_id="doc-test", content_hash=sha256(TEXT.encode()).hexdigest())
-    excerpt = make_source(run_id="cache-policy", tool="web_query", url=URL, status="excerpt",
-                         quote=TEXT, doc_id="doc-test", offset=0, quote_verified=True,
-                         content_hash=sha256(TEXT.encode()).hexdigest())
-    evidence.record_tool_result(tool_name="web_fetch", arguments={"url": URL, "store": True},
-                                execution_status="ok", output={"ok": True, "sources": [passport]},
-                                text_result=format_source(passport), state_changed=False)
-    evidence.record_tool_result(tool_name="web_query", arguments={"query": "nginx version"},
-                                execution_status="ok", output={"ok": True, "sources": [excerpt]},
-                                text_result=format_source(excerpt), state_changed=False)
-    evidence.mark_sources_presented([{"role": "tool", "content": format_source(excerpt)}])
-    outcome = TaskOutcome()
-    outcome.set_contract("Прочитай бюллетень безопасности и ответь в чате.", [])
-    result = task_decide(tmp_path, {
-        "disposition": "one_off", "reason": "Анализ прочитанного бюллетеня.",
-        "inputs": [], "targets": [], "delivery": {"mode": "none", "targets": []},
-        "requirements": [{"id": "read", "text": "Прочитай бюллетень безопасности.", "mandatory": True,
-                          "verification": {"checks": [{"kind": "source_read", "url": URL, "contains": TEXT}]}}],
-    })
-    outcome.observe("runtime_control", {"operation": "task_decide"}, {"ok": True, "result": result},
-                    project_root=tmp_path, input_epoch=0, execution_status="ok")
-    receipt = outcome.verify_answer(TEXT, evidence, 0, persistence_policy=POLICY)
-    assert receipt.get("status") == "passed", receipt
-    assert outcome.verifications == [] and outcome.learning_evidence(0) is None
-    for denied in (None, {"rag": False, "learning": False, "direct_memory": False},
-                   {"rag": False, "direct_memory": True, "direct_memory_scope": "facts"}):
-        assert outcome.verify_answer(TEXT, evidence, 0, persistence_policy=denied) == {}
 
 
 @pytest.mark.parametrize("policy", [

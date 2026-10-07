@@ -531,64 +531,6 @@ def test_confirmed_local_bom_absence_requires_web_fallback(tmp_path) -> None:
     )
 
 
-def test_download_request_cannot_finish_before_resource_publish(tmp_path) -> None:
-    responses = iter([
-        {"message": {"content": "", "tool_calls": [{"function": {
-            "name": "runtime_control", "arguments": {"operation": "task_decide", "config": {
-                "disposition": "one_off", "reason": "Выдать пользователю готовый PDF",
-                "delivery": {"mode": "chat_download", "targets": ["report.pdf"]},
-            }},
-        }}]}},
-        {"message": {"content": "Файл готов.", "tool_calls": []}},
-        {
-            "message": {
-                "content": "",
-                "tool_calls": [{
-                    "function": {
-                        "name": "resource_publish",
-                        "arguments": {
-                            "project_path": "report.pdf",
-                            "download_name": "report.pdf",
-                        },
-                    },
-                }],
-            },
-        },
-        {"message": {"content": "Файл доступен по кнопке скачивания.", "tool_calls": []}},
-    ])
-    prompts: list[list[dict[str, object]]] = []
-
-    def fake_chat(**kwargs):
-        prompts.append(list(kwargs["messages"]))
-        return next(responses)
-
-    def fake_publish(_project_root, **_kwargs):
-        return _publication_fixture(tmp_path, "report.pdf")
-
-    with patch(
-        "app.application.code_agent.tools._dispatch.tool_resource_publish",
-        side_effect=fake_publish,
-    ):
-        events = list(stream_code_agent(
-            user_message="Создай PDF и дай файл для скачивания",
-            project_root=tmp_path,
-            run_id="download-delivery-router",
-            chat_fn=fake_chat,
-            auto_remember=False,
-            permission_mode="bypass",
-        ))
-
-    assert len(prompts) == 4
-    assert "internal delivery correction" in runtime_text(prompts[2])
-    published = next(
-        event for event in events
-        if event.get("type") == "tool_call" and event.get("tool") == "resource_publish"
-    )
-    assert published["download_url"] == "/api/skills/download/report.pdf"
-    done = next(event for event in events if event.get("type") == "done")
-    assert done["answer_status"] == "complete"
-
-
 def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) -> None:
     responses = iter([
         {
@@ -628,7 +570,6 @@ def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) ->
     assert "Публикация для скачивания не подтверждена" in final["text"]
     assert "missing.pdf" in final["text"]
     assert "Остальная работа сохранена" in final["text"]
-    assert not final["task_outcome"]["decision"]  # No prior declaration/keyword gate.
     assert done["answer_status"] == "degraded"
 
 

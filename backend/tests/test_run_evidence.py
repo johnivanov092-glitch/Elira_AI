@@ -38,54 +38,6 @@ def _verification(target: Path, status: str = "passed") -> dict:
     }
 
 
-def test_crm_verification_is_bound_to_latest_project_epoch(tmp_path: Path) -> None:
-    evidence = RunEvidence()
-    target = tmp_path / "result.csv"
-    target.write_bytes(b"expected\n")
-
-    _record(
-        evidence,
-        "write_file",
-        args={"path": "src/App.tsx"},
-        output={"ok": True, "touched_path": "src/App.tsx"},
-        state_changed=True,
-    )
-    assert evidence.project_epoch == 1
-    assert evidence.has_mutations
-    assert not evidence.has_current_verification
-
-    _record(
-        evidence,
-        "runtime_control",
-        args={"operation": "result_verify"},
-        output={"ok": True, "verification": _verification(target)},
-        text="exit=0",
-    )
-    assert evidence.has_current_verification
-    assert evidence.has_current_passing_verification
-
-    _record(
-        evidence,
-        "edit_file",
-        args={"path": "src/App.tsx"},
-        output={"ok": True, "touched_path": "src/App.tsx"},
-        state_changed=True,
-    )
-    assert evidence.project_epoch == 2
-    assert not evidence.has_current_verification
-    assert not evidence.has_current_passing_verification
-
-    _record(
-        evidence,
-        "runtime_control",
-        args={"operation": "result_verify"},
-        output={"ok": False, "verification": _verification(target, "failed")},
-        text="exit=1",
-    )
-    assert evidence.has_current_verification
-    assert not evidence.has_current_passing_verification
-
-
 def test_non_verifier_shell_command_does_not_create_verification_receipt() -> None:
     evidence = RunEvidence()
     _record(
@@ -114,31 +66,6 @@ def test_process_success_is_not_semantic_verification(tool: str, args: dict) -> 
     assert not evidence.has_current_verification
 
 
-@pytest.mark.parametrize("status", ["failed", "unverified"])
-def test_later_check_revokes_prior_pass_even_at_same_epoch(tmp_path: Path, status: str) -> None:
-    target = tmp_path / "output.csv"
-    target.write_bytes(b"a,b\n")
-    evidence = RunEvidence()
-    _record(evidence, "runtime_control", args={"operation": "result_verify"},
-            output={"ok": True, "result": {"verification": _verification(target)}})
-    assert evidence.has_current_passing_verification
-    _record(evidence, "runtime_control", args={"operation": "result_verify"}, status="error",
-            output={"ok": False, "result": {"verification": _verification(target, status)}})
-    assert not evidence.has_current_passing_verification
-    assert evidence.receipts_of_kind(EvidenceKind.VERIFICATION)[-1].status == status
-
-
-def test_check_receipt_cannot_survive_out_of_band_target_edit(tmp_path: Path) -> None:
-    target = tmp_path / "output.csv"
-    target.write_bytes(b"a,b\n")
-    evidence = RunEvidence()
-    _record(evidence, "runtime_control", args={"operation": "result_verify"},
-            output={"ok": True, "verification": _verification(target)})
-    assert evidence.has_current_passing_verification
-    target.write_bytes(b"incorrect\n")
-    assert not evidence.has_current_passing_verification
-
-
 def test_typed_browser_verdict_survives_and_failed_verdict_revokes_it() -> None:
     evidence = RunEvidence()
     _record(evidence, "browser", args={"url": "http://localhost:8080"},
@@ -148,33 +75,6 @@ def test_typed_browser_verdict_survives_and_failed_verdict_revokes_it() -> None:
             output={"ok": False, "verifier": True, "evidence": "Interaction did not complete"})
     assert evidence.has_current_verification
     assert not evidence.has_current_passing_verification
-
-
-def test_result_completion_requires_all_exact_current_targets(tmp_path: Path) -> None:
-    first, second = tmp_path / "normalized.csv", tmp_path / "summary.csv"
-    first.write_bytes(b"a,b\n")
-    second.write_bytes(b"b,a\n")
-    evidence = RunEvidence()
-    _record(evidence, "runtime_control", args={"operation": "result_verify"},
-            output={"ok": True, "result": {"verification": _verification(first)}})
-    _record(evidence, "path_exists", args={"path": str(second)},
-            output={"ok": True, "verifier": True})
-    assert evidence.has_passing_result_verification([str(first)])
-    assert not evidence.has_passing_result_verification([str(first), str(second)])
-    assert not evidence.has_passing_result_verification([])
-    assert not evidence.has_passing_result_verification([first.name])
-    _record(evidence, "runtime_control", args={"operation": "result_verify"},
-            output={"ok": True, "result": {"verification": _verification(second)}})
-    assert evidence.has_passing_result_verification([str(first), str(second)])
-    # Normalization is lexical, and doesn't allow a similarly named target.
-    alias = str(tmp_path / "nested" / ".." / first.name)
-    assert evidence.has_passing_result_verification([alias, str(second)])
-    _record(evidence, "runtime_control", args={"operation": "result_verify"}, status="error",
-            output={"ok": False, "result": {"verification": _verification(first, "unverified")}})
-    assert not evidence.has_passing_result_verification([str(first), str(second)])
-    assert evidence.has_passing_result_verification([str(second)])
-    second.write_bytes(b"new content\n")
-    assert not evidence.has_passing_result_verification([str(second)])
 
 
 @pytest.mark.parametrize("patch", [{"checks": []}, {"targets": []}, {"kind": "process_exit"},

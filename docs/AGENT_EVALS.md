@@ -249,11 +249,9 @@ Reports are written to `.agent/evals/memory/<suite-id>/report.md` and
 
 ## Autonomous development and recovery
 
-- `backend/tests/smokes/autonomy_mcp.py`: real MCP creation, adaptation after an
-  API change and reuse in a new task.
 - `backend/tests/smokes/autonomy_ui.py`: isolated UI/backend release acceptance.
-- `backend/tests/smokes/skill_advisor_eval.py` and `skill_advisor_warmup.py`:
-  diagnostic data and comparisons for optional skill recommendations.
+- The MCP creation and skill-advisor harnesses were removed with the skill
+  publish pipeline (2026-10-07): skills are now a plain folder, `data/skills`.
 
 These are opt-in harnesses, not evidence that all scenarios passed. Current
 results, failed attempts, developer interventions and pending checks are in

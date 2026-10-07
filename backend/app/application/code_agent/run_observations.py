@@ -25,9 +25,6 @@ def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
         return criteria.record(tool_name=name, args=args, ok=tool_ok,
                                evidence=str(tool_meta.get("evidence") or ""),
                                meta=tool_meta, auto=auto)
-    if name == "runtime_control" and args.get("operation") == "result_verify":
-        return criteria.record(tool_name=name, args=args, ok=tool_ok,
-                               evidence=text_result, meta=tool_meta, auto=auto)
     if name == "run_bash":
         return criteria.record(tool_name=name, args=args, ok=tool_ok,
                                evidence=text_result, meta=tool_meta, auto=auto)
@@ -64,13 +61,6 @@ class RunObservations:
         self.mutated_files = list(durable_state.get("mutated_files") or [])
         self.verifications = list(durable_state.get("verifications") or [])
         self.failed_attempts = list(durable_state.get("failed_attempts") or [])
-        for verification in self.outcome.current_verifications(self.code_input_epoch):
-            self.evidence.record_tool_result(
-                tool_name="runtime_control", arguments={"operation": "result_verify"},
-                execution_status="ok", output={"ok": verification.get("status") == "passed",
-                    "operation": "result_verify", "result": {"verification": verification}},
-                text_result="", state_changed=False,
-            )
         project_epoch = int(durable_state.get("project_epoch") or 0)
         criteria_epoch = int(durable_state.get("criteria_epoch") or 0)
         if resume and criteria_epoch == project_epoch:
@@ -98,17 +88,6 @@ class RunObservations:
         # Even prose outside a recognised criteria section changes the inputs.
         self.outcome.apply_user_clarification(text)
         self.verifications.clear()
-
-    def capture_verification(self, name: str, args: dict) -> dict | None:
-        return (self.outcome.verification_context(self.code_input_epoch)
-                if name == "runtime_control" and args.get("operation") == "result_verify" else None)
-
-    def bind_verification(self, output: dict, before: dict | None) -> dict:
-        if output.get("operation") == "task_decide":
-            output = self.outcome.bind_decision(output)
-        if before is None:
-            return output
-        return self.outcome.bind_verification(output, before, self.code_input_epoch)
 
     def before_dispatch(self, name: str, args: dict, *, root: Path, model_turn: int | None = None) -> dict | None:
         self.project_root = root.resolve()
@@ -154,16 +133,10 @@ class RunObservations:
                 self.mutated_files.append(mutated)
         if verification:
             self.verifications.append(verification)
-        executed_result_check = (
-            name == "runtime_control" and args.get("operation") == "result_verify"
-            and status in {"error", "cancelled"}
-            and isinstance(output.get("result"), dict)
-            and isinstance(output["result"].get("verification"), dict)
-        )
         executed_ssh_check = (
             status == "error" and executed_ssh_verification(name, args, output) is not None
         )
-        if status == "ok" or executed_result_check or executed_ssh_check:
+        if status == "ok" or executed_ssh_check:
             metadata = ({**output, "_runtime_read_root": str(self.project_root)}
                         if name == "read_file" and self.project_root is not None else output)
             _record_criterion_verdict(self.criteria, name, args, metadata, text, ok)

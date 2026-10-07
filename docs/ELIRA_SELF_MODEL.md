@@ -34,9 +34,9 @@
 - `context_profile`: requested/server/effective window, reserved output/system, safety margin
 - `established_facts` + `recent_tool_outputs` — передаются между ходами
 - `RunEvidence` — run-local ledger; мутация продвигает project epoch
-- `TaskOutcome` — model-owned `task_decide`, привязанные к текущей версии
-  `result_verify`, публикации с target/store hashes; снимки переживают Resume,
-  но не превращают устаревший результат в текущий pass.
+- `TaskOutcome` — контракт пользователя (TaskSpec), публикации файлов с target/store
+  hashes и проверка прямых условий пользователя; модель ничего не объявляет.
+  Снимки переживают Resume, но не превращают устаревшую публикацию в текущую.
 
 ## Файлы (`_files.py`)
 
@@ -120,13 +120,11 @@ Thread-local: `run_id`, `execution_channel`, `permission_mode`
 
 ## Навыки и доставка
 
-- `skill_create/check/publish/load` — проверенный локальный Git-пакет;
-  инструкции закреплены на run, явный load обновляет версию.
-- CPU `skill_advisor` учится только по подходящим проверенным исходам и даёт
-  рекомендации; отсутствие активной модели не блокирует полный каталог Qwen.
-- `task_decide.delivery`: `chat_download` с локальными targets или явное `none`.
-  Пропущенное поле при обновлении сохраняет контракт. Без декларации проверяются
-  реальные попытки публикации; исправленный контракт может заменить их список.
+- Навыки — папки `data/skills/<имя>/` (SKILL.md, скрипты, своя .venv); модель
+  читает, пишет и запускает их обычными инструментами. Прочитанный SKILL.md
+  закрепляется на run; история папки — её git.
+- Выдача файла: проверяются реальные попытки `resource_publish` и ссылки на
+  скачивание в ответе; объявлений нет.
 - Receipt связывает target и канонический download store с SHA-256; произвольный
   artifact не закрывает цель. Неподтверждённые ссылки исправляются или становятся
   некликабельными в degraded-ответе. См. `ANSWER_CONTRACT.md` и `TASK_SKILLS.md`.

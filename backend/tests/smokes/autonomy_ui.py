@@ -606,17 +606,16 @@ def acceptance_snapshot(root: Path) -> dict:
                 "receipt": read_json(manager.record(candidate.name)) if manager.record(candidate.name).exists() else None,
             }
     cfg = config(root)
-    skill_root = Path(cfg["data"]) / "skill_development"
-    active = skill_root / "active.json"
-    packages = {}
-    for folder, directories, names in os.walk(skill_root / "packages"):
+    skill_root = Path(cfg["data"]) / "skills"  # one plain skills folder (2026-10-07)
+    files = {}
+    for folder, directories, names in os.walk(skill_root):
         directories[:] = [name for name in directories if name not in {".venv", ".git", "__pycache__", "node_modules"}]
         for name in names:
             path = Path(folder) / name
-            packages[str(path.relative_to(skill_root))] = digest(path)
+            files[str(path.relative_to(skill_root))] = digest(path)
     return {"at": stamp(), "state": manager.state(), "releases": releases,
             "platform_core": digest(Path(cfg["platform"]) / "scripts/elira_release.py"),
-            "active_skills": read_json(active) if active.exists() else {}, "skill_files": packages}
+            "skill_files": files}
 
 
 def task_prompt(root: Path, phase: str, batch: int, *, attempt: str = "") -> str:

@@ -548,33 +548,11 @@ def tool_runtime_control(
     """Manage hidden integration runtimes through one Workflow-facing tool."""
     op = str(operation or "").strip().lower()
     try:
-        # Some compatible models encode this nested object twice. task_decide
-        # is a declaration only; never apply post-policy coercion to operations
-        # that execute commands or mutate external state.
-        if op == "task_decide" and isinstance(config, str):
-            config = json.loads(config)
         if config is not None and not isinstance(config, dict):
             raise ValueError("config must be an object")
         settings = config or {}
         if op == "status":
             result = _runtime_status()
-        elif op in {"task_decide", "result_verify"}:
-            from app.application.code_agent.task_outcomes import result_verify, task_decide
-
-            result = (task_decide if op == "task_decide" else result_verify)(project_root, settings)
-        elif op in {"skill_advisor_status", "skill_advisor_rollback"}:
-            from app.application.code_agent import skill_advisor
-
-            result = (skill_advisor.status() if op == "skill_advisor_status"
-                      else skill_advisor.rollback(str(settings.get("version") or "")))
-        elif op in {"skill_list", "skill_load"}:
-            from app.application.code_agent.task_skills import skill_control
-
-            result = skill_control(op, name, query)
-        elif op in {"skill_create", "skill_check", "skill_publish", "skill_rollback", "skill_status", "skill_discard"}:
-            from app.application.code_agent.skill_development import develop
-
-            result = develop(op, name, settings)
         elif op.startswith("mcp_"):
             result = _mcp_control(op, server_id, settings)
         elif op.startswith("lsp_"):
@@ -686,10 +664,6 @@ def tool_runtime_control(
                 retryable = False
                 code = "runtime_operation_failed"
             failure = _failed(op, message, code=code, retryable=retryable)
-            if op in {"result_verify", "skill_check"}:
-                # Check failures must retain their concrete diagnostics so the
-                # agent can repair the result or package before trying again.
-                return _text({**failure, "result": result})
             return failure
         return _completed(op, result)
     except _RuntimeRequest as exc:

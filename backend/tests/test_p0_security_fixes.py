@@ -25,7 +25,8 @@ class AgentChildEnvTest(unittest.TestCase):
         }
         with patch.dict(os.environ, fake, clear=True):
             env = _agent_child_env()
-        self.assertEqual(env, fake)
+        # Nothing is stripped; only UTF-8 output defaults for Python children are added.
+        self.assertEqual(env, {**fake, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
         self.assertEqual(env.get("PATH"), "/usr/bin")   # toolchain preserved
         self.assertEqual(env.get("NORMAL_VAR"), "1")
 

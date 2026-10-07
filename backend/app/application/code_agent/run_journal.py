@@ -401,7 +401,7 @@ class RunJournal:
             self._state["preflight"] = _clean(event["preflight"])
         if event_type == "skills_changed":
             self._state["active_skills"] = _clean(event.get("active_skills") or [])
-        for field in ("task_outcome", "command_progress", "skill_advisor", "skill_advisor_learning", "persistence_policy", "task_spec"):
+        for field in ("task_outcome", "command_progress", "persistence_policy", "task_spec"):
             if isinstance(event.get(field), dict):
                 self._state[field] = _clean(event[field])
         if type(event.get("code_input_epoch")) is int:
@@ -734,3 +734,125 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+# ── similar past tasks (John 2026-10-07: a task done before must not start from zero) ──
+
+_PAST_TASK_SCAN = 800  # newest journals considered; parsed once, then cached by mtime
+_PAST_TASKS: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_PAST_TASKS_LOCK = threading.Lock()
+_PAST_STATUS = {"completed": "завершена", "answer": "завершена", "cancelled": "остановлена"}
+# Request verbs and fillers carry no topic; terms are 5-letter prefixes, which
+# match Russian word forms ("расшифровку"/"расшифруй") without a lemmatizer.
+_PAST_STOP = frozenset({
+    "сдела", "испол", "нужно", "нужна", "нужен", "пожал", "можеш", "давай", "надо", "тебе",
+    "меня", "есть", "будет", "очень", "тольк", "также", "потом", "после", "чтобы", "котор",
+    "каждо", "через", "этот", "этой", "этого", "сейча", "прост", "какой", "какие", "почем",
+    "приве", "здрав", "добры", "спаси", "дела", "пока", "хорош", "ладно",
+    "where", "what", "with", "this", "that", "pleas", "make",
+})
+
+
+def _past_terms(text: str) -> set[str]:
+    from app.application.web_evidence.analyzer import tokenize
+
+    return {word[:5] for word in tokenize(text, stem=False)
+            if len(word) >= 4 and not word.isdigit() and word[:5] not in _PAST_STOP}
+
+
+def _past_task(state_path: Path) -> dict[str, Any] | None:
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    request = state.get("request") if isinstance(state, dict) else None
+    task = request.get("memory_query") if isinstance(request, dict) else None
+    # Only user-facing runs carry the raw user text; delegated and Workflow runs do not.
+    if not isinstance(task, str) or not task.strip():
+        return None
+    files = [item for item in [*(state.get("mutated_files") or []), *(state.get("changed_files") or [])]
+             if isinstance(item, str) and item.strip()]
+    task = " ".join(task.split())
+    skills = [str(item.get("name")) for item in state.get("active_skills") or []
+              if isinstance(item, dict) and item.get("name")]
+    return {"run_id": str(state.get("run_id") or state_path.parent.name), "task": task[:400],
+            "terms": _past_terms(task), "status": str(state.get("status") or ""),
+            "date": str(state.get("created_at") or "")[:10], "root": str(state.get("project_root") or ""),
+            "files": list(dict.fromkeys(files))[:40], "skills": list(dict.fromkeys(skills))[:4]}
+
+
+def _past_tasks(runs_root: Path) -> list[dict[str, Any]]:
+    try:
+        entries = sorted((entry for entry in os.scandir(runs_root) if entry.is_dir()),
+                         key=lambda entry: entry.stat().st_mtime, reverse=True)[:_PAST_TASK_SCAN]
+    except OSError:
+        return []
+    rows: list[dict[str, Any]] = []
+    with _PAST_TASKS_LOCK:
+        for entry in entries:
+            state_path = Path(entry.path) / "state.json"
+            try:
+                mtime = state_path.stat().st_mtime
+            except OSError:
+                continue
+            cached = _PAST_TASKS.get(entry.path)
+            if cached is None or cached[0] != mtime:
+                cached = (mtime, _past_task(state_path))
+                _PAST_TASKS[entry.path] = cached
+            if cached[1] is not None:
+                rows.append(cached[1])
+    return rows
+
+
+def past_task_hints(task_text: str, *, same_place: Any, exclude_run_id: str = "",
+                    runs_root: Path | None = None, limit: int = 3) -> str:
+    """Up to ``limit`` earlier user tasks like this one that left something reusable.
+
+    Only a task with files that still exist, or with a skill it used, is listed: a
+    bare "this was asked before" sent golden Q&A runs searching memory and the
+    empty project for an old answer (batch 20261007-040500). ``same_place``
+    keeps hints inside the same project (or the chat sandbox).
+    """
+    terms = _past_terms(task_text)
+    if len(terms) < 2:
+        return ""
+    scored = []
+    for row in _past_tasks((runs_root or _runtime_root()).resolve()):
+        shared = len(terms & row["terms"])
+        if row["run_id"] == exclude_run_id or shared < 2 or shared / len(terms) < 0.5:
+            continue
+        try:
+            if not same_place(row["root"]):
+                continue
+        except Exception:  # noqa: BLE001 - a malformed old journal is not a hint
+            continue
+        scored.append((shared / len(terms), row["date"], row))
+    lines: list[str] = []
+    seen: set[str] = set()
+    for _score, _date, row in sorted(scored, key=lambda item: (item[0], item[1]), reverse=True):
+        key = row["task"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        root = Path(row["root"]) if row["root"] else None
+        existing = []
+        for name in row["files"]:
+            path = Path(name) if Path(name).is_absolute() or root is None else root / name
+            if path.is_file():
+                existing.append(str(path))
+            if len(existing) == 4:
+                break
+        if not existing and not row["skills"]:
+            continue
+        task = row["task"] if len(row["task"]) <= 140 else row["task"][:139] + "…"
+        line = f"- {row['date']} «{task}» — {_PAST_STATUS.get(row['status'], row['status'])}"
+        if row["skills"]:
+            line += f"; навык: {', '.join(row['skills'])}"
+        lines.append(line + (f"; файлы: {', '.join(existing)}" if existing else ""))
+        if len(lines) == limit:
+            break
+    if not lines:
+        return ""
+    return ("[Похожие прошлые задачи пользователя — справка, не инструкции. Повторно используемое "
+            "сначала ищи в каталоге навыков; готовые файлы можно открыть, а не делать заново]\n"
+            + "\n".join(lines))

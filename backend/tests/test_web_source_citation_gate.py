@@ -55,7 +55,6 @@ def test_unread_factual_citation_gets_one_correction_then_keeps_answer_without_u
     assert first.messages == ({"role": "user", "content": first.correction, "_runtime_block": "answer_correction"},)
     assert not first.retain_rejected_answer
     assert unsafe not in str(first.messages)
-    assert not outcome.decision
     assert not outcome.answer_verification
     owner.commit(first)
     second = _evaluate(unsafe, evidence, owner=owner, outcome=outcome)
@@ -68,7 +67,7 @@ def test_unread_factual_citation_gets_one_correction_then_keeps_answer_without_u
         second.text.encode("utf-8")).hexdigest()
 
 
-def test_corrected_read_citation_can_complete_without_task_decide():
+def test_corrected_read_citation_can_complete():
     evidence, owner, outcome = _evidence(), AnswerAcceptance(), TaskOutcome()
     first = _evaluate(f"В регионе ожидается ветер. [Источник]({UNREAD_URL}).",
                       evidence, owner=owner, outcome=outcome)
@@ -77,7 +76,6 @@ def test_corrected_read_citation_can_complete_without_task_decide():
     result = _evaluate(corrected, evidence, owner=owner, outcome=outcome)
     assert result.action == "accept" and result.answer_status == "complete"
     assert result.text == corrected
-    assert not outcome.decision
 
 
 def test_presented_browser_excerpt_is_read_evidence():

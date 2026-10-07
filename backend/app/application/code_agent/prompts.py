@@ -36,7 +36,7 @@ _PROJECT_CONNECTED_BLOCK = """\
 _NO_PROJECT_BLOCK = """\
 
 ## Проект не подключён
-Сейчас проект НЕ подключён. Временная рабочая директория (scratch) — только начальная директория для относительных путей, а не граница доступа.
+Сейчас проект НЕ подключён. Рабочая папка — своя папка этого чата в общей песочнице чатов (data/agent_workspace/chats); это только начальная директория для относительных путей, а не граница доступа. Повторно используемое сохраняй навыком в папке навыков, а не в папке чата.
 
 - Если пользователь дал абсолютный путь к файлу или папке, сразу работай с ним через `project_map(path=...)`, `glob`, `read_file`, `write_file`, `edit_file` или shell. Не утверждай, что путь недоступен только потому, что проект не подключён.
 - Если указан существующий путь в тексте задачи, подключать папку через UI не требуется.
@@ -58,12 +58,13 @@ def _scratch_workspace_root() -> Path | None:
 
 
 def _is_scratch_workspace(project_root: Path) -> bool:
-    """True when project_root IS the scratch workspace (i.e. no real project)."""
+    """True when project_root is the scratch workspace or one chat's folder in it."""
     scratch = _scratch_workspace_root()
     if scratch is None:
         return False
     try:
-        return project_root.resolve() == scratch
+        resolved = project_root.resolve()
+        return resolved == scratch or resolved.parent == scratch / "chats"
     except Exception:
         return False
 

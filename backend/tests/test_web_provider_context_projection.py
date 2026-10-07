@@ -140,7 +140,7 @@ def test_projection_disabled_by_caller_preserves_work_context(tmp_path):
     assert context.provider_messages(read_source_handles=evidence.read_source_handles) is context.messages
 
 
-@pytest.mark.parametrize("work", [None, "mutation", "artifact"])
+@pytest.mark.parametrize("work", [None, "mutation"])
 def test_coordinator_projects_only_readonly_web_and_keeps_raw_results_and_tools(tmp_path, monkeypatch, work):
     discovery = [{"title": "Primary report", "url": URL, "content": SNIPPET + "\nSecond snippet line."}]
     monkeypatch.setattr("app.infrastructure.search.web_search.search_web",
@@ -152,10 +152,6 @@ def test_coordinator_projects_only_readonly_web_and_keeps_raw_results_and_tools(
     steps = []
     if work == "mutation":
         steps.append(("write_file", {"path": "note.txt", "content": "Requested work started."}))
-    elif work == "artifact":
-        steps.append(("runtime_control", {"operation": "task_decide", "config": {
-            "disposition": "one_off", "reason": "Produce the requested report.",
-            "targets": [str(tmp_path / "report.txt")]}}))
     steps.extend([("web_search", {"query": "primary report"}), ("web_fetch", {"url": URL})])
 
     def chat(**kwargs):

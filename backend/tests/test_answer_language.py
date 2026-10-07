@@ -7,7 +7,7 @@ import pytest
 
 from app.application.code_agent.answer_language import answer_language_matches
 from app.application.code_agent.run_evidence import RunEvidence
-from app.application.code_agent.task_outcomes import TaskOutcome, task_decide
+from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.web_evidence.receipts import format_source, make_source
 
 
@@ -54,32 +54,6 @@ def _presented_evidence(text: str) -> RunEvidence:
     )
     evidence.mark_sources_presented([{"role": "tool", "content": packet}])
     return evidence
-
-
-def test_compact_games_answer_passes_actual_answer_format_verifier(tmp_path):
-    # Name lines are a reduced snapshot of the actual displayed Box table.
-    evidence = _presented_evidence("\n".join(GAME_NAMES))
-    outcome = TaskOutcome()
-    outcome.set_contract("Ответь по-русски о ближайших играх на ПК и PS5.", [])
-    result = task_decide(tmp_path, {
-        "disposition": "one_off", "reason": "Ответ прямо в чате, без файлов.",
-        "inputs": [], "targets": [], "delivery": {"mode": "none", "targets": []},
-        "requirements": [{
-            "id": "list", "text": "Русский список с названиями игр и ссылкой.",
-            "mandatory": True, "verification": {"checks": [{
-                "kind": "answer_format", "contains": [
-                    "GTA 6", "Modern Warfare 4", "Phantom Blade Zero", "Final Fantasy Resonance",
-                ], "max_chars": 3000, "language": "ru", "markdown_url": URL,
-            }]},
-        }],
-    })
-    outcome.observe("runtime_control", {"operation": "task_decide"},
-                    {"ok": True, "result": result}, project_root=tmp_path,
-                    input_epoch=0, execution_status="ok")
-    receipt = outcome.verify_answer(COMPACT_GAMES_ANSWER, evidence, 0)
-    assert receipt["checks"][0]["passed"] is True, receipt
-    assert receipt["answer_sha256"] == "ad27870b94edb937b8e65d6aca44839318f78359b3357158c00cfa018a4084d8"
-    assert sha256(COMPACT_GAMES_ANSWER.encode()).hexdigest() == receipt["answer_sha256"]
 
 
 def test_source_bound_names_do_not_determine_games_list_language():

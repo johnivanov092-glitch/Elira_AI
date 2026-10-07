@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.application.code_agent import agent_loop, loop_helpers, task_skills, skill_advisor
+from app.application.code_agent import agent_loop, loop_helpers
 from app.application.code_agent.delivery_session import build_continuation_kwargs
 from app.application.code_agent.run_journal import RunJournal
 
@@ -31,21 +31,13 @@ def test_training_only_opt_out_and_explicit_later_permission():
     assert loop_helpers.task_persistence_policy(saved={"rag": True})["learning"] is False
 
 
-def test_rag_and_training_skip_before_any_write(tmp_path, monkeypatch):
+def test_rag_skips_before_any_write(tmp_path, monkeypatch):
     writes = []
     monkeypatch.setattr(loop_helpers, "_is_throwaway_project", lambda root: False)
     monkeypatch.setattr("app.application.rag_memory.service.add_to_rag", lambda **kw: writes.append(kw))
-    monkeypatch.setattr(skill_advisor, "ROOT", tmp_path / "advisor")
     loop_helpers._try_remember_turn(user_message="Не запоминай это.", response_text="Готово",
                                    project_root=tmp_path, verified=True, mutation_targets=["result.csv"])
     assert writes == []
-    state = {"request": {"user_message": "Не запоминай это.", "auto_remember": True},
-             "status": "completed", "answer_status": "complete", "stop_reason": "answer"}
-    assert task_skills.learn_from_run("forbidden", state) == {
-        "status": "ineligible", "reason": "task_persistence_denied"}
-    state["request"] = {"user_message": "Проверь таблицу.", "auto_remember": False}
-    assert task_skills.learn_from_run("flag", state)["reason"] == "task_persistence_denied"
-    assert not skill_advisor.ROOT.exists()
 
 
 def test_explicit_command_allows_direct_memory_only_with_auto_flag_off(tmp_path, monkeypatch):
@@ -63,8 +55,6 @@ def test_explicit_command_allows_direct_memory_only_with_auto_flag_off(tmp_path,
     loop_helpers._try_remember_turn(user_message="Запомни: Atlas — проект пользователя.", response_text="Сохранено",
         project_root=tmp_path, verified=True, mutation_targets=["result.csv"], persistence_policy=policy)
     assert writes == []
-    assert task_skills.learn_from_run("direct-consent", {"request": {"auto_remember": False},
-        "persistence_policy": policy})["reason"] == "task_persistence_denied"
 
 
 def test_specific_memory_consent_bounds_multiline_facts_and_general_permission():
@@ -130,7 +120,6 @@ def test_clarification_policy_survives_resume_and_technical_journal(tmp_path, mo
     list(agent_loop.stream_code_agent(**kwargs))
     resumed = RunJournal.load("policy")
     assert resumed.state["persistence_policy"] == state["persistence_policy"]
-    assert resumed.state["skill_advisor_learning"]["reason"] == "task_persistence_denied"
     events = [json.loads(line) for line in resumed.events_path.read_text(encoding="utf-8").splitlines()]
     assert any(row["type"] == "run_resumed" for row in events)
     assert any(row["type"] == "final_response" for row in events)

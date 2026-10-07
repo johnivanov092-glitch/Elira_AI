@@ -36,7 +36,6 @@ RUNTIME_WORKFLOW_STATUSES = frozenset({
 @dataclass(frozen=True)
 class ExecutionOutcome:
     result: ToolExecutionResult | None
-    verification_binding: dict[str, Any] | None
     terminal: dict[str, Any] | None = None
 
 
@@ -120,7 +119,6 @@ def run_tool(
     step: int,
     cancel_event: threading.Event,
     pause_for_workflow_request: bool,
-    capture_verification: Callable[[], dict[str, Any]] | None = None,
 ) -> Generator[dict[str, Any], None, ExecutionOutcome]:
     """Execute one prepared request; approved arguments remain unchanged."""
     name = request.tool_name
@@ -134,7 +132,6 @@ def run_tool(
             "arguments": redact_secrets(parsed_args),
         }
     result = None
-    binding = capture_verification() if capture_verification is not None else None
     for heartbeat in _exec_with_heartbeat(
         lambda: executor(request, dispatch_fn=dispatch_fn), step, cancel_event,
     ):
@@ -167,7 +164,7 @@ def run_tool(
                 "request": workflow_request,
             }
             return ExecutionOutcome(
-                result, binding,
+                result,
                 _paused_event(step, "waiting_approval", workflow_request, response_id),
             )
         begin_workflow_response(response_id)
@@ -180,7 +177,7 @@ def run_tool(
             response_id=response_id, cancel_event=cancel_event, step=step,
         )
         if waited.cancelled:
-            return ExecutionOutcome(result, binding, _cancelled_event(step))
+            return ExecutionOutcome(result, _cancelled_event(step))
         if str((waited.response or {}).get("action") or "") == "accept":
             request.workflow_approved = True
             if delay_tool_started:
@@ -188,8 +185,6 @@ def run_tool(
                     "type": "tool_started", "step": step, "tool": name,
                     "arguments": redact_secrets(parsed_args),
                 }
-            if binding is not None:
-                binding = capture_verification()
             for heartbeat in _exec_with_heartbeat(
                 lambda: executor(request, dispatch_fn=dispatch_fn), step, cancel_event,
             ):
@@ -210,7 +205,7 @@ def run_tool(
                 },
                 error="workflow_request_declined",
             )
-    return ExecutionOutcome(result, binding)
+    return ExecutionOutcome(result)
 
 
 def run_ask_user(

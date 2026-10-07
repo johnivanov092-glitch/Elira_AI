@@ -108,25 +108,3 @@ def test_real_mutation_gets_work_guidance_on_next_turn_without_hiding_tools(tmp_
     assert next(event for event in events if event["type"] == "tool_call")["state_changed"]
 
 
-def test_declared_artifact_starts_work_before_mutation(tmp_path, monkeypatch):
-    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
-    calls = []
-    run_id = "artifact-work-phase"
-
-    def chat(**kwargs):
-        calls.append(deepcopy(kwargs["messages"]))
-        if len(calls) == 1:
-            assert WORK not in str(kwargs["messages"])
-            return _reply("runtime_control", {"operation": "task_decide", "config": {
-                "disposition": "one_off", "reason": "Requested local artifact.",
-                "targets": [str(tmp_path / "note.txt")]}})
-        assert sum(WORK in message.get("content", "") for message in calls[-1]) == 1
-        assert agent_loop.request_cancel(run_id)
-        return _reply(text="")
-
-    events = list(agent_loop.stream_code_agent(user_message="Создай note.txt.", run_id=run_id,
-        project_root=tmp_path, chat_fn=chat, auto_remember=False,
-        permission_mode="bypass", num_ctx=65536))
-    assert len(calls) == 2 and events[-1]["stop_reason"] == "cancelled"
-    assert next(event for event in events if event["type"] == "tool_call")["ok"]
-    assert not (tmp_path / "note.txt").exists()

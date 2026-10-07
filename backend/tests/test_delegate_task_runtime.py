@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.application.code_agent import agent_loop, run_control, skill_development, task_skills
+from app.application.code_agent import agent_loop, run_control, task_skills
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.tools import _meta, _shell
 from app.application.event_bus import runtime as event_bus
@@ -36,7 +36,7 @@ def isolated_storage(tmp_path, monkeypatch):
     workflow_db_path.set_workflow_db_path(tmp_path / "workflow.db")
     store.init_db(db_path=workflow_db_path.get_workflow_db_path())
     monkeypatch.setattr(task_skills, "SKILLS_ROOT", tmp_path / "skills")
-    monkeypatch.setattr(skill_development, "ROOT", tmp_path / "developed-skills")
+    monkeypatch.setattr(task_skills, "LEGACY_DEVELOPMENT", tmp_path / "developed-skills")
     yield
     workflow_db_path.set_workflow_db_path(previous)
 
@@ -180,7 +180,7 @@ def test_actual_parent_delegate_reaches_canonical_child_and_preserves_project(tm
     assert not RunJournal.load(parent_id).agent_lock_path.exists()
 
 
-def test_read_only_child_can_load_skill_but_cannot_execute_mutations_or_activation(tmp_path, monkeypatch):
+def test_read_only_child_can_read_skill_but_cannot_execute_mutations_or_activation(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
     source = project / "fixture.txt"
@@ -204,7 +204,7 @@ def test_read_only_child_can_load_skill_but_cannot_execute_mutations_or_activati
               call("runtime_control", operation="mcp_start", server_id="foreign"),
               call("capability_load", group="shell"), call("unknown__execute", command="write"),
               call("delegate_task", role="review", task="Spawn another reviewer")]
-    replies = iter([response(calls=[call("runtime_control", operation="skill_load", name="delegate-fixture")]),
+    replies = iter([response(calls=[call("read_file", path=str(skill / "SKILL.md"))]),
                     response(calls=unsafe), response(calls=[call("read_file", path="fixture.txt")]),
                     response("fixture.txt remains preserved; unsafe requested operations were refused.")])
     def run_child(**kwargs):
@@ -228,7 +228,7 @@ def test_read_only_child_can_load_skill_but_cannot_execute_mutations_or_activati
         assert parent.agent_lock_path.read_bytes() == owner
         assert captured[0]["permission_mode"] == "ask" and captured[0]["num_ctx"] == 16384
         assert "Inspect the report without changing the CSV." in captured[0]["task_instructions"]
-        assert "Return findings directly; no task_decide, report files, checker execution." in captured[0]["task_instructions"]
+        assert "Return findings directly; no report files or checker scripts." in captured[0]["task_instructions"]
         receipts = child_results[0]["tool_calls"]
         assert receipts[0]["ok"] is True and receipts[0]["skill"]["name"] == "delegate-fixture"
         assert all(row["ok"] is False for row in receipts[1:1 + len(unsafe)])
@@ -236,7 +236,7 @@ def test_read_only_child_can_load_skill_but_cannot_execute_mutations_or_activati
         assert child.state["request"]["read_only"] is True
         assert child.state["request"]["parent_run_id"] == parent.run_id
         assert child.state["active_skills"][0]["name"] == "delegate-fixture"
-        assert child.state["task_outcome"]["decision"] == {}
+        assert not child.state["task_outcome"]["delivery_attempts"]  # read-only child published nothing
     finally:
         parent.finish()
     replies = iter([response(calls=[call("write_file", path="fixture.txt", content="changed on Resume")]),

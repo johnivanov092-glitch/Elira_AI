@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import re
 import uuid
 from itertools import chain
 from typing import Any, Callable, Literal, Optional
@@ -219,16 +220,24 @@ def _inject_resource_context(
     return f"{message.strip()}\n\n{block}" if message.strip() else block
 
 
-def _resolve_project_root(raw: str | None) -> str:
-    """Default an empty/blank project_root to a writable scratch workspace.
+def _resolve_project_root(raw: str | None, session_id: object = None) -> str:
+    """Default an empty/blank project_root to this chat's scratch folder.
 
-    Lets chat work without first picking a folder, and avoids silently falling
-    back to the backend's own cwd (which would let the agent touch app files).
+    One root sandbox, data/agent_workspace, with a folder per chat (John
+    2026-10-07): a chat's files no longer pile up with every other chat's.
+    Reusable tools belong to the shared skills folder, not to a chat folder.
+    Never falls back to the backend's own cwd.
     """
     p = (raw or "").strip()
     if p:
         return p
-    return str(data_subdir("agent_workspace"))
+    root = data_subdir("agent_workspace")
+    chat = str(session_id or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", chat):
+        folder = root / "chats" / chat
+        folder.mkdir(parents=True, exist_ok=True)
+        return str(folder)
+    return str(root)
 
 
 def _favicon_url_for_source(raw_url: str) -> str:
@@ -685,7 +694,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
             events = stream_delivery_session(
                 user_message=user_message,
                 memory_query=payload.message,
-                project_root=_resolve_project_root(payload.project_root),
+                project_root=_resolve_project_root(payload.project_root, payload.session_id),
                 working_dir=payload.working_dir,
                 model=payload.model,
                 conversation_history=history,

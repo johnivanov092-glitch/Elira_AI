@@ -99,29 +99,6 @@ def test_code_goal_continues_to_real_file_action_after_web_read(tmp_path, monkey
     assert len(calls) == 3 and events[-1]["stop_reason"] == "answer"
 
 
-def test_declared_artifact_contract_run_gets_no_cue(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(_web, "_fetch_one", lambda url, limit: PageFetchResult(text=BODY, final_url=url))
-    def chat(**kwargs):
-        calls.append(kwargs["messages"])
-        _no_cue(kwargs["messages"])
-        if len(calls) == 1:
-            return {"message": {"tool_calls": [_call("runtime_control", {"operation": "task_decide",
-                "config": {"disposition": "one_off", "reason": "Write the requested local report.",
-                           "targets": [str(tmp_path / "report.txt")]}})]}}
-        if len(calls) == 2:
-            return {"message": {"tool_calls": [_call("web_fetch", {"url": URL})]}}
-        assert request_cancel("web-closing-artifact")
-        return {"message": {"content": ""}}
-    events = list(stream_code_agent(user_message="Find the observation date and produce report.txt.",
-        project_root=tmp_path, chat_fn=chat, run_id="web-closing-artifact",
-        base_tools=["runtime_control", "web_fetch"], auto_remember=False,
-        permission_mode="bypass", num_ctx=65536))
-    assert len(calls) == 3 and events[-1]["stop_reason"] == "cancelled"
-    assert not any(event["type"] == "final_response" for event in events)
-    assert RunJournal.load("web-closing-artifact").state["task_outcome"]["artifact_contract_seen"]
-
-
 def test_read_handles_require_actual_verified_text(tmp_path):
     source = excerpt_sources(run_id="closing", tool="web_fetch", url=URL, text=BODY, fetched_at=1.0)[0]
     evidence = RunEvidence(sources=[source])

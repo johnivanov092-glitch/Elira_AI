@@ -201,6 +201,8 @@ backend/.env.local
 /data/sandbox/
 /data/skill_development/
 /data/skill_advisor/
+/data/skills/
+/data/archive/
 /data/ssh_acl.json
 /data/*.db-shm
 /data/*.db-wal

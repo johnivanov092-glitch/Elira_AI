@@ -113,7 +113,7 @@ def test_http_evidence_reaches_next_turn_and_final_after_transient_failure(tmp_p
     assert any(s["quote"] == FACT and s["quote_verified"] for s in final["sources"])
 
 
-def test_search_mode_can_load_tools_create_verify_and_finish_artifact(tmp_path, monkeypatch):
+def test_search_mode_can_load_tools_create_check_and_finish_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     monkeypatch.setattr("requests.get", lambda url, **kwargs: SimpleNamespace(status_code=200, text=FACT,
         url=url, encoding="utf-8", headers={"Content-Type": "text/plain"}, close=lambda: None))
@@ -128,14 +128,11 @@ def test_search_mode_can_load_tools_create_verify_and_finish_artifact(tmp_path, 
     command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     stages = iter([
         [call("web_fetch", url=URL)],
-        [call("capability_load", group="project"), call("capability_load", group="runtime")],
-        [call("runtime_control", operation="task_decide", config={"disposition": "one_off",
-            "reason": "Create the requested report from the read source", "targets": ["selection.md"],
-            "requirements": [{"id": "report", "text": "Создай selection.md с выбранным вариантом, объёмом памяти и URL источника."}]})],
+        [call("capability_load", group="project"), call("capability_load", group="shell")],
         [call("write_file", path="selection.md", content="Alpha: 64 GB. Source: " + URL + "\n"),
          call("write_file", path="check.py", content=checker)],
-        [call("runtime_control", operation="result_verify", config={"command": command,
-            "targets": ["selection.md"], "report_path": "verification.json"})],
+        # Checked the way agents check: run the checker and read its result.
+        [call("run_bash", command=command)],
     ])
     seen = []
     def chat(**kwargs):
@@ -143,13 +140,13 @@ def test_search_mode_can_load_tools_create_verify_and_finish_artifact(tmp_path, 
         if len(seen) == 2:
             assert any(FACT in m.get("content", "") for m in kwargs["messages"] if m["role"] == "tool")
         batch = next(stages, None)
-        assert len(seen) <= 6, "Artifact work must finish after its independent verifier"
+        assert len(seen) <= 5, "Artifact work must finish right after its check"
         return {"message": {"tool_calls": batch}} if batch else {"message": {"content": "Создан selection.md; значение и ссылка проверены."}}
     events = list(stream_code_agent(user_message="Создай selection.md с выбранным вариантом, объёмом памяти и URL источника.",
         project_root=tmp_path, chat_fn=chat, permission_mode="bypass", auto_remember=False, num_ctx=65536,
         base_tools=["capability_load", "web_search", "web_fetch"]))
     assert seen[0] - {"ask_user", "workflow_request"} == {"capability_load", "web_search", "web_fetch"}
-    assert {"write_file", "runtime_control"} <= seen[2]
+    assert {"write_file", "run_bash"} <= seen[2]
     final = next(e for e in events if e["type"] == "final_response")
     assert final["answer_status"] == "complete", events
     assert json.loads((tmp_path / "verification.json").read_text(encoding="utf-8"))["checks"][0]["passed"]

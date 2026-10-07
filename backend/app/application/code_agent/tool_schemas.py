@@ -130,29 +130,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "runtime_control",
                 "description": (
-                    "Load task instructions with skill_load(name, query=reason); skill_list "
-                    "discovers all installed skills. Loading is read-only and does not grant "
-                    "tool permissions. Build reusable capabilities with skill_create(name); "
-                    "config.environment='python' creates an isolated durable .venv without downloading packages. "
-                    "Use returned environment.python_command/pip_command, never bare python/pip or the app venv. "
-                    "write SKILL.md/scripts in the returned directory, skill_check(name, "
-                    "config={candidate_id,command}), then skill_publish(name,config={candidate_id}). "
-                    "Publication records local Git history and atomically selects the checked package. "
-                    "skill_load uses it immediately; skill_status/skill_rollback inspect/revert versions. "
-                    "skill_advisor_status inspects the learned recommendation model; "
-                    "skill_advisor_rollback(config={version}) restores a saved model version. "
-                    "skill_discard(name,config={candidate_id}) removes a selected inactive candidate. "
-                    "For work that creates code, record task_decide(config={disposition:'one_off'|'reuse'|'develop', "
-                    "reason,skill_name,inputs:[paths],targets:[result paths],requirements:[{id,text,mandatory:true}]}). "
-                    "Keep the complete current task contract and stable requirement IDs. Qwen chooses whether "
-                    "a useful recurring capability should be saved; this decision is not a permission. "
-                    "Verify actual files with result_verify(config={command,targets:[paths],report_path}). "
-                    "Targets must already exist and remain unchanged during the checker; exclude its generated reports. "
-                    "The checker must freshly write JSON {checks:[{name,requirement_id,passed:boolean}]} to report_path. "
-                    "A successfully executed checker exits0 even when a requirement has passed:false; "
-                    "nonzero indicates execution failure. Cover every mandatory requirement with current files. "
-                    "Printing False or process exit0 alone "
-                    "does not verify results. Reuse/update skills for recurring tasks, then verify their output. "
+                    "Skills are plain folders listed in the skills catalog: read, write and run them "
+                    "with read_file/write_file/run_bash. Verify results by running them "
+                    "(tests, build, the script itself) with run_bash. "
                     "Manage integration runtimes hidden behind Workflow UI. For long-term "
                     "user memory, use memory_search first and memory_list when search has no "
                     "matches; recall is project RAG, not user memory. Project Corpus indexing and "
@@ -173,10 +153,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "string",
                             "enum": [
                                 "status",
-                                "skill_list", "skill_load",
-                                "skill_create", "skill_check", "skill_publish", "skill_rollback", "skill_status", "skill_discard",
-                                "task_decide", "result_verify",
-                                "skill_advisor_status", "skill_advisor_rollback",
                                 "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
                                 "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
                                 "ssh_hosts", "ssh_set_hosts",
@@ -234,43 +210,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "object",
                             "description": (
                                 "Runtime config. "
-                                "task_decide: disposition one_off|reuse|develop, reason, skill_name "
-                                "(for reuse/develop), inputs and targets local file paths, not URLs. "
-                                "requirements=[{id,text,mandatory:boolean}] declares every result requirement; "
-                                "omitting requirements preserves the current contract. "
-                                "Read-only web chat requirements may each declare verification={checks:[...]}. "
-                                "Bind checks after search/read, using the executed query and actual returned URL, never a guessed URL. "
-                                "Only listed fields are accepted. Typed checks: {kind:'web_search',query,url} (executed query/discovered URL); "
-                                "{kind:'source_read',url,contains?:literal} (presented verified excerpt); "
-                                "{kind:'answer_format',contains?:[literals],max_chars?:int,language?:'ru'|'en',markdown_url?:actual HTTP(S) URL string, not boolean,user_quote?:str}; "
-                                "{kind:'cited_quote',url,count,max_words} has no text field: quote text comes from the final answer/cited excerpt. "
-                                "{kind:'tool_policy',allowed:[tool names or 'runtime_control:task_decide'],"
-                                "max_search_queries?:int,max_read_urls?:int,user_quote?:str}. "
-                                "Literal/length/tool restrictions need user_quote copied from the matching direct-user constraint; do not invent budgets. "
-                                "{kind:'no_persistence'} requires runtime policy rag/direct_memory/learning all false. "
-                                "Runtime checks the actual final answer and current-run facts, without commands/files. "
-                                "This path requires one_off, empty inputs/targets, delivery none, no writes or store=true; "
-                                "it never replaces file/artifact verification or proves uncheckable semantics. "
-                                "To amend an existing ID after a user clarification, set source_clarification "
-                                "(1-based index) and copy its exact amendment or addition clause as text. "
-                                "Only neutral preambles 'Ещё поправка:' and 'Уточнение к текущей задаче:' may be omitted. "
-                                "The clause must name the old condition or its exact filename; "
-                                "the original text and unrelated requirements remain mandatory. "
-                                "Optional delivery={mode:'none'|'chat_download',targets:[local paths]} "
-                                "declares files to deliver in this chat, not a download feature to implement. "
-                                "chat_download needs nonempty paths; none needs empty targets. Explain the reason "
-                                "in config.reason; delivery has only mode and targets. "
-                                "Omitting delivery preserves the previous contract. Actual resource_publish attempts "
-                                "also require factual delivery evidence; none cannot turn their failure into success. "
-                                "Keep URLs in source evidence/SOURCES.md; save a response/document "
-                                "locally to bind its content as an input. report_path is also a local file path. "
-                                "result_verify: command, nonempty targets, report_path; checker writes "
-                                "fresh JSON {checks:[{name,requirement_id,passed:boolean}]} separately from targets. "
-                                "Use current requirement IDs; unnamed coverage does not prove the full contract. "
-                                "Skill development takes candidate_id from skill_create; skill_check "
-                                "also takes command (a real shell verification in the candidate directory). "
-                                "skill_create optionally takes environment:'python' for a permanent candidate-local .venv. "
-                                "Use its absolute environment.python_command/pip_command; cwd alone does not select Python. "
                                 "MCP secrets use env_secret_refs or "
                                 "secret_header_refs maps whose values are sref_ references. "
                                 "MikroTik onboarding uses itops_mikrotik_upsert with host, "
@@ -695,7 +634,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "remote process-tree cleanup and returns remote_cleanup_status. "
                     "Actions: 'start' (launch `command`, optional `port`), 'list' (show tracked "
                     "processes), 'logs' (status + tail output of `pid`), 'stop' (terminate/cancel "
-                    "`pid`), 'stop_all'. "
+                    "`pid`), 'stop_all'. To wait for a job, call logs with wait_seconds (up to 600) — "
+                    "it returns when the job finishes or the server prints new output; do not wait "
+                    "with sleep/timeout commands. "
                     "The process runs until run_server(action='stop') or explicit Workflow Stop."
                 ),
                 "parameters": {
@@ -713,6 +654,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "string",
                             "enum": ["server", "job"],
                             "description": "Background process kind; default 'server'.",
+                        },
+                        "wait_seconds": {
+                            "type": "integer",
+                            "description": "action='logs': wait up to N seconds (max 600) until the job "
+                                           "finishes or the server exits/prints new output.",
                         },
                     },
                     "required": [],

@@ -26,7 +26,7 @@ from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 RetryReason = Literal[
     "background", "local_catalog", "web_catalog", "catalog_source", "evidence",
-    "outcome", "bom", "delivery", "quote", "quote_source", "cadence", "web_source",
+    "user_constraint", "bom", "delivery", "quote", "quote_source", "cadence", "web_source",
 ]
 
 
@@ -42,7 +42,6 @@ class AcceptanceDecision:
     event: dict[str, Any] | None = None
     event_task_outcome: bool = False
     event_runtime_activation: bool = False
-    outcome_correction: str | None = None
     retain_rejected_answer: bool = True
 
     @property
@@ -76,6 +75,7 @@ class AnswerAcceptance:
     quote_source_correction_sent: bool = False
     cadence_correction_sent: bool = False
     web_source_correction_sent: bool = False
+    user_constraint_correction_sent: bool = False
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
@@ -100,6 +100,8 @@ class AnswerAcceptance:
             self.cadence_correction_sent = True
         elif decision.reason == "web_source":
             self.web_source_correction_sent = True
+        elif decision.reason == "user_constraint":
+            self.user_constraint_correction_sent = True
 
     def evaluate(
         self, *, final_text: str, raw_user_message: str,
@@ -258,7 +260,7 @@ class AnswerAcceptance:
                     "прочитай конкретную недостающую страницу. Сниппет, оглавление и ссылка из соседней "
                     "статьи не подтверждают содержание целевой страницы. Не оставляй утверждение только "
                     "с оговоркой о непроверенной ссылке и не заменяй ссылку ради прохождения проверки. "
-                    "Не вызывай task_decide ради ответа и не повторяй уже успешное чтение."
+                    "Не повторяй уже успешное чтение."
                 ),
                 log_note="ordinary Web answer cites unread sources",
                 event={"type": "answer_format_correction", "step": step,
@@ -279,64 +281,26 @@ class AnswerAcceptance:
         answer_verification = task_outcome.verify_answer(
             final_text, run_evidence, code_input_epoch, persistence_policy=persistence_policy,
             user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))
-        outcome_pending = task_outcome.pending()
+        # John 2026-10-07: requirements the runtime could not confirm are reported
+        # (answer status, readiness UI), never a retry demanding declarations and
+        # never a replacement of the model's answer.
         missing_requirements = task_outcome.missing_requirements(
             code_input_epoch, criteria_rows, answer_verification=answer_verification, answer=final_text)
-        if missing_requirements:
-            outcome_pending = (
-                "Не подтверждены обязательные требования текущей задачи: "
-                + json.dumps(missing_requirements, ensure_ascii=False)
-                + ". Сохрани исходную цель и остальные требования. Для ответа прямо в чате "
-                "исправь содержание по уже прочитанным источникам и прямым условиям пользователя. "
-                "Не составляй task_decide ради ответа. Если фактов не хватает, проверь недостающий "
-                "источник или явно обозначь пробел; не повторяй уже успешные поиски без новых данных. "
-                "Успешный поиск не покрывает непроверяемые смысловые условия. Для файлов проверь каждый пункт "
-                "подходящим реальным verifier. Для result_verify свежий JSON отчёт должен "
-                "содержать checks:[{name,requirement_id,passed:boolean}] с ID из текущего "
-                "контракта. passed=true для части проверок не покрывает остальные пункты. "
-                "После уточнения или изменения входов выполни проверки заново."
-            )
-        outcome_targets = task_outcome.decision.get("targets") or []
-        if not outcome_pending and outcome_targets:
-            unverified_targets = set(task_outcome.unverified_targets(outcome_targets, code_input_epoch))
-            pending_targets = [target for target in outcome_targets if target in unverified_targets
-                               or not run_evidence.has_passing_result_verification([target])]
-            if pending_targets:
-                outcome_pending = (
-                    "Не имеют актуальной проверки следующие заявленные результаты задачи: "
-                    + json.dumps(pending_targets, ensure_ascii=False)
-                    + ". task_decide.config.targets задаёт результаты всей задачи; "
-                    "result_verify.config.targets задаёт только файлы отдельной проверки "
-                    "и не изменяет решение task_decide. Если служебный отчёт проверки ошибочно "
-                    "включён в результаты задачи, явно обнови task_decide по исходному запросу "
-                    "пользователя. Если это действительно нужный дополнительный результат, "
-                    "проверь его отдельно. Затем выполни result_verify для текущих результатов: "
-                    "config.command читает их и записывает свежий JSON "
-                    "{checks:[{name,passed:true/false}]} в report_path, отдельный от проверяемых "
-                    "targets. При несовпадении исправь решение и проверь снова."
-                )
-        if outcome_pending and task_outcome.correction != outcome_pending:
-            failed_checks = [
-                {"requirement_id": row["requirement_id"],
-                 "failed_checks": [item["kind"] for item in row["predicates"] if not item["passed"]]}
-                for row in answer_verification.get("checks", []) if not row["passed"]
-            ]
-            # Keep the retry identity stable: a changing candidate/predicate must
-            # not create an additional correction attempt for the same gap.
-            feedback = outcome_pending
-            if failed_checks:
-                feedback += (
-                    " Не прошли конкретные проверки текущего ответа: "
-                    + json.dumps(failed_checks, ensure_ascii=False)
-                    + ". Исправь указанные проверки, сохрани успешные. Не повторяй уже успешный "
-                    "поиск или чтение без причины. Проверка формата не подтверждает достоверность фактов."
-                )
+        # The one rule check that still asks for a rewrite: a format condition the
+        # user wrote in the message (length, required text) — the answer can fix it.
+        # A spent search budget cannot be undone; it only marks the answer partial.
+        unmet_user_format = [check for check in answer_verification.get("user_constraint_checks", [])
+                             if not check.get("passed") and check.get("kind") == "answer_format"]
+        if unmet_user_format and not self.user_constraint_correction_sent:
             return AcceptanceDecision(
-                "retry", final_text, reason="outcome", correction=feedback,
-                outcome_correction=outcome_pending,
-                activate_groups=("runtime",) if "runtime" not in active_capability_groups else (),
-                event={"type": "task_outcome_changed", "step": step},
-                event_task_outcome=True, event_runtime_activation=True,
+                "retry", final_text, reason="user_constraint", correction=(
+                    "[Условие пользователя] Ответ не выполняет прямое условие из сообщения пользователя: "
+                    + json.dumps([{"field": check["field"], "value": check["value"]}
+                                  for check in unmet_user_format], ensure_ascii=False)
+                    + ". Перепиши ответ так, чтобы условие выполнялось; содержание и ссылки сохрани."
+                ),
+                log_note="answer misses an explicit user format condition",
+                event={"type": "answer_format_correction", "step": step, "contract": "user_answer_format"},
             )
         if (self.bom_validation_selected and self.bom_snapshot is None
                 and not self.bom_validation_correction_sent):
@@ -357,16 +321,12 @@ class AnswerAcceptance:
         if (missing_downloads or unbacked_downloads) and not self.download_delivery_correction_sent:
             return AcceptanceDecision(
                 "retry", final_text, reason="delivery", correction=(
-                    "[internal delivery correction] Для объявленных или фактически "
-                    "запрошенных через resource_publish файлов либо выданных ссылок нет подтверждённой "
-                    "публикации текущих байтов: "
+                    "[internal delivery correction] Для файлов, запрошенных через resource_publish, "
+                    "либо выданных ссылок нет подтверждённой публикации текущих байтов: "
                     + json.dumps(delivery_problems, ensure_ascii=False)
                     + ". Проверь файлы и опубликуй через resource_publish; используй только "
                     "ссылку из успешного результата. Удали выдуманную ссылку, если файл не создан. "
-                    "Если объявленный delivery contract неверно отражает задачу, "
-                    "исправь его явно через task_decide с reason; пропуск поля "
-                    "delivery сохраняет прежний контракт. Не объявляй неудачную "
-                    "попытку публикации успешной: при невозможности восстановить "
+                    "Не объявляй неудачную попытку публикации успешной: при невозможности восстановить "
                     "файл объясни конкретную проблему, сохранив остальной результат."
                 ),
                 log_note="declared/attempted file delivery lacks current publication",
@@ -457,7 +417,7 @@ class AnswerAcceptance:
                 "Ответ не прошёл проверку ссылок."
             )
         answer_status = (
-            "degraded" if (download_delivery_failed or bool(outcome_pending)
+            "degraded" if (download_delivery_failed or bool(missing_requirements)
                            or bom_validation_failed or catalog_web_failed
                            or unverified_document_qa_claim or quote_format_failed
                            or cadence_format_failed or quote_source_failed or web_source_failed
@@ -473,16 +433,6 @@ class AnswerAcceptance:
                 final_text, run_evidence.quote_bindings(final_text, skip_names=skip_quoted_names))
             if any(item.get("status") == "unresolved" for item in run_evidence.citations(final_text)):
                 final_text += "\n\nЧасть ссылок на источники не подтверждена; связанные с ними выводы требуют проверки."
-        # A read-only sourced answer remains useful with explicitly reported
-        # gaps. Artifact completion claims still require their actual verifiers.
-        preserve_partial = (run_evidence.has_external_source and not run_evidence.has_mutations
-                            and not task_outcome.artifact_contract_seen)
-        if missing_requirements:
-            final_text = (final_text.rstrip() + "\n\n" if preserve_partial else "") + "Не удалось подтвердить:\n" + "\n".join(
-                f"- {item['text']} ({item['status']})" for item in missing_requirements)
-        elif outcome_pending:
-            final_text = ((final_text.rstrip() + "\n\n" if preserve_partial else "")
-                          + "Полное выполнение задачи не подтверждено. " + outcome_pending)
         # Receipts attest to the delivered bytes, not an earlier candidate that
         # was replaced by a safety fallback or extended with missing coverage.
         task_outcome.verify_answer(final_text, run_evidence, code_input_epoch,

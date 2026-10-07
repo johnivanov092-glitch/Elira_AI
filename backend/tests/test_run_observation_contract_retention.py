@@ -36,23 +36,6 @@ CLARIFICATIONS = [
 ]
 
 
-def test_original_live_prose_goal_and_declared_requirements_survive_both_clarifications():
-    assert derive_task_spec(ORIGINAL_PROMPT) is None
-    observations = RunObservations(task_spec=None, durable_state={}, resume=False)
-    requirements = [{"id": "language", "text": "Русский отчёт", "mandatory": True},
-                    {"id": "csv", "text": "Исходный CSV не изменён", "mandatory": True}]
-    observations.outcome.set_contract(ORIGINAL_PROMPT, requirements)
-    version = observations.outcome.verification_context(0)
-    for clarification in CLARIFICATIONS:
-        observations.apply_user_clarification(clarification)
-        assert observations.task_spec is None
-        assert observations.outcome.contract["goal"] == ORIGINAL_PROMPT
-        assert observations.outcome.contract["requirements"] == requirements
-        assert observations.outcome.contract["declaration_pending"] is True
-    assert observations.outcome.contract["clarifications"] == CLARIFICATIONS
-    assert observations.outcome.verification_context(0) != version
-
-
 def test_structured_clarification_retains_extra_model_requirements_and_original_prose_goal():
     observations = RunObservations(task_spec=None, durable_state={}, resume=False)
     observations.outcome.set_contract(ORIGINAL_PROMPT, [
@@ -76,58 +59,3 @@ def test_explicit_user_requirement_replacement_retains_unmentioned_model_require
         {"id": "csv", "text": "Исходный CSV не изменён", "mandatory": True}]
 
 
-def test_task_decision_is_bound_even_without_a_result_verification_context(monkeypatch):
-    observations = RunObservations(task_spec=None, durable_state={}, resume=False)
-    output = {"ok": True, "operation": "task_decide", "result": {"task_decision": {}}}
-    bound = {"ok": False, "operation": "task_decide", "error": "missing_requirements"}
-    calls = []
-    def bind_decision(value):
-        calls.append(value)
-        return bound
-    monkeypatch.setattr(observations.outcome, "bind_decision", bind_decision, raising=False)
-    assert observations.bind_verification(output, None) is bound
-    assert calls == [output]
-
-
-def test_resume_retains_accepted_amendment_and_only_seeds_missing_task_spec_requirements():
-    old = "Города cities сортируй по имени"
-    spec = TaskSpec(goal="Исходный отчёт", success_criteria=[old, "Русский язык"],
-        criterion_contracts={old: {"requirement_id": "city-sort"},
-                             "Русский язык": {"requirement_id": "language"}})
-    observations = RunObservations(task_spec=spec, durable_state={}, resume=False)
-    # The durable contract can also contain model-declared conditions absent
-    # from the structured TaskSpec, which remains the original saved version.
-    observations.outcome.set_contract("Исходный отчёт", [
-        {"id": "city-sort", "text": old}, {"id": "csv", "text": "Исходный CSV не изменён"}])
-    clause = "Города cities сортируй по revenue по убыванию вместо имени"
-    observations.apply_user_clarification(clause)
-    output = {"ok": True, "operation": "task_decide", "result": {"task_decision": {
-        "disposition": "one_off", "requirements": [
-            {"id": "city-sort", "text": clause, "source_clarification": 1}]}}}
-    observations.outcome.observe("runtime_control", {"operation": "task_decide"}, output)
-    amended = observations.outcome.contract["requirements"][0]["text"]
-    assert amended == old + "\n\nУточнение пользователя 1: " + clause
-    assert observations.task_spec.success_criteria == [old, "Русский язык"]
-    restored_spec = task_spec_from_report(taskspec_report(observations.task_spec))
-    # Test seeding a missing ID as well as retaining IDs from both sources.
-    saved = observations.outcome.snapshot()
-    saved["contract"]["requirements"] = [row for row in saved["contract"]["requirements"]
-                                           if row["id"] != "language"]
-    restored = RunObservations(task_spec=restored_spec, durable_state={"task_outcome": saved}, resume=True)
-    by_id = {row["id"]: row for row in restored.outcome.contract["requirements"]}
-    assert by_id["city-sort"]["text"] == amended
-    assert by_id["csv"]["text"] == "Исходный CSV не изменён"
-    assert by_id["language"]["text"] == "Русский язык"
-    assert restored.outcome.contract["goal"] == "Исходный отчёт"
-    assert restored.outcome.contract["clarifications"] == [clause]
-    assert restored.outcome.contract["declaration_pending"] is False
-    restored.apply_user_clarification("В summary.md добавь CHECK_B_82")
-    by_id = {row["id"]: row for row in restored.outcome.contract["requirements"]}
-    assert by_id["city-sort"]["text"] == amended
-    assert by_id["csv"]["text"] == "Исходный CSV не изменён"
-    restored.apply_user_clarification(
-        "замени критерий [city-sort]: Города сортируются по revenue по возрастанию")
-    by_id = {row["id"]: row for row in restored.outcome.contract["requirements"]}
-    assert by_id["city-sort"]["text"] == "Города сортируются по revenue по возрастанию"
-    assert by_id["csv"]["text"] == "Исходный CSV не изменён"
-    assert restored.outcome.contract["goal"] == "Исходный отчёт"

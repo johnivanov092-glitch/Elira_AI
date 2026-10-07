@@ -102,11 +102,11 @@ a successfully completed run.
   quoted/code examples do not trigger this answer-based recovery.
   Local state still comes from local tools; external contracts come from primary
   sources. The model may load further groups with `capability_load`.
-- The model declares chat file delivery through `task_decide.config.delivery`;
-  request keywords only suggest guidance. A download feature being implemented
-  does not itself require a file in the current chat. Without a declaration,
-  actual publication attempts establish the targets to check. A later explicit
-  contract can correct those targets; omitting `delivery` preserves the contract.
+- Chat file delivery is a fact, not a declaration: actual `resource_publish`
+  attempts (failed ones included) establish the targets to check, and a download
+  link in the answer must point to published current bytes. Request keywords only
+  suggest guidance; a download feature being implemented does not itself require
+  a file in the current chat (`task_decide`/`result_verify` removed 2026-10-07).
   `TaskOutcome` binds successful publication to the exact local target (when
   mapped), current SHA-256 and canonical stored download. A generic artifact
   receipt is insufficient; Resume rechecks the files and preserves stale status.
@@ -212,8 +212,8 @@ a successfully completed run.
   warnings survive both successful and failed batches through answer acceptance.
   Search mode starts with `capability_load`, `web_search`, and `web_fetch`;
   other capabilities load on demand. Work guidance follows actual project
-  discovery, mutations, code sources or an artifact contract, not visible schemas.
-  Plain web/file/API answers do not require `task_decide`, including full-machine.
+  discovery, mutations, code sources or a publication, not visible schemas.
+  Plain web/file/API answers declare nothing, including full-machine.
   Missing excerpts after compaction/Resume can be restored from the evidence
   ledger without another request or a recovery refusal. Another diagnostic can
   permit a bounded retry of a failed operation, not an already successful search
@@ -282,20 +282,22 @@ a successfully completed run.
   do not prove topic relevance or factual entailment. Those are independently
   assessed against the actual read excerpts during acceptance; the same model's
   assessment cannot certify factual truth or replace a valid answer with a refusal.
-- Task skills use the same runtime_control/registry/executor path: skill_list
-  returns all installed metadata; skill_load loads the model-selected package
-  from Elira's trusted skills/ directory. One pinned block preserves exact
-  instructions through compaction; active_skills journal snapshots restore them
-  on Resume, while new requests start fresh. No skill changes persona or grants
-  permissions. See TASK_SKILLS.md for the contract and limits.
-- Agent-authored skill packages use `skill_create/check/publish/rollback` in that
-  same adapter. Checks execute through the existing cancellable shell runtime;
-  source and dependency receipts bind activation to the verified candidate.
-  `data/skill_development/` owns local Git history and an atomic active pointer.
-  Generated code executes out of process; loading a skill only reads instructions.
+- Skills are one plain folder, `data/skills/<name>/` (SKILL.md, scripts, optional
+  .venv); the model reads, writes and runs them with its ordinary tools. The
+  runtime lists the catalog (name, description, path) in the prompt, pins a
+  SKILL.md the model read or edited (one pinned block survives compaction;
+  active_skills restores it on Resume) and commits the folder's git history.
+  Built-ins are seeded from `skills/` once and never overwritten. No skill changes
+  persona or grants permissions. See TASK_SKILLS.md.
+- File working set (`code_agent/working_set.py`): the run records files it read
+  or changed. A repeated read_file of an unchanged file, while the earlier result
+  is still in context, returns a short "not changed, see above" note. Compaction
+  rebuilds one pinned block listing those files with the current text of the most
+  recently changed ones (windows of 16K+, budget num_ctx/4 characters); it
+  travels as tool data like restored excerpts. Observation only: no tool call is
+  executed or blocked.
 - The primary Qwen agent interprets requests and selects tools from the existing
-  catalog. The local learned `skill_advisor` ranks skill hints only; it does not
-  select tools, impose a route or replace Qwen. Compatibility heuristics supply
+  catalog. Compatibility heuristics supply
   guidance and specific evidence recovery, not an independent intent classifier.
   Exact download and BOM delivery contracts remain deterministic; they do not
   grant permissions. The rejected Laya experiment is retained only in Git and

@@ -69,6 +69,12 @@ def _agent_child_env(overrides: dict[str, str | None] | None = None) -> dict[str
     override interpreter search paths without mutating the backend environment.
     """
     environment = dict(os.environ)
+    # A Python child writing to a pipe or a log file uses the ANSI code page
+    # (cp1251), which the console decoder then misreads as OEM cp866: the model
+    # got "╟руЁєчър" instead of "Загрузка" in its own job logs. UTF-8 unless the
+    # environment explicitly says otherwise.
+    environment.setdefault("PYTHONUTF8", "1")
+    environment.setdefault("PYTHONIOENCODING", "utf-8")
     for key, value in (overrides or {}).items():
         if value is None:
             environment.pop(key, None)
@@ -114,6 +120,11 @@ def _inline_script_argv(command: str) -> list[str] | None:
         argv = shlex.split(command, posix=True)
     except ValueError:
         return None
+    # A trailing `2>&1` is a habit, not a need: stdout and stderr are both
+    # returned. Keeping it sent the script back through cmd.exe, which cut it at
+    # the first newline (golden 20261007: nine empty exit-0 runs in a row).
+    if len(argv) == 4 and argv[3] == "2>&1":
+        argv = argv[:3]
     if len(argv) != 3:
         return None
     interp = os.path.basename(argv[0]).lower()
@@ -467,6 +478,38 @@ def _apply_job_record(handle: _ServerHandle, record: dict[str, Any]) -> str:
     handle.exit_code = record.get("exit_code")
     handle.finished_at = record.get("finished_at")
     return handle.status
+
+
+_MAX_LOG_WAIT_SECONDS = 600.0
+
+
+def _log_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
+def _wait_for_process(handle: _ServerHandle, wait_seconds: Any) -> float:
+    """run_server(logs, wait_seconds): block until a job finishes, a server exits or
+    prints new output, or the time is up — the model no longer polls with sleep
+    commands (`timeout /t` even fails without a console). Returns seconds waited."""
+    try:
+        limit = min(max(float(wait_seconds or 0), 0.0), _MAX_LOG_WAIT_SECONDS)
+    except (TypeError, ValueError):
+        limit = 0.0
+    if not limit:
+        return 0.0
+    started = time.monotonic()
+    initial_size = _log_size(handle.log_path)
+    while time.monotonic() - started < limit:
+        if handle.kind == "job":
+            if _refresh_job_handle(handle) != "running":
+                break
+        elif handle.proc.poll() is not None or _log_size(handle.log_path) != initial_size:
+            break
+        time.sleep(1.0)
+    return time.monotonic() - started
 
 
 def _refresh_job_handle(handle: _ServerHandle) -> str:
@@ -1127,6 +1170,7 @@ def _tool_run_server_impl(
     port: int | None = None,
     pid: int | None = None,
     kind: str = "server",
+    wait_seconds: float = 0,
     _argv: list[str] | None = None,
     _display_command: str | None = None,
     _runtime_metadata: dict[str, Any] | None = None,
@@ -1207,6 +1251,7 @@ def _tool_run_server_impl(
             h = _LIVE_SERVERS.get(int(pid))
         if h is None:
             return {"text": f"ERROR: no tracked server with pid={pid}.", "ok": False}
+        waited = _wait_for_process(h, wait_seconds)
         tail = _read_log_tail(h.log_path)
         if h.kind == "job":
             status = _refresh_job_handle(h)
@@ -1226,6 +1271,7 @@ def _tool_run_server_impl(
         text = (
             f"{h.kind} pid={pid} [{status}]"
             + ("" if running else f" exit={exit_code}")
+            + (f" (ожидание {waited:.0f} с)" if waited else "")
             + f"\n$ {h.command}\n\n{body}"
         )
         if h.kind == "server":
@@ -1751,6 +1797,7 @@ def tool_run_server(
     port: int | None = None,
     pid: int | None = None,
     kind: str = "server",
+    wait_seconds: float = 0,
 ) -> dict[str, Any]:
     """Public model-facing background process tool."""
     return _tool_run_server_impl(
@@ -1760,6 +1807,7 @@ def tool_run_server(
         port=port,
         pid=pid,
         kind=kind,
+        wait_seconds=wait_seconds,
     )
 
 

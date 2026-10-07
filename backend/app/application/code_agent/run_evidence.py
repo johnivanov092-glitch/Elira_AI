@@ -326,51 +326,6 @@ def _basename(path: str) -> str:
     return re.split(r"[\\/]", path)[-1]
 
 
-def _result_verification(arguments: dict[str, Any], output: dict[str, Any]) -> dict[str, Any] | None:
-    """Accept the runtime-owned explicit check protocol, never console prose."""
-    if arguments.get("operation") != "result_verify":
-        return None
-    nested = output.get("result")
-    check = output.get("verification")
-    if check is None and isinstance(nested, dict):
-        check = nested.get("verification")
-    if not isinstance(check, dict) or check.get("kind") != "command_check":
-        return None
-    if check.get("status") not in {"passed", "failed", "unverified"}:
-        return None
-    if not isinstance(check.get("command"), str) or not check["command"].strip():
-        return None
-    targets = check.get("targets")
-    if not isinstance(targets, list) or not targets:
-        return None
-    if any(
-        not isinstance(target, dict)
-        or not isinstance(target.get("path"), str)
-        or not Path(target["path"]).is_absolute()
-        or not re.fullmatch(
-            r"[0-9a-f]{64}" if check["status"] == "passed" else r"(?:[0-9a-f]{64})?",
-            str(target.get("sha256") or ""),
-        )
-        for target in targets
-    ):
-        return None
-    if check["status"] == "passed":
-        if (
-            not isinstance(check.get("report_path"), str)
-            or not Path(check["report_path"]).is_absolute()
-            or not re.fullmatch(r"[0-9a-f]{64}", str(check.get("report_sha256") or ""))
-        ):
-            return None
-        checks = check.get("checks")
-        if not isinstance(checks, list) or not checks or any(
-            not isinstance(item, dict)
-            or not isinstance(item.get("name"), str)
-            or not item["name"].strip()
-            or item.get("passed") is not True
-            for item in checks
-        ):
-            return None
-    return check
 
 
 def _receipt_target_unchanged(receipt: EvidenceReceipt) -> bool:
@@ -769,41 +724,6 @@ class RunEvidence:
             for receipt in latest.values()
         )
 
-    def has_passing_result_verification(self, targets: list[str]) -> bool:
-        """Whether every exact target has a current explicit result-check pass.
-
-        Browser observations and unrelated successful checks cannot discharge a
-        file-result contract. Latest failed/unverified checks supersede a pass.
-        """
-        def normalized(path: str) -> str:
-            if not isinstance(path, str) or not path or not Path(path).is_absolute():
-                raise ValueError("Verification targets must be absolute paths")
-            return os.path.normcase(os.path.abspath(path))
-
-        try:
-            required = {normalized(path) for path in targets}
-        except (TypeError, ValueError, OSError):
-            return False
-        if not required:
-            return False
-        latest: dict[str, EvidenceReceipt] = {}
-        for receipt in self._receipts:
-            if (
-                receipt.kind is EvidenceKind.VERIFICATION
-                and receipt.tool_name == "runtime_control"
-                and receipt.project_epoch == self._project_epoch
-            ):
-                try:
-                    latest[normalized(receipt.target)] = receipt
-                except (ValueError, OSError):
-                    continue
-        return all(
-            target in latest
-            and latest[target].passed
-            and latest[target].status == "passed"
-            and _receipt_target_unchanged(latest[target])
-            for target in required
-        )
 
     @property
     def has_external_source(self) -> bool:
@@ -881,10 +801,6 @@ class RunEvidence:
         output: dict[str, Any] | None = None,
     ) -> bool:
         tool = str(tool_name or "").strip()
-        if tool == "runtime_control":
-            if output is None:
-                return (arguments or {}).get("operation") == "result_verify"
-            return _result_verification(arguments or {}, output) is not None
         # Process launch/exit and a readable log prove execution, not the result
         # of the user's task. Only a tool's typed check creates a verdict.
         return tool in _VERIFICATION_TOOLS and (
@@ -1039,24 +955,6 @@ class RunEvidence:
     ) -> None:
         tool = str(tool_name or "").strip()
         self._record_operation(tool, arguments, execution_status, output, state_changed)
-        explicit_check = (
-            _result_verification(arguments, output) if tool == "runtime_control" else None
-        )
-        if explicit_check is not None and execution_status in {"ok", "error", "cancelled"}:
-            check_passed = (
-                execution_status == "ok"
-                and output.get("ok") is not False
-                and explicit_check["status"] == "passed"
-            )
-            check_epoch = self._project_epoch + int(check_passed and state_changed)
-            for checked_target in explicit_check["targets"]:
-                self._receipts.append(EvidenceReceipt(
-                    EvidenceKind.VERIFICATION, tool, check_epoch, check_passed,
-                    checked_target["path"], str(checked_target.get("sha256") or ""),
-                    "passed" if check_passed else (
-                        "unverified" if explicit_check["status"] == "unverified" else "failed"
-                    ),
-                ))
         if tool in {"web_search", "web_fetch", "web_query", "browser"}:
             self._sources = merge_sources(self._sources, output.get("sources") or [])
         document_qa = output.get("document_qa")
@@ -1090,7 +988,6 @@ class RunEvidence:
         if execution_status != "ok":
             if (
                 execution_status == "error"
-                and explicit_check is None
                 and self.is_verification_tool(tool, arguments=arguments, output=output)
             ):
                 self._receipts.append(EvidenceReceipt(
@@ -1126,7 +1023,7 @@ class RunEvidence:
             ))
             self._remember_grounding(arguments, text_result)
 
-        if explicit_check is None and self.is_verification_tool(
+        if self.is_verification_tool(
             tool,
             arguments=arguments,
             output=output,

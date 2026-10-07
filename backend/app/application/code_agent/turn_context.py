@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.application.code_agent.document_validation import infer_expected_page_count
-from app.application.code_agent.history import _coerce_history
+from app.application.code_agent.history import _coerce_history, is_runtime_block
 from app.application.code_agent.loop_helpers import (
     _schema_tool_name, build_task_state_block, upsert_task_state_message,
 )
@@ -24,8 +25,10 @@ from app.application.code_agent.planning import PlanArtifact, plan_artifact_from
 from app.application.code_agent.prompts import (
     _build_system_prompt, _build_turn_context, _build_project_context,
     _shell_guidance, _NO_PROJECT_BLOCK, _PROJECT_CONNECTED_BLOCK,
-    _is_scratch_workspace,
+    _is_scratch_workspace, _scratch_workspace_root,
 )
+from app.application.code_agent.run_journal import past_task_hints
+from app.application.code_agent.working_set import WORKING_SET_ID, FileWorkingSet
 from app.application.code_agent.taskspec import (
     TaskSpec, derive_task_spec, is_continuation_message, merge_task_spec, taskspec_context,
 )
@@ -38,8 +41,8 @@ from app.application.code_agent.task_guidance import (
     DELIVERY_GUIDANCE, task_guidance_blocks,
 )
 from app.application.code_agent.task_skills import (
-    ADVISOR_CONTEXT_ID, CATALOG_ID, CONTEXT_ID, SkillContext,
-    advisor_context, catalog_context, insert_skill_context,
+    CATALOG_ID, CONTEXT_ID, SkillContext,
+    catalog_context, insert_skill_context, skill_for_path,
 )
 
 
@@ -188,6 +191,8 @@ class TurnContext:
         self.original_goal = raw_user_message
         self.clarifications: list[str] = []
         self.root, self.working_dir, self.run_id = root, working_dir, run_id
+        self.working_set = FileWorkingSet(root=root, working_dir=working_dir)
+        self.script_hint_sent = False
 
     def initialize_skills(self, *, resume: bool) -> None:
         self.sent_guidance: set[str] = set()
@@ -199,20 +204,65 @@ class TurnContext:
             except (OSError, ValueError) as exc:
                 raise SkillRestoreError(str(exc)) from exc
         self.catalog = catalog_context()
-        if self.catalog:
-            self.messages = insert_skill_context(self.messages, self.catalog, CATALOG_ID)
+        # Only a new chat needs earlier tasks: an ongoing chat has them in its history,
+        # and a hint that changes between its requests would break the prompt prefix.
+        new_chat = not any(message.get("role") in {"user", "assistant"} and not is_runtime_block(message)
+                           for message in self.messages[:-1])
+        hints = self._past_task_hints() if new_chat and not resume else ""
+        if self.catalog or hints:
+            text = "\n\n".join(part for part in (self.catalog, hints) if part)
+            self.messages = insert_skill_context(self.messages, text, CATALOG_ID)
             self.guidance_message_ids.add(CATALOG_ID)
-        advisor_text, advisor_state = advisor_context(self.raw_user_message)
-        if advisor_text:
-            self.messages = insert_skill_context(self.messages, advisor_text, ADVISOR_CONTEXT_ID)
-            self.guidance_message_ids.add(ADVISOR_CONTEXT_ID)
-        self.advisor_state = advisor_state
         self.skill_reminder_pending = False
         self.skill_reminder_sent = False
         self.refresh_task_state = True
         self.awaiting_input_replies: list[str] = []
         self.user_input_policy_applied = False
 
+
+    def script_skill_hint(self, *, name: str, args: dict, ok: bool) -> str:
+        """One note per run when a chat writes a script outside the skills folder.
+
+        John 2026-10-07 (option б): with no ready skill the model wrote its
+        transcription script into the task folder twice out of two, although the
+        guidance says to save it as a skill. Only chats without a project: in a
+        connected project a script is the project's own code. Never blocks.
+        """
+        from app.application.code_agent import task_skills
+
+        if self.script_hint_sent or not ok or name != "write_file" or not _is_scratch_workspace(self.root):
+            return ""
+        raw = str(args.get("path") or "").strip()
+        if Path(raw).suffix.lower() not in {".py", ".ps1", ".bat", ".cmd", ".sh", ".js"}:
+            return ""
+        path = Path(raw) if Path(raw).is_absolute() else Path(self.working_dir or self.root) / raw
+        try:
+            path.resolve().relative_to(task_skills.SKILLS_ROOT.resolve())
+            return ""
+        except ValueError:
+            pass
+        self.script_hint_sent = True
+        return (f"[Заметка Elira] Скрипт записан в папку задачи. Если он пригодится снова, сохрани его "
+                f"навыком: {task_skills.SKILLS_ROOT}\\<имя>\\ (SKILL.md с описанием и этот скрипт) — тогда в новом "
+                "чате он найдётся в каталоге навыков.")
+
+    def _past_task_hints(self) -> str:
+        """1-3 earlier tasks of this project, or of the chat sandbox for chats."""
+        scratch = _scratch_workspace_root()
+        if scratch is not None and _is_scratch_workspace(self.root):
+            def same_place(raw: str) -> bool:
+                path = Path(raw)
+                return path == scratch or path.parent == scratch / "chats"
+        else:
+            key = os.path.normcase(str(self.root))
+
+            def same_place(raw: str) -> bool:
+                return os.path.normcase(raw) == key
+        try:
+            return past_task_hints(self.raw_user_message, same_place=same_place, exclude_run_id=self.run_id)
+        except Exception as exc:  # noqa: BLE001 - a hint never blocks a run
+            logger.debug("past task hints unavailable: %s", exc)
+            return ""
 
     def apply_user_inputs(self, rows: list[dict], *, step: int):
         for row in rows:
@@ -244,8 +294,7 @@ class TurnContext:
             self.messages = insert_skill_context(self.messages, (
                 "[Рабочее напоминание Elira] Ты начала работу с проектом или системой. "
                 "Проверь каталог навыков выше и перед дальнейшей профильной работой "
-                "загрузи подходящие инструкции через runtime_control(operation='skill_load', "
-                "name=имя, query=причина). Для кода обычно нужен навык языка и code-change; "
+                "прочитай SKILL.md подходящего навыка (read_file). Для кода обычно нужен навык языка и code-change; "
                 "для поиска причины сбоя — diagnostics. Выбери сама по текущей задаче. "
                 "Если подходящего навыка нет или задача не требует профильной инструкции, "
                 "продолжай доступными инструментами."
@@ -396,41 +445,46 @@ class TurnContext:
         # "next step, do not output" block made Qwen3.8 treat its finished
         # answer as reasoning, emit </think> and write the answer twice.
         def restore(packed, *, compacted):
-            return restore_source_context(packed, compacted=compacted, max_chars=min(7000, num_ctx))
+            packed = restore_source_context(packed, compacted=compacted, max_chars=min(7000, num_ctx))
+            return self.working_set.restore(packed, compacted=compacted, num_ctx=num_ctx,
+                                            read_text=self._file_text)
 
         self.messages, compacted, usage = prepare_fn(
             self.messages, num_ctx=num_ctx, model=model, chat_fn=chat_fn,
             context_profile=context_profile, tool_schemas=tool_schemas,
             cancel_handle=cancel_handle, audit_sink=audit_sink,
-            pinned_message_ids=self.guidance_message_ids | {"web-source-context"},
+            pinned_message_ids=self.guidance_message_ids | {"web-source-context", WORKING_SET_ID},
             restore_messages=restore,
         )
         return compacted, usage
 
+    def _file_text(self, path: Path) -> str:
+        """Current numbered text of a working-set file, exactly as read_file shows it."""
+        from app.application.code_agent.tools._files import tool_read_file
+
+        result = tool_read_file(self.root, path=str(path), limit=400)
+        text = str(result.get("text") or "")
+        return text if result.get("ok") and not text.startswith("[") else ""
+
     def activate_skill_result(self, *, name: str, args: dict, tool_meta: dict, status: str):
-        _skill_snapshot_changed = False
-        _skill_receipt = None
-        if (name == "runtime_control" and str(args.get("operation") or "").strip().lower() == "skill_load"
-                and status == "ok" and tool_meta.get("ok")):
+        """Reading or editing data/skills/<name>/SKILL.md pins that instruction for the task.
+
+        No skill operation exists: the model reads a skill with read_file, and the
+        pinned copy keeps it through context compaction. The tool result itself is
+        unchanged, so the model can still edit the file with its exact text.
+        """
+        changed, receipt = False, None
+        if (name in {"read_file", "write_file", "edit_file"} and status == "ok" and tool_meta.get("ok", True)):
+            path = tool_meta.get("touched_path") or args.get("path") or ""
+            base = self.working_dir or self.root
+            if path and base is not None and not Path(str(path)).is_absolute():
+                path = str((Path(base) / str(path)).resolve())
             try:
-                skill_result = tool_meta.get("result", {})
-                _skill_snapshot_changed = self.skills.activate(
-                    skill_result["skill"], skill_result.get("reason", ""),
-                    refresh=True,
-                )
-                selected = next(item for item in self.skills.snapshots()
-                                if item["name"] == skill_result["skill"]["name"])
-                _skill_receipt = {key: selected[key] for key in ("name", "title", "sha256", "reason")}
-                _skill_receipt.update({key: selected[key] for key in
-                    ("candidate_id", "revision", "package_sha256", "directory") if key in selected})
-                _skill_receipt["already_loaded"] = not _skill_snapshot_changed
-                # The full instruction has one pinned owner. Tool history
-                # and UI receive a receipt, not a duplicate instruction.
-                tool_meta = {"ok": True, "status": "completed",
-                    "result": {"skill": _skill_receipt}, "text": json.dumps({
-                    "skill": _skill_receipt,
-                    "message": "Skill instructions are active in the current task context.",
-                }, ensure_ascii=False)}
-            except (KeyError, TypeError, OSError, ValueError) as exc:
-                tool_meta = {"ok": False, "error": "skill_activation_failed", "text": str(exc)}
-        return tool_meta, _skill_snapshot_changed, _skill_receipt
+                changed = self.skills.activate_path(path)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.info("Skill instruction not pinned for %s: %s", path, exc)
+            if changed:
+                skill = skill_for_path(path)
+                selected = next(item for item in self.skills.snapshots() if item["name"] == skill)
+                receipt = {key: selected[key] for key in ("name", "title", "sha256", "directory")}
+        return tool_meta, changed, receipt

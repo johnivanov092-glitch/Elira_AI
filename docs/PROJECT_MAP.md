@@ -39,6 +39,7 @@ move Elira's backend state or tools into that repository.
 | Final-answer acceptance and correction state | `backend/app/application/code_agent/answer_acceptance.py` |
 | Context rollover | `backend/app/application/code_agent/delivery_session.py` |
 | Context compaction and pinned runtime blocks | `backend/app/application/context/compaction.py` |
+| File working set across compaction (read/changed files, unchanged re-read) | `backend/app/application/code_agent/working_set.py` |
 | Durable run state and Resume | `backend/app/application/code_agent/run_journal.py` |
 | Planning | `backend/app/application/code_agent/planning.py` |
 | Prompts/schemas | `backend/app/application/code_agent/prompts.py`, `tool_schemas.py` |
@@ -48,9 +49,7 @@ move Elira's backend state or tools into that repository.
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
 | Deterministic local price-list/BOM validation | `backend/app/application/code_agent/tools/_bom.py` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
-| Task skill instructions and run context | `skills/`, `backend/app/application/code_agent/task_skills.py` |
-| Agent-authored packages, verification and local Git versions | `backend/app/application/code_agent/skill_development.py` |
-| Learned skill hints from verified run outcomes | `backend/app/application/code_agent/skill_advisor.py`, `task_outcomes.py` |
+| Skills folder (catalog, pinned SKILL.md, git history; seeds from `skills/`) | `backend/app/application/code_agent/task_skills.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
 | Workflow/data runtime adapters | `backend/app/application/code_agent/tools/_runtime_control_workflows.py`, `_runtime_control_data.py` |
 | Tool executor | `backend/app/application/agent_kernel/executor.py` |
@@ -145,8 +144,8 @@ data/
 ├─ drift_facts.db
 ├─ portable_vault.json       encrypted vault; backup includes smart/rag memory
 ├─ background_jobs/          machine-local job journal/spec/launch/result sidecars
-├─ skill_development/        published packages, verification receipts and local Git
-├─ skill_advisor/            learned hint samples, model versions and active pointer
+├─ skills/                   Elira's skills: <name>/SKILL.md, scripts, .venv; own git
+├─ archive/                  retired data folders (e.g. skill_development, skill_advisor)
 ├─ mcp_servers.json
 ├─ lsp_servers.json
 ├─ ssh_acl.json          legacy filename; saved SSH shortcuts

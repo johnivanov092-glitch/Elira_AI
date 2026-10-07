@@ -1405,38 +1405,6 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
             return None
         ssh_identity = {"host": _normalized_host(str(a.get("host") or "")),
                         "target": _normalized_target(str(a.get("path") or a.get("port") or ""))}
-    if tool_name == "runtime_control" and a.get("operation") == "result_verify":
-        from app.application.code_agent.run_evidence import _result_verification
-
-        receipt = _result_verification(a, m)
-        if receipt is None:
-            return None
-        checks = receipt.get("checks")
-        if not isinstance(checks, list):
-            return None
-        named: dict[str, bool] = {}
-        identities: dict[str, bool] = {}
-        for check in checks:
-            if not (isinstance(check, dict) and isinstance(check.get("name"), str)
-                    and type(check.get("passed")) is bool):
-                return None
-            name = " ".join(check["name"].split()).casefold()
-            if not name or name in named:
-                return None
-            named[name] = check["passed"]
-            identity = check.get("requirement_id")
-            if isinstance(identity, str) and identity:
-                if identity in identities:
-                    return None
-                identities[identity] = check["passed"]
-        if not named:
-            return None
-        return {
-            "intents": {"result_check"}, "checks": named, "requirement_checks": identities,
-            "status": receipt["status"], "exit_code": receipt.get("exit_code"),
-            "targets": [item["path"].replace("\\", "/").casefold()
-                        for item in receipt["targets"]],
-        }
     if tool_name == "ssh_assert_contains":
         return {**ssh_identity, "intents": {"content_contains"}, "files": _file_tokens(str(a.get("path", ""))),
                 "pattern": str(a.get("pattern", "")).lower(), "literal_pattern": str(a.get("pattern", ""))}
@@ -1628,36 +1596,6 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
 
 def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
     """Apply a matched observation to a current condition or historical fact."""
-    if "result_check" in v.get("intents", set()):
-        # Explicit check names map to exact user criteria, never a keyword or
-        # generic exit=0. File-bearing criteria also need every named target.
-        name = " ".join(item["text"].split()).casefold()
-        identity = item.get("requirement_id")
-        identified = identity in v.get("requirement_checks", {})
-        if not identified and name not in v["checks"]:
-            return None
-        targets = v["targets"]
-        for token in item.get("files") or ():
-            token = token.replace("\\", "/").casefold()
-            if re.fullmatch(r"\d+\.\d+", token):
-                continue  # A decimal quantity is not a path.
-            # The legacy file tokenizer captures a forward-slash Windows path
-            # without its drive. Recover that explicit prefix for exact matching.
-            if token.startswith("/"):
-                drive_path = re.search(r"[a-z]:" + re.escape(token), item["text"].casefold())
-                if drive_path:
-                    token = drive_path.group(0)
-            absolute = token.startswith("/") or bool(re.match(r"^[a-z]:/", token))
-            if not any(path == token or (not absolute and path.endswith("/" + token)) for path in targets):
-                return None
-        if v["status"] == "unverified":
-            return "unverified"
-        passed = v["requirement_checks"][identity] if identified else v["checks"][name]
-        if passed is False:
-            return "fail"
-        if ok and v["status"] == "passed" and type(v.get("exit_code")) is int and v["exit_code"] == 0:
-            return "confirm"
-        return "unverified"
     it = item["intent"]
     if it in ("file_exists", "file_not_exists"):
         if not _verdict_target_matches(item, v):

@@ -116,7 +116,6 @@ from app.application.code_agent.prompts import (  # noqa: F401
     _is_scratch_workspace,
 )
 from app.core.persona_defaults import DEFAULT_PROFILE
-from app.application.code_agent.task_skills import learn_from_run
 from app.core.redaction import redact_secrets
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
@@ -638,7 +637,6 @@ def _stream_code_agent_core(
             yield {"type": "done", "ok": False, "steps": 0, "stop_reason": "error",
                    "error_code": "skill_restore_failed", "error": str(exc), "resumable": False}
             return
-        yield {"type": "skill_advisor_consulted", "skill_advisor": turn_context.advisor_state}
 
         while True:
             step += 1
@@ -1023,8 +1021,6 @@ def _stream_code_agent_core(
                     step=step, run_id=rid,
                 )
                 if answer_decision.action == "retry":
-                    if answer_decision.outcome_correction is not None:
-                        task_outcome.correction = answer_decision.outcome_correction
                     if answer_decision.activate_groups:
                         activation.activate_groups(answer_decision.activate_groups)
                         schema_update = activation.rebuild()
@@ -1416,16 +1412,13 @@ def _stream_code_agent_core(
                     _request, dispatch_fn=registry.dispatch_raw, executor=_kernel_exec,
                     step=step, cancel_event=cancel_event,
                     pause_for_workflow_request=pause_for_workflow_request,
-                    capture_verification=(
-                        lambda: observations.capture_verification(name, parsed_args)
-                    ) if name == "runtime_control" and parsed_args.get("operation") == "result_verify" else None,
                 )
                 if execution.terminal is not None:
                     yield {**execution.terminal,
                            **_completion_fields(criteria, terminated_incomplete=True)}
                     return
                 _exec_result = execution.result
-                tool_meta = observations.bind_verification(_exec_result.output, execution.verification_binding)
+                tool_meta = _exec_result.output
                 tool_meta, _skill_snapshot_changed, _skill_receipt = turn_context.activate_skill_result(
                     name=name, args=parsed_args, tool_meta=tool_meta, status=_exec_result.status,
                 )
@@ -1708,6 +1701,9 @@ def _stream_code_agent_core(
                     if _language_hint:
                         web_language_hint_given = True
                         _tool_content += "\n\n" + _language_hint
+                _script_hint = turn_context.script_skill_hint(name=name, args=parsed_args, ok=_tool_ok)
+                if _script_hint:
+                    _tool_content += "\n\n" + _script_hint
                 if _evidence_web_activated:
                     _tool_content += (
                         "\n\n[EVIDENCE ROUTER] Web tools are now available. Before retrying "
@@ -1727,11 +1723,17 @@ def _stream_code_agent_core(
                     text=text_result, ok=_tool_ok, state_changed=_state_changed,
                     verification=task_state_verification,
                 )
-                turn_context.messages.append({
-                    "role": "tool",
-                    "content": _tool_content,
-                    "name": name,
-                })
+                _unchanged_read = turn_context.working_set.unchanged_read(
+                    name=name, args=parsed_args, ok=_tool_ok, text=text_result,
+                    messages=turn_context.messages,
+                )
+                _tool_message = {"role": "tool", "content": _unchanged_read or _tool_content, "name": name}
+                turn_context.messages.append(_tool_message)
+                if not _unchanged_read:
+                    turn_context.working_set.record(
+                        name=name, args=parsed_args, ok=_tool_ok, text=text_result, step=step,
+                        message=_tool_message,
+                    )
                 if _fact:
                     established_facts.append(_fact)
                 elif _failed_call:
@@ -2023,10 +2025,6 @@ def stream_code_agent(
             if event.get("type") in {"tool_started", "tool_call"}:
                 journal.append_command(event)
             journal.append_event(event)
-            if event.get("type") == "tool_call" and event.get("task_outcome"):
-                learning = learn_from_run(rid, journal.state)
-                if learning.get("status") not in {"ineligible", "disabled"}:
-                    journal.append_event({"type": "skill_advisor_learning", "skill_advisor_learning": learning})
             if event.get("type") == "tool_call":
                 result_text = str(event.get("result") or "")
                 tool_ok = bool(event.get("ok", not result_text.lower().startswith("error")))
@@ -2066,8 +2064,6 @@ def stream_code_agent(
                     "stop_reason": event.get("stop_reason"),
                     "resumable": event.get("resumable"),
                 })
-                learning = learn_from_run(rid, journal.state)
-                journal.append_event({"type": "skill_advisor_learning", "skill_advisor_learning": learning})
             yield event
     except Exception as exc:
         logger.exception("code-agent run journal failed for %s", rid)

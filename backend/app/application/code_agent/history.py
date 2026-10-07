@@ -221,7 +221,8 @@ def project_runtime_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]
             # channel they came from and never gain system weight (decision
             # 2026-10-06). Only before the slice's first tool result (Resume)
             # do they wait in the system section with their untrusted label.
-            if kind == "restored_sources" and last_tool >= 0:
+            # Restored file texts (working set after compaction) are data too.
+            if kind in {"restored_sources", "file_working_set"} and last_tool >= 0:
                 restored.append(text)
             # A notice the model must act on now stays next to the generation
             # point: appended to the latest tool result (the runtime's channel),
