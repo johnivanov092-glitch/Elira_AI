@@ -215,7 +215,7 @@ class VerifiedTurnMemoryTest(unittest.TestCase):
 
 class RecallPresentationTest(unittest.TestCase):
     def test_explicit_recall_labels_volatile_fact_for_live_recheck(self) -> None:
-        from app.application.code_agent.tools import tool_recall
+        from app.application.code_agent.tools import tool_memory
 
         with (
             patch(
@@ -233,22 +233,18 @@ class RecallPresentationTest(unittest.TestCase):
                 return_value={"ok": True, "items": []},
             ),
         ):
-            result = tool_recall(BACKEND_ROOT, query="активная модель")
+            result = tool_memory(action="search", query="активная модель")
 
-        self.assertIn("требуется live-проверка", result["text"])
+        self.assertIn("нужна live-проверка", result["text"])
 
     def test_remember_reports_volatile_classification_honestly(self) -> None:
-        from app.application.code_agent.tools import tool_remember
+        from app.application.code_agent.tools import tool_memory
 
         with patch(
             "app.application.memory.add_fact",
             return_value={"ok": True, "category": "volatile_fact", "id": 1},
         ):
-            result = tool_remember(
-                BACKEND_ROOT,
-                fact="Активная модель сейчас 27B.",
-                correction=True,
-            )
+            result = tool_memory(action="add", text="Активная модель сейчас 27B.", correction=True, id=1)
 
         self.assertTrue(result["ok"])
         self.assertIn("временное состояние", result["text"])

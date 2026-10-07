@@ -366,7 +366,6 @@ class RunJournal:
             "active_skills": [],
             "runtime_activation": {
                 "mcp_server_ids": [],
-                "lsp_server_ids": [],
                 "ssh": False,
                 "itops": False,
                 "capability_groups": [],

@@ -38,8 +38,8 @@ class InfraModeTest(unittest.TestCase):
         from app.application.code_agent.task_guidance import task_guidance_blocks
         prompt = build_persona_prompt("Инфраструктура")
         self.assertEqual(prompt, build_persona_prompt("Баланс"))
-        guidance = task_guidance_blocks({"runtime_control"})
-        self.assertIn("typed health/inventory", guidance["runtime"])
+        guidance = task_guidance_blocks({"itops_network_inventory"})
+        self.assertIn("typed health/inventory", guidance["itops"])
         self.assertIn("разрешения определяет Workflow", guidance["work"])
 
 

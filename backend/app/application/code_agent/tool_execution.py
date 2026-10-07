@@ -330,6 +330,7 @@ def run_workflow_request(
 
 
 def run_runtime_workflow(
+    tool_name: str,
     parsed_args: dict[str, Any],
     tool_meta: dict[str, Any],
     *,
@@ -353,7 +354,7 @@ def run_runtime_workflow(
     })
     response_id = uuid.uuid4().hex
     yield {
-        "type": "tool_call", "step": step, "tool": "runtime_control",
+        "type": "tool_call", "step": step, "tool": tool_name,
         "arguments": redact_secrets(parsed_args),
         "result": _truncate(str(tool_meta.get("text") or "")),
         "ok": False, "state_changed": False,

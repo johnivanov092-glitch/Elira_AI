@@ -8,12 +8,11 @@ from __future__ import annotations
 # The model gets ordinary work tools immediately. Keep specialist groups and
 # external integrations discoverable through the same registry/executor.
 BASE_TOOLS: tuple[str, ...] = (
-    "capability_load", "runtime_control",
+    "capability_load",
     "read_file", "write_file", "edit_file", "glob", "grep",
-    "project_map", "todo_update", "delegate_task", "run_bash", "run_server",
-    "web_search", "web_fetch", "recall", "remember", "calc",
+    "run_bash", "run_server", "web_search", "web_fetch", "todo_update",
 )
 # Legacy prompt grouping; persona never changes tool access.
 READONLY_TOOLS: tuple[str, ...] = (
-    "capability_load", "read_file", "glob", "grep", "project_map",
+    "capability_load", "read_file", "glob", "grep",
 )

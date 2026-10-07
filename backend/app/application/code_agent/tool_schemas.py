@@ -82,9 +82,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "capability_load",
                 "description": (
-                    "Load one optional built-in tool group for this run. This changes "
-                    "only which tool schemas are sent to the model; it is not a "
-                    "permission or approval boundary. Available groups:\n"
+                    "Load a tool group for this run; its tools appear on the next turn. "
+                    "Not a permission. Groups:\n"
                     + capability_catalog_text()
                 ),
                 "parameters": {
@@ -105,112 +104,73 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "runtime_control",
                 "description": (
-                    "Skills are plain folders listed in the skills catalog: read, write and run them "
-                    "with read_file/write_file/run_bash. Verify results by running them "
-                    "(tests, build, the script itself) with run_bash. "
-                    "Manage integration runtimes hidden behind Workflow UI. For long-term "
-                    "user memory, use memory_search first and memory_list when search has no "
-                    "matches; recall is project RAG, not user memory. Project Corpus indexing and "
-                    "status use project_index/project_status. Also manages: portable vault "
-                    "status/backup/restore/lock, MCP and LSP config/lifecycle, Telegram "
-                    "config/lifecycle/users, plugins, IT Ops assets/profiles, Workflow "
-                    "templates/runs/triggers, memory, and library. For a local Library catalog, "
-                    "use library_search with separate category/function/brand/model tokens before "
-                    "a negative conclusion; exact filters or truncated samples do not prove "
-                    "absence. Every call returns a "
-                    "structured completed/failed/needs_* result. Secret values are never "
-                    "arguments; use only an opaque secret_ref created by a needs_secret card."
+                    "MCP servers from the user's config. mcp_list shows them; mcp_start "
+                    "(server_id) starts one and its tools appear on the next turn; mcp_tools "
+                    "(server_id, query) reveals more of its tools; mcp_stop/mcp_restart; "
+                    "mcp_upsert (server_id, config) adds or changes a server, mcp_remove deletes it. "
+                    "Start only the server the task needs. Credentials go in config as "
+                    "env_secret_refs/secret_header_refs with sref_ values, never plain text."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "operation": {
-                            "type": "string",
-                            "enum": [
-                                "status",
-                                "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
-                                "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
-                                "ssh_hosts", "ssh_set_hosts",
-                                "telegram_status", "telegram_configure", "telegram_migrate_legacy_token",
-                                "telegram_start", "telegram_stop", "telegram_test", "telegram_users",
-                                "telegram_toggle_user", "telegram_send", "telegram_messages",
-                                "itops_assets", "itops_asset_upsert",
-                                "itops_asset_remove", "itops_profile_upsert", "itops_profile_remove",
-                                "itops_mikrotik_list", "itops_mikrotik_upsert",
-                                "itops_mikrotik_remove", "itops_mikrotik_sync",
-                                "plugin_list", "plugin_info", "plugin_enable", "plugin_disable",
-                                "plugin_reload", "plugin_configure", "plugin_run",
-                                "workflow_list", "workflow_upsert", "workflow_remove",
-                                "workflow_run", "workflow_runs", "workflow_resume",
-                                "workflow_cancel", "workflow_trigger_list",
-                                "workflow_trigger_upsert", "workflow_trigger_remove",
-                                "workflow_scheduler_status", "workflow_scheduler_start",
-                                "workflow_scheduler_stop",
-                                "memory_stats", "memory_profiles", "memory_list",
-                                "memory_search", "memory_recall", "memory_add",
-                                "memory_delete", "memory_prune",
-                                "project_index", "project_status",
-                                "library_list", "library_search", "library_read",
-                                "library_context", "library_add", "library_import",
-                                "library_toggle", "library_delete",
-                                "vault_status", "vault_lock",
-                                "vault_backup", "vault_restore",
-                            ],
-                        },
+                        "operation": {"type": "string", "enum": [
+                            "mcp_list", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
+                            "mcp_upsert", "mcp_remove",
+                        ]},
                         "server_id": {"type": "string"},
-                        "workflow_id": {"type": "string"},
-                        "run_id": {"type": "string"},
-                        "trigger_id": {"type": "string"},
-                        "asset_id": {"type": "string"},
-                        "profile_id": {"type": "string"},
-                        "kind": {"type": "string"},
-                        "memory_id": {
-                            "oneOf": [{"type": "integer"}, {"type": "string"}],
-                        },
-                        "filename": {"type": "string"},
-                        "name": {"type": "string"},
-                        "query": {"type": "string"},
-                        "root_path": {
-                            "type": "string",
-                            "description": (
-                                "Optional runtime root. Project Corpus defaults to the connected "
-                                "project; relative paths start there. LSP defaults there too."
-                            ),
-                        },
-                        "secret_ref": {
-                            "type": "string",
-                            "description": "Opaque sref_ value; never put a plaintext secret here.",
-                        },
-                        "config": {
-                            "type": "object",
-                            "description": (
-                                "Runtime config. "
-                                "MCP secrets use env_secret_refs or "
-                                "secret_header_refs maps whose values are sref_ references. "
-                                "MikroTik onboarding uses itops_mikrotik_upsert with host, "
-                                "user, optional label/router_id/port/TLS/ros_version fields; the password "
-                                "arrives only through the top-level secret_ref. "
-                                "Workflow runs/triggers always inherit the current UI permission "
-                                "mode; config cannot elevate it. Project indexing accepts optional "
-                                "patterns: string[] and replace: boolean. memory_recall defaults "
-                                "to the connected Project Corpus; config.project accepts a project "
-                                "path or an existing scope: ID. memory_add accepts its fact in the "
-                                "top-level query or config.fact. Memory source/source_ref are server-owned: "
-                                "literal current user statements retain user provenance; paraphrases and "
-                                "agent conclusions are searchable agent_note entries, not user truth. "
-                                "Library search returns file_id; "
-                                "library_read uses config.file_id, offset and limit to read the full "
-                                "document page by page. library_import saves an attached durable "
-                                "resource using config.resource_id. Telegram send uses chat_id and "
-                                "the top-level query as message text; telegram_messages accepts "
-                                "optional chat_id and config.limit."
-                            ),
-                        },
-                        "chat_id": {"type": "integer"},
-                        "allowed": {"type": "boolean"},
-                        "path": {"type": "string"},
+                        "query": {"type": "string", "description": "mcp_tools/mcp_start: which tools are needed."},
+                        "config": {"type": "object", "description": "mcp_upsert: server config (command/args/env or url)."},
                     },
                     "required": ["operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "telegram",
+                "description": (
+                    "Send a message through the user's Telegram bot (action=send, chat_id, text) "
+                    "or read recent bot messages (action=messages). The bot is set up in Settings."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["send", "messages"]},
+                        "chat_id": {"type": "integer"},
+                        "text": {"type": "string"},
+                        "parse_mode": {"type": "string", "description": "Markdown (default) or HTML."},
+                        "limit": {"type": "integer", "description": "messages: how many (default 50)."},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "itops_registry",
+                "description": (
+                    "Saved IT Ops targets: action=list (assets and connection profiles), "
+                    "asset_upsert/asset_remove, profile_upsert/profile_remove, mikrotik_list/"
+                    "mikrotik_upsert/mikrotik_remove/mikrotik_sync. Health and inventory checks are "
+                    "the itops_* tools. A password or key is never an argument: pass secret_ref."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "list", "asset_upsert", "asset_remove", "profile_upsert", "profile_remove",
+                            "mikrotik_list", "mikrotik_upsert", "mikrotik_remove", "mikrotik_sync",
+                        ]},
+                        "asset_id": {"type": "string"},
+                        "profile_id": {"type": "string"},
+                        "kind": {"type": "string", "description": "asset_upsert: asset type (linux, windows, router...)."},
+                        "secret_ref": {"type": "string", "description": "Opaque sref_ value; never plaintext."},
+                        "config": {"type": "object", "description": "Fields of the asset/profile/router (host, user, label, port...)."},
+                    },
+                    "required": ["action"],
                 },
             },
         },
@@ -409,49 +369,66 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "recall",
                 "description": (
-                    "Semantic search over the current project's indexed RAG memory; this is "
-                    "not long-term user memory. Returns "
-                    "relevant code chunks (if the project was indexed) and "
-                    "summaries of prior agent runs. Use this before grep when "
-                    "looking for 'where is X implemented' or 'what did I do "
-                    "last time about Y'."
+                    "Search the project index: code chunks and summaries of earlier runs "
+                    "('where is X implemented', 'what did we do about Y'). action=index "
+                    "builds/refreshes the index of the project (or path), action=status "
+                    "reports it. Facts about the user are the memory tool."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Natural-language search query."},
+                        "action": {"type": "string", "enum": ["search", "index", "status"], "description": "Default search."},
+                        "query": {"type": "string", "description": "What to find (search)."},
+                        "path": {"type": "string", "description": "Folder to index/report; default the project."},
                         "top_k": {"type": "integer", "description": "Max results (default 5)."},
-                        "min_score": {"type": "number", "description": "Cosine similarity threshold 0..1 (default 0.3)."},
                     },
-                    "required": ["query"],
                 },
             },
         },
         {
             "type": "function",
             "function": {
-                "name": "remember",
+                "name": "memory",
                 "description": (
-                    "Save a durable note or correction. The server binds provenance to the "
-                    "current user request: preserve its exact wording for a user statement. "
-                    "Paraphrases and your own conclusions are stored as searchable agent notes. "
-                    "Saving a note is not verification of its contents or current system state."
+                    "Long-term memory about the user: facts, preferences, corrections. "
+                    "search before answering a personal question (list when search finds "
+                    "nothing). add only when the user asks to remember or correct something; "
+                    "keep the user's wording. Correction: search for the record, then add "
+                    "with correction=true and id of the replaced record. delete by id."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "fact": {"type": "string", "description": "The note/correction. Preserve the user's literal statement when remembering their words."},
-                        "correction": {"type": "boolean", "description": "True to correct a saved note. This does not elevate its provenance or trust. Default false."},
-                        "replaces_id": {
-                            "oneOf": [{"type": "integer"}, {"type": "string"}],
-                            "description": (
-                                "ID of the stored fact being corrected. Obtain it from "
-                                "runtime_control(operation='memory_search'); use it whenever "
-                                "the correction replaces an existing memory."
-                            ),
-                        },
+                        "action": {"type": "string", "enum": ["search", "list", "add", "delete"]},
+                        "query": {"type": "string", "description": "search: what to find."},
+                        "text": {"type": "string", "description": "add: the fact to save."},
+                        "id": {"type": "integer", "description": "delete / correction: record id."},
+                        "correction": {"type": "boolean", "description": "add: replaces record id."},
+                        "limit": {"type": "integer", "description": "search/list: max records (default 10)."},
                     },
-                    "required": ["fact"],
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "library",
+                "description": (
+                    "The user's Library (documents curated in Settings): search by words "
+                    "(empty query lists everything), then read a document by id page by "
+                    "page with offset. Search with separate words (category, brand, model) "
+                    "before concluding something is absent."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["search", "read"]},
+                        "query": {"type": "string", "description": "search: words to find."},
+                        "id": {"type": "integer", "description": "read: document id from search."},
+                        "offset": {"type": "integer", "description": "read: continue from this character."},
+                    },
+                    "required": ["action"],
                 },
             },
         },
@@ -537,20 +514,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "run_server",
                 "description": (
-                    "Start and manage background processes: LONG-LIVED dev servers/watchers or "
-                    "finite managed jobs. Unlike run_bash, this returns IMMEDIATELY and the process "
-                    "keeps running across turns; output and terminal status remain available through "
-                    "logs. Use kind='server' for `npm run dev`/`uvicorn`/`vite`; use kind='job' for "
-                    "a long scan, download, build or other finite command. Finite jobs persist their "
-                    "PID identity, logs and completed/failed/cancelled result across backend restarts. "
-                    "Managed Windows SSH jobs also expose a remote_pid; stop performs bounded "
-                    "remote process-tree cleanup and returns remote_cleanup_status. "
-                    "Actions: 'start' (launch `command`, optional `port`), 'list' (show tracked "
-                    "processes), 'logs' (status + tail output of `pid`), 'stop' (terminate/cancel "
-                    "`pid`), 'stop_all'. To wait for a job, call logs with wait_seconds (up to 600) — "
-                    "it returns when the job finishes or the server prints new output; do not wait "
-                    "with sleep/timeout commands. "
-                    "The process runs until run_server(action='stop') or explicit Workflow Stop."
+                    "Background process that keeps running across turns: kind='server' for a "
+                    "dev server/watcher, kind='job' for a long build, download or scan. start "
+                    "returns the pid at once; logs(pid, wait_seconds up to 600) waits until the "
+                    "job ends or new output appears - never wait with sleep; stop(pid) ends it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -583,24 +550,12 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "web_search",
                 "description": (
-                    "Search the web for current information. Returns ranked "
-                    "list of {title, url, snippet}. Use this BEFORE answering "
-                    "any question that depends on facts you don't already "
-                    "know — current events, library versions, niche docs. "
-                    "For academic / peer-reviewed papers use a connected paper-search "
-                    "provider when its schema is available; otherwise use web_search. "
-                    "Pass `queries` (a list) to run SEVERAL searches in PARALLEL "
-                    "in one call (faster than one-by-one; merged + de-duped); "
-                    "otherwise pass a single `query`. "
-                    "Optionally target engine `categories` (e.g. 'it' for "
-                    "github/stackoverflow/pypi, 'science' for arxiv/pubmed, "
-                    "'news') and/or `time_range` for recency. "
-                    "Call `web_fetch` after on URLs that look relevant. "
-                    "Use `categories='images'` when relevant visuals materially help; "
-                    "the runtime attaches sourced cards automatically. "
-                    "In the answer cite pages you have READ by the number shown after "
-                    "each read: [Title][n] or [n]; never write URLs yourself — the "
-                    "runtime renders the links."
+                    "Search the web for current or external facts (news, versions, "
+                    "docs, prices) - results are {title, url, snippet}. Pass `queries` "
+                    "(up to 5) to search several angles in one call, or one `query`; "
+                    "then read relevant pages with web_fetch. In the answer cite only "
+                    "pages you have READ, by the number shown after each read: "
+                    "[Title][n] or [n]; never type URLs - the runtime renders links."
                 ),
                 "parameters": {
                     "type": "object",
@@ -610,19 +565,19 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "array",
                             "items": {"type": "string"},
                             "maxItems": 5,
-                            "description": "Several queries in one call (up to 5, run concurrently). Long batches return a fair summary within 12000 characters, with omitted counts; full source metadata is retained.",
+                            "description": "Several queries in one call (up to 5, run concurrently).",
                         },
                         "top_k": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5,
-                                  "description": "Max results per query (default 5, max 10). Read complete pages via web_fetch(store=true) and web_query."},
+                                  "description": "Max results per query (default 5, max 10)."},
                         "categories": {
                             "type": "string",
                             "enum": ["general", "news", "it", "science", "images", "videos", "map", "music", "files"],
-                            "description": "Focus engines: 'it'=github/stackoverflow/pypi/mdn, 'science'=arxiv/pubmed/scholar, 'news', 'images' (also attaches a sourced answer gallery), 'map', etc. Omit for general web.",
+                            "description": "'it' = github/stackoverflow/pypi, 'science' = arxiv/pubmed, 'news', 'images' (attaches sourced picture cards). Omit for general web.",
                         },
                         "time_range": {
                             "type": "string",
                             "enum": ["day", "week", "month", "year"],
-                            "description": "Bias toward recent results. Omit for no recency filter.",
+                            "description": "Recent results only.",
                         },
                         "audience": {
                             "type": "string",
@@ -644,15 +599,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "web_fetch",
                 "description": (
-                    "Fetch a web page and extract the main readable text "
-                    "(navigation, ads, scripts stripped; JS-rendered pages are "
-                    "auto-rendered). Use AFTER `web_search` to actually read "
-                    "pages, not just snippets. Pass `urls` (a list) to fetch "
-                    "SEVERAL pages in PARALLEL in one call (far faster than one "
-                    "at a time); otherwise pass a single `url`. Plain text up to "
-                    "max_chars per page. Model-facing text is fitted within 12000 characters; "
-                    "Use find to read the passage around a known phrase in HTML, plain text or PDF without persistent storage; do not increase max_chars repeatedly or guess PDF #page anchors. "
-                    "For complete large pages use store=true then web_query only when task persistence permits."
+                    "Read web pages as clean text (JS pages are rendered). Pass `urls` "
+                    "(up to 5) to read several in one call, or one `url`. The reply fits "
+                    "12000 characters; to read around a known phrase use `find` instead "
+                    "of raising max_chars. Very large pages: store=true, then web_query."
                 ),
                 "parameters": {
                     "type": "object",
@@ -662,13 +612,13 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "array",
                             "items": {"type": "string"},
                             "maxItems": 5,
-                            "description": "Several http(s) URLs in one call (up to 5, fetched concurrently). store=true ingests sequentially. Batch text shares a 12000-character budget; use store=true then web_query for full pages.",
+                            "description": "Several http(s) URLs in one call (up to 5, read concurrently).",
                         },
                         "max_chars": {"type": "integer", "minimum": 500, "maximum": 50000, "default": 8000,
-                                      "description": "Extract up to this many chars per page (default 8000, max 50000); model-facing excerpts share the 12000-character response budget."},
-                        "force_refresh": {"type": "boolean", "description": "Recheck a paused source only when the user explicitly requests a new availability check. Otherwise respect its next-probe date and use another source."},
+                                      "description": "Chars per page (default 8000)."},
+                        "force_refresh": {"type": "boolean", "description": "Recheck a paused site only when the user asks; otherwise use another source."},
                         "find": {"type": "string", "maxLength": 200,
-                                 "description": "Read the passage around the first match of this phrase (case-insensitive, flexible whitespace), scanning up to 200000 extracted characters. Use words in the source language, not a question. Single url only; works without memory; requires store=false. Missing match is reported explicitly."},
+                                 "description": "Return the passage around this phrase (words in the page's language, not a question). Single url, store=false."},
                     },
                     "required": [],
                 },

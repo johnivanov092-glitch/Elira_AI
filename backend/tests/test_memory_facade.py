@@ -61,15 +61,15 @@ class MemoryFacadeTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["context"], "")
 
-    def test_code_agent_recall_tool_surfaces_facts(self) -> None:
-        # Ф3: the code-agent `recall` tool now returns curated facts too, not
-        # just RAG — so facts the user told Elira are reachable during a run.
-        from app.application.code_agent.tools import tool_recall
+    def test_code_agent_memory_tool_surfaces_facts(self) -> None:
+        # Facts the user told Elira are reachable during a run through the
+        # memory tool (recall searches the project index only).
+        from app.application.code_agent.tools import tool_memory
 
         memory.add_fact("Меня зовут Иван Тестовый", category="fact")
-        out = tool_recall(Path(BACKEND_ROOT), query="Иван", top_k=5)
+        out = tool_memory(action="search", query="Иван", limit=5)
         self.assertIn("Иван", out.get("text", ""))
-        self.assertIn("Known facts", out.get("text", ""))
+        self.assertIn("id=", out.get("text", ""))
 
 
 if __name__ == "__main__":

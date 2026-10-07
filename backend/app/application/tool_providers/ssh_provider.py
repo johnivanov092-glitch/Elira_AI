@@ -710,49 +710,6 @@ def tool_ssh_replace(*, host: str, path: str, old: str, new: str) -> dict[str, A
     }
 
 
-def _ssh_assert(host: str, path: str, pattern: str, *, want: bool) -> dict[str, Any]:
-    # ERROR branches: ok=False but NO verifier flag — the verifier couldn't RUN, so
-    # it's not a verdict (a matched criterion stays unconfirmed, not failed).
-    err = _validate_host(host)
-    if err is not None:
-        return {"text": f"ERROR: {err}", "ok": False}
-    if not isinstance(path, str) or not path.strip():
-        return {"text": "ERROR: path is empty", "ok": False}
-    if not isinstance(pattern, str) or pattern == "":
-        return {"text": "ERROR: `pattern` must be a non-empty string", "ok": False}
-    raw, rerr = _read_remote_bytes(host, path, None)
-    if rerr is not None:
-        return {"text": f"ERROR: {rerr}", "ok": False}
-    present = pattern in decode_console(raw)
-    ok = present is want
-    verdict = "НАЙДЕНО" if present else "НЕ НАЙДЕНО"
-    kind = "contains" if want else "not_contains"
-    # A real verdict → verifier=True + evidence, so the criteria tracker can mark
-    # the matching criterion confirmed (ok) or failed (not ok).
-    return {
-        "text": f"ssh_assert_{kind} {host}:{path} «{pattern[:60]}»: {verdict} → {'OK' if ok else 'FAIL'}",
-        "ok": ok,
-        "verifier": True,
-        "evidence": f"«{pattern[:60]}» {verdict} в {path}",
-        "touched_host": host,
-        "ssh_verification": _ssh_verification(
-            host, path, kind, present, ok, pattern=pattern,
-        ),
-    }
-
-
-def tool_ssh_assert_contains(*, host: str, path: str, pattern: str) -> dict[str, Any]:
-    """Verifier: assert a remote file CONTAINS `pattern`. Returns ok=True/False —
-    a real success criterion, not raw output the model has to eyeball."""
-    return _ssh_assert(host, path, pattern, want=True)
-
-
-def tool_ssh_assert_not_contains(*, host: str, path: str, pattern: str) -> dict[str, Any]:
-    """Verifier: assert a remote file does NOT contain `pattern` (e.g. proving a
-    line was removed). Returns ok=True/False."""
-    return _ssh_assert(host, path, pattern, want=False)
-
-
 def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     """Verifier: is `port` LISTENING on the remote host? Windows-first (PowerShell
     Get-NetTCPConnection via base64, no quoting), with a POSIX `ss`/`netstat`
@@ -811,97 +768,6 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
         "evidence": f"порт {p} {'LISTENING' if listening else 'не слушает'}: {out.strip()[:120]}",
         "touched_host": host,
         "ssh_verification": _ssh_verification(host, str(p), "listening", listening, listening),
-    }
-
-
-def _ssh_probe_exists(host: str, path: str) -> tuple[bool | None, str, dict[str, Any] | None]:
-    """Probe whether `path` exists on `host` (file or directory). Windows-first
-    (PowerShell Test-Path via base64, no quoting) with a POSIX `test` fallback.
-    Returns (exists, kind, error_result): a real verdict → (True/False, kind, None);
-    couldn't run → (None, "", {ERROR result, ok=False, no verifier})."""
-    err = _validate_host(host)
-    if err is not None:
-        return None, "", {"text": f"ERROR: {err}", "ok": False}
-    if not isinstance(path, str) or not path.strip():
-        return None, "", {"text": "ERROR: path is empty", "ok": False}
-
-    esc = path.replace("'", "''")  # PowerShell single-quote literal escaping
-    ps = (
-        "$ErrorActionPreference='Stop';"
-        f"if(Test-Path -LiteralPath '{esc}' -ErrorAction Stop){{"
-        f"if(Test-Path -LiteralPath '{esc}' -PathType Container -ErrorAction Stop){{'EXISTS DIR'}}else{{'EXISTS FILE'}}"
-        "}else{'MISSING'}"
-    )
-    b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-    win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
-    try:
-        proc = run_registered_process([*_ssh_args(host), win_cmd])
-    except Exception as exc:
-        logger.warning("SSH existence probe failed for host=%s", host, exc_info=True)
-        return None, "", {"text": f"ERROR: {exc}", "ok": False}
-    out = decode_console(proc.stdout)
-    # PowerShell missing (POSIX remote) → fall back to `test`.
-    if _powershell_unavailable(proc):
-        q = _shell_quote(path)
-        # test -e alone confuses inaccessible paths with absent ones. Only the
-        # known ENOENT diagnostic from ls permits an absence verdict.
-        posix = (
-            f"if [ -d {q} ]; then echo 'EXISTS DIR'; elif [ -e {q} ]; then echo 'EXISTS FILE'; "
-            f"else error=$(LC_ALL=C ls -ld -- {q} 2>&1); code=$?; "
-            "if [ \"$code\" -ne 0 ]; then case \"$error\" in "
-            "*': No such file or directory') echo 'MISSING';; "
-            "*) printf '%s\\n' \"$error\" >&2; exit \"$code\";; esac; "
-            "else echo 'EXISTS FILE'; fi; fi"
-        )
-        try:
-            proc = run_registered_process([*_ssh_args(host), posix])
-        except Exception as exc:
-            logger.warning("SSH POSIX existence probe failed for host=%s", host, exc_info=True)
-            return None, "", {"text": f"ERROR: {exc}", "ok": False}
-        out = decode_console(proc.stdout)
-    out = out.strip()
-    if proc.returncode != 0 or out not in {"EXISTS DIR", "EXISTS FILE", "MISSING"}:
-        return None, "", _probe_error(proc, probe=f"path {path}")
-    exists = out != "MISSING"
-    kind = "директория" if out == "EXISTS DIR" else ("файл" if out == "EXISTS FILE" else "нет")
-    return exists, kind, None
-
-
-def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
-    """Verifier: does `path` EXIST on the remote host (file or directory)? Returns
-    ok=True when the path exists, with the kind as evidence — so a "файл создан"/"папка
-    существует" criterion is confirmed by a verdict, not the model's word. The ERROR
-    branch (bad host / empty path / probe failed) returns ok=False WITHOUT a verifier
-    flag, so a matching criterion stays unconfirmed rather than marked failed."""
-    exists, kind, err = _ssh_probe_exists(host, path)
-    if err is not None:
-        return err
-    return {
-        "text": f"ssh_exists {host}:{path}: {'ЕСТЬ (' + kind + ')' if exists else 'НЕ найден'} → {'OK' if exists else 'FAIL'}",
-        "ok": bool(exists),
-        "verifier": True,
-        "evidence": f"{path}: {'существует (' + kind + ')' if exists else 'не найден'}",
-        "touched_host": host,
-        "ssh_verification": _ssh_verification(host, path, "exists", bool(exists), bool(exists)),
-    }
-
-
-def tool_ssh_not_exists(*, host: str, path: str) -> dict[str, Any]:
-    """Verifier for CLEANUP: assert `path` is GONE. Returns ok=True when the path is
-    ABSENT (cleanup succeeded) — so a "временный файл удалён" criterion is confirmed by
-    a verdict, and a still-present path is a real FAIL, not a tool error. The mirror of
-    ssh_exists; ERROR branch (couldn't probe) → ok=False, no verifier."""
-    exists, kind, err = _ssh_probe_exists(host, path)
-    if err is not None:
-        return err
-    gone = not exists
-    return {
-        "text": f"ssh_not_exists {host}:{path}: {'УДАЛЁН' if gone else 'НЕ УДАЛЁН (' + kind + ')'} → {'OK' if gone else 'FAIL'}",
-        "ok": gone,
-        "verifier": True,
-        "evidence": f"{path}: {'отсутствует — cleanup ок' if gone else 'ещё существует (' + kind + ')'}",
-        "touched_host": host,
-        "ssh_verification": _ssh_verification(host, path, "not_exists", bool(exists), gone),
     }
 
 
@@ -1323,48 +1189,6 @@ def _schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "ssh_assert_contains",
-                "description": (
-                    "Verifier: assert a remote file CONTAINS a substring. Returns "
-                    "ok=true/false — a real pass/fail check, not raw text to eyeball. "
-                    "Use only after the exact file and expected pattern are known; "
-                    "never use this to search or discover files."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string"},
-                        "pattern": {"type": "string"},
-                    },
-                    "required": ["host", "path", "pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_assert_not_contains",
-                "description": (
-                    "Verifier: assert a remote file does NOT contain a substring "
-                    "(e.g. proving a line was removed). Returns ok=true/false. "
-                    "Use only after the exact file and expected absence are known; "
-                    "never use this to search or discover files."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string"},
-                        "pattern": {"type": "string"},
-                    },
-                    "required": ["host", "path", "pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "ssh_port_check",
                 "description": (
                     "Verifier: is a TCP port LISTENING on the remote host? "
@@ -1378,47 +1202,6 @@ def _schemas() -> list[dict[str, Any]]:
                         "port": {"type": "integer"},
                     },
                     "required": ["host", "port"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_exists",
-                "description": (
-                    "Verifier: does a path EXIST on the remote host (file or "
-                    "directory)? Returns ok=true with the kind as evidence — use "
-                    "this to prove a file/folder was actually created, instead of "
-                    "eyeballing a Test-Path in ssh_run_ps. This checks one known "
-                    "path; it is not a discovery/search tool."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string"},
-                    },
-                    "required": ["host", "path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_not_exists",
-                "description": (
-                    "Verifier for CLEANUP: assert a path is GONE on the remote host. "
-                    "Returns ok=true when the path is ABSENT (cleanup succeeded) — use "
-                    "this after deleting a file/folder so the absence is a PASS, not a "
-                    "tool error. A still-present path is a real fail."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string"},
-                    },
-                    "required": ["host", "path"],
                 },
             },
         },
@@ -1442,11 +1225,7 @@ _DISPATCH = {
     "ssh_write": tool_ssh_write,
     "ssh_run_ps": tool_ssh_run_ps,
     "ssh_replace": tool_ssh_replace,
-    "ssh_assert_contains": tool_ssh_assert_contains,
-    "ssh_assert_not_contains": tool_ssh_assert_not_contains,
     "ssh_port_check": tool_ssh_port_check,
-    "ssh_exists": tool_ssh_exists,
-    "ssh_not_exists": tool_ssh_not_exists,
     "ssh_list_hosts": lambda **_: tool_ssh_list_hosts(),
 }
 

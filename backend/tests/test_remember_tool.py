@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.application.code_agent.tools import tool_remember
+from app.application.code_agent.tools import tool_memory
 from app.application.code_agent.prompts import _build_turn_context
 
 
@@ -13,14 +13,8 @@ class RememberToolTest(unittest.TestCase):
     """A model argument alone cannot confer user provenance."""
 
     def test_unbound_correction_is_agent_note(self):
-        with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 1}) as m, \
-             tempfile.TemporaryDirectory() as tmp:
-            res = tool_remember(
-                Path(tmp),
-                fact="Столица QA — Тестбург",
-                correction=True,
-                replaces_id=41,
-            )
+        with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 1}) as m:
+            res = tool_memory(action="add", text="Столица QA — Тестбург", correction=True, id=41)
         self.assertTrue(res["ok"])
         kw = m.call_args.kwargs
         self.assertEqual(kw["source"], "agent_note")
@@ -30,24 +24,22 @@ class RememberToolTest(unittest.TestCase):
         self.assertEqual(kw["replaces_id"], 41)
 
     def test_unbound_fact_source_agent(self):
-        with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 2}) as m, \
-             tempfile.TemporaryDirectory() as tmp:
-            tool_remember(Path(tmp), fact="Пользователь предпочитает тёмную тему")
+        with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 2}) as m:
+            tool_memory(action="add", text="Пользователь предпочитает тёмную тему")
         kw = m.call_args.kwargs
         self.assertEqual(kw["source"], "agent_note")
         self.assertEqual(kw["importance"], 8)
 
     def test_too_short_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            res = tool_remember(Path(tmp), fact="x")
+        res = tool_memory(action="add", text="x")
         self.assertFalse(res["ok"])
 
     def test_memory_failure_is_graceful(self):
-        with patch("app.application.memory.add_fact", side_effect=RuntimeError("db down")), \
-             tempfile.TemporaryDirectory() as tmp:
-            res = tool_remember(Path(tmp), fact="valid fact here")
+        with patch("app.application.memory.add_fact", side_effect=RuntimeError("db down")):
+            res = tool_memory(action="add", text="valid fact here")
         self.assertFalse(res["ok"])
-        self.assertIn("Не удалось", res["text"])
+        self.assertIn("недоступна", res["text"])
+
 
 class UserFactsInjectionTest(unittest.TestCase):
     """Relevant durable user facts are injected into the current turn."""

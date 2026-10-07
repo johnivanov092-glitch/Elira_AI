@@ -51,7 +51,7 @@ def test_full_machine_retrieval_keeps_tools_without_authoring_guidance(tmp_path,
     assert events[-1]["stop_reason"] == "answer"
     assert len(calls) == (3 if retrieval == "http_api" else 2)
     initial = _names(calls[0])
-    assert {"read_file", "write_file", "project_map", "runtime_control", "web_search", "web_fetch"} <= initial
+    assert {"read_file", "write_file", "web_search", "web_fetch"} <= initial
     assert all(initial <= _names(call) for call in calls)
     assert any("Не вызывай confirm за пользователя" in message.get("content", "")
                for message in calls[0]["messages"])
@@ -75,7 +75,9 @@ def test_actual_project_discovery_activates_work_once_even_without_catalog(tmp_p
         if len(calls) == 1:
             return _reply(name, arguments)
         assert sum(REMINDER in message.get("content", "") for message in calls[-1]) == int(bool(catalog))
-        assert {"read_file", "write_file", name} <= {tool["function"]["name"] for tool in kwargs["tools"]}
+        visible = {tool["function"]["name"] for tool in kwargs["tools"]}
+        # project_map is in the on-demand project group; a direct call still runs.
+        assert {"read_file", "write_file"} <= visible and (name in visible or name == "project_map")
         return _reply("read_file", {"path": "data.txt"}) if len(calls) == 2 else _reply()
 
     events = list(agent_loop.stream_code_agent(user_message="Исследуй файлы проекта.",
@@ -97,7 +99,7 @@ def test_real_mutation_gets_work_guidance_on_next_turn_without_hiding_tools(tmp_
             return _reply("write_file", {"path": "note.txt", "content": "Проверено: 12"})
         assert sum(WORK in message.get("content", "") for message in calls[-1]) == 1
         assert REMINDER not in str(kwargs["messages"])
-        assert {"write_file", "edit_file", "runtime_control"} <= {tool["function"]["name"] for tool in kwargs["tools"]}
+        assert {"write_file", "edit_file", "run_server"} <= {tool["function"]["name"] for tool in kwargs["tools"]}
         return _reply(text="Создан note.txt.")
 
     events = list(agent_loop.stream_code_agent(user_message="Создай note.txt.",

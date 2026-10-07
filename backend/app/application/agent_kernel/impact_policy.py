@@ -233,17 +233,16 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
         return str(payload.get("action") or "screenshot").strip().lower() != "screenshot"
     if name == "run_server":
         return str(payload.get("action") or "start").strip().lower() not in {"list", "logs"}
+    if name == "memory":
+        return str(payload.get("action") or "").strip().lower() not in {"search", "list"}
+    if name == "recall":
+        return str(payload.get("action") or "search").strip().lower() == "index"
     if name == "runtime_control":
-        return str(payload.get("operation") or "").strip().lower() not in {
-            "status", "mcp_list", "lsp_list", "telegram_status",
-            "telegram_test", "telegram_users", "itops_assets", "vault_status",
-            "plugin_list", "plugin_info", "ssh_hosts",
-            "workflow_list", "workflow_runs", "workflow_trigger_list",
-            "workflow_scheduler_status", "memory_stats", "memory_profiles",
-            "memory_list", "memory_search", "memory_recall", "library_list",
-            "library_search", "library_context", "project_status", "library_read",
-            "mcp_tools", "telegram_messages", "itops_mikrotik_list",
-        }
+        return str(payload.get("operation") or "").strip().lower() not in {"mcp_list", "mcp_tools"}
+    if name == "telegram":
+        return str(payload.get("action") or "").strip().lower() != "messages"
+    if name == "itops_registry":
+        return str(payload.get("action") or "").strip().lower() not in {"list", "mikrotik_list"}
     parts = _creative_mcp_parts(name)
     if parts is None:
         return True

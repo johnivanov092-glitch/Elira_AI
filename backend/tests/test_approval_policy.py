@@ -17,9 +17,16 @@ from app.application.agent_kernel.executor import ToolExecutionRequest, permissi
 
 
 @pytest.mark.parametrize("mode", ["ask", "accept_edits", "bypass"])
-@pytest.mark.parametrize("operation", ["library_read", "mcp_tools", "telegram_messages", "itops_mikrotik_list"])
-def test_runtime_discovery_and_reads_do_not_pause(mode, operation):
-    request = _local_ask_request("runtime_control", {"operation": operation})
+@pytest.mark.parametrize("tool,args", [
+    ("runtime_control", {"operation": "mcp_tools"}),
+    ("runtime_control", {"operation": "mcp_list"}),
+    ("telegram", {"action": "messages"}),
+    ("itops_registry", {"action": "mikrotik_list"}),
+    ("memory", {"action": "search"}),
+    ("recall", {"action": "status"}),
+])
+def test_runtime_discovery_and_reads_do_not_pause(mode, tool, args):
+    request = _local_ask_request(tool, args)
     request.permission_mode = mode
     with patch("app.application.tool_registry.runtime.get_tool", return_value={"side_effect": True}):
         assert permission_mode_auto_approves(request)
@@ -67,8 +74,11 @@ def test_read_only_call_never_needs_workflow_approval() -> None:
 
 
 def test_project_corpus_status_is_read_only_but_indexing_is_a_change() -> None:
-    assert not tool_call_is_change("runtime_control", {"operation": "project_status"})
-    assert tool_call_is_change("runtime_control", {"operation": "project_index"})
+    assert not tool_call_is_change("recall", {"action": "status"})
+    assert not tool_call_is_change("recall", {"query": "x"})
+    assert tool_call_is_change("recall", {"action": "index"})
+    assert tool_call_is_change("memory", {"action": "add"})
+    assert tool_call_is_change("telegram", {"action": "send"})
 
 
 def test_bypass_does_not_depend_on_registry_or_classifier() -> None:

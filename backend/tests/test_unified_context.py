@@ -49,7 +49,7 @@ def test_legacy_profiles_do_not_switch_identity_or_sampling():
 ])
 def test_any_message_starts_with_work_tools_and_one_persona(tmp_path, query):
     call = capture(tmp_path, query)
-    assert {"capability_load", "runtime_control", "read_file", "web_search", "web_fetch"} <= names(call)
+    assert {"capability_load", "read_file", "web_search", "web_fetch"} <= names(call)
     assert "проверь результат" in str(call["messages"])
     assert "первичные источники" in str(call["messages"])
     assert len(base_system(call["messages"])) <= 3000

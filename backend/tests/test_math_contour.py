@@ -158,6 +158,5 @@ def test_math_tools_are_read_only_and_visible():
         assert specs[name]["side_effect"] is False
         # Read-only calls run in "ask" mode without an approval card.
         assert decide_approval("ask", "local", None, is_change=specs[name]["side_effect"]) == "auto"
-    assert "calc" in BASE_TOOLS
-    assert CAPABILITY_GROUPS["math"] == {"calc", "unit_convert", "finance_calc"}
-    assert "csv" in CAPABILITY_GROUPS["data"]
+    assert "calc" not in BASE_TOOLS
+    assert CAPABILITY_GROUPS["math"] == {"calc", "unit_convert", "finance_calc", "csv"}

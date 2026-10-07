@@ -11,7 +11,7 @@ from _runtime_roles import runtime_text
 from app.application.code_agent.capabilities import (
     CAPABILITY_GROUPS,
     CORE_BUILTIN_TOOLS,
-    PROFILE_CAPABILITY_GROUPS,
+    DOMAIN_CAPABILITY_GROUPS,
     builtin_tools_for_groups,
     route_request_capabilities,
 )
@@ -35,7 +35,6 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
         tmp_path,
         builtin_tool_names=builtin_tools_for_groups(()),
         mcp_server_ids=(),
-        lsp_server_ids=(),
         include_ssh=False,
         include_itops=False,
     )
@@ -175,14 +174,13 @@ def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
         tmp_path,
         builtin_tool_names=builtin_tools_for_groups(("resources",)),
         mcp_server_ids=(),
-        lsp_server_ids=(),
         include_ssh=False,
         include_itops=False,
     )
 
     names = _tool_names(registry)
     assert {"resource_process", "read_image", "file_gen"} <= names
-    assert {"web_search", "computer", "csv", "remember"}.isdisjoint(names)
+    assert {"web_search", "computer", "csv", "memory"}.isdisjoint(names)
 
 
 def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path) -> None:
@@ -274,7 +272,7 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
     }
     with patch(
         "app.application.code_agent.agent_loop._load_runtime_activation_state",
-        return_value=(set(), set(), {}, True, False, {"project", "runtime"}),
+        return_value=(set(), {}, {"project", "ssh"}),
     ), patch(
         "app.application.code_agent.tools._run.start_background_argv_job",
         return_value=started,
@@ -355,16 +353,12 @@ def test_memory_tool_schemas_distinguish_project_rag_from_user_memory() -> None:
         for schema in build_tool_schemas()
     }
 
-    recall_description = schemas["recall"]["description"]
-    runtime_description = schemas["runtime_control"]["description"]
-    assert "not long-term user memory" in recall_description
-    assert "memory_search" in runtime_description
-    assert "memory_list" in runtime_description
-    assert "local Library catalog" in runtime_description
-    assert "negative conclusion" in runtime_description
+    assert "memory tool" in schemas["recall"]["description"]
+    assert schemas["recall"]["parameters"]["properties"]["action"]["enum"] == ["search", "index", "status"]
+    assert schemas["memory"]["parameters"]["properties"]["action"]["enum"] == ["search", "list", "add", "delete"]
+    assert "before concluding something is absent" in schemas["library"]["description"]
     operations = schemas["runtime_control"]["parameters"]["properties"]["operation"]["enum"]
-    assert "project_index" in operations
-    assert "project_status" in operations
+    assert all(operation.startswith("mcp_") for operation in operations)
 
 
 def test_unknown_capability_group_fails_without_changing_visibility() -> None:
@@ -384,7 +378,7 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
         ("Объясни квантовую запутанность со ссылками", "Научный"),
         ("Какие симптомы бывают при пневмонии", "Медицина"),
     )
-    assert set(PROFILE_CAPABILITY_GROUPS) == set(PERSONA_MODES)
+    assert set(DOMAIN_CAPABILITY_GROUPS) == set(PERSONA_MODES)
 
     for profile_index, (message, expected_profile) in enumerate(route_cases):
         seen_tool_names: list[set[str]] = []
@@ -413,7 +407,8 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
             permission_mode="ask",
         ))
 
-        assert {"capability_load", "runtime_control", "read_file", "web_search", "web_fetch"} <= seen_tool_names[0]
+        assert {"capability_load", "read_file", "web_search", "web_fetch"} <= seen_tool_names[0]
+        assert "runtime_control" not in seen_tool_names[0]
         assert "Режим работы:" not in seen_system_prompts[0]
         run_started = next(event for event in events if event["type"] == "run_started")
         assert run_started["profile_name"] == "Баланс"
@@ -487,7 +482,7 @@ def test_explicit_runtime_activation_survives_resume(tmp_path) -> None:
 
     replies = iter([
         {"message": {"content": "", "tool_calls": [{"function": {
-            "name": "runtime_control", "arguments": {"operation": "itops_assets"},
+            "name": "capability_load", "arguments": {"group": "itops"},
         }}]}},
         {"message": {"content": "Готово.", "tool_calls": []}},
     ])

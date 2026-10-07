@@ -116,3 +116,40 @@ def require_id(value: str, name: str, title: str | None = None) -> str:
         # for user input is requested explicitly through the Workflow plane.
         raise ValueError(f"Missing required argument: {name} ({title or name})")
     return normalized
+
+
+def run_operation(operation: str, call: Any) -> dict[str, Any]:
+    """Run one integration operation and wrap its outcome in the shared contract.
+
+    ``call`` returns the runtime's own result dict or raises; a RuntimeRequest
+    becomes a needs_* status that the agent loop turns into a Workflow card.
+    """
+    from app.application.agent_kernel.tool_result import ensure_tool_result
+
+    try:
+        result = ensure_tool_result(call(), source=f"operation {operation!r}")
+    except RuntimeRequest as exc:
+        return requested(operation, exc)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the model as a typed failure
+        return failed(
+            operation,
+            str(exc),
+            code=exc.__class__.__name__,
+            retryable=isinstance(exc, (ConnectionError, OSError))
+            and not isinstance(exc, (FileNotFoundError, PermissionError)),
+        )
+    raw_status = str(result.get("status") or "").strip()
+    if raw_status == "cancelled":
+        return with_text({"ok": False, "status": "cancelled", "operation": operation, "result": result})
+    if raw_status in RESULT_STATUSES - {"completed", "failed", "cancelled"}:
+        request = result.get("request") if isinstance(result.get("request"), dict) else {}
+        return with_text({"ok": False, "status": raw_status, "operation": operation,
+                          "request": request, "result": result})
+    if raw_status == "failed" or result.get("ok") is False:
+        raw_error = result.get("error") or "operation failed"
+        if isinstance(raw_error, dict):
+            return failed(operation, str(raw_error.get("message") or raw_error),
+                          code=str(raw_error.get("code") or "runtime_operation_failed"),
+                          retryable=bool(raw_error.get("retryable", False)))
+        return failed(operation, str(raw_error))
+    return completed(operation, result)

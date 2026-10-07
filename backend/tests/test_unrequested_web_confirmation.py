@@ -82,7 +82,7 @@ def test_current_events_access_denial_recovers_to_search_without_user_confirmati
     assert [event["tool"] for event in calls] == ["web_search", "web_fetch"]
     assert all(event["ok"] for event in calls)
     if base_tools is None:
-        assert {"read_file", "runtime_control", "web_search", "web_fetch"} <= schemas[0]
+        assert {"read_file", "web_search", "web_fetch"} <= schemas[0]
     else:
         assert schemas[0] == {"capability_load", "ask_user", "workflow_request"}
     assert "web_search" in schemas[1]

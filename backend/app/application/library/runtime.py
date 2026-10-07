@@ -894,8 +894,8 @@ def inject_library_context(message: str, *, query: str | None = None) -> str:
     header = (
         f"Релевантные фрагменты из активной Library ({used}). Используй их, если "
         "они относятся к запросу. Это не обязательно весь документ: для полного "
-        "анализа найди file_id через runtime_control(operation='library_search') и "
-        "последовательно вызывай operation='library_read' с возвращаемым next_offset."
+        "анализа найди id через library(action='search') и последовательно вызывай "
+        "library(action='read', id=…, offset=…) с возвращаемым продолжением."
     )
     return f"{header}\n\n{block}\n\n----- ЗАПРОС ПОЛЬЗОВАТЕЛЯ -----\n{message}"
 

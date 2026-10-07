@@ -95,8 +95,11 @@ def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Pa
         "calc": {"expression": ""},
         "unit_convert": {"value": "x", "from_unit": "?", "to_unit": "?"},
         "finance_calc": {"operation": "__invalid__"},
-        "recall": {},
-        "remember": {"fact": ""},
+        "recall": {"action": "__invalid__"},
+        "memory": {"action": "__invalid__"},
+        "library": {"action": "__invalid__"},
+        "telegram": {"action": "__invalid__"},
+        "itops_registry": {"action": "__invalid__"},
     }
     missing_cases = ALL_BUILTIN_TOOLS - set(safe_calls)
     assert missing_cases == set()

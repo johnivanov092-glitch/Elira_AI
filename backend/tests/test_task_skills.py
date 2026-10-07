@@ -154,7 +154,7 @@ def test_history_snapshot_commits_skill_changes(data):
 
 
 def test_no_skill_operations_remain(tmp_path):
-    result = tool_runtime_control(tmp_path, operation="skill_load", name="python")
+    result = tool_runtime_control(tmp_path, operation="skill_load")
     assert result["ok"] is False
     runtime = next(item for item in build_tool_schemas() if item["function"]["name"] == "runtime_control")
     operations = runtime["function"]["parameters"]["properties"]["operation"]["enum"]

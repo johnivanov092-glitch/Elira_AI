@@ -28,8 +28,7 @@ Code-agent core: понять → спланировать → вызвать to
     ├─ группы tools по запросу LLM
     ├─ SSH
     ├─ IT Ops
-    ├─ MCP
-    └─ LSP
+    └─ MCP
     ↓
 Файлы / процессы / LAN / Windows / внешние сервисы
 ```
@@ -69,9 +68,9 @@ Transcript + Workflow request card
 | ToolExecutor | Единственная точка Workflow-разрешения и запуска tool | `application/agent_kernel/executor.py` |
 | Impact policy | Только классифицирует опасность для `accept_edits` | `application/agent_kernel/impact_policy.py` |
 | Runtime registry | Собирает схемы и направляет call владельцу | `application/tool_providers/runtime_registry.py` |
-| Providers | Builtin, SSH, IT Ops, MCP, LSP | `application/tool_providers/` |
+| Providers | Builtin, SSH, IT Ops, MCP | `application/tool_providers/` |
 | Capability catalog | Группирует необязательные builtin-схемы для загрузки моделью | `application/code_agent/capabilities.py` |
-| Runtime control | Управляет скрытыми интеграциями из Workflow | `application/code_agent/tools/_runtime_control.py` |
+| MCP control | Список, запуск и настройка MCP-серверов (группа mcp) | `application/code_agent/tools/_runtime_control.py` |
 | TaskOutcome | Решение о повторном использовании, свежие проверки и receipts выдачи файлов | `application/code_agent/task_outcomes.py` |
 | Навыки | Папка `data/skills`: каталог в промпте, закрепление прочитанного SKILL.md, git-история | `application/code_agent/task_skills.py` |
 | Самообновление | Проверка и переключение цельного backend/UI с восстановлением | `scripts/elira_release.py` стабильной платформы |
@@ -87,7 +86,7 @@ Transcript + Workflow request card
 |---|---|
 | `run_control.py` | Живую регистрацию run, Stop, закрытие upstream и ожидание Workflow response |
 | `model_turn.py` | Один обмен с моделью, reasoning/content и heartbeat |
-| `runtime_activation.py` | Видимость групп и MCP/LSP/SSH/IT Ops в текущем run |
+| `runtime_activation.py` | Видимость групп (включая ssh/itops) и MCP в текущем run |
 | `turn_context.py` | Messages, skills, уточнения пользователя, pinned blocks и подготовку контекста |
 | `tool_execution.py` | Один выбранный tool call через прежний executor и ветки Workflow |
 | `run_observations.py` | Прежние evidence, TaskOutcome, CommandProgress и CriteriaTracker — по одному экземпляру |
@@ -143,13 +142,14 @@ sequenceDiagram
 
 Что важно:
 
-- модель сразу видит основные инструменты файлов/shell, поиска/чтения Web,
-  памяти и `runtime_control`, а также `capability_load` и вопросы Workflow;
+- модель сразу видит базу из 10 рабочих инструментов (файлы, поиск по файлам,
+  shell, фоновые процессы, web_search/web_fetch, список задач) плюс
+  `capability_load` и `ask_user`;
 - дополнительные группы builtin tools выбирает сама LLM, а полные схемы группы появляются
   на следующем model turn;
 - в UI существует одна личность `Elira / Auto` и единая температура; доменные
   метки нужны только для требований задачи и evidence, без переключения роли;
-- MCP/LSP/SSH не запускаются из-за профиля: LLM вызывает runtime только когда
+- MCP/SSH/IT Ops не подключаются из-за профиля: LLM загружает группу только когда
   конкретной задаче нужна соответствующая внешняя интеграция;
 - большой MCP не выгружает в LLM все схемы сразу: provider оставляет только
   релевантный задаче поднабор, а `mcp_tools(server_id, query)` раскрывает другой
@@ -161,14 +161,14 @@ sequenceDiagram
 - approval не хранится во второй approval-базе;
 - Resume продолжает тот же `run_id`, а не создаёт новую задачу;
 - долгий корректный run не имеет wall-clock timeout или лимита шагов.
-- дочерние shell/sandbox/plugin процессы наследуют текущую среду Elira и права
+- дочерние shell-процессы и скрипты навыков наследуют текущую среду Elira и права
   текущего Windows token; отдельной скрытой env-allowlist нет.
 
 ### 3.1. Как LLM подгружает инструменты
 
 На первом ходе модель получает одну стабильную личность и основные рабочие
-схемы из `tool_policy.BASE_TOOLS`, включая `web_search`, `web_fetch`,
-`runtime_control` и файловые инструменты. Их рабочие инструкции стоят перед
+схемы из `tool_policy.BASE_TOOLS`: файловые инструменты, `run_bash`/`run_server`,
+`web_search`, `web_fetch`, `todo_update`. Их рабочие инструкции стоят перед
 текущим запросом. Минимальный default только с discovery отменён 2026-09-06:
 правильное выполнение важнее TTFT. Старые настройки и журналы читаются,
 профиль не меняет личность или температуру. Остальные возможности подгружаются:
@@ -194,14 +194,19 @@ Evidence Router
 |---|---|
 | свободная беседа | прямой ответ, без загрузки |
 | файлы, код, тесты | основные tools уже видимы |
-| документы, расчёты | `resources`, `data` |
-| сервер, SSH, внешние интеграции, личная память | `runtime_control` уже видим |
+| документы, вложения | `resources` |
+| расчёты, суммы по таблице | `math` |
+| сервер по SSH | `ssh` |
+| сохранённые цели IT Ops, MikroTik | `itops` |
+| MCP-серверы | `mcp` |
+| личная память, Библиотека | `memory` |
+| отправка в Telegram | `telegram` |
 | внешние источники | `web_search`/`web_fetch` уже видимы; `web` для browser и остальных tools |
 
 Legacy `profile_name` остаётся в HTTP/journal для совместимости. Новый run
 начинается с основных рабочих tools; `capability_load` доступен и после ошибочного
 выбора группы. Общие проверки работы и инструкции подключённого проекта
-поступают также для Web/MCP/SSH/LSP. Они закреплены через существующие
+поступают также для Web/MCP/SSH. Они закреплены через существующие
 `pinned_message_ids` компактора: не теряются при summary/fallback, учитываются
 в бюджете и не меняют стабильный system prefix.
 
@@ -215,14 +220,16 @@ Windows, сервера или сети.
 
 | Группа | Что появляется |
 |---|---|
-| `project` | файлы, код, shell, процессы, тесты, план задачи |
-| `runtime` | MCP/LSP/SSH/IT Ops, Telegram, Library, личная память |
-| `web` | поиск/чтение web, HTTP API, browser, URL screenshot |
+| `project` | `project_map`, `recall` (индекс проекта), `delegate_task` (подагент) |
+| `mcp` | `runtime_control`: MCP list/start/stop/tools/upsert/remove |
+| `ssh` | ssh_run/ssh_run_ps/ssh_read/ssh_write/ssh_replace/ssh_port_check/ssh_list_hosts |
+| `itops` | `itops_registry` и typed `itops_*` health/inventory |
+| `telegram` | `telegram` (send/messages) |
+| `web` | `web_query`, `http_api`, `browser` |
 | `desktop` | локальный Windows computer control |
-| `resources` | вложения, OCR/vision, DOCX/XLSX/PDF, публикация файлов |
-| `data` | sandbox, regex, CSV, converter, SQLite, encryption, archives |
-| `memory` | recall и remember |
-| `operations` | server-facts reconciliation, webhooks |
+| `resources` | вложения, vision, DOCX/XLSX/PDF, публикация файлов |
+| `memory` | `memory` (факты о пользователе), `library` (Библиотека) |
+| `math` | `calc`, `unit_convert`, `finance_calc`, `csv` |
 
 Это не permission и не guard. `capability_load` лишь уменьшает prompt: handler
 и ToolExecutor остаются теми же. Если валидный native/inline call скрытого
@@ -450,71 +457,36 @@ Workflow response и Stop ветка `ask_user` сначала сохраняе�
 
 - сервер модели недоступен или оборвал соединение;
 - OS вернула ошибку запуска/доступа;
-- MCP/LSP/SSH transport не подключился;
+- MCP/SSH transport не подключился;
 - запрос не помещается в физическое context window после compaction;
 - provider вернул невалидный protocol payload;
 - приложение/процесс аварийно завершился.
 
 Это не внутренние запреты. Это фактические failure boundaries.
 
-## 8. Интеграции спрятаны за runtime
+## 8. Интеграции — группы по требованию и UI
 
-В Settings больше не нужен отдельный пульт на каждую интеграцию. Агент вызывает
-`runtime_control(operation, ...)`, а Workflow показывает нужную карточку.
-Имеющееся исключение для ручного управления — Settings → MCP: статус и
-start/stop/restart настроенных серверов через `/api/mcp`. Этот API делегирует
-тому же runtime; запуск процесса пользователем не раскрывает schemas всем чатам.
+С 2026-10-07 (трек «Elira на диете») мега-инструмента с десятками операций нет.
+Каждая интеграция — маленькая группа, которую модель загружает сама через
+`capability_load(group)`; то, что делает человек, живёт в Настройках.
 
-```text
-Агент
-  ↓ runtime_control
-Runtime control adapter
-  ├─ Vault
-  ├─ MCP lifecycle/config
-  ├─ LSP lifecycle/config
-  ├─ SSH saved shortcuts
-    ├─ Telegram lifecycle/config/users/send/messages (token только внутри vault/runtime)
-  ├─ IT Ops assets/profiles
-  ├─ Plugins lifecycle/config/run
-  ├─ Workflow templates/runs/triggers/scheduler
-  ├─ Memory administration
-  └─ Library administration
-```
+| Что | Как модель это делает | Что в UI |
+|---|---|---|
+| MCP | группа `mcp`: `runtime_control(mcp_list/start/stop/restart/tools/upsert/remove)` | Настройки → MCP (статус, start/stop) |
+| SSH | группа `ssh`: ssh_run, ssh_run_ps, ssh_read, ssh_write, ssh_replace, ssh_port_check, ssh_list_hosts | — |
+| IT Ops | группа `itops`: `itops_registry` (активы, профили, MikroTik) + typed `itops_*` | — |
+| Telegram | группа `telegram`: `telegram(action=send/messages)` | Настройки → Telegram (токен, старт/стоп, пользователи) |
+| Хранилище секретов | только `secret_ref` через карточку Workflow | Настройки → Секреты (создать, разблокировать, копия) |
+| Память, Библиотека | группа `memory`: `memory` (search/list/add/delete), `library` (search/read) | Настройки → Память / Библиотека |
+| Индекс проекта | группа `project`: `recall(action=search/index/status)` | — |
 
-Поддерживаемые группы операций:
+LSP-подсистема и плагины удалены (символы и ссылки по коду — serena MCP по
+требованию; повторно используемые скрипты — навыки в `data/skills`). Операции
+Workflow-шаблонов и расписаний из инструмента модели убраны; сам Workflow-движок
+остаётся владельцем прогонов, одобрений и карточек.
 
-- `status`;
-- `mcp_list/upsert/remove/start/stop/restart`;
-- `lsp_list/upsert/remove/start/stop/restart`;
-- `ssh_hosts/set_hosts` — только сохранённые shortcuts, не ограничение целей;
-- `telegram_status/configure/start/stop/test/users/toggle_user`;
-- `itops_assets`, asset/profile upsert/remove;
-- `itops_mikrotik_list/upsert/remove/sync` — постоянный multi-router roster;
-- `plugin_list/info/enable/disable/reload/configure/run`;
-- `workflow_list/upsert/remove/run/runs/resume/cancel`;
-- `workflow_trigger_list/upsert/remove` и `workflow_scheduler_status/start/stop`;
-- `memory_stats/profiles/list/search/recall/add/delete/prune`;
-- `library_list/search/read/context/add/import/toggle/delete`: поиск возвращает
-  `file_id`, а `library_read(offset, limit)` последовательно читает полный текст;
-- `vault_status/lock/backup/restore`.
-
-Library в topbar — долговременная база, а не второе чат-вложение. Файл можно
-загрузить прямо в popover или явно сохранить туда из attachment-chip. При
-ингесте сохраняется полный извлечённый текст до физического предела 1 000 000
-символов и индексируется FTS5 внутри существующей `library.db`; в обычный prompt
-попадает только релевантное окно до 2500 символов. Нулевое совпадение не
-подмешивает старые документы в обычный чат; fallback разрешён только при явном
-запросе к Library/вложению/документу.
-Если запрос требует прочитать документ целиком, агент выполняет
-`library_search`, затем повторяет `library_read` с возвращаемым `next_offset`.
-UI показывает `проиндексирован / только превью / ошибка индексации`, активность
-и факт предыдущего добавления в контекст.
-
-Старый отдельный Pipeline API не возвращён. Расписание — это запись
-`workflow_triggers` в той же `workflow_engine.db`; триггер запускает существующий
-Workflow и наследует один из трёх permission modes.
-
-Каждая операция возвращает единый envelope:
+Telegram, IT Ops и MCP возвращают единый envelope, из которого цикл агента
+показывает карточку Workflow для любого инструмента:
 
 ```text
 completed(result)
@@ -526,41 +498,41 @@ waiting_approval(exact tool digest)
 cancelled
 ```
 
-Публичная точка одна, но файл не превращён в новый монолит: общий result contract
-лежит в `_runtime_control_contract.py`, Workflow/scheduler adapter — в
-`_runtime_control_workflows.py`, memory/library adapter — в
-`_runtime_control_data.py`. Они не исполняют tools сами и не создают второй
-registry.
+Контракт и общий `run_operation` лежат в `_runtime_control_contract.py`; адаптеры —
+`_runtime_control.py` (MCP), `_telegram.py`, `_itops.py`. Они не исполняют чужие
+tools и не создают второй registry.
 
-FastAPI не запускает MCP автоматически. Новый обычный прогон не добавляет схемы
-MCP/LSP/SSH/IT Ops по ключевым словам или профилю. Нужную интеграцию выбирает
-сама модель через уже доступный `runtime_control`:
+FastAPI не запускает MCP автоматически. Новый прогон не добавляет схемы
+MCP/SSH/IT Ops по ключевым словам или профилю:
 
 ```text
-MCP: runtime_control(mcp_list)
+MCP: capability_load(mcp) → runtime_control(mcp_list)
   → runtime_control(mcp_start, server_id)
   → schemas только выбранного MCP на следующем model turn
 
-LSP: runtime_control(lsp_list)
-  → runtime_control(lsp_start, server_id)
-  → три LSP tools текущего прогона
+SSH: capability_load(ssh) → ssh_list_hosts / ssh_run …
 
-SSH: runtime_control(ssh_hosts)
-  → SSH tools текущего прогона
+IT Ops: capability_load(itops) → itops_registry(action=list)
+  → typed itops_* по решению LLM
 
-IT Ops: runtime_control(itops_assets)
-  → IT Ops tools текущего прогона по решению LLM
-
-Новый MikroTik: runtime_control(itops_mikrotik_upsert, host, user, label,
-                                ros_version?, ssh_alias?, identity_file?)
+Новый MikroTik: itops_registry(action=mikrotik_upsert, config={host, user, label,
+                               ros_version?, ssh_alias?, identity_file?})
   → network_device + ssh profile в it_ops.sqlite3
   → typed SSH probe автоматически определяет/проверяет RouterOS
   → RouterOS 6 получает legacy algorithms только для этой зарегистрированной цели
 
-Сохранённый MikroTik: runtime_control(itops_mikrotik_list)
+Сохранённый MikroTik: itops_registry(action=mikrotik_list)
   → itops_mikrotik_inventory с точным router_id
   → произвольная RouterOS CLI-команда через ssh_run
 ```
+
+Library в topbar — долговременная база, а не второе чат-вложение. Файл можно
+загрузить прямо в popover или явно сохранить туда из attachment-chip. При
+ингесте сохраняется полный извлечённый текст до физического предела 1 000 000
+символов и индексируется FTS5 внутри существующей `library.db`; в обычный prompt
+попадает только релевантное окно до 2500 символов. Если запрос требует прочитать
+документ целиком, агент вызывает `library(action=search)`, затем
+`library(action=read, id, offset)` с возвращаемым продолжением.
 
 Адрес, имя, версия, key path и параметры всех добавленных MikroTik переживают
 новые чаты и перезапуск приложения. Каноническая запись находится в IT Ops
@@ -674,10 +646,10 @@ web_corpus.sqlite3               ← временный run-scoped кэш, не 
 `memory_prune` объединяет два независимых обслуживания: bounded prune
 семантических `agent_turn/verified_turn` и удаление только устаревших
 `volatile_fact` (по умолчанию старше 7 дней). Обычные пользовательские факты
-эта операция не удаляет. `runtime_control(memory_search)` показывает ID
-найденных curated facts, не смешивая этот lookup с Project RAG. Для поправки
-передаётся явный `replaces_id`, но он не повышает доверие к записи.
-`remember`/`memory_add` по умолчанию сохраняют `agent_note` и ссылку на run.
+эта операция не удаляет. `memory(action=search)` показывает ID
+найденных curated facts, не смешивая этот lookup с индексом проекта (`recall`). Для
+поправки передаются `correction=true` и id записи, но они не повышают доверие к записи.
+`memory(action=add)` по умолчанию сохраняет `agent_note` и ссылку на run.
 Сервер сверяет текст с исходным `memory_query` текущего RunJournal: только
 буквальные слова пользователя или точный остаток его команды «запомни» получают
 `user_command`/`user_correction`. Парафразы, выводы модели, вложения и её
@@ -864,7 +836,6 @@ assets, plugin execution, Task Planner CRUD, pipelines и change executor уда
 data/resources/            resource blobs + metadata
 data/background_jobs/      machine-local job journal/spec/launch/result sidecars
 data/mcp_servers.json      MCP configuration
-data/lsp_servers.json      LSP configuration
 data/ssh_acl.json          legacy filename; saved SSH shortcuts, не ACL gate
 data/portable_vault.json   encrypted portable vault
 ```
@@ -900,7 +871,7 @@ evidence и audit events разные lifecycle и recovery semantics.
 | LLM payload/cache | `infrastructure/llm/openai_compatible.py` |
 | Новый built-in tool | `capabilities.py` + существующие `tool_schemas.py`/`_dispatch.py`, без второго registry |
 | Новый provider | `application/tool_providers/`, зарегистрировать в runtime registry |
-| Integration control | `_runtime_control.py` |
+| Integration tools | `_runtime_control.py` (MCP), `_telegram.py`, `_itops.py`, `_memory.py` |
 | Workflow request | `workflows/request_lifecycle.py`, `request_recovery.py`, `request_validation.py`, `WorkflowRequestCard.tsx` |
 | Vault/UAC | `infrastructure/secrets/vault.py`, `src-tauri/src/main.rs` |
 | API mount | `api/routes/registry.py` |

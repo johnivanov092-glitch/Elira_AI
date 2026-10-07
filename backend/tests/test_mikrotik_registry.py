@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.application.code_agent.tools._runtime_control import tool_runtime_control
+from app.application.code_agent.tools._itops import tool_itops_registry
 from app.application.it_ops import mikrotik_registry
 from app.application.tool_providers import mcp_runtime
 from app.infrastructure.it_ops import store
@@ -106,9 +106,8 @@ class MikrotikSshRegistryTest(unittest.TestCase):
                 return_value=self.registry_path,
             ),
         ):
-            result = tool_runtime_control(
-                ROOT,
-                operation="itops_mikrotik_upsert",
+            result = tool_itops_registry(
+                action="mikrotik_upsert",
                 config={"host": "192.168.88.1", "label": "home", "user": "Elira"},
             )
 
@@ -123,9 +122,8 @@ class MikrotikSshRegistryTest(unittest.TestCase):
             "discover_routeros_version",
             return_value={"ok": True, "ros_version": "6.49.19"},
         ):
-            result = tool_runtime_control(
-                ROOT,
-                operation="itops_mikrotik_upsert",
+            result = tool_itops_registry(
+                action="mikrotik_upsert",
                 config={
                     "host": "192.168.88.1",
                     "label": "home",
@@ -175,9 +173,8 @@ class MikrotikSshRegistryTest(unittest.TestCase):
         self.assertNotIn("identity_file", saved)
 
     def test_plaintext_password_is_rejected_without_echo_or_persistence(self) -> None:
-        result = tool_runtime_control(
-            ROOT,
-            operation="itops_mikrotik_upsert",
+        result = tool_itops_registry(
+            action="mikrotik_upsert",
             config={
                 "host": "192.168.88.1",
                 "user": "Elira",

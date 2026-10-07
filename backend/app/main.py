@@ -50,10 +50,9 @@ def _recover_background_job_runtime() -> None:
 
 def _shutdown_integration_runtimes() -> None:
     """Release explicitly started child runtimes on a graceful backend stop."""
-    from app.application.tool_providers import lsp_runtime, mcp_runtime
+    from app.application.tool_providers import mcp_runtime
 
     mcp_runtime.stop_all_servers()
-    lsp_runtime.stop_all_servers()
 
 
 def _recover_workflow_requests() -> None:

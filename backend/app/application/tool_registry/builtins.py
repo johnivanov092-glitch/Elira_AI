@@ -21,7 +21,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("glob",        "Glob",         "project", "List files matching a glob pattern",       15, 20000, True),
         ("grep",        "Grep",         "project", "Search files by content pattern",          15, 20000, True),
         ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
-        ("recall",      "Recall",       "memory",  "Recall from project RAG memory",           15, 20000, True),
+        ("recall",      "Recall",       "project", "Search, index or report the project index", 60, 20000, True),
+        ("library",     "Library",      "memory",  "Search and read the user's Library documents", 15, 20000, True),
         ("web_search",  "Web Search",   "web",     "Search the web",                          30, 50000, True),
         ("web_fetch",   "Web Fetch",    "web",     "Fetch and parse a web page",              30, 50000, True),
         ("web_query",   "Web Query",    "web",     "Search the run's saved web-evidence corpus for relevant excerpts (web_fetch store)", 30, 20000, True),
@@ -44,12 +45,14 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Validate and publish an already-produced project file as a downloadable artifact (streaming, hash-bound, no overwrite) via the existing download route", 120, 10000, True),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
-        ("runtime_control", "Runtime Control", "system", "Manage integration runtimes through Workflow UI", 900, 50000, False),
+        ("runtime_control", "MCP Control", "system", "List, start, stop and configure MCP servers", 900, 50000, False),
+        ("telegram", "Telegram", "system", "Send a Telegram message or read the bot log", 60, 20000, False),
+        ("itops_registry", "IT Ops Registry", "system", "List or change saved IT Ops assets, profiles and MikroTik routers", 60, 20000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
         ("delegate_task", "Delegate Task", "task", "Run a child agent until completion or Workflow Stop", 60, 50000, False),
-        ("remember", "Remember", "memory", "Save a durable user fact / correction (source of truth)", 15, 5000, False),
+        ("memory", "Memory", "memory", "Search, list, add or delete long-term facts about the user", 15, 10000, False),
     ]
 
     # Legacy inventory labels retained only for DB compatibility/observability.
@@ -65,7 +68,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "runtime_control": ["shell.exec", "net.outbound", "fs.read", "fs.write"],
-        "remember": ["task.write"],
+        "telegram": ["net.outbound"], "itops_registry": ["fs.write"],
+        "memory": ["task.write"], "library": ["fs.read"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
         "run_bash": ["shell.exec"], "run_server": ["shell.exec"],
         "http_api": ["net.outbound"],

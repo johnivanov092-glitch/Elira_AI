@@ -85,73 +85,11 @@ def _shell_guidance(platform: str | None = None) -> str:
     )
 
 
-# Compatibility ordering for the compact core prompt. Integration schemas are
-# activated per run through runtime_control; this tuple is not an authorization
-# boundary.
+# Tools sent with every request; the rest load per run through capability_load.
+# This tuple is not an authorization boundary.
 _CODE_AGENT_BASE_TOOLS = tool_policy.BASE_TOOLS
 
 _CODE_AGENT_READONLY_TOOLS = tool_policy.READONLY_TOOLS
-
-# F4: per-tool prompt lines. The "Твои инструменты" section is generated from
-# the run's ACTUAL initial tool set, so the prompt never advertises a tool the
-# executor would block as not-activated and never hides an active one.
-TOOL_PROMPT_LINES: dict[str, str] = {
-    "capability_load": (
-        "- capability_load(group) — загрузить нужную группу дополнительных "
-        "инструментов; новые схемы появятся на следующем ходе"
-    ),
-    "read_file":     "- read_file(path) — читать файл",
-    "write_file":    "- write_file(path, content) — создать или перезаписать файл",
-    "edit_file":     "- edit_file(path, old_string, new_string) — точечная правка существующего файла",
-    "glob":          "- glob(pattern) — найти файлы по маске (например `**/*.py`)",
-    "grep":          "- grep(pattern, path) — искать текст в файлах",
-    "project_map":   "- project_map(path?, max_depth=4) — обзор проекта за один вызов: дерево файлов + манифесты/точки входа + сигнатуры функций/классов",
-    "run_bash":      "- run_bash(command) — выполнить shell-команду в директории проекта до естественного завершения или кнопки Stop. Для постоянного dev-сервера/watch используй run_server, чтобы сразу получить PID и логи",
-    "run_server":    "- run_server(action, command, port, pid, kind) — управляемый фоновой процесс: kind=server для dev-сервера/watch, kind=job для долгого конечного скана/download/build. start сразу возвращает PID; list/logs дают статус и вывод, stop останавливает процесс. Job сохраняет PID/log и completed/failed/cancelled между рестартами backend. Глобального тайм-аута нет; Workflow Stop останавливает дочернее дерево",
-    "itops_network_inventory": (
-        "- itops_network_inventory(cidr, ports, connect_timeout, concurrency) — "
-        "typed TCP-проверка с параллельностью, транспортным тайм-аутом, evidence "
-        "и остановкой через Workflow Stop; для одного IP используй /32, а не "
-        "последовательный Test-NetConnection через run_bash"
-    ),
-    "recall":        "- recall(query) — только семантический поиск по индексированному проекту и прошлым прогонам; это не долговременная память пользователя",
-    "remember":      "- remember(fact, correction=False, replaces_id=None) — сохранить заметку/поправку; сервер отличает точные слова текущего сообщения пользователя от собственных выводов агента. Для замены записи возьми её id через runtime_control(memory_search) и передай replaces_id; сохранение не доказывает истинность результата",
-    "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
-    "delegate_task": "- delegate_task(role, task) — запустить дочернего агента с тем же workflow permission mode",
-    "runtime_control": (
-        "- runtime_control(operation, ...) — скрытый control plane интеграций. "
-        "MCP вызывай по явному запросу или когда нужна настроенная внешняя "
-        "интеграция: сначала mcp_list, выбери один подходящий сервер, затем "
-        "mcp_start(server_id); не запускай все автоматически — только после этого "
-        "релевантные инструменты выбранного MCP появятся на следующем ходе. "
-        "Если нужен другой уже известный MCP-tool, вызови mcp_tools(server_id, query) "
-        "с его именем или задачей. LSP: lsp_list → "
-        "lsp_start. SSH-инструменты раскрываются после ssh_hosts, IT Ops — после "
-        "itops_assets. Долговременная память пользователя: memory_search, а при "
-        "пустом результате memory_list; не подменяй её проектным recall. Project "
-        "Corpus по явному запросу: project_status, затем project_index; "
-        "если root_path не указан, используется подключённая папка проекта. Для "
-        "Telegram используй только telegram_status/start/users/send/messages: "
-        "telegram_send принимает chat_id и текст в query, а токен разрешается внутри "
-        "runtime из vault. Не обходи typed Telegram через http_api. Остальные runtime "
-        "управляются здесь же; секреты только как secret_ref"
-    ),
-    "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",
-    "web_fetch":     "- web_fetch(url) — прочитать полный текст веб-страницы (после web_search)",
-    "http_api":      "- http_api(url, method='GET', headers?, body?, timeout=15) — исходящий HTTP-запрос к API (GET/POST/PUT/DELETE), по явному запросу пользователя",
-}
-
-def _tools_section(active_tools: tuple[str, ...] | list[str]) -> str:
-    lines = [TOOL_PROMPT_LINES[t] for t in active_tools if t in TOOL_PROMPT_LINES]
-    # Provider tools without a curated line (SSH/MCP/plugins) are still listed
-    # so the prompt matches reality; the
-    # model sees their full JSON schema anyway.
-    lines += [
-        f"- {t}(…) — активный инструмент (параметры смотри в схеме)"
-        for t in active_tools if t not in TOOL_PROMPT_LINES
-    ]
-    return "\n".join(lines)
-
 
 def _persona_section(model_name: str = "", profile_name: str = "Инженерный") -> str:
     try:
@@ -180,12 +118,7 @@ def _build_base_system_prompt(
 
 
 # Kept for backwards-compat (tests / external imports). Generic, no project root.
-BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(
-    project_root="<укажет runtime>",
-    tools_section=_tools_section(_CODE_AGENT_BASE_TOOLS),
-    shell_guidance=_shell_guidance(),
-    persona_section=_persona_section(),
-)
+BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(persona_section=_persona_section())
 
 
 def _build_system_prompt(

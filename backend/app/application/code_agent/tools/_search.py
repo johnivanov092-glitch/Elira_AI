@@ -310,136 +310,60 @@ def tool_project_map(
     return {"ok": True, "text": "\n\n".join(sections)}
 
 
-def tool_remember(
-    project_root: Path,
-    *,
-    fact: str,
-    correction: bool = False,
-    replaces_id: int | str | None = None,
-) -> dict[str, Any]:
-    """Persist a note with server-bound origin in the existing memory store.
-
-    The server classifies live operational state as volatile: it remains
-    searchable, but is never injected as durable source truth without a fresh
-    check.
-    """
-    from app.application import memory as mem
-    from app.application.memory.policy import is_user_memory_source
-    from app.application.memory.tool_provenance import tool_memory_provenance
-
-    text = (fact or "").strip()
-    if len(text) < 3:
-        return {"ok": False, "text": "Нечего запоминать: факт слишком короткий."}
-    provenance = tool_memory_provenance(text, correction=correction)
-    try:
-        res = mem.add_fact(
-            text,
-            category="user_fact",
-            **provenance,
-            importance=10 if correction else 8,
-            replaces_id=replaces_id if correction else None,
-        )
-    except Exception as exc:  # noqa: BLE001 — memory failure must not break the run
-        return {"ok": False, "text": f"Не удалось сохранить факт: {exc}"}
-    if not res.get("ok"):
-        return {"ok": False, "text": f"Не удалось сохранить факт: {res.get('error', 'ошибка памяти')}"}
-    source = res.get("source", provenance["source"])
-    source_ref = res.get("source_ref", provenance["source_ref"])
-    metadata = {"id": res.get("id"), "action": res.get("action"),
-                "source": source, "source_ref": source_ref}
-    if res.get("category") == "volatile_fact":
-        return {
-            "ok": True,
-            **metadata,
-            "text": (
-                "Запомнил как временное состояние. Перед использованием "
-                "потребуется live-проверка: "
-                + text
-            ),
-        }
-    origin = "точная запись слов пользователя" if is_user_memory_source(source) else "заметка агента; требует проверки перед использованием"
-    return {"ok": True, **metadata,
-            "text": f"Запомнил ({origin}): {res.get('text', text)}"}
-
-
 def tool_recall(
     project_root: Path,
     *,
-    query: str,
+    query: str = "",
+    action: str = "search",
+    path: str = "",
     top_k: int = 5,
     min_score: float = 0.3,
 ) -> dict[str, Any]:
-    """Recall from memory through the unified MemoryService facade — returns
-    BOTH curated facts (what we know about the user: name, preferences,
-    working details) AND semantic/episodic matches (relevant code chunks,
-    prior-turn summaries, chat reflection episodes).
+    """Search the project index (code chunks, past runs); index or report it.
 
-    Facts are user-level so they surface regardless of project. Semantic
-    results are restricted to this project plus global entries (project='')
-    so cross-project leakage is prevented.
+    Long-term facts about the user are the `memory` tool, not recall.
     """
+    import json
+
+    act = str(action or "search").strip().lower()
+    if act in {"index", "status"}:
+        from app.application.code_agent.indexing import index_project, project_corpus_status
+
+        target = Path(path).expanduser() if str(path or "").strip() else project_root
+        if not target.is_absolute():
+            target = project_root / target
+        target = target.resolve()
+        try:
+            result = project_corpus_status(target) if act == "status" else index_project(target, replace=True)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a tool error
+            return {"ok": False, "error": f"recall_{act}_failed", "text": f"ERROR: {exc}"}
+        ok = bool(result.get("ok", True))
+        return {"ok": ok, "text": json.dumps(result, ensure_ascii=False, default=str)[:4000]}
+    if act != "search":
+        return {"ok": False, "error": "unknown_action", "text": "ERROR: action должен быть search, index или status."}
+    if not str(query or "").strip():
+        return {"ok": False, "error": "query_required", "text": "ERROR: укажи query."}
+
     from app.application import memory as mem
 
     limit = max(1, int(top_k))
-    sections: list[str] = []
-
-    # 1) Curated facts (lexical, smart_memory).
-    try:
-        fact_items = mem.search_facts(query, limit=limit).get("items", []) or []
-    except Exception:
-        fact_items = []
-    if fact_items:
-        from app.application.memory.policy import is_authoritative_fact, is_volatile_fact
-
-        flines = [f"Known facts ({len(fact_items)}):"]
-        for item in fact_items:
-            text = (item.get("text") or "").strip()
-            if len(text) > 300:
-                text = text[:300] + " [...]"
-            category = str(item.get("category") or "fact")
-            volatile = category == "volatile_fact" or is_volatile_fact(text)
-            source = str(item.get("source") or "unknown")
-            suffix = "; требуется live-проверка" if volatile else ""
-            if not is_authoritative_fact(item):
-                suffix += "; сохранённая заметка, не подтверждённый факт пользователя"
-            reference = f"; {item['source_ref']}" if item.get("source_ref") else ""
-            flines.append(f"- [{category}; source={source}{reference}{suffix}] {text}")
-        sections.append("\n".join(flines))
-
-    # 2) Semantic / episodic (vector, rag_memory) — project-scoped + global.
     scope_id = project_scope_id(project_root)
     try:
         result = mem.search_semantic(query, limit=limit, min_score=float(min_score), project=scope_id)
     except Exception as exc:
         result = {"ok": False, "error": f"RAG service unavailable: {exc}"}
     if not result.get("ok"):
-        if sections:  # facts are still useful even if the semantic side failed
-            return {
-                "ok": True,
-                "partial": True,
-                "text": "\n\n".join(sections),
-                "warning": str(result.get("error") or "semantic recall failed"),
-            }
-        return {
-            "ok": False,
-            "error": "recall_failed",
-            "text": f"ERROR: {result.get('error', 'recall failed')}",
-        }
-
-    sem_items = result.get("items", []) or []
-    if sem_items:
-        slines = [f"Found {len(sem_items)} relevant items:"]
-        for i, item in enumerate(sem_items, 1):
-            score = item.get("score", 0.0)
-            category = item.get("category", "fact")
-            text = (item.get("text") or "").strip()
-            if len(text) > 600:
-                text = text[:600] + " [...]"
-            src = item.get("source") or {}
-            cite = f"  src={src['file']}:{src['start']}-{src['end']}" if src else ""
-            slines.append(f"\n[{i}] score={score:.2f}  category={category}{cite}\n{text}")
-        sections.append("\n".join(slines))
-
-    if not sections:
-        return {"ok": True, "text": f"No matches for '{query}' (min_score={min_score})"}
-    return {"ok": True, "text": "\n\n".join(sections)}
+        return {"ok": False, "error": "recall_failed", "text": f"ERROR: {result.get('error', 'recall failed')}"}
+    items = result.get("items", []) or []
+    if not items:
+        return {"ok": True, "text": f"No matches for '{query}' (min_score={min_score}). "
+                                    "Если проект не проиндексирован — recall(action='index')."}
+    lines = [f"Found {len(items)} relevant items:"]
+    for i, item in enumerate(items, 1):
+        text = (item.get("text") or "").strip()
+        if len(text) > 600:
+            text = text[:600] + " [...]"
+        src = item.get("source") or {}
+        cite = f"  src={src['file']}:{src['start']}-{src['end']}" if src else ""
+        lines.append(f"\n[{i}] score={item.get('score', 0.0):.2f}  category={item.get('category', 'fact')}{cite}\n{text}")
+    return {"ok": True, "text": "\n".join(lines)}

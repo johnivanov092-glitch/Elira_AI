@@ -62,21 +62,19 @@
 - `reconcile_job_records`: на рестарте сверяет identity → running → failed если process disappeared
 - Retention: max 128 terminal, 7 дней
 
-## Sandbox
-
-- `<DATA_DIR>/sandbox/<slug>/venv/` + `work/` — изолирован от project root
-- `pip install` → только в venv; персистентность между turns
-- `reset_sandbox` → `shutil.rmtree`
-
 ## Search и RAG
 
 - **grep**: exclude .git/node_modules/.venv/…; max 200 matches, 5000 files, 2 MB/file
 - **project_map**: manifests + entry points + top-level signatures (py/js/ts/rs/go)
-- **recall**: curated facts (lexical) + RAG (vector, project-scoped + global)
-- **remember/memory_add**: `agent_note` + run ref по умолчанию; только буквальный
+- **recall** (группа project): поиск по индексу проекта (код + прошлые прогоны);
+  `action=index` строит индекс, `action=status` показывает его
+- **memory** (группа memory): факты о пользователе — search/list/add/delete.
+  `add` сохраняет `agent_note` + run ref по умолчанию; только буквальный
   текущий `memory_query` или остаток его команды «запомни» даёт user provenance.
-  `config.source`/`replaces_id` не повышают доверие; заметка агента не заменяет
-  доверенный пользовательский факт. `volatile_fact` требует live-проверки.
+  Поправка — `correction=true` + id; заметка агента не заменяет доверенный
+  пользовательский факт. `volatile_fact` требует live-проверки.
+- **library** (группа memory): поиск и чтение документов Библиотеки; добавление,
+  удаление и закладки — только в UI
 - **Project Corpus**: все chunks одного файла готовятся до публикации;
   manifest и chunks заменяются одной транзакцией после сверки source hash.
   Ошибка сохраняет полную старую версию; поиск не смешивает версии файла.
@@ -90,9 +88,12 @@
 - Успешное чтение DOM сохраняет web receipt с конечным URL; команды действий
   не входят в цитируемый текст. `matched` подтверждает происхождение, не смысл.
 
-## Runtime Control
+## Интеграции
 
-- Тонкий адаптер: MCP, LSP, SSH, IT Ops, Telegram, Library, Memory, Plugins, Workflows, Vault
+- `runtime_control` (группа mcp) — только MCP: list/start/stop/restart/tools/upsert/remove
+- SSH, IT Ops (`itops_registry` + typed `itops_*`), Telegram (`telegram` send/messages) —
+  группы по требованию через `capability_load`
+- Настройка Telegram-бота и хранилище секретов — только UI (Настройки)
 - Статусы: `completed` / `failed` / `needs_input` / `needs_secret` /
   `needs_elevation` / `waiting_approval` / `cancelled`.
   `requested`, `input_request`, `secret_request` — имена helpers, не статусы.
@@ -110,12 +111,13 @@ Thread-local: `run_id`, `execution_channel`, `permission_mode`
 
 ## Capabilities
 
-- 8 groups: project, runtime, web, desktop, resources, data, memory, operations
+- Группы: project, mcp, ssh, itops, telegram, web, desktop, resources, memory, math
 - CORE: `{capability_load}` — всегда доступен
 - `route_request_capabilities` — compatibility/evidence hints; intent и выбор
   tools принадлежат Qwen. Download keyword не устанавливает delivery contract.
-- Обычные рабочие tools доступны из `tool_policy.BASE_TOOLS`; MCP/LSP/SSH/IT Ops
-  выбираются через `runtime_control`, а не автоматически по доменной метке.
+- База каждого запроса (`tool_policy.BASE_TOOLS`): read_file, write_file, edit_file,
+  glob, grep, run_bash, run_server, web_search, web_fetch, todo_update, capability_load
+  (+ ask_user). Остальное модель загружает сама через `capability_load(group)`.
 - Domain policies (hidden): Личный, Баланс, Инженерный, Деловой, Инфраструктура, Научный, Медицина
 
 ## Навыки и доставка

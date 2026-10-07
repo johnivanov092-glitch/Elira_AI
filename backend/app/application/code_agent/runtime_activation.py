@@ -19,14 +19,12 @@ from app.application.code_agent.capabilities import (
 from app.application.tool_providers import ToolRegistry, build_runtime_tool_registry
 
 
-RuntimeActivationState = tuple[
-    set[str], set[str], dict[str, str], bool, bool, set[str],
-]
+RuntimeActivationState = tuple[set[str], dict[str, str], set[str]]
 RegistryBuilder = Callable[..., ToolRegistry]
 
 
 def _load_runtime_activation_state(run_id: str) -> RuntimeActivationState:
-    """Restore legacy journal keys, falling back to fresh schema visibility."""
+    """Restore a run's selections; legacy ssh/itops flags become their groups."""
     try:
         from app.application.code_agent.run_journal import RunJournal
 
@@ -35,9 +33,13 @@ def _load_runtime_activation_state(run_id: str) -> RuntimeActivationState:
         stored = {}
     if not isinstance(stored, dict):
         stored = {}
+    groups = set(stored.get("capability_groups") or [])
+    if stored.get("ssh"):
+        groups.add("ssh")
+    if stored.get("itops"):
+        groups.add("itops")
     return (
         {str(value) for value in stored.get("mcp_server_ids") or [] if str(value)},
-        {str(value) for value in stored.get("lsp_server_ids") or [] if str(value)},
         {
             str(key): str(value)
             for key, value in (stored.get("mcp_schema_queries") or {}).items()
@@ -45,9 +47,7 @@ def _load_runtime_activation_state(run_id: str) -> RuntimeActivationState:
         }
         if isinstance(stored.get("mcp_schema_queries"), dict)
         else {},
-        bool(stored.get("ssh")),
-        bool(stored.get("itops")),
-        set(normalize_capability_groups(stored.get("capability_groups"))),
+        set(normalize_capability_groups(groups)),
     )
 
 
@@ -66,10 +66,7 @@ class RuntimeActivation:
 
     project_root: Path
     mcp_server_ids: set[str] = field(default_factory=set)
-    lsp_server_ids: set[str] = field(default_factory=set)
     mcp_schema_queries: dict[str, str] = field(default_factory=dict)
-    ssh_tools_active: bool = False
-    itops_tools_active: bool = False
     capability_groups: set[str] = field(default_factory=set)
     requested_builtin_tools: set[str] = field(default_factory=set)
     registry_builder: RegistryBuilder = field(
@@ -87,24 +84,14 @@ class RuntimeActivation:
         restored_state: RuntimeActivationState | None = None,
         registry_builder: RegistryBuilder | None = None,
     ) -> RuntimeActivation:
-        (
-            mcp_server_ids,
-            lsp_server_ids,
-            mcp_schema_queries,
-            ssh_tools_active,
-            itops_tools_active,
-            capability_groups,
-        ) = (
+        mcp_server_ids, mcp_schema_queries, capability_groups = (
             _load_runtime_activation_state(run_id)
             if restored_state is None else restored_state
         )
         return cls(
             project_root=project_root,
             mcp_server_ids=mcp_server_ids,
-            lsp_server_ids=lsp_server_ids,
             mcp_schema_queries=mcp_schema_queries,
-            ssh_tools_active=ssh_tools_active,
-            itops_tools_active=itops_tools_active,
             capability_groups=capability_groups,
             requested_builtin_tools={
                 str(name).strip()
@@ -117,22 +104,14 @@ class RuntimeActivation:
     @property
     def has_optional_tools(self) -> bool:
         """Preserve the existing condition for exposing Workflow requests."""
-        return bool(
-            self.capability_groups
-            or self.requested_builtin_tools
-            or self.mcp_server_ids
-            or self.lsp_server_ids
-            or self.ssh_tools_active
-            or self.itops_tools_active
-        )
+        return bool(self.capability_groups or self.requested_builtin_tools or self.mcp_server_ids)
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "mcp_server_ids": sorted(self.mcp_server_ids),
-            "lsp_server_ids": sorted(self.lsp_server_ids),
             "mcp_schema_queries": dict(sorted(self.mcp_schema_queries.items())),
-            "ssh": self.ssh_tools_active,
-            "itops": self.itops_tools_active,
+            "ssh": "ssh" in self.capability_groups,
+            "itops": "itops" in self.capability_groups,
             "capability_groups": sorted(self.capability_groups),
         }
 
@@ -146,9 +125,8 @@ class RuntimeActivation:
             builtin_tool_names=builtin_names,
             mcp_server_ids=self.mcp_server_ids,
             mcp_schema_queries=self.mcp_schema_queries,
-            lsp_server_ids=self.lsp_server_ids,
-            include_ssh=self.ssh_tools_active,
-            include_itops=self.itops_tools_active,
+            include_ssh="ssh" in self.capability_groups,
+            include_itops="itops" in self.capability_groups,
         )
         return RuntimeSchemaUpdate(registry, registry.collect_schemas(), self.snapshot())
 
@@ -169,7 +147,7 @@ class RuntimeActivation:
         status: str,
         user_message: str,
     ) -> RuntimeSchemaUpdate | None:
-        """Apply confirmed capability/runtime effects at the coordinator's boundary.
+        """Apply confirmed capability/MCP effects at the coordinator's boundary.
 
         Rebuilding is observable even when the selection is unchanged. Preserve
         the old successful-call behavior instead of deduplicating those builds.
@@ -204,12 +182,4 @@ class RuntimeActivation:
         elif operation in {"mcp_stop", "mcp_remove"}:
             self.mcp_server_ids.discard(server_id)
             self.mcp_schema_queries.pop(server_id, None)
-        elif operation in {"lsp_start", "lsp_restart"} and server_id:
-            self.lsp_server_ids.add(server_id)
-        elif operation in {"lsp_stop", "lsp_remove"}:
-            self.lsp_server_ids.discard(server_id)
-        elif operation in {"ssh_hosts", "ssh_set_hosts"}:
-            self.ssh_tools_active = True
-        elif operation.startswith("itops_"):
-            self.itops_tools_active = True
         return self.rebuild()

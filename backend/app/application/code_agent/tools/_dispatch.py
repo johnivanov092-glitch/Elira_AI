@@ -13,8 +13,8 @@ from app.application.code_agent.tools._search import (
     tool_grep,
     tool_project_map,
     tool_recall,
-    tool_remember,
 )
+from app.application.code_agent.tools._memory import tool_library, tool_memory
 from app.application.code_agent.tools._meta import (
     tool_delegate_task,
     tool_todo_update,
@@ -47,6 +47,8 @@ from app.application.code_agent.tools._resources import (
     tool_resource_publish,
 )
 from app.application.code_agent.tools._runtime_control import tool_runtime_control
+from app.application.code_agent.tools._telegram import tool_telegram
+from app.application.code_agent.tools._itops import tool_itops_registry
 from app.application.code_agent.tools._capability import tool_capability_load
 
 
@@ -60,12 +62,15 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "grep": lambda **kw: tool_grep(project_root, **kw),
         "project_map": lambda **kw: tool_project_map(project_root, **kw),
         "recall": lambda **kw: tool_recall(project_root, **kw),
-        "remember": lambda **kw: tool_remember(project_root, **kw),
+        "memory": lambda **kw: tool_memory(**kw),
+        "library": lambda **kw: tool_library(**kw),
         "todo_update": lambda **kw: tool_todo_update(**kw),
         "delegate_task": lambda **kw: tool_delegate_task(project_root, **kw),
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "run_server": lambda **kw: tool_run_server(project_root, **kw),
         "runtime_control": lambda **kw: tool_runtime_control(project_root, **kw),
+        "telegram": lambda **kw: tool_telegram(**kw),
+        "itops_registry": lambda **kw: tool_itops_registry(**kw),
         "web_search": lambda **kw: tool_web_search(**kw),
         "web_fetch": lambda **kw: tool_web_fetch(**kw),
         "web_query": lambda **kw: tool_web_query(**kw),

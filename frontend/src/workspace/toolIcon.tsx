@@ -1,4 +1,4 @@
-import { Brain, Calculator, FileText, GitBranch, Globe, ListChecks, Monitor, Ruler, Search, Server, Sheet, TerminalSquare, Wrench, type LucideIcon } from "lucide-react";
+import { BookMarked, Brain, Calculator, FileText, GitBranch, Globe, ListChecks, Monitor, Ruler, Search, Server, Sheet, TerminalSquare, Wrench, type LucideIcon } from "lucide-react";
 
 /** Map a tool name to an existing lucide icon (no new icon set). */
 export function toolIcon(tool: string): LucideIcon {
@@ -6,7 +6,8 @@ export function toolIcon(tool: string): LucideIcon {
   if (tool === "run_bash") return TerminalSquare;
   if (tool === "read_file" || tool === "write_file" || tool === "edit_file") return FileText;
   if (tool === "glob" || tool === "grep") return Search;
-  if (tool === "recall") return Brain;
+  if (tool === "recall" || tool === "memory") return Brain;
+  if (tool === "library") return BookMarked;
   if (tool === "todo_update") return ListChecks;
   if (tool === "delegate_task") return GitBranch;
   if (tool === "ssh_run" || tool === "ssh_read" || tool === "ssh_write" || tool === "ssh_list_hosts") return Server;

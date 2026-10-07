@@ -53,8 +53,7 @@ def test_infrastructure_route_preloads_typed_ssh_itops_and_web_evidence() -> Non
         domain_policy="Инфраструктура",
     )
 
-    assert decision.include_itops is True
-    assert decision.include_ssh is True
+    assert {"ssh", "itops"} <= decision.capability_groups
     assert "web" in decision.capability_groups
     assert decision.evidence_reasons
 
@@ -176,10 +175,10 @@ def test_external_integration_failure_escalates_web_on_first_failure() -> None:
 
 def test_local_runtime_failure_does_not_replace_local_truth_with_web() -> None:
     assert should_escalate_web_after_failure(
-        tool_name="runtime_control",
-        error="Library item not found",
-        failure_count=2,
-        arguments={"operation": "library_add"},
+        tool_name="memory",
+        error="запись не удалена",
+        failure_count=1,
+        arguments={"action": "delete"},
     ) is False
 
 
@@ -198,8 +197,7 @@ def test_mixed_request_leaves_semantic_routing_to_main_agent() -> None:
 
     assert decision.domain_policies == ("Баланс",)
     assert decision.preflight == {"source": "main_agent"}
-    assert decision.include_itops is False
-    assert decision.include_ssh is False
+    assert not {"ssh", "itops"} & decision.capability_groups
 
 
 def test_general_uncertainty_is_not_a_web_requirement() -> None:

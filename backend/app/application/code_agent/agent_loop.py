@@ -1361,13 +1361,8 @@ def _stream_code_agent_core(
                                **_completion_fields(criteria, terminated_incomplete=True)}
                         return
                     continue
-                writes_memory = name == "remember" or (
-                    name == "runtime_control" and parsed_args.get("operation") == "memory_add"
-                )
-                memory_config = parsed_args.get("config") or {}
-                memory_fact = (parsed_args.get("fact") if name == "remember" else parsed_args.get("query")
-                               or (memory_config.get("fact") or memory_config.get("text")
-                                   if isinstance(memory_config, dict) else None))
+                writes_memory = name == "memory" and str(parsed_args.get("action") or "").lower() == "add"
+                memory_fact = parsed_args.get("text") or parsed_args.get("query")
                 if writes_memory and not task_memory_write_allowed(run_persistence_policy(rid), memory_fact):
                     denial = "Долговременное сохранение запрещено политикой текущей задачи."
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
@@ -1408,9 +1403,9 @@ def _stream_code_agent_core(
                     name=name, args=parsed_args, tool_meta=tool_meta, status=_exec_result.status,
                 )
                 _runtime_activation_snapshot: dict[str, Any] | None = None
-                if name == "runtime_control" and str(tool_meta.get("status") or "").strip() in RUNTIME_WORKFLOW_STATUSES:
+                if str(tool_meta.get("status") or "").strip() in RUNTIME_WORKFLOW_STATUSES:
                     workflow_result = yield from run_runtime_workflow(
-                        parsed_args, tool_meta, step=step, cancel_event=cancel_event,
+                        name, parsed_args, tool_meta, step=step, cancel_event=cancel_event,
                         pause_for_workflow_request=pause_for_workflow_request,
                     )
                     if workflow_result.terminal is not None:
@@ -1533,8 +1528,7 @@ def _stream_code_agent_core(
                 if _skill_receipt is not None:
                     event["skill"] = _skill_receipt
                 if (name in {"project_map", "glob", "grep", "run_bash", "write_file", "edit_file"}
-                        or name.startswith(("itops_", "ssh_", "lsp_"))
-                        or (name == "runtime_control" and str(parsed_args.get("operation") or "").startswith(("itops_", "ssh_", "lsp_")))):
+                        or name.startswith(("itops_", "ssh_"))):
                     turn_context.skill_reminder_pending = True
                 task_state_verification = ""
                 if (

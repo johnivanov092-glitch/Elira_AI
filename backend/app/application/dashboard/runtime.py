@@ -69,14 +69,6 @@ def dashboard_stats(history: RunHistoryService | None = None) -> dict:
     except Exception:
         pass
 
-    plugin_count = 0
-    try:
-        from app.application.plugins.runtime import list_plugins
-
-        plugin_count = list_plugins().get("count", 0)
-    except Exception:
-        pass
-
     return {
         "ok": True,
         "total_runs": total,
@@ -92,5 +84,4 @@ def dashboard_stats(history: RunHistoryService | None = None) -> dict:
         "chats": chat_count,
         "messages": message_count,
         "memory": memory_stats,
-        "plugins": plugin_count,
     }

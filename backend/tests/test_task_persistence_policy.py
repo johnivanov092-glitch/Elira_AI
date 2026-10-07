@@ -161,13 +161,13 @@ def test_explicit_memory_permission_after_ban_survives_resume(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("tool,arguments", [
-    ("remember", {"fact": "Секретная деталь этой задачи"}),
-    ("runtime_control", {"operation": "memory_add", "query": "Секретная деталь этой задачи"}),
+    ("memory", {"action": "add", "text": "Секретная деталь этой задачи"}),
+    ("memory", {"action": "add", "query": "Секретная деталь этой задачи"}),
 ])
 def test_explicit_remember_tool_cannot_bypass_task_policy(tmp_path, monkeypatch, tool, arguments):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     calls = []
-    monkeypatch.setattr("app.application.code_agent.tools._search.tool_remember", lambda *a, **kw: calls.append(kw))
+    monkeypatch.setattr("app.application.code_agent.tools._dispatch.tool_memory", lambda *a, **kw: calls.append(kw))
     count = 0
 
     def chat(**kwargs):
@@ -186,8 +186,7 @@ def test_explicit_remember_tool_cannot_bypass_task_policy(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("tool,arguments", [
-    ("remember", {"fact": "Результат этой задачи полностью проверен."}),
-    ("runtime_control", {"operation": "memory_add", "config": {"fact": "Результат этой задачи полностью проверен."}}),
+    ("memory", {"action": "add", "text": "Результат этой задачи полностью проверен."}),
 ])
 def test_specific_remember_request_rejects_unrelated_model_notes(tmp_path, monkeypatch, tool, arguments):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))

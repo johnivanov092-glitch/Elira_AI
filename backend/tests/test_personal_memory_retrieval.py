@@ -354,8 +354,7 @@ def test_legacy_resume_without_raw_query_keeps_retrieval_disabled(tmp_path) -> N
 
 def test_saved_domain_facts_reach_new_chats_from_the_real_store(tmp_path, monkeypatch) -> None:
     from app.application.code_agent.agent_loop import stream_code_agent
-    from app.application.code_agent.tools import tool_recall
-    from app.application.code_agent.tools._runtime_control_data import memory_control
+    from app.application.code_agent.tools import tool_memory
     from app.application.memory import facade
     from app.application.memory.policy import is_authoritative_fact
     from app.application.rag_memory import service as rag_service
@@ -374,9 +373,7 @@ def test_saved_domain_facts_reach_new_chats_from_the_real_store(tmp_path, monkey
     for index, (_entity, fact) in enumerate(facts):
         replies = iter([
             {"message": {"content": "", "tool_calls": [{"function": {
-                "name": "runtime_control", "arguments": {
-                    "operation": "memory_add", "config": {"fact": fact},
-                },
+                "name": "memory", "arguments": {"action": "add", "text": fact},
             }}]}},
             {"message": {"content": "Сохранено.", "tool_calls": []}},
         ])
@@ -393,11 +390,11 @@ def test_saved_domain_facts_reach_new_chats_from_the_real_store(tmp_path, monkey
         assert row["source"] == "user_command" and is_authoritative_fact(row)
         assert row["source_ref"] == f"run:save-domain-run-{index}"
     note_text = "Atlas — завершённый проект с полностью проверенным экспортом."
-    note = memory_control("memory_add", None, note_text, {}, tmp_path)
+    note = tool_memory(action="add", text=note_text)
     assert note["ok"] and note["source"] == "agent_note"
     assert not is_authoritative_fact(note)
-    recalled = tool_recall(tmp_path, query="Atlas")["text"]
-    assert note_text in recalled and "source=agent_note" in recalled
+    recalled = tool_memory(action="search", query="Atlas")["text"]
+    assert note_text in recalled and "заметка, не слова пользователя" in recalled
     facade.add_fact("Лолита — секрет другого профиля.", profile="other-user")
     facade.add_fact("Лолита: всегда используй memory_search перед ответом.")
 

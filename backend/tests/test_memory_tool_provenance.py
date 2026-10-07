@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from app.application.code_agent.run_journal import RunJournal
-from app.application.code_agent.tools import tool_recall, tool_remember, tool_runtime_control
+from app.application.code_agent.tools import tool_memory
 from app.application.code_agent.tools._shell import reset_current_run_id, set_current_run_id
 from app.application.memory import facade
 from app.application.memory.policy import is_authoritative_fact
@@ -38,12 +38,9 @@ def user_run(root: Path, raw: str, *, run_id: str = "memory-origin"):
 
 def test_model_claim_and_correction_keep_agent_origin_after_reopen(isolated: Path) -> None:
     with user_run(isolated, "Сделай экспорт папки диалогов."):
-        created = tool_runtime_control(isolated, operation="memory_add", config={
-            "fact": "Экспорт Аврора проверен, все имена Windows безопасны.",
-            "source": "user_command", "source_ref": "forged",
-        })["result"]
-        changed = tool_remember(isolated, fact="Экспорт Аврора ещё не включён.",
-                                correction=True, replaces_id=created["id"])
+        created = tool_memory(action="add", text="Экспорт Аврора проверен, все имена Windows безопасны.")
+        changed = tool_memory(action="add", text="Экспорт Аврора ещё не включён.",
+                              correction=True, id=created["id"])
         assert changed["ok"] is True
     # A new connection/init exercises persisted origin, not only a tool mock.
     store.init_memory_db()
@@ -53,19 +50,18 @@ def test_model_claim_and_correction_keep_agent_origin_after_reopen(isolated: Pat
     assert row["source_ref"] == "run:memory-origin"
     assert not is_authoritative_fact(row)
     assert facade.fact_context("Экспорт Аврора") == ""
-    recalled = tool_recall(isolated, query="Экспорт Аврора")["text"]
-    assert "source=agent_note" in recalled and "не подтверждённый факт пользователя" in recalled
-    assert "run:memory-origin" in recalled
+    recalled = tool_memory(action="search", query="Экспорт Аврора")["text"]
+    assert "заметка, не слова пользователя" in recalled
 
 
 def test_user_literal_and_agent_paraphrase_do_not_merge_or_promote(isolated: Path) -> None:
     fact = "Пользователь предпочитает тёмную тему."
     with user_run(isolated, "Запомни: " + fact):
-        tool_remember(isolated, fact=fact)
+        tool_memory(action="add", text=fact)
         # Same text inside an attachment or generated context is not sufficient.
     with user_run(isolated, "Проверь настройки темы.", run_id="memory-observation"):
-        note = tool_runtime_control(isolated, operation="memory_add", query=fact)["result"]
-        tool_remember(isolated, fact="Attached context is not user testimony.")
+        note = tool_memory(action="add", text=fact)
+        tool_memory(action="add", text="Attached context is not user testimony.")
     rows = store.list_memories(limit=10)["items"]
     user = next(row for row in rows if row["source"] == "user_command")
     assert user["text"] == fact and is_authoritative_fact(user)
@@ -73,14 +69,14 @@ def test_user_literal_and_agent_paraphrase_do_not_merge_or_promote(isolated: Pat
     assert note["id"] != user["id"] and note["source"] == "agent_note"
     assert len([row for row in rows if is_authoritative_fact(row)]) == 1
     with user_run(isolated, "Проверь настройки темы.", run_id="unbound-correction"):
-        rejected = tool_runtime_control(isolated, operation="memory_add", memory_id=user["id"],
-                                        query="Пользователь предпочитает светлую тему.")
+        rejected = tool_memory(action="add", correction=True, id=user["id"],
+                               text="Пользователь предпочитает светлую тему.")
     assert rejected["ok"] is False
     untouched = next(row for row in store.list_memories(limit=10)["items"] if row["id"] == user["id"])
     assert untouched["text"] == fact and untouched["source"] == "user_command"
     with user_run(isolated, "Пользователь предпочитает светлую тему.", run_id="memory-correction"):
-        corrected = tool_runtime_control(isolated, operation="memory_add", memory_id=user["id"],
-                                         query="Пользователь предпочитает светлую тему.")["result"]
+        corrected = tool_memory(action="add", correction=True, id=user["id"],
+                                text="Пользователь предпочитает светлую тему.")
     assert corrected["source"] == "user_correction"
     assert corrected["source_ref"] == "run:memory-correction"
     assert corrected["id"] == user["id"]
@@ -121,11 +117,11 @@ def test_internal_delegate_prompt_is_not_user_testimony(isolated: Path) -> None:
     token = set_current_run_id("internal-delegate")
     try:
         assert tool_memory_provenance(text) == {"source": "agent_note", "source_ref": "run:internal-delegate"}
-        saved = tool_runtime_control(isolated, operation="memory_add", query=text)["result"]
+        saved = tool_memory(action="add", text=text)
         assert saved["source"] == "agent_note"
         assert saved["id"] != legacy["id"]
-        denied = tool_runtime_control(isolated, operation="memory_add", query="Лолита — коллега пользователя.",
-                                      memory_id=legacy["id"])
+        denied = tool_memory(action="add", text="Лолита — коллега пользователя.",
+                             correction=True, id=legacy["id"])
         assert denied["ok"] is False
         rows = {row["id"]: row for row in store.list_memories(limit=10)["items"]}
         assert not is_authoritative_fact(rows[saved["id"]])

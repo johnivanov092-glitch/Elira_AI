@@ -41,7 +41,10 @@ from app.application.code_agent.tools._search import (  # noqa: F401
     tool_grep,
     tool_project_map,
     tool_recall,
-    tool_remember,
+)
+from app.application.code_agent.tools._memory import (  # noqa: F401
+    tool_library,
+    tool_memory,
 )
 from app.application.code_agent.tools._web import (  # noqa: F401
     tool_browser,
@@ -69,6 +72,8 @@ from app.application.code_agent.tools._vision import (  # noqa: F401
 from app.application.code_agent.tools._dispatch import build_tool_dispatch  # noqa: F401
 from app.application.code_agent.tools._capability import tool_capability_load  # noqa: F401
 from app.application.code_agent.tools._runtime_control import tool_runtime_control  # noqa: F401
+from app.application.code_agent.tools._telegram import tool_telegram  # noqa: F401
+from app.application.code_agent.tools._itops import tool_itops_registry  # noqa: F401
 
 __all__ = [
     "build_tool_schemas",
@@ -92,11 +97,14 @@ __all__ = [
     "tool_grep",
     "tool_project_map",
     "tool_recall",
-    "tool_remember",
+    "tool_memory",
+    "tool_library",
     "tool_todo_update",
     "tool_delegate_task",
     "tool_capability_load",
     "tool_runtime_control",
+    "tool_telegram",
+    "tool_itops_registry",
     "tool_run_bash",
     "tool_run_server",
     "tool_web_search",

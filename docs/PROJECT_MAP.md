@@ -47,11 +47,11 @@ move Elira's backend state or tools into that repository.
 | Observed tool/web evidence | `backend/app/application/code_agent/run_evidence.py` |
 | Model-owned task decisions, current checks and file-delivery receipts | `backend/app/application/code_agent/task_outcomes.py` |
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
-| Deterministic local price-list/BOM validation | `backend/app/application/code_agent/tools/_bom.py` |
-| Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
+| Price-list/BOM check (factory skill) | `skills/bom-check/` |
+| MCP control tool (`runtime_control`) | `backend/app/application/code_agent/tools/_runtime_control.py` |
+| Memory, Library, Telegram, IT Ops registry tools | `backend/app/application/code_agent/tools/_memory.py`, `_telegram.py`, `_itops.py` |
 | Skills folder (catalog, pinned SKILL.md, git history; seeds from `skills/`) | `backend/app/application/code_agent/task_skills.py` |
-| Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
-| Workflow/data runtime adapters | `backend/app/application/code_agent/tools/_runtime_control_workflows.py`, `_runtime_control_data.py` |
+| Integration result contract (`run_operation`) | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
 | Tool executor | `backend/app/application/agent_kernel/executor.py` |
 | Workflow impact classification | `backend/app/application/agent_kernel/impact_policy.py` |
 | Workflow engine | `backend/app/application/workflows/` |
@@ -59,8 +59,9 @@ move Elira's backend state or tools into that repository.
 | Workflow request lifecycle/recovery/validation | `backend/app/application/workflows/request_lifecycle.py`, `request_recovery.py`, `request_validation.py` |
 | Workflow step execution | `backend/app/domain/workflows/step_executor.py` |
 | Runtime provider registry | `backend/app/application/tool_providers/runtime_registry.py` |
-| SSH/MCP/LSP/IT Ops providers | `backend/app/application/tool_providers/` |
+| SSH/MCP/IT Ops providers | `backend/app/application/tool_providers/` |
 | Settings MCP lifecycle API | `backend/app/api/routes/mcp_routes.py` |
+| Settings Telegram API | `backend/app/api/routes/telegram_routes.py` |
 | Reprocenter operator pagination | `integrations/reprocenter/operator_pagination.py` |
 | Tool inventory | `backend/app/application/tool_registry/` |
 | LLM client | `backend/app/infrastructure/llm/openai_compatible.py` |
@@ -147,7 +148,6 @@ data/
 ├─ skills/                   Elira's skills: <name>/SKILL.md, scripts, .venv; own git
 ├─ archive/                  retired data folders (e.g. skill_development, skill_advisor)
 ├─ mcp_servers.json
-├─ lsp_servers.json
 ├─ ssh_acl.json          legacy filename; saved SSH shortcuts
 └─ resources/
 ```

@@ -179,7 +179,7 @@ def add_memory(
                     "ok": False,
                     "error": (
                         "Memory changed or was deleted while saving. Read its current state with "
-                        "memory_search or memory_list, then retry using the current memory id."
+                        "memory(action='search') or memory(action='list'), then retry using the current memory id."
                     ),
                     "profile_name": normalized_profile,
                 }
@@ -222,7 +222,7 @@ def add_memory(
                     "ok": False,
                     "error": (
                         "Memory changed or was deleted while saving. Read its current state with "
-                        "memory_search or memory_list, then retry using the current memory id."
+                        "memory(action='search') or memory(action='list'), then retry using the current memory id."
                     ),
                     "profile_name": normalized_profile,
                 }

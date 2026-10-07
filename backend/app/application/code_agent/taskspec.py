@@ -578,9 +578,7 @@ def _criterion_pattern(text: str) -> str:
 
 def executed_ssh_verification(tool_name: str, args: dict, meta: dict) -> dict | None:
     """Validate the narrow receipt which may cross an executor error boundary."""
-    conditions = {"ssh_exists": "exists", "ssh_not_exists": "not_exists", "ssh_read": "exists",
-                  "ssh_assert_contains": "contains", "ssh_assert_not_contains": "not_contains",
-                  "ssh_port_check": "listening"}
+    conditions = {"ssh_read": "exists", "ssh_port_check": "listening"}
     condition = conditions.get(tool_name)
     receipt = meta.get("ssh_verification")
     if condition is None or not isinstance(receipt, dict) or meta.get("verifier") is not True:
@@ -1381,8 +1379,7 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
     a = args or {}
     m = meta or {}
     ssh_identity = {}
-    if tool_name in {"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-                     "ssh_exists", "ssh_not_exists", "ssh_read"}:
+    if tool_name in {"ssh_port_check", "ssh_read"}:
         # Missing meta is retained for old direct internal tracker callers. Every
         # provider/executor path supplies metadata and must have a valid receipt.
         receipt = executed_ssh_verification(tool_name, a, m)
@@ -1390,21 +1387,8 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
             return None
         ssh_identity = {"host": _normalized_host(str(a.get("host") or "")),
                         "target": _normalized_target(str(a.get("path") or a.get("port") or ""))}
-    if tool_name == "ssh_assert_contains":
-        return {**ssh_identity, "intents": {"content_contains"}, "files": _file_tokens(str(a.get("path", ""))),
-                "pattern": str(a.get("pattern", "")).lower(), "literal_pattern": str(a.get("pattern", ""))}
-    if tool_name == "ssh_assert_not_contains":
-        return {**ssh_identity, "intents": {"content_not_contains"}, "files": _file_tokens(str(a.get("path", ""))),
-                "pattern": str(a.get("pattern", "")).lower(), "literal_pattern": str(a.get("pattern", ""))}
     if tool_name == "ssh_port_check":
         return {**ssh_identity, "intents": {"server_started"}, "port": str(a.get("port", "")), "files": set()}
-    if tool_name == "ssh_exists":  # present(ok)→file_exists, absent(not ok)→file_not_exists
-        return {**ssh_identity, "intents": {"file_exists", "file_not_exists"},
-                "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
-    if tool_name == "ssh_not_exists":  # EXPLICIT cleanup assertion: absent (ok) proves
-        # file_not_exists, and a still-present path is a real FAIL (asserts="absent").
-        return {**ssh_identity, "intents": {"file_exists", "file_not_exists"}, "files": _file_tokens(str(a.get("path", ""))),
-                "present_when_ok": False, "asserts": "absent"}
     if tool_name == "ssh_read":  # a successful read proves the file EXISTS (never absence)
         return {**ssh_identity, "intents": {"file_exists"},
                 "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}

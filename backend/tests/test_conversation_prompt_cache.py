@@ -55,7 +55,7 @@ def test_conversation_keeps_work_tools_and_stable_persona(tmp_path):
         "Да не надо ничего делать я просто хочу болтать ты ведь для меня не только инструмент",
     ):
         call = _capture(tmp_path, message, history=history)
-        assert {"read_file", "runtime_control", "web_search", "web_fetch"} <= {t["function"]["name"] for t in call["tools"]}
+        assert {"read_file", "web_search", "web_fetch"} <= {t["function"]["name"] for t in call["tools"]}
         assert len(base_system(call["messages"])) < 3000
         systems.append(base_system(call["messages"]))
         history.extend([{"role": "user", "content": message}, {"role": "assistant", "content": "Привет!"}])
@@ -67,7 +67,7 @@ def test_compliment_and_social_followup_keep_conversation_prompt(tmp_path):
     systems = []
     for message in ("привет", "вау какая ты быстрая", "что предложишь?", "о чём поговорим?"):
         call = _capture(tmp_path, message, history=history)
-        assert {"read_file", "runtime_control", "web_search", "web_fetch"} <= {t["function"]["name"] for t in call["tools"]}, message
+        assert {"read_file", "web_search", "web_fetch"} <= {t["function"]["name"] for t in call["tools"]}, message
         assert len(base_system(call["messages"])) < 3000
         systems.append(base_system(call["messages"]))
         history.extend([

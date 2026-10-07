@@ -506,11 +506,7 @@ class SshProviderIntegrationTest(SshProviderTestBase):
                 "ssh_write",
                 "ssh_run_ps",
                 "ssh_replace",
-                "ssh_assert_contains",
-                "ssh_assert_not_contains",
                 "ssh_port_check",
-                "ssh_exists",
-                "ssh_not_exists",
                 "ssh_list_hosts",
             },
         )

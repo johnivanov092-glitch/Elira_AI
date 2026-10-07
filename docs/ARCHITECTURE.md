@@ -16,7 +16,7 @@ Composer
   -> capability_load + task guidance + Evidence Router
   -> agent_kernel.executor
   -> runtime_registry
-  -> Builtin | SSH | IT Ops | MCP | LSP provider
+  -> Builtin | SSH | IT Ops | MCP provider
   -> OS / LAN / files / subprocesses
 
 Workflow request
@@ -94,9 +94,10 @@ a successfully completed run.
 - The UI exposes one personality: `Elira / Auto`, with one sampling temperature.
   Legacy profiles remain readable but do not switch identity, tone or sampling.
   Their evidence/calculation requirements survive as relevant task instructions.
-- Every normal first turn sees the ordinary work tools from `tool_policy.BASE_TOOLS`,
-  including file/shell, web search/reading, memory, `runtime_control` and
-  `capability_load`. Workflow questions remain available through the runtime.
+- Every normal first turn sees ten work tools from `tool_policy.BASE_TOOLS`
+  (read/write/edit_file, glob, grep, run_bash, run_server, web_search, web_fetch,
+  todo_update) plus `capability_load` and `ask_user` (track «Elira на диете»,
+  2026-10-07). Workflow questions remain available through the runtime.
   Explicit search, attachments and resumed activations may add schemas. The model loads other
   groups through the existing registry; routing hints do not preload them. An external
   first failure, repeated local failure, or a false denial of available Web
@@ -140,20 +141,13 @@ a successfully completed run.
   save/reload and follow-up requests. Historical metadata is resolved from the
   Resource Store and framed as untrusted attachment data; file contents are not
   eagerly injected. Missing resources are explicit, without filename substitution.
-- Local price-list assembly/BOM requests cannot finalize on model arithmetic.
-  `bom_validate` reads the declared XLSX/CSV columns and deterministically
-  validates exact codes, numeric stock, quantities and prices, then calculates
-  markup, VAT, services and totals. A successful result is sealed with the
-  catalog SHA-256 and an immutable receipt; any failed revalidation revokes it.
-  BOM documents are generated from that snapshot rather than model arithmetic,
-  and arbitrary prebuilt files are not publishable as the validated BOM. A
-  failed validation has no canonical total.
-  If the model still reports a mandatory component absent after Library search,
-  the Evidence Router requires Web search for a sourced compatible alternative
-  before allowing the BOM flow to continue.
-- MCP/LSP remain per-run and appear only after a relevant `runtime_control`
-  request. Typed IT Ops and SSH are discovered through that same adapter; domain
-  routing hints neither preload schemas nor start an MCP server.
+- Price-list specifications/BOM are checked by the factory skill `bom-check`
+  (script over the declared XLSX/CSV columns: exact codes, stock, prices, markup,
+  VAT 16% by default, totals); the model takes numbers from its output.
+- MCP is per-run: group `mcp` (`runtime_control` with mcp_* operations only),
+  and a server's schemas appear after `mcp_start`. SSH and IT Ops are groups
+  `ssh`/`itops` loaded through `capability_load`; domain routing hints neither
+  preload schemas nor start an MCP server. LSP and plugins were removed.
 - All conversation and work use one compact stable base system prompt. There
   is no greeting/compliment regex or separate conversational path.
 - Role contract (owner's decision 2026-10-06): the `user` role carries only the
@@ -168,22 +162,21 @@ a successfully completed run.
   untrusted label there and never enters the base prompt. A rejected answer is
   quoted inside its correction, never left as the model's last reply. Runtime
   blocks are replaced in place so an unchanged block keeps the system prefix.
-- Ordinary file/shell, web search/reading, memory, runtime discovery tools and
-  the exact calculator `calc` are visible from the first turn
-  (`tool_policy.BASE_TOOLS`). Their work and source-verification instructions
-  are runtime blocks in the system section.
+- The base tools are visible from the first turn (`tool_policy.BASE_TOOLS`).
+  Their work and source-verification instructions are runtime blocks in the
+  system section.
 - Math contour (owner's decision 2026-10-06): the rule "check calculations with
   a tool" is executed with read-only tools (`side_effect=False`, no approval
   card in "ask"): `calc` (exact decimal/rational arithmetic, percentages,
   algebra via SymPy built from an AST allowlist — input is never evaluated as
-  code), group `math` (`unit_convert`, `finance_calc`: invoices, VAT, markup vs
-  margin, discounts, loans, splits) and `csv` filters/aggregates (group `data`;
-  its old `eval` of the question was removed). Shared Decimal parsing lives in
-  `application/calculation/numbers.py` (also used by `bom_validate`). Scripts
+  code), `unit_convert`, `finance_calc` (invoices, VAT, markup vs margin,
+  discounts, loans, splits) and `csv` filters/aggregates — all in group `math`
+  (its old `eval` of the question was removed). Shared Decimal parsing lives in
+  `application/calculation/numbers.py`. Scripts
   remain for complex modelling and ask for approval in "ask" mode.
   Correct task execution takes priority over short-chat TTFT; the discovery-only
   default was reverted on 2026-09-06 after a live current-events refusal.
-- Task guidance arrives with tools, including Web and external MCP/SSH/LSP
+- Task guidance arrives with tools, including Web and external MCP/SSH/IT Ops
   providers. Common verification rules and project instructions apply regardless
   of transport. Generated guidance messages use the existing compactor's pinned
   IDs; both summarization and its fallback preserve them and count them against
@@ -336,8 +329,8 @@ a successfully completed run.
   router uses an FTS5 index in the same `library.db` and injects only up to 10
   relevant excerpts of 2,500 characters. With no match, ordinary chat receives
   no Library text; freshest-file fallback exists only for an explicit
-  Library/attachment/document request. `runtime_control` with
-  `library_search → library_read` lets the
+  Library/attachment/document request. The `library` tool
+  (`search → read`) lets the
   agent consume the selected document in repeatable pages of at most 10,000
   characters. The topbar Library can upload directly; a durable chat resource
   is copied into Library only by the explicit save action. This is separate
@@ -356,15 +349,15 @@ a successfully completed run.
   when none exists. Retrieval reads one database snapshot and excludes managed
   chunks whose hash/status disagree with the manifest. Atomicity is per source,
   not across the entire corpus; freshness requires another indexing pass.
-- Workflow exposes that owner through `runtime_control(project_status)` and
-  `runtime_control(project_index)`. Both default to the connected project.
-  `memory_recall` maps a project path to the same opaque scope ID, so ingestion
-  and retrieval cannot silently address different namespaces.
+- The agent reaches that owner through `recall(action=status|index|search)`
+  (group `project`). All default to the connected project and map it to the
+  same opaque scope ID, so ingestion and retrieval cannot address different
+  namespaces.
 - The memory facade is the application-level boundary over curated facts
   (`smart_memory.db`) and semantic/project records (`rag_memory.db`). A
   correction with an explicit `replaces_id` can update that profile's prior
   curated row in place, subject to provenance and compare-and-swap checks.
-  `runtime_control(memory_search)` exposes fact IDs so the agent can make that
+  `memory(action=search)` exposes fact IDs so the agent can make that
   replacement deterministic; lexical matching remains only a compatibility
   fallback. Before the first model call, the harness sends each substantive user
   request through `memory.resolve_relevant_facts`, using a separate raw
@@ -379,14 +372,14 @@ a successfully completed run.
   (people, clients, companies, projects and
   servers). Exact entities rank above contextual matches and the injected block
   is bounded. Operational `volatile_fact` rows and stored harness-behaviour
-  rules are non-authoritative. Legacy `runtime_control(memory_add)` rows remain
+  rules are non-authoritative. Legacy rows saved by the retired runtime_control remain
   subject to prompt-override filtering, and selected rows are JSON-encoded before
   inclusion in the prompt. Legacy rows are readable only through this relevance
-  gate. Model-authored `remember`/`memory_add` default to `agent_note`, with a run
+  gate. Model-authored `memory(action=add)` defaults to `agent_note`, with a run
   reference when available. Only the literal current `memory_query`, or the exact
   remainder of its explicit remember command, receives server-owned
-  `user_command`/`user_correction` provenance. Model `config.source`, paraphrases
-  and `replaces_id` cannot elevate trust. Agent notes cannot replace trusted user
+  `user_command`/`user_correction` provenance. Paraphrases and a correction id
+  cannot elevate trust. Agent notes cannot replace trusted user
   rows; dedup keeps their origins separate. Manual user APIs retain their existing
   contract, and historical rows are not relabelled automatically.
   Automatic retrieval never implies automatic write. `memory_prune` removes only aged
@@ -466,13 +459,17 @@ or creates an executor/provider. TCP checks use `itops_network_inventory` with a
 explicit per-connect timeout and concurrency, not sequential shell
 `Test-NetConnection`.
 
-MCP, LSP, SSH shortcuts, Telegram, IT Ops, plugins, Workflow scheduling,
-memory/library administration and vault operations are behind the agent's
-`runtime_control` tool. It returns a single structured capability envelope:
-`completed`, `failed`, `needs_input`, `needs_secret`, `needs_elevation`,
-`waiting_approval`, or `cancelled`. Existing domain runtimes remain owners;
-`runtime_control` is an adapter, not a second executor or registry.
-Telegram uses typed `status/start/users/send/messages` operations; the bot token
+Integrations are small on-demand groups (track «Elira на диете», 2026-10-07):
+`mcp` (`runtime_control` with mcp_* operations), `ssh`, `itops` (`itops_registry`
+plus typed `itops_*`), `telegram` (`telegram` send/messages) and `memory`
+(`memory`, `library`). They share one structured envelope: `completed`, `failed`,
+`needs_input`, `needs_secret`, `needs_elevation`, `waiting_approval`, or
+`cancelled`; the agent loop turns a needs_* status of any tool into a Workflow
+card. Existing domain runtimes remain owners; the tools are adapters, not a
+second executor or registry. Telegram bot setup and the secrets vault are UI
+settings (Settings → Telegram, Settings → Секреты); LSP, plugins and the
+Workflow template/trigger operations were removed from the agent's tools.
+The `telegram` tool sends and reads messages; the bot token
 is resolved inside the Telegram runtime from the portable vault and is never an
 agent argument. Successful outgoing messages are written to the durable
 Telegram log, which is also the evidence source for `telegram_messages`.
@@ -510,10 +507,9 @@ A successful `mcp_start`/`mcp_restart` also returns
 the exact namespaced tool count and up to 50 tool names in server-advertised
 order. It does not duplicate descriptions or JSON schemas, so the model can call
 the right dynamic tool on the next turn without bloating the stable prompt
-prefix; `available_tool_names_truncated=true` reports a longer roster. LSP
-follows the same per-run rule. `ssh_hosts`
-reveals the existing SSH provider and `itops_assets` reveals the IT Ops provider
-without turning those discovery calls into authorization gates.
+prefix; `available_tool_names_truncated=true` reports a longer roster.
+`capability_load(ssh)` and `capability_load(itops)` reveal the SSH and IT Ops
+providers without turning those loads into authorization gates.
 
 Settings → MCP provides explicit user start/stop/restart controls and live status
 for configured servers. `api/routes/mcp_routes.py` delegates lifecycle actions to
@@ -552,16 +548,10 @@ cleanup are not lost; blocking POSIX commands retain argv-safe background
 transfer. Low-level callers without project/job context receive
 `needs_background`.
 
-The read-only LSP stdio client answers server-side configuration/progress
-requests, canonicalizes equivalent Windows file URI spellings and waits past an
-empty warm-up diagnostics push. Repeated checks do not send an invalid second
-`didOpen`; changed snapshots are close/open notifications, not edit operations.
-Explicit stop and backend shutdown kill the complete child process tree.
-
 Workflow Stop is race-safe across process creation. The per-run cancelled
 marker and Popen registration share one lock; if Stop arrives after
 `tool_started` but before registration, the new process tree is killed as soon
-as it registers. MCP and LSP stdio children use the same run ownership, while
+as it registers. MCP stdio children use the same run ownership, while
 provider-level cancellation callbacks close active HTTP/JSON-RPC transports;
 the UI does not acknowledge cancellation while a detached transport continues
 working. Durable Resume reuses the persisted run ID only after this cleanup.

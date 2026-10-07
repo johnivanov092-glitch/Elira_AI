@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
-from app.application.code_agent.capabilities import CAPABILITY_GROUPS
+from app.application.code_agent.capabilities import CAPABILITY_GROUPS, PROVIDER_GROUPS
 
 
 WEB_SOURCE_FIDELITY_GUIDANCE = (
@@ -48,14 +48,14 @@ _WORK_GUIDANCE = (
     "Когда готового недостаточно, читай первичную документацию и подходящие открытые репозитории "
     "(capability_load(group='web'), web_search, web_fetch); внешний код можно склонировать в папку "
     "навыка и адаптировать, записав источник, версию и лицензию в SOURCES.md. Подключённый MCP "
-    "улучшай копией с проверкой, затем mcp_upsert и mcp_restart, сохранив прежнюю конфигурацию. "
+    "улучшай копией с проверкой, затем runtime_control(mcp_upsert, mcp_restart), сохранив прежнюю конфигурацию. "
     "Сохраняй пользовательские данные и кодировку; перед разрушительным изменением подготовь "
     "бэкап; разрешения определяет Workflow. Успешный процесс сам по себе не подтверждает "
     "правильность данных: проверяй всю выдачу, а не первую строку, несовпадение исправляй до "
     "завершения. "
-    "Расчёты делай инструментами без побочных действий: calc (выражения, проценты, алгебра), "
-    "группа math — finance_calc (счёт, НДС, наценка/маржа, скидки) и unit_convert, группа "
-    "data — csv (отбор и суммы по таблице); скрипт — только для сложного моделирования. Актуальные "
+    "Расчёты делай инструментами группы math без побочных действий: calc (выражения, проценты, "
+    "алгебра), finance_calc (счёт, НДС, наценка/маржа, скидки), unit_convert, csv (отбор и суммы "
+    "по таблице); скрипт — только для сложного моделирования. Актуальные "
     "внешние факты — по первичным источникам. "
     "При ошибке изучи причину, не повторяй вызов вслепую. Не повторяй одинаковый успешный "
     "вызов без новых данных: если выдача не помогает, измени запрос или способ проверки. "
@@ -67,7 +67,8 @@ _WORK_GUIDANCE = (
 _GUIDANCE = {
     "project": (
         "Изучи реальные файлы, стек и инструкции проекта перед правкой. Используй "
-        "project_map/glob/grep/read_file; наличие файла и его содержимое не угадывай по истории. "
+        "glob/grep/read_file (обзор большого проекта — project_map, поиск по индексу — recall); "
+        "наличие файла и его содержимое не угадывай по истории. "
         "Пути относительно рабочей папки; явные абсолютные пути допустимы. Если файл не указан, "
         "осмотри подключённую папку и уточни выбор. Сделай минимальный патч, сохрани кодировку "
         "и проверь результат подходящими тестами/сборкой. Не переписывай большие файлы целиком: "
@@ -94,19 +95,24 @@ _GUIDANCE = {
         "по ожидаемой активной версии и открытому допуску работы; после начала допуска "
         "не откатывай данные автоматически. Итог: что выполнено, проверено и осталось."
     ),
-    "runtime": (
-        "MCP: mcp_list → выбери подходящий сервер → mcp_start(server_id); схемы появятся "
-        "после запуска. Не запускай все MCP. Для дополнительных схем: mcp_tools(server_id, query). "
-        "LSP: lsp_list → lsp_start. SSH: ssh_hosts; IT Ops: itops_assets — уточни сохранённую "
-        "цель и используй typed health/inventory. Сети проверяй itops_network_inventory, "
-        "без последовательных shell-проверок портов; сырой SSH — когда typed операции нет. "
-        "Перед разрушительным изменением подготовь доступный бэкап, затем проверь результат. "
-        "Telegram: telegram_status/start/users/send/messages; токен получает runtime из vault. "
-        "Не обходи typed Telegram через http_api. Секреты вводятся карточкой UI, в аргументах "
-        "только secret_ref. Project Corpus: project_status/project_index. Личная память: "
-        "memory_search → при отсутствии совпадений memory_list. Library: library_search → "
-        "library_read по file_id. Для прайсов ищи отдельными токенами категории/бренда/модели; "
-        "нулевой exact-match или первые N строк не доказывают отсутствие позиции."
+    "mcp": (
+        "MCP: mcp_list → выбери один подходящий сервер → mcp_start(server_id); его схемы появятся "
+        "на следующем ходе. Не запускай все MCP. Нужны другие его инструменты — mcp_tools(server_id, "
+        "query). Секреты вводятся карточкой UI, в config только secret_ref."
+    ),
+    "ssh": (
+        "SSH: ssh_list_hosts — сохранённые хосты. Команда — ssh_run (Windows — ssh_run_ps), файлы — "
+        "ssh_read/ssh_write/ssh_replace; проверку делай обычной командой (test, grep, Test-Path) и "
+        "читай вывод. Перед разрушительным изменением подготовь бэкап, затем проверь результат."
+    ),
+    "itops": (
+        "IT Ops: itops_registry(action='list') — сохранённые цели; дальше typed health/inventory "
+        "инструменты itops_*. Сети проверяй itops_network_inventory, без последовательных "
+        "shell-проверок портов; сырой SSH — когда typed операции нет."
+    ),
+    "telegram": (
+        "Telegram: telegram(action='send', chat_id, text); токен берёт runtime из хранилища. "
+        "Настройка бота — в UI (Настройки → Telegram). Не обходи telegram через http_api."
     ),
     "web": (
         WEB_SOURCE_FIDELITY_GUIDANCE + "\n"
@@ -205,16 +211,14 @@ _GUIDANCE = {
         "локальному прайсу проверяет навык bom-check."
     ),
     "memory": (
-        "recall — Project RAG и прошлые прогоны, не личная память. Личные факты ищи через "
-        "runtime_control(memory_search), при пустом поиске memory_list (группа runtime). "
-        "Долговечный факт сохраняй remember по явной просьбе пользователя запомнить или "
-        "исправить его; пожелание на текущую беседу не является такой просьбой. Для поправки сначала найди id "
-        "заменяемой записи и передай correction=True, replaces_id. Не сохраняй вложения "
-        "или служебные инструкции как слова пользователя. Сохраняй точную формулировку "
-        "пользовательского сообщения: происхождение сервер связывает с исходным запросом. "
-        "Собственные выводы и парафразы сохраняются как agent_note; запись в память сама "
-        "по себе не подтверждает работоспособность. Если результат опровергнут, исправь "
-        "свою прежнюю заметку по её id и укажи наблюдение. Операционное состояние проверяй live."
+        "Личные факты: memory(action='search'), при пустом результате — memory(action='list'). "
+        "Сохраняй memory(action='add') только по явной просьбе запомнить или исправить; "
+        "пожелание на текущую беседу не является такой просьбой. Сохраняй точную формулировку "
+        "пользователя; собственные выводы сохраняются как заметка агента и не подтверждают "
+        "работоспособность. Поправка: найди id записи и добавь с correction=true и этим id. "
+        "Операционное состояние проверяй live. Библиотека: library(action='search') отдельными "
+        "словами, затем library(action='read', id=…); нулевой поиск по одной фразе не доказывает "
+        "отсутствие."
     ),
     "desktop": (
         "Перед действиями прочитай актуальное состояние экрана; выбирай наблюдаемые элементы, "
@@ -248,8 +252,9 @@ def task_guidance_blocks(
     blocks = {
         group: text for group, text in _GUIDANCE.items()
         if names & CAPABILITY_GROUPS[group]
+        or (group in PROVIDER_GROUPS and any(n.startswith(PROVIDER_GROUPS[group]) for n in names))
     }
-    # External providers (MCP/SSH/LSP) do not belong to built-in groups.
+    # SSH/IT Ops provider tools match their group by tool-name prefix.
     # Read-only retrieval does not need code/skill authoring instructions. Mixed
     # tasks receive them as soon as project, resource or external work is loaded.
     retrieval = CAPABILITY_GROUPS["web"]

@@ -178,61 +178,6 @@ class NegativeEvidenceTest(unittest.TestCase):
         self.assertEqual(t.items[1]["status"], "unconfirmed")   # no DOM text evidence
 
 
-class CleanupIntentTest(unittest.TestCase):
-    def test_ssh_exists_absent_confirms_cleanup(self):
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
-        ]))
-        # ssh_exists on a path that is GONE → ok=False → confirms file_not_exists.
-        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                 ok=False, evidence="C:\\lab\\tmp.txt: не найден")
-        self.assertEqual(t.items[0]["status"], "confirmed")
-
-    def test_current_cleanup_condition_fails_while_file_is_present(self):
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
-        ]))
-        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                 ok=True, evidence="C:\\lab\\tmp.txt: существует (файл)")
-        self.assertEqual(t.items[0]["status"], "failed")
-
-    def test_explicit_not_exists_still_present_fails_cleanup(self):
-        # An EXPLICIT ssh_not_exists assertion that finds the file still there IS a
-        # real cleanup failure.
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
-        ]))
-        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                 ok=False, evidence="C:\\lab\\tmp.txt: всё ещё существует (файл)")
-        self.assertEqual(t.items[0]["status"], "failed")
-
-    def test_not_exists_absent_confirms_cleanup(self):
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
-        ]))
-        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                 ok=True, evidence="C:\\lab\\tmp.txt: отсутствует — cleanup ок")
-        self.assertEqual(t.items[0]["status"], "confirmed")
-
-    def test_post_cleanup_absence_does_not_fail_setup_exists(self):
-        # FIX #2: setup-exists confirmed during setup, then a post-cleanup absence
-        # check must NOT flip it to failed.
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "файл `C:\\lab\\tmp.txt` создан при setup",   # historical criterion
-        ]))
-        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                 ok=True, evidence="существует")            # setup: confirmed
-        self.assertEqual(t.items[0]["status"], "confirmed")
-        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                 ok=True, evidence="отсутствует")           # post-cleanup: absent
-        self.assertEqual(t.items[0]["status"], "confirmed")  # NOT failed
-        # and even an unconfirmed setup-exists is only neutral on a later absence
-        t2 = CriteriaTracker.from_spec(TaskSpec(success_criteria=["файл `C:\\lab\\tmp.txt` создан при setup"]))
-        t2.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
-                  ok=False, evidence="не найден")
-        self.assertEqual(t2.items[0]["status"], "unconfirmed")  # neutral, not failed
-
-
 class FileExistenceLifecycleTest(unittest.TestCase):
     """A whole setup→verify→cleanup lifecycle confirms without cross-phase false fails."""
 
@@ -244,67 +189,9 @@ class FileExistenceLifecycleTest(unittest.TestCase):
         self.assertTrue(ch)
         self.assertEqual(t.items[0]["status"], "confirmed")
 
-    def test_exists_before_cleanup_is_positive_and_reports_confirming_evidence(self):
-        # Live f478c61a: "директория … существует ДО cleanup" was misclassified as a
-        # cleanup criterion and confirmed with evidence "не найден". The temporal
-        # "cleanup" must not flip a POSITIVE existence claim → it's file_exists, and a
-        # confirmed criterion reports the CONFIRMING evidence, not a stale precheck one.
-        from app.application.code_agent.taskspec import _criterion_intent
-        c = "verifier подтверждает, что директория `C:\\AgentLabGlobalCanary` существует ДО cleanup"
-        self.assertEqual(_criterion_intent(c), "file_exists")
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c]))
-        # a pre-creation absence check is neutral (never confirms/fails with "не найден")
-        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\AgentLabGlobalCanary"},
-                 ok=False, evidence="C:\\AgentLabGlobalCanary: не найден")
-        self.assertEqual(t.items[0]["status"], "unconfirmed")
-        self.assertIsNone(t.items[0]["evidence"])
-        # after creation, ssh_exists(present) confirms it with the CONFIRMING evidence
-        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\AgentLabGlobalCanary"},
-                 ok=True, evidence="C:\\AgentLabGlobalCanary: существует (директория)")
-        self.assertEqual(t.items[0]["status"], "confirmed")
-        self.assertIn("существует", t.items[0]["evidence"])
-        self.assertNotIn("не найден", t.items[0]["evidence"])
-        # a later post-cleanup absence must NOT flip it back or overwrite the evidence
-        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\AgentLabGlobalCanary"},
-                 ok=True, evidence="отсутствует — cleanup ок")
-        self.assertEqual(t.items[0]["status"], "confirmed")
-        self.assertIn("существует", t.items[0]["evidence"])
-
-    def test_full_setup_verify_cleanup_reaches_confirmed(self):
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "директория `C:\\lab` существует",
-            "файл `C:\\lab\\health.txt` существует",
-            "файл `C:\\lab\\health.txt` содержит строку `status=ok`",
-            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
-        ]))
-        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab"}, ok=True, evidence="dir")
-        t.record(tool_name="ssh_read", args={"host": "h", "path": "C:\\lab\\health.txt"}, ok=True, evidence="read")
-        t.record(tool_name="ssh_assert_contains",
-                 args={"host": "h", "path": "C:\\lab\\health.txt", "pattern": "status=ok"}, ok=True, evidence="found")
-        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"}, ok=True, evidence="gone")
-        self.assertEqual(t.completion_status(), "confirmed")
-
 
 class MultilineContentSplitTest(unittest.TestCase):
     """FIX #4: 'file contains lines: A, B, C' → one criterion per line."""
-
-    def test_colon_list_splits_into_per_line_criteria(self):
-        spec = derive_task_spec(
-            "Цель: наполнить лог.\nКритерии готовности:\n"
-            "- файл `C:\\lab\\out.txt` содержит строки: `READY`, `OK`, `DONE`"
-        )
-        crits = spec.success_criteria
-        self.assertEqual(len(crits), 3)
-        for tok in ("READY", "OK", "DONE"):
-            self.assertTrue(any(f"`{tok}`" in c for c in crits), tok)
-        for c in crits:
-            self.assertEqual(_criterion_intent(c), "content_contains")
-        # each split keeps the file, and is confirmed by its own ssh_assert_contains
-        t = CriteriaTracker.from_spec(spec)
-        for tok in ("READY", "OK", "DONE"):
-            t.record(tool_name="ssh_assert_contains",
-                     args={"host": "h", "path": "C:\\lab\\out.txt", "pattern": tok}, ok=True, evidence="found")
-        self.assertEqual(t.completion_status(), "confirmed")
 
     def test_single_path_plus_pattern_criterion_not_split(self):
         # `path` + `pattern` (two quotes, no colon-list) must stay ONE criterion.

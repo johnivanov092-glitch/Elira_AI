@@ -122,10 +122,10 @@ def test_ssh_requires_executed_observation_and_postcheck_after_change() -> None:
 
     _record(
         evidence,
-        "ssh_assert_contains",
-        args={"host": "ai-server", "path": "/etc/app.conf", "text": "setting=true"},
+        "ssh_read",
+        args={"host": "ai-server", "path": "/etc/app.conf"},
         output={"ok": True, "verifier": True},
-        text="assertion passed",
+        text="setting=true",
     )
     assert evidence.has_current_passing_verification
 

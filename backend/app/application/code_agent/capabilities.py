@@ -20,9 +20,13 @@ CORE_BUILTIN_TOOLS = frozenset(CORE_BUILTIN_TOOL_ORDER)
 CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "project": frozenset({
         "read_file", "write_file", "edit_file", "glob", "grep",
-        "project_map", "todo_update", "delegate_task", "run_bash", "run_server",
+        "project_map", "recall", "todo_update", "delegate_task", "run_bash", "run_server",
     }),
-    "runtime": frozenset({"runtime_control"}),
+    "mcp": frozenset({"runtime_control"}),
+    # ssh/itops also switch on their integration provider (PROVIDER_GROUPS).
+    "ssh": frozenset(),
+    "itops": frozenset({"itops_registry"}),
+    "telegram": frozenset({"telegram"}),
     "web": frozenset({
         "web_search", "web_fetch", "web_query", "http_api", "browser",
     }),
@@ -31,18 +35,21 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
         "resource_process", "resource_materialize", "resource_publish",
         "read_image", "file_gen",
     }),
-    "memory": frozenset({"recall", "remember"}),
+    "memory": frozenset({"memory", "library"}),
     "math": frozenset({"calc", "unit_convert", "finance_calc", "csv"}),
 }
 
 
 CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
-    "project": "local files, code, shell commands, processes, tests and task planning",
-    "runtime": "discover/manage MCP, LSP, SSH, IT Ops, Telegram, Library and user memory",
+    "project": "project overview (project_map), project index search (recall) and a sub-agent (delegate_task); files and shell are always loaded",
+    "mcp": "configured MCP servers: list, start/stop, discover their tools, add or change a server",
+    "ssh": "SSH to saved or explicit hosts: run bash/PowerShell, read/write/replace remote files, port check",
+    "itops": "IT Ops: saved assets, connection profiles, MikroTik routers and typed health/inventory checks",
+    "telegram": "send a Telegram message or read the bot log",
     "web": "internet search, page reading, HTTP APIs and a JS browser",
     "desktop": "local Windows desktop screenshots, mouse and keyboard control",
     "resources": "attachments, vision, generated DOCX/XLSX/PDF and downloads",
-    "memory": "project RAG recall; save durable user facts/corrections only on explicit request, never transient chat preferences",
+    "memory": "long-term facts about the user (memory) and the user's document Library (library)",
     "math": "exact calculator, unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums",
 }
 
@@ -61,14 +68,10 @@ DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "Баланс": frozenset(),
     "Инженерный": frozenset(),  # project/code tools are already in the core
     "Деловой": frozenset({"math"}),
-    "Инфраструктура": frozenset({"web"}),
+    "Инфраструктура": frozenset({"web", "ssh", "itops"}),
     "Научный": frozenset({"web", "math"}),
     "Медицина": frozenset({"web"}),
 }
-
-# Compatibility alias for older imports/tests. The values now describe hidden
-# domain policies, not selectable user profiles.
-PROFILE_CAPABILITY_GROUPS = DOMAIN_CAPABILITY_GROUPS
 
 
 _DOWNLOAD_REQUEST_RE = re.compile(
@@ -101,9 +104,8 @@ _EXTERNAL_FAILURE_TOOLS = frozenset({
     "web_fetch", "http_api", "browser", "ssh_run",
     "ssh_run_ps", "itops_mikrotik_inventory", "itops_network_inventory",
 })
-_EXTERNAL_RUNTIME_PREFIXES = (
-    "mcp_", "lsp_", "ssh_", "telegram_", "itops_", "plugin_",
-)
+# Groups whose tools come from an integration provider, by tool-name prefix.
+PROVIDER_GROUPS: dict[str, str] = {"ssh": "ssh_", "itops": "itops_"}
 _EXTERNAL_FAILURE_RE = re.compile(
     r"(?:mcp|ssh|http|api|routeros|mikrotik|protocol|version|unsupported|"
     r"not\s+found|unknown|connection|timeout|certificate|tls|jinja|template)",
@@ -117,8 +119,6 @@ class RequestCapabilityRoute:
 
     domain_policies: tuple[str, ...]
     capability_groups: frozenset[str]
-    include_itops: bool
-    include_ssh: bool
     download_requested: bool  # Legacy name: a hint, never a completion gate.
     evidence_reasons: tuple[str, ...]
     preflight: dict[str, object] = field(default_factory=dict)
@@ -159,12 +159,9 @@ def route_request_capabilities(
     if evidence_reasons:
         groups.add("web")
 
-    include_itops = "Инфраструктура" in domains
     return RequestCapabilityRoute(
         domain_policies=tuple(domains),
         capability_groups=normalize_capability_groups(groups),
-        include_itops=include_itops,
-        include_ssh=include_itops,
         download_requested=download_requested,
         evidence_reasons=tuple(dict.fromkeys(evidence_reasons)),
         preflight={"source": "main_agent"},
@@ -183,9 +180,8 @@ def should_escalate_web_after_failure(
     message = str(error or "")
     if name == "runtime_control":
         operation = str((arguments or {}).get("operation") or "").strip().lower()
-        # Local stores remain the source of truth for Library, Memory, Vault,
-        # Workflow and Project Corpus errors; Web cannot resolve those states.
-        return operation.startswith(_EXTERNAL_RUNTIME_PREFIXES)
+        # An MCP server failure may be fixed by its documentation on the web.
+        return operation.startswith("mcp_")
     if int(failure_count) >= 2:
         return True
     return name in _EXTERNAL_FAILURE_TOOLS or bool(_EXTERNAL_FAILURE_RE.search(message))
@@ -207,16 +203,6 @@ def should_escalate_web_from_answer(answer: str, user_message: str = "") -> bool
     text = re.sub(r'```[\s\S]*?(?:```|$)|`[^`\n]*`|«[^»]*»|“[^”]*”|"[^"\n]*"', "", text)
     text = re.sub(r"(?m)^\s*>.*$", "", text)
     return bool(_MODEL_EXTERNAL_ACCESS_DENIAL_RE.search(text))
-
-
-def capability_groups_for_profile(profile_name: str) -> frozenset[str]:
-    """Compatibility view of one internal domain policy's starter groups."""
-    return DOMAIN_CAPABILITY_GROUPS.get(str(profile_name or "").strip(), frozenset())
-
-
-def profile_preloads_itops(profile_name: str) -> bool:
-    """Compatibility helper for the internal infrastructure policy."""
-    return str(profile_name or "").strip() == "Инфраструктура"
 
 
 def normalize_capability_groups(groups: Collection[str] | None) -> frozenset[str]:
