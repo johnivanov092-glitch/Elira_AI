@@ -667,34 +667,6 @@ def _port_listening(port: int, timeout: float = 0.5, host: str = "127.0.0.1") ->
         return False
 
 
-def _url_endpoint_listening(url: str, port: int) -> bool:
-    """Probe the host the URL actually names — not a hardcoded 127.0.0.1. A server
-    bound only to ::1 or to a LAN interface is ALIVE at its own address; probing the
-    wrong loopback would read it as dead and invite a duplicate start (review #6/#9)."""
-    m = re.match(r"https?://\[?([^/\]:]+)\]?", url or "")
-    host = (m.group(1) if m else "127.0.0.1").lower()
-    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "::"):
-        return _port_listening(port) or _port_listening(port, host="::1")
-    return _port_listening(port, host=host)
-
-
-def url_is_live_server(url: str) -> bool:
-    """True when `url` points at a tracked dev server whose PROCESS is alive and
-    whose endpoint actually LISTENS. This is the liveness gate for server→browser
-    redirects and auto-verifier browser probes — a stale URL from a stopped/crashed
-    server must not steer verification at a dead endpoint."""
-    m = _SERVER_URL_RE.search(url or "")
-    if not m:
-        return False
-    port = int(m.group(2))
-    _reap_dead_servers()
-    with _SERVERS_LOCK:
-        handles = [h for h in _LIVE_SERVERS.values() if h.port == port]
-    if not any(h.proc.poll() is None for h in handles):
-        return False
-    return _url_endpoint_listening(url, port)
-
-
 def run_owned_servers(run_id: str) -> list[dict[str, Any]]:
     """Alive background processes owned by this run, for reporting and Stop."""
     if not run_id:
@@ -1193,7 +1165,7 @@ def _tool_run_server_impl(
         with _SERVERS_LOCK:
             handles = list(_LIVE_SERVERS.values())
         if not handles:
-            return {"text": "No background processes are tracked.", "ok": False}
+            return {"text": "No background processes are tracked.", "ok": True, "processes": []}
         lines = ["Tracked background processes:"]
         processes: list[dict[str, Any]] = []
         canonical = None

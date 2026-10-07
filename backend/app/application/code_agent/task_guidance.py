@@ -229,27 +229,8 @@ _GUIDANCE = {
     ),
 }
 
-_DOMAIN_GUIDANCE = {
-    "Медицина": (
-        "Объясняй медицинские вопросы с учётом ограниченности контекста; не представляй "
-        "предположение диагнозом. Дозировки/протоколы проверяй по первичным источникам, "
-        "уточняй существенные данные. При тревожных симптомах рекомендуй срочную очную помощь."
-    ),
-    "Научный": (
-        "Отделяй установленное знание от гипотез. Не выдумывай исследования, DOI и результаты. "
-        "Проверяй вычисления инструментом, единицы и погрешности; источники — реальные публикации."
-    ),
-    "Деловой": (
-        "Факты о компаниях и актуальные реквизиты подтверждай источниками. Суммы и проценты "
-        "проверяй расчётом; оценку помечай. Соблюдай формат требуемого документа; юридические "
-        "выводы отделяй от рабочей заготовки и отмечай существенные ограничения."
-    ),
-}
 
-
-def task_guidance_blocks(
-    tool_names: Collection[str], *, domain_policies: Collection[str] = (),
-) -> dict[str, str]:
+def task_guidance_blocks(tool_names: Collection[str]) -> dict[str, str]:
     """Stable keys let the loop append each activated instruction only once."""
     names = set(tool_names)
     blocks = {
@@ -263,7 +244,4 @@ def task_guidance_blocks(
     retrieval = CAPABILITY_GROUPS["web"]
     if names - retrieval - {"capability_load", "ask_user", "workflow_request"}:
         blocks = {"work": _WORK_GUIDANCE, **blocks}
-    for domain in domain_policies:
-        if domain in _DOMAIN_GUIDANCE:
-            blocks[domain] = _DOMAIN_GUIDANCE[domain]
     return blocks

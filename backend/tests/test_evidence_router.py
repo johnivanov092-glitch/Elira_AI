@@ -7,7 +7,7 @@ import pytest
 
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.capabilities import (
-    route_request_capabilities,
+    file_delivery_requested,
     should_escalate_web_after_failure,
     should_escalate_web_from_answer,
 )
@@ -47,25 +47,8 @@ def _valid_bom_result() -> dict:
     }
 
 
-def test_infrastructure_route_preloads_typed_ssh_itops_and_web_evidence() -> None:
-    decision = route_request_capabilities(
-        "Подключись к MikroTik и проверь совместимость RouterOS 6.49 с MikroMCP",
-        domain_policy="Инфраструктура",
-    )
-
-    assert {"ssh", "itops"} <= decision.capability_groups
-    assert "web" in decision.capability_groups
-    assert decision.evidence_reasons
-
-
-def test_download_request_suggests_resources_without_declaring_delivery() -> None:
-    decision = route_request_capabilities(
-        "Создай PDF и дай мне файл для скачивания",
-        domain_policy="Деловой",
-    )
-
-    assert "resources" in decision.capability_groups
-    assert decision.download_requested is True
+def test_download_request_is_a_delivery_hint() -> None:
+    assert file_delivery_requested("Создай PDF и дай мне файл для скачивания") is True
 
 
 @pytest.mark.parametrize("message", [
@@ -75,9 +58,7 @@ def test_download_request_suggests_resources_without_declaring_delivery() -> Non
     "Give me a link to the manufacturer's PDF",
 ])
 def test_external_link_does_not_require_artifact_publication(message: str) -> None:
-    decision = route_request_capabilities(message)
-
-    assert decision.download_requested is False
+    assert file_delivery_requested(message) is False
 
 
 @pytest.mark.parametrize("message", [
@@ -89,10 +70,7 @@ def test_external_link_does_not_require_artifact_publication(message: str) -> No
     "Give me a link to the generated PDF",
 ])
 def test_generated_file_link_keeps_resource_hint(message: str) -> None:
-    decision = route_request_capabilities(message)
-
-    assert decision.download_requested is True
-    assert "resources" in decision.capability_groups
+    assert file_delivery_requested(message) is True
 
 
 @pytest.mark.parametrize("encoding", ["UTF-8 без BOM", "UTF-16 с BOM"])
@@ -155,15 +133,6 @@ def test_library_text_cannot_require_unsolicited_download(tmp_path) -> None:
     assert started["runtime_activation"]["capability_groups"] == []
 
 
-def test_local_code_edit_does_not_load_web_without_external_evidence_need() -> None:
-    decision = route_request_capabilities(
-        "Исправь опечатку в локальном файле backend/app/main.py",
-        domain_policy="Инженерный",
-    )
-
-    assert "web" not in decision.capability_groups
-
-
 def test_external_integration_failure_escalates_web_on_first_failure() -> None:
     assert should_escalate_web_after_failure(
         tool_name="mcp",
@@ -188,16 +157,6 @@ def test_repeated_local_tool_failure_escalates_web() -> None:
         error="command failed",
         failure_count=2,
     ) is True
-
-
-def test_mixed_request_leaves_semantic_routing_to_main_agent() -> None:
-    decision = route_request_capabilities(
-        "Исправь Python-код диагностики SSH-сети и проверь актуальные CVE",
-    )
-
-    assert decision.domain_policies == ("Баланс",)
-    assert decision.preflight == {"source": "main_agent"}
-    assert not {"ssh", "itops"} & decision.capability_groups
 
 
 def test_general_uncertainty_is_not_a_web_requirement() -> None:

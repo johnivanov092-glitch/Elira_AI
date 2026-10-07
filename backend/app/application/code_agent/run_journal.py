@@ -396,8 +396,6 @@ class RunJournal:
         record = {"timestamp": _utc_now(), "run_id": self.run_id, **_clean(event)}
         self._append_jsonl(self.events_path, record)
         event_type = str(event.get("type") or "")
-        if event_type == "run_started" and isinstance(event.get("preflight"), dict):
-            self._state["preflight"] = _clean(event["preflight"])
         if event_type == "skills_changed":
             self._state["active_skills"] = _clean(event.get("active_skills") or [])
         for field in ("task_outcome", "command_progress", "persistence_policy", "task_spec"):

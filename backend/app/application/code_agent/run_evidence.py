@@ -226,15 +226,6 @@ _EXTERNAL_AUTHORITY_CLAIM_RE = re.compile(
     r"(?:official|verified)\s+(?:source|data))",
     re.IGNORECASE | re.UNICODE,
 )
-_EXTERNAL_UNCERTAINTY_RE = re.compile(
-    r"(?:не\s+(?:подтвердил\w*|подтвержда\w*|подтвержден\w*|наш[её]л\w*|знаю|удалось\s+"
-    r"(?:найти|проверить|подтвердить))|источник\s+не\s+найден|"
-    r"источник.{0,80}\bне\s+найден|"
-    r"(?:нет\s+(?:ни\s+одного\s+)?подтвержд\w+|подтвержд\w+.{0,80}\bнет)|"
-    r"не\s+могу\s+(?:достоверно\s+)?подтвердить|requires?\s+verification|"
-    r"not\s+(?:verified|confirmed))",
-    re.IGNORECASE | re.UNICODE,
-)
 _LOCAL_FACT_CONTEXT_RE = re.compile(
     r"\b(?:файл\w*|код\w*|класс\w*|функци\w*|компонент\w*|коммит\w*|"
     r"ветк\w*|репозитор\w*|проект\w*|сервер\w*|хост\w*|ssh|папк\w*|"
@@ -249,26 +240,6 @@ _EXPLICIT_EXTERNAL_CONTEXT_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
-_ANSWER_FILE_RE = re.compile(
-    r"[\w.\-/\\]+\.(?:py|js|ts|tsx|jsx|json|md|txt|ya?ml|toml|cfg|ini|sh|bash|"
-    r"rs|go|java|kt|c|cpp|h|hpp|sql|html|css|scss|env|lock|rsc|conf|service)\b",
-    re.IGNORECASE,
-)
-_ANSWER_DOC_RE = re.compile(r"[\w.\-/\\]+\.(?:docx|xlsx|pdf)\b", re.IGNORECASE)
-_DOCGEN_READY_RE = re.compile(
-    r"(?:\bвот\b|\bготов(?:о|а|ы)?\b|\bсоздан(?:о|а|ы)?\b|"
-    r"\bсгенерирован(?:о|а|ы)?\b|\bподготовлен(?:о|а|ы)?\b|"
-    r"\bсохран(?:ен|ён)(?:о|а|ы)?\b|\bскачать\b|"
-    r"\b(?:here(?:'s| is)|ready|created|generated|saved|download)\b)",
-    re.IGNORECASE,
-)
-_DOCGEN_EXISTING_RE = re.compile(
-    r"(?:\bсуществу\w*\b|\bнаход\w*\b|\bнайден\w*\b|\bимеется\b|"
-    r"\bна месте\b|\bпредыдущ\w*\s+прогон\w*\b|\bранее\b|"
-    r"\bдо этого\b|\b(?:already existed|previous run|exists|found)\b|"
-    r"\bне\s+(?:был[оаи]?\s+)?(?:создан|сгенерирован|подготовлен|сохран[её]н)\w*\b)",
-    re.IGNORECASE,
-)
 _DOCUMENT_QA_CLAIM_RE = re.compile(
     r"(?:\bqa\s*(?:passed|pass|пройден\w*)\b|"
     r"\b(?:документ\w*|файл\w*|кп|оформлен\w*|в[её]рстк\w*)\b.{0,60}"
@@ -297,20 +268,6 @@ def _receipt_target_unchanged(receipt: EvidenceReceipt) -> bool:
         return False
 
 
-def _doc_claim_context(answer: str, start: int, end: int) -> str:
-    left = 0
-    for marker in ("\n", "! ", "? ", ". "):
-        pos = answer.rfind(marker, 0, start)
-        if pos >= 0:
-            left = max(left, pos + len(marker))
-    right = len(answer)
-    for marker in ("\n", "! ", "? ", ". "):
-        pos = answer.find(marker, end)
-        if pos >= 0:
-            right = min(right, pos)
-    return answer[left:right]
-
-
 def requires_external_source(user_message: str, answer: str = "") -> bool:
     request = user_message or ""
     if (
@@ -325,10 +282,6 @@ def requires_external_source(user_message: str, answer: str = "") -> bool:
     )
 
 
-def answer_admits_missing_external_source(answer: str) -> bool:
-    return bool(_EXTERNAL_UNCERTAINTY_RE.search(answer or ""))
-
-
 def tool_provides_external_source(tool_name: str, text_result: str) -> bool:
     tool = str(tool_name or "").strip()
     if not str(text_result or "").strip():
@@ -339,36 +292,6 @@ def tool_provides_external_source(tool_name: str, text_result: str) -> bool:
         "browser_snapshot",
         "browser_network_requests",
     }
-
-
-def ungrounded_file_claims(
-    answer: str,
-    messages: Iterable[dict[str, Any]],
-    established_facts: Iterable[str],
-    observed_fragments: Iterable[str] = (),
-) -> list[str]:
-    claimed = {_basename(m.group(0)).lower() for m in _ANSWER_FILE_RE.finditer(answer or "")}
-    if not claimed:
-        return []
-    parts = [str(item) for item in established_facts]
-    parts.extend(str(item) for item in observed_fragments)
-    for message in list(messages)[1:]:
-        if isinstance(message, dict) and message.get("role") in ("tool", "user", "system"):
-            content = message.get("content")
-            if isinstance(content, str):
-                parts.append(content)
-    haystack = " ".join(parts).lower()
-    return sorted({name for name in claimed if name not in haystack})
-
-
-def unbacked_document_claims(answer: str, generated_documents: Iterable[str]) -> list[str]:
-    claimed: set[str] = set()
-    for match in _ANSWER_DOC_RE.finditer(answer or ""):
-        context = _doc_claim_context(answer, match.start(), match.end())
-        if _DOCGEN_READY_RE.search(context) and not _DOCGEN_EXISTING_RE.search(context):
-            claimed.add(_basename(match.group(0)).lower())
-    produced = {_basename(path).lower() for path in generated_documents}
-    return sorted(claimed - produced)
 
 
 class RunEvidence:
@@ -383,7 +306,6 @@ class RunEvidence:
         self._project_epoch = 0
         self._receipts: list[EvidenceReceipt] = []
         self._generated_documents: set[str] = set()
-        self._remote_hosts: set[str] = set()
         self._grounding_fragments: list[str] = []
         self._web_research_started = False
         source_records = list(sources)
@@ -675,10 +597,6 @@ class RunEvidence:
         return [(url, titles.get(url, "")) for url in self.read_site_urls]
 
     @property
-    def remote_hosts(self) -> tuple[str, ...]:
-        return tuple(sorted(self._remote_hosts))
-
-    @property
     def generated_documents(self) -> tuple[str, ...]:
         return tuple(sorted(self._generated_documents))
 
@@ -730,26 +648,6 @@ class RunEvidence:
         return tool in _VERIFICATION_TOOLS and (
             output is None or output.get("verifier") is True
         )
-
-    @staticmethod
-    def answer_admits_missing_external_source(answer: str) -> bool:
-        return answer_admits_missing_external_source(answer)
-
-    def ungrounded_file_claims(
-        self,
-        answer: str,
-        messages: Iterable[dict[str, Any]],
-        established_facts: Iterable[str],
-    ) -> list[str]:
-        return ungrounded_file_claims(
-            answer,
-            messages,
-            established_facts,
-            self._grounding_fragments,
-        )
-
-    def unbacked_document_claims(self, answer: str) -> list[str]:
-        return unbacked_document_claims(answer, self._generated_documents)
 
     def has_unverified_document_qa_claim(self, answer: str) -> bool:
         latest_qa_by_target: dict[str, EvidenceReceipt] = {}
@@ -1019,23 +917,6 @@ class RunEvidence:
                 True,
                 target,
             ))
-
-        if provider_ok and tool.startswith("ssh_"):
-            host = str(arguments.get("host") or "").strip()
-            if host:
-                self._remote_hosts.add(host)
-
-    def summary(self) -> dict[str, int | bool]:
-        return {
-            "project_epoch": self._project_epoch,
-            "mutations": len(self.receipts_of_kind(EvidenceKind.MUTATION)),
-            "observations": len(self.receipts_of_kind(EvidenceKind.OBSERVATION)),
-            "verifications": len(self.receipts_of_kind(EvidenceKind.VERIFICATION)),
-            "artifacts": len(self.receipts_of_kind(EvidenceKind.ARTIFACT)),
-            "external_sources": len(self.receipts_of_kind(EvidenceKind.EXTERNAL_SOURCE)),
-            "current_verification": self.has_current_verification,
-            "current_passing_verification": self.has_current_passing_verification,
-        }
 
     @staticmethod
     def _is_observation_tool(tool: str) -> bool:

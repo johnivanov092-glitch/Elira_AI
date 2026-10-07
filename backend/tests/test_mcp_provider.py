@@ -478,19 +478,6 @@ class CreativeEditorMcpTest(McpProviderTestBase):
         self.assertEqual(screenshot_args["action"], "screenshot")
         self.assertTrue(screenshot_args["include_image"])
 
-    def test_creative_workflow_prompt_has_no_iteration_cap(self) -> None:
-        absent = self.provider_mod.creative_workflow_prompt({"github__search"})
-        self.assertEqual(absent, "")
-        prompt = self.provider_mod.creative_workflow_prompt({
-            "blender__batch_edit",
-            "blender__execute_blender_code",
-            "unity__batch_execute",
-            "unity__execute_code",
-        })
-        self.assertIn("inspect", prompt)
-        self.assertNotIn("максимум", prompt)
-        self.assertIn("резервную копию", prompt)
-
     def test_provider_mutation_signal_counts_without_fake_file_path(self) -> None:
         from app.application.code_agent.loop_helpers import tool_state_changed
 

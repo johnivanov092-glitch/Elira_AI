@@ -16,22 +16,28 @@ from __future__ import annotations
 import json
 import logging
 import re
-import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from app.application.code_agent.run_control import (  # public facade and shared-owner aliases
-    _CANCEL_REGISTRY, _UPSTREAM_HANDLE_REGISTRY, _REGISTRY_LOCK,
-    _WORKFLOW_RESPONSES, _WORKFLOW_RESPONSE_LOCK,
-    _register_run, _cancel_handle_for, _unregister_run,
-    request_cancel, submit_workflow_response,
+from app.application.code_agent.run_control import (
+    _register_run,
+    _cancel_handle_for,
+    _unregister_run,
+    request_cancel,
+    submit_workflow_response,
 )
 from app.application.code_agent.model_turn import (
-    _ANTI_REPEAT_SAMPLING, _normalize_reasoning_effort, _thinking_template_kwargs,
-    _effective_temperature, _chat_events, _local_chat_stream, stream_model_turn,
-    decode_response, recover_tool_calls, _DRY_WINDOW_TOKENS,
+    _ANTI_REPEAT_SAMPLING,
+    _normalize_reasoning_effort,
+    _thinking_template_kwargs,
+    _effective_temperature,
+    _chat_events,
+    _local_chat_stream,
+    stream_model_turn,
+    decode_response,
+    recover_tool_calls,
 )
 
 from app.application.tool_providers import (
@@ -39,7 +45,7 @@ from app.application.tool_providers import (
     build_runtime_tool_registry,
 )
 from app.application.code_agent.capabilities import (
-    ALL_BUILTIN_TOOLS, normalize_capability_groups, route_request_capabilities,
+    ALL_BUILTIN_TOOLS, normalize_capability_groups, file_delivery_requested,
     should_escalate_web_after_failure,
 )
 from app.application.code_agent.runtime_activation import (
@@ -48,9 +54,7 @@ from app.application.code_agent.runtime_activation import (
 from app.application.code_agent.turn_context import (
     build_initial_turn, TurnContext, SkillRestoreError, _load_planning_state, _bounded_planning_recon,
 )
-from app.application.code_agent.run_observations import (
-    RunObservations, _record_criterion_verdict,
-)
+from app.application.code_agent.run_observations import RunObservations
 from app.application.code_agent.tool_execution import (
     _exec_with_heartbeat, run_tool, run_ask_user, run_workflow_request,
     run_runtime_workflow, RUNTIME_WORKFLOW_STATUSES,
@@ -73,20 +77,16 @@ from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.application.context.usage import get_context_usage
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
-    ToolExecutionRequest, ToolExecutionResult, execute_tool as _kernel_exec,
+    ToolExecutionRequest,
+    execute_tool as _kernel_exec,
     workflow_approval_matches,
 )
-from app.application.monitoring.inference import extract_llm_usage, record_inference_telemetry
+from app.application.monitoring.inference import record_inference_telemetry
 # Project indexing/RAG was extracted to .indexing; re-exported here so existing
 # importers (file_watcher, code_agent_routes, tests) keep importing these names
 # from agent_loop unchanged.
 from app.application.code_agent.indexing import (  # noqa: F401
     DEFAULT_INDEX_PATTERNS,
-    INDEX_CHUNK_LINES,
-    INDEX_CHUNK_OVERLAP,
-    INDEX_MAX_FILE_BYTES,
-    INDEX_MAX_TOTAL_CHUNKS,
-    INDEX_SKIP_DIRS,
     index_project,
     project_corpus_status,
     recall_from_rag,
@@ -96,7 +96,6 @@ from app.application.code_agent.indexing import (  # noqa: F401
 # Inline tool-call recovery extracted to .inline_tool_calls (used by the loop).
 from app.application.code_agent.inline_tool_calls import (
     _contains_tool_trace,
-    _extract_inline_tool_calls,
     _strip_tool_call_markup,
 )
 from app.application.code_agent.tools._files import recover_read_path_from_glob
@@ -104,16 +103,9 @@ from app.application.code_agent.tools._meta import delegate_tool_allowed, delega
 # System-prompt construction extracted to .prompts; re-exported so the loop and
 # tests keep importing these from agent_loop unchanged.
 from app.application.code_agent.prompts import (  # noqa: F401
-    BASE_SYSTEM_PROMPT,
     _CODE_AGENT_BASE_TOOLS,
-    _build_base_system_prompt,
     _build_system_prompt,
     _build_turn_context,
-    _build_project_context,
-    _shell_guidance,
-    _NO_PROJECT_BLOCK,
-    _PROJECT_CONNECTED_BLOCK,
-    _is_scratch_workspace,
 )
 from app.core.persona_defaults import DEFAULT_PROFILE
 from app.core.redaction import redact_secrets
@@ -124,9 +116,6 @@ from app.core.redaction import redact_secrets
 # summarize_history binds it as a default-arg value.
 from app.application.code_agent.history import (  # noqa: F401
     DEFAULT_MODEL,
-    DEFAULT_NUM_CTX,
-    SUMMARIZE_SYSTEM_PROMPT,
-    _SUMMARY_PREFIX,
     _coerce_history,
     _local_chat,
     _resolve_code_route,
@@ -137,7 +126,6 @@ from app.application.code_agent.history import (  # noqa: F401
 # PROJECT_PROMPT_FILENAME) so code_agent_routes and tests keep importing these
 # from agent_loop unchanged.
 from app.application.code_agent.project_prompt import (  # noqa: F401
-    PROJECT_PROMPT_FILENAME,
     get_project_prompt,
     init_project_prompt,
     set_project_prompt,
@@ -159,16 +147,6 @@ def _public_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return redact_secrets(_without_runtime_arguments(arguments))
 
 
-def _server_url_alive(url: str) -> bool:
-    """R2 liveness gate: the remembered dev-server URL is backed by a tracked
-    process that is alive AND listening. Module-level so tests patch it."""
-    try:
-        from app.application.code_agent.tools._run import url_is_live_server
-        return url_is_live_server(url)
-    except Exception:
-        return False
-
-
 def _run_owned_servers(run_id: str) -> list[dict]:
     """R2: alive servers this run started (module-level so tests patch it)."""
     try:
@@ -188,25 +166,17 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     ContextBudgetError,
     TOOL_RESULT_LLM_LIMIT,
     WEB_TOOL_RESULT_LLM_LIMIT,
-    _WORKFLOW_REQUEST_KEEPALIVE_EVERY,
-    _WORKFLOW_REQUEST_POLL_INTERVAL,
     _ASK_USER_SCHEMA,
     _WORKFLOW_REQUEST_SCHEMA,
-    FACTS_PREFIX,
     _fact_from_tool,
     _facts_digest,
     _recent_tool_snippet,
     _recent_tools_digest,
-    RECENT_TOOLS_PREFIX,
-    build_task_state_block,
-    format_checklist_state,
     session_cancel_requested,
     take_session_inputs,
     tool_state_changed,
-    upsert_task_state_message,
     _flatten_for_summary,
     _messages_char_count,
-    _strip_think_blocks,
     _prepare_messages_for_llm,
     _record_code_route_metric,
     _schema_tool_name,
@@ -334,15 +304,11 @@ def _stream_code_agent_core(
             root, rid, base_tools, restored_state=_load_runtime_activation_state(rid),
             registry_builder=build_runtime_tool_registry,
         )
-        # Compatibility domain labels supply task/evidence requirements only.
         # The public entrypoints preserve raw user text in memory_query.
-        # Library/attachment contents are evidence, not download or SSH intent.
-        request_route = route_request_capabilities(
+        # Library/attachment contents are evidence, not a file-delivery request.
+        download_requested = file_delivery_requested(
             user_message if memory_query is None else memory_query,
-            domain_policy=profile_name,
-            conversation_history=conversation_history,
         )
-        # Domain/evidence hints never preload schemas or change the persona.
 
         # Aggregate the default work tools into one registry. The agent loop only
         # talks to the registry from here on.
@@ -395,9 +361,6 @@ def _stream_code_agent_core(
             "run_id": rid,
             "profile_name": profile_name,
             "ui_profile_name": "Elira / Auto",
-            "domain_policies": list(request_route.domain_policies),
-            "evidence_reasons": list(request_route.evidence_reasons),
-            "preflight": request_route.preflight,
             "runtime_activation": activation.snapshot(),
         }
         yield {
@@ -451,8 +414,6 @@ def _stream_code_agent_core(
         # verifier passed) / failed (matching verifier red). completion_status is a
         # deterministic function of this — kept SEPARATE from runtime `ok`. We never
         # burn an extra LLM turn to nag; unconfirmed criteria are reported at finalize.
-        _last_server_url = ""
-        touched_files: list[str] = []  # every file the run mutated (for the report)
         durable_state: dict[str, Any] = {}
         try:
             from app.application.code_agent.run_journal import RunJournal
@@ -688,7 +649,7 @@ def _stream_code_agent_core(
                 if activation.has_optional_tools:
                     step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
             command_progress.observe("", {}, {}, epoch=observations.progress_epoch())
-            turn_context.add_guidance(schemas=step_schemas, request_route=request_route,
+            turn_context.add_guidance(schemas=step_schemas, download_requested=download_requested,
                                       task_instructions=task_instructions, step=step,
                                       work_started=bool(task_outcome.sources or task_outcome.artifact_contract_seen
                                           or run_evidence.has_mutations or turn_context.skill_reminder_pending))
@@ -1423,20 +1384,6 @@ def _stream_code_agent_core(
                 if schema_update is not None:
                     registry, all_schemas = schema_update.registry, schema_update.schemas
                     _runtime_activation_snapshot = schema_update.snapshot
-                if name == "run_server":
-                    _rs_act = str(parsed_args.get("action") or "start").lower()
-                    if tool_meta.get("actual_url"):
-                        _last_server_url = str(tool_meta.get("actual_url"))
-                    elif _last_server_url and (
-                        _rs_act in ("stop", "stop_all") or not tool_meta.get("ok", True)
-                    ):
-                        # R2 (scoped, review #1/#8/#15): forget the URL only if ITS
-                        # server is really gone — a failed call about a DIFFERENT
-                        # server (wrong-pid logs, second start on a taken port, a
-                        # rejected approval that never ran) must not wipe a live
-                        # server's address. A later verdict re-adopts via actual_url.
-                        if not _server_url_alive(_last_server_url):
-                            _last_server_url = ""
                 if (
                     tool_meta.get("backgrounded") is True
                     and str(tool_meta.get("status") or "") == "running"
@@ -1660,8 +1607,6 @@ def _stream_code_agent_core(
                 _fact = _fact_from_tool(
                     name, _hint, text_result, ok=_tool_ok, verifier=bool(tool_meta.get("verifier")),
                 )
-                if tool_meta.get("touched_path"):
-                    touched_files.append(str(tool_meta.get("touched_path")))
                 observations.complete_result(
                     name=name, args=parsed_args, output=tool_meta, status=_exec_result.status,
                     text=text_result, ok=_tool_ok, state_changed=_state_changed,

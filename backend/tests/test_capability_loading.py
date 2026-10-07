@@ -11,16 +11,14 @@ from _runtime_roles import runtime_text
 from app.application.code_agent.capabilities import (
     CAPABILITY_GROUPS,
     CORE_BUILTIN_TOOLS,
-    DOMAIN_CAPABILITY_GROUPS,
     builtin_tools_for_groups,
-    route_request_capabilities,
 )
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.tool_schemas import build_tool_schemas
 from app.application.code_agent.tools._capability import tool_capability_load
 from app.application.chat.local_chat import resolve_persona_mode
 from app.application.tool_providers.runtime_registry import build_runtime_tool_registry
-from app.core.persona_defaults import AUTO_PROFILE, PERSONA_MODES
+from app.core.persona_defaults import AUTO_PROFILE
 
 
 def _tool_names(registry) -> set[str]:
@@ -378,7 +376,6 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
         ("Объясни квантовую запутанность со ссылками", "Научный"),
         ("Какие симптомы бывают при пневмонии", "Медицина"),
     )
-    assert set(DOMAIN_CAPABILITY_GROUPS) == set(PERSONA_MODES)
 
     for profile_index, (message, expected_profile) in enumerate(route_cases):
         seen_tool_names: list[set[str]] = []
@@ -393,10 +390,6 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
 
         effective_profile = resolve_persona_mode(AUTO_PROFILE, message)
         assert effective_profile == "Баланс"
-        request_route = route_request_capabilities(
-            message,
-            domain_policy=effective_profile,
-        )
         events = list(stream_code_agent(
             user_message=message,
             project_root=tmp_path,
@@ -413,11 +406,8 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
         run_started = next(event for event in events if event["type"] == "run_started")
         assert run_started["profile_name"] == "Баланс"
         assert run_started["ui_profile_name"] == "Elira / Auto"
-        assert run_started["domain_policies"] == ["Баланс"]
-        assert request_route.preflight == {"source": "main_agent"}
         assert run_started["runtime_activation"]["capability_groups"] == []
         assert run_started["runtime_activation"]["itops"] is False
-
 
 
 def test_auto_routes_an_explicit_absolute_filesystem_path_to_engineering() -> None:

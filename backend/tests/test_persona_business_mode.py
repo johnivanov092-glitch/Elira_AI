@@ -30,14 +30,10 @@ class BusinessModeTest(unittest.TestCase):
             "Баланс",
         )
 
-    def test_legacy_mode_keeps_identity_and_task_guidance(self):
+    def test_legacy_mode_keeps_identity(self):
         from app.application.persona.service import build_persona_prompt
-        from app.application.code_agent.task_guidance import task_guidance_blocks
         prompt = build_persona_prompt("Деловой")
         self.assertEqual(prompt, build_persona_prompt("Баланс"))
-        guidance = task_guidance_blocks(set(), domain_policies=["Деловой"])["Деловой"]
-        self.assertIn("подтверждай источниками", guidance)
-        self.assertIn("формат требуемого документа", guidance)
 
     def test_full_overlay_preview_in_api(self):
         from app.core.persona_defaults import PROFILE_MODE_OVERLAYS

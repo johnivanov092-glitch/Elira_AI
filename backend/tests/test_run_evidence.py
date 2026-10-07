@@ -99,7 +99,6 @@ def test_ssh_requires_executed_observation_and_postcheck_after_change() -> None:
         status="blocked",
         output={"ok": False, "error": "approval_rejected"},
     )
-    assert evidence.remote_hosts == ()
     assert not evidence.receipts_of_kind(EvidenceKind.OBSERVATION)
 
     _record(
@@ -108,7 +107,6 @@ def test_ssh_requires_executed_observation_and_postcheck_after_change() -> None:
         args={"host": "ai-server", "path": "/etc/app.conf"},
         text="setting=true",
     )
-    assert evidence.remote_hosts == ("ai-server",)
 
     _record(
         evidence,
@@ -128,43 +126,6 @@ def test_ssh_requires_executed_observation_and_postcheck_after_change() -> None:
         text="setting=true",
     )
     assert evidence.has_current_passing_verification
-
-
-def test_document_claim_requires_successful_exact_file_gen_artifact() -> None:
-    evidence = RunEvidence()
-
-    _record(
-        evidence,
-        "resource_publish",
-        output={"ok": True, "download_name": "report.pdf"},
-        text="published",
-    )
-    assert evidence.unbacked_document_claims("Готово, вот report.pdf") == ["report.pdf"]
-
-    _record(
-        evidence,
-        "file_gen",
-        status="error",
-        output={"ok": False, "download_name": "report.pdf"},
-        text="generation failed",
-    )
-    assert evidence.unbacked_document_claims("Готово, вот report.pdf") == ["report.pdf"]
-
-    _record(
-        evidence,
-        "file_gen",
-        output={"ok": True, "download_name": "actual.pdf"},
-        text="created",
-    )
-    assert evidence.unbacked_document_claims("Готово, вот report.pdf") == ["report.pdf"]
-
-    _record(
-        evidence,
-        "file_gen",
-        output={"ok": True, "download_name": "report.pdf"},
-        text="created",
-    )
-    assert evidence.unbacked_document_claims("Готово, вот report.pdf") == []
 
 
 def test_published_local_gpu_transcript_is_a_download_artifact() -> None:
@@ -366,32 +327,6 @@ def test_niche_game_and_film_facts_require_external_source() -> None:
         "А настоящая доктор Эбигейл Тайлер существовала?",
         "Да, это реальный человек.",
     )
-
-
-def test_runtime_summary_contains_only_structured_counts() -> None:
-    evidence = RunEvidence()
-    _record(evidence, "read_file", args={"path": "src/App.tsx"}, text="secret source")
-    _record(
-        evidence,
-        "write_file",
-        args={"path": "src/App.tsx"},
-        output={"ok": True, "touched_path": "src/App.tsx"},
-        state_changed=True,
-    )
-
-    summary = evidence.summary()
-
-    assert summary == {
-        "project_epoch": 1,
-        "mutations": 1,
-        "observations": 1,
-        "verifications": 0,
-        "artifacts": 0,
-        "external_sources": 0,
-        "current_verification": False,
-        "current_passing_verification": False,
-    }
-    assert "secret source" not in repr(summary)
 
 
 def test_crm_criterion_verdict_is_invalidated_after_later_mutation() -> None:

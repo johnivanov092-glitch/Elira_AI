@@ -219,25 +219,6 @@ def select_mcp_schemas(
     return selected or schemas
 
 
-def creative_workflow_prompt(tool_names: set[str] | list[str] | tuple[str, ...]) -> str:
-    names = {str(name) for name in tool_names}
-    has_blender = any(name.startswith("blender__") for name in names)
-    has_unity = any(name.startswith("unity__") for name in names)
-    if not has_blender and not has_unity:
-        return ""
-    editors = "Blender и Unity" if has_blender and has_unity else ("Blender" if has_blender else "Unity")
-    return f"""
-## Процедурная работа в {editors}
-- Работай через MCP открытого редактора, не через PowerShell и не через второй runtime.
-- Перед изменением runtime автоматически создаёт резервную копию текущей сцены.
-- Контур: inspect текущей сцены → изменение → screenshot с vision-проверкой → коррекция до готовности или Stop → явное сохранение сцены/рендера.
-- Простую правку делай dedicated tool; несколько однотипных правок можно объединять в batch-вызовы.
-- Если нужны циклы, процедурная расстановка, массовое выравнивание или сложная математика — сразу вызывай отдельный procedural tool (`blender__execute_blender_code` / `unity__execute_code`) вместо десятков batch.
-- Для сложного кода предпочитай отдельный procedural tool: так его вызов, результат и visual post-check лучше видны в Workflow. Вложенный код также выполняется и подчиняется тому же Workflow permission.
-- После vision-описания исправь конкретный видимый дефект и проверяй результат до готовности или Stop.
-""".strip()
-
-
 def _augment_creative_description(server_id: str, tool_name: str, description: str) -> str:
     qualified = _qualify(server_id, tool_name)
     if qualified in _CREATIVE_BATCH_TO_PROCEDURAL:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +35,6 @@ from app.application.context.compaction import (
     RUNTIME_BLOCK_KEY, TASK_CONTRACT_PREFIX, TASK_CONTRACT_MARKER_VALUE, TASK_STATE_MARKER_KEY,
 )
 from app.application.tool_providers import ToolRegistry
-from app.application.tool_providers.mcp_provider import creative_workflow_prompt
 from app.application.code_agent.task_guidance import (
     DELIVERY_GUIDANCE, task_guidance_blocks,
 )
@@ -88,22 +86,6 @@ def build_initial_turn(
         model_name=model, profile_name=profile_name, task_text=raw_user_message,
         memory_query=memory_query or "", resource_refs=resource_refs,
     )
-    creative_context = [str(user_message or "")]
-    for turn in list(conversation_history or [])[-8:]:
-        if isinstance(turn, dict) and isinstance(turn.get("content"), str):
-            creative_context.append(str(turn["content"])[:4000])
-    if re.search(
-        r"(?:\bblender\b|\bunity\b|блендер|юнити|сцен\w*|scene\w*|"
-        r"префаб\w*|prefab\w*|террейн\w*|terrain\w*|\b3d\b)",
-        "\n".join(creative_context),
-        re.IGNORECASE,
-    ):
-        creative_prompt = creative_workflow_prompt({
-            _schema_tool_name(schema) for schema in active_schemas
-            if _schema_tool_name(schema)
-        })
-        if creative_prompt:
-            request_context += "\n\n" + creative_prompt
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     messages.extend(_coerce_history(conversation_history))
     # The current request is the owner's raw text only; its runtime context is a
@@ -302,18 +284,15 @@ class TurnContext:
             self.skill_reminder_sent = True
 
 
-    def add_guidance(self, *, schemas: list[dict], request_route,
+    def add_guidance(self, *, schemas: list[dict], download_requested: bool,
                       task_instructions: str, step: int, work_started: bool = True) -> None:
-        guidance = task_guidance_blocks(
-            {_schema_tool_name(schema) for schema in schemas},
-            domain_policies=request_route.domain_policies,
-        )
+        guidance = task_guidance_blocks({_schema_tool_name(schema) for schema in schemas})
         if not work_started:
             guidance.pop("work", None)
         # The web guidance block (which opens with WEB_SOURCE_FIDELITY_GUIDANCE)
         # is a pinned runtime block projected into the system section, so the
         # source-fidelity contract is not appended to the system prompt twice.
-        if request_route.download_requested or "resources" in guidance:
+        if download_requested or "resources" in guidance:
             guidance["file_delivery"] = DELIVERY_GUIDANCE
         if task_instructions:
             guidance["delivery"] = task_instructions

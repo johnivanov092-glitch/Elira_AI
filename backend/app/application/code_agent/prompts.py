@@ -116,10 +116,6 @@ def _build_base_system_prompt(
     )
 
 
-# Kept for backwards-compat (tests / external imports). Generic, no project root.
-BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(persona_section=_persona_section())
-
-
 def _build_system_prompt(
     project_root: Path,
     working_dir: Path | str | None = None,

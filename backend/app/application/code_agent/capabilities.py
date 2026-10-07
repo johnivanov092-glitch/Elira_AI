@@ -7,7 +7,6 @@ been requested for the current run.
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass, field
 import re
 
 CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
@@ -60,20 +59,6 @@ ALL_BUILTIN_TOOLS = frozenset().union(
 )
 
 
-# Internal domain policies may suggest useful starter schemas. They are not UI
-# profiles and never authorize or prohibit a tool. Request evidence signals
-# below may add multiple groups when a task crosses domains.
-DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
-    "Личный": frozenset({"memory"}),
-    "Баланс": frozenset(),
-    "Инженерный": frozenset(),  # project/code tools are already in the core
-    "Деловой": frozenset({"math"}),
-    "Инфраструктура": frozenset({"web", "ssh", "itops"}),
-    "Научный": frozenset({"web", "math"}),
-    "Медицина": frozenset({"web"}),
-}
-
-
 _DOWNLOAD_REQUEST_RE = re.compile(
     r"(?:скач\w*|download|дай\s+(?:мне\s+)?файл|"
     r"отдай\s+(?:мне\s+)?файл|файл\w*\s+для\s+скач\w*)",
@@ -113,58 +98,17 @@ _EXTERNAL_FAILURE_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class RequestCapabilityRoute:
-    """Compatibility hints; only the main agent can declare task delivery."""
+def file_delivery_requested(user_message: str) -> bool:
+    """The user asked for a downloadable file: a guidance hint, never a completion gate.
 
-    domain_policies: tuple[str, ...]
-    capability_groups: frozenset[str]
-    download_requested: bool  # Legacy name: a hint, never a completion gate.
-    evidence_reasons: tuple[str, ...]
-    preflight: dict[str, object] = field(default_factory=dict)
-
-
-def route_request_capabilities(
-    user_message: str,
-    *,
-    domain_policy: str = "Баланс",
-    conversation_history: list[dict[str, object]] | None = None,
-) -> RequestCapabilityRoute:
-    """Offer compatibility hints; the main agent interprets intent.
-
-    No separate model call or semantic regex router runs here. Qwen receives
-    the conversation and chooses tools through the existing capability catalog.
-    Legacy domain hints remain accepted for stored callers, never permissions.
+    A product/source link needs web evidence, not a locally published file; these
+    words can also describe software to build.
     """
     text = str(user_message or "")
-    domains = [domain_policy if domain_policy in DOMAIN_CAPABILITY_GROUPS else "Баланс"]
-    groups: set[str] = set()
-    for domain in domains:
-        groups.update(DOMAIN_CAPABILITY_GROUPS.get(domain, ()))
-
-    # A product/source link needs web evidence, not a locally published file.
-    # These words can also describe software to build. They may suggest resources,
-    # but cannot establish that this chat must receive a downloadable artifact.
-    download_requested = bool(
+    return bool(
         _DOWNLOAD_REQUEST_RE.search(text)
         or _FILE_LINK_REQUEST_RE.search(text)
         or (_LINK_REQUEST_RE.search(text) and _GENERATED_ARTIFACT_RE.search(text))
-    )
-    if download_requested:
-        groups.add("resources")
-
-    evidence_reasons: list[str] = []
-    if any(domain in {"Инфраструктура", "Медицина", "Научный"} for domain in domains):
-        evidence_reasons.append("domain_requires_sources")
-    if evidence_reasons:
-        groups.add("web")
-
-    return RequestCapabilityRoute(
-        domain_policies=tuple(domains),
-        capability_groups=normalize_capability_groups(groups),
-        download_requested=download_requested,
-        evidence_reasons=tuple(dict.fromkeys(evidence_reasons)),
-        preflight={"source": "main_agent"},
     )
 
 
