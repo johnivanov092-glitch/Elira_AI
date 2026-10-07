@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.application.code_agent.tools._runtime_control_contract import (
+from app.application.code_agent.tools._tool_contract import (
     require_id,
     run_operation,
     secret_request,

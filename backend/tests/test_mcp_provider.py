@@ -123,10 +123,12 @@ class LifecycleTest(McpProviderTestBase):
         self.assertFalse(result["ok"])
         self.assertIn("not configured", result["error"])
 
-    def test_disabled_config_does_not_block_explicit_start(self) -> None:
+    def test_switched_off_server_does_not_start(self) -> None:
         self.runtime.save_servers([self._fake_spec("disabled", enabled=False)])
         result = self.runtime.start_server("disabled")
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertIn("switched off", result["error"])
+        self.assertIsNone(self.runtime.get_live_client("disabled"))
 
     def test_start_then_stop_lifecycle(self) -> None:
         self.runtime.save_servers([self._fake_spec("x")])

@@ -1,4 +1,4 @@
-"""Structured result contract shared by runtime_control domain adapters."""
+"""Structured result contract shared by the integration tools (mcp, telegram, itops_registry)."""
 from __future__ import annotations
 
 import json

@@ -611,7 +611,7 @@ def build_mcp_providers(
     ``None`` preserves the inventory/API view of every running provider. An
     explicit collection is the agent-run activation set: an empty collection
     exposes no MCP schemas, and a selected server becomes visible only after an
-    explicit ``runtime_control(mcp_start)`` call.
+    explicit ``mcp(action='start')`` call.
     """
     allowed = None if server_ids is None else {
         str(server_id).strip() for server_id in server_ids if str(server_id).strip()

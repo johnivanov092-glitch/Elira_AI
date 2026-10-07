@@ -69,7 +69,7 @@ def test_capability_groups_are_complete_and_non_overlapping() -> None:
 def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Path) -> None:
     safe_calls = {
         "capability_load": {"group": "__invalid__"},
-        "runtime_control": {"operation": "__invalid__"},
+        "mcp": {"action": "__invalid__"},
         "read_file": {"path": "missing.txt"},
         "write_file": {},
         "edit_file": {},

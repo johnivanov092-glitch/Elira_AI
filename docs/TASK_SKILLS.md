@@ -21,6 +21,12 @@
 (`data/skill_development`, активные версии), при первом запуске переезжают сюда же;
 старые папки `skill_development` и `skill_advisor` уходят в `data/archive/`.
 
+MCP-серверы тоже описаны навыками: `<id>-mcp` на каждый сервер из
+`data/mcp_servers.json` (что умеет, какие инструменты передать в `query` при
+`mcp(action=start)`, порядок, ограничения) и `mcp-install` — как поставить новый
+сервер в `data/mcp/<id>/`. Отдельного MCP-каталога в промпте нет — его роль
+играет этот каталог навыков.
+
 ## Что делает runtime
 
 Только три вещи (`backend/app/application/code_agent/task_skills.py`):

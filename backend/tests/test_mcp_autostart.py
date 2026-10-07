@@ -1,7 +1,7 @@
 """The explicit batch-start helper remains available but is not a boot hook.
 
 FastAPI intentionally leaves MCP stopped. A model/user selects a server through
-runtime_control. These tests cover only the manually invoked helper: it starts
+the mcp tool. These tests cover only the manually invoked helper: it starts
 enabled servers, skips disabled ones, and isolates per-server failures.
 """
 from __future__ import annotations

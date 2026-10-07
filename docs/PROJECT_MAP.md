@@ -48,10 +48,12 @@ move Elira's backend state or tools into that repository.
 | Model-owned task decisions, current checks and file-delivery receipts | `backend/app/application/code_agent/task_outcomes.py` |
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
 | Price-list/BOM check (factory skill) | `skills/bom-check/` |
-| MCP control tool (`runtime_control`) | `backend/app/application/code_agent/tools/_runtime_control.py` |
+| MCP tool (`mcp`) | `backend/app/application/code_agent/tools/_mcp.py` |
+| MCP config + lifecycle (`data/mcp_servers.json`) | `backend/app/application/tool_providers/mcp_runtime.py` |
+| MCP instruction skills (factory, `<id>-mcp`, `mcp-install`) | `skills/*-mcp/`, `skills/mcp-install/` |
 | Memory, Library, Telegram, IT Ops registry tools | `backend/app/application/code_agent/tools/_memory.py`, `_telegram.py`, `_itops.py` |
 | Skills folder (catalog, pinned SKILL.md, git history; seeds from `skills/`) | `backend/app/application/code_agent/task_skills.py` |
-| Integration result contract (`run_operation`) | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
+| Integration result contract (`run_operation`) | `backend/app/application/code_agent/tools/_tool_contract.py` |
 | Tool executor | `backend/app/application/agent_kernel/executor.py` |
 | Workflow impact classification | `backend/app/application/agent_kernel/impact_policy.py` |
 | Workflow engine | `backend/app/application/workflows/` |

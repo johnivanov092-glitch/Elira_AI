@@ -145,8 +145,9 @@ a successfully completed run.
 - Price-list specifications/BOM are checked by the factory skill `bom-check`
   (script over the declared XLSX/CSV columns: exact codes, stock, prices, markup,
   VAT 16% by default, totals); the model takes numbers from its output.
-- MCP is per-run: group `mcp` (`runtime_control` with mcp_* operations only),
-  and a server's schemas appear after `mcp_start`. SSH and IT Ops are groups
+- MCP is per-run: group `mcp` (tool `mcp`, actions list/start/stop/restart/tools/
+  add/remove), and a server's schemas appear after `mcp(action=start)`. Each
+  server has an instruction skill `<id>-mcp`; the skill catalog is the MCP catalog. SSH and IT Ops are groups
   `ssh`/`itops` loaded through `capability_load`; domain routing hints neither
   preload schemas nor start an MCP server. LSP and plugins were removed.
 - All conversation and work use one compact stable base system prompt. There
@@ -461,7 +462,7 @@ explicit per-connect timeout and concurrency, not sequential shell
 `Test-NetConnection`.
 
 Integrations are small on-demand groups (track «Elira на диете», 2026-10-07):
-`mcp` (`runtime_control` with mcp_* operations), `ssh`, `itops` (`itops_registry`
+`mcp` (tool `mcp`), `ssh`, `itops` (`itops_registry`
 plus typed `itops_*`), `telegram` (`telegram` send/messages) and `memory`
 (`memory`, `library`). They share one structured envelope: `completed`, `failed`,
 `needs_input`, `needs_secret`, `needs_elevation`, `waiting_approval`, or
@@ -512,12 +513,18 @@ prefix; `available_tool_names_truncated=true` reports a longer roster.
 `capability_load(ssh)` and `capability_load(itops)` reveal the SSH and IT Ops
 providers without turning those loads into authorization gates.
 
-Settings → MCP provides explicit user start/stop/restart controls and live status
-for configured servers. `api/routes/mcp_routes.py` delegates lifecycle actions to
-the same `tool_runtime_control` and `mcp_runtime`; it exposes no server arguments,
-URLs or credentials. Starting a process in Settings does not preload its schemas
-into every agent run. Batch start respects the persisted `enabled` flag; HTTP
-stop disconnects the local MCP client rather than stopping the remote service.
+`data/mcp_servers.json` is the single source of truth for MCP servers (optional
+fields `description`, `cwd`, `skill`; secrets only as `sref_` references). It is
+read on every call, so an edit by the model, the user or Settings applies without
+a release; `start_server` restarts a live process whose entry changed, and a
+server with `enabled: false` does not start. Settings → MCP shows status and
+description, starts/stops, switches a server on/off, edits one entry as JSON
+(secret values masked; a masked value keeps the stored one; a new plain-text
+credential is refused), adds and deletes entries. `api/routes/mcp_routes.py`
+uses the same `tool_mcp` and `mcp_runtime`. Starting a process in Settings does
+not preload its schemas into every agent run; HTTP stop disconnects the local
+MCP client rather than stopping the remote service. New servers are installed
+into `data/mcp/<id>/` with their own environment (factory skill `mcp-install`).
 
 MikroTik onboarding is SSH-only for RouterOS 6 and 7. The model uses
 `itops_mikrotik_upsert/list/remove/sync`; router identity, version, SSH target and

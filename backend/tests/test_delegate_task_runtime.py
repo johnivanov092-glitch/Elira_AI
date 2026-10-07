@@ -201,7 +201,7 @@ def test_read_only_child_can_read_skill_but_cannot_execute_mutations_or_activati
                   "disposition": "reuse", "targets": ["review-findings.md"],
                   "delivery": {"mode": "invalid", "reason": "bad payload", "targets": []}}),
               call("runtime_control", operation="skill_publish", config={}),
-              call("runtime_control", operation="mcp_start", server_id="foreign"),
+              call("mcp", action="start", server_id="foreign"),
               call("capability_load", group="shell"), call("unknown__execute", command="write"),
               call("delegate_task", role="review", task="Spawn another reviewer")]
     replies = iter([response(calls=[call("read_file", path=str(skill / "SKILL.md"))]),
@@ -211,9 +211,7 @@ def test_read_only_child_can_read_skill_but_cannot_execute_mutations_or_activati
         captured.append(kwargs)
         def chat(**model_kwargs):
             schemas = {item["function"]["name"]: item for item in model_kwargs["tools"]}
-            assert set(schemas) <= _meta.DELEGATE_READ_TOOLS | {"runtime_control"}
-            operations = schemas["runtime_control"]["function"]["parameters"]["properties"]["operation"]["enum"]
-            assert set(operations) == _meta.DELEGATE_RUNTIME_OPERATIONS
+            assert set(schemas) <= _meta.DELEGATE_READ_TOOLS
             return next(replies)
         result = original_run(**kwargs, chat_fn=chat)
         child_results.append(result)

@@ -347,8 +347,8 @@ def _stream_code_agent_core(
         # Aggregate the default work tools into one registry. The agent loop only
         # talks to the registry from here on.
         #   - BuiltinToolProvider exposes discovery on every request.
-        #   - SSH/IT Ops schemas appear after their runtime_control discovery
-        #     request in this run.
+        #   - SSH/IT Ops schemas appear after capability_load of their group
+        #     in this run.
         #   - MCP/LSP schemas appear only for servers explicitly started by this
         #     run; other globally running integrations remain hidden.
         # The HTTP app seeds these at startup, but the runtime is also called
@@ -1414,7 +1414,7 @@ def _stream_code_agent_core(
                         return
                     turn_context.messages.append({"role": "tool", "content": workflow_result.tool_text, "name": name})
                     tool_round_trips += 1
-                    call_log.append(f"runtime_control({str(tool_meta.get('status') or '').strip()})")
+                    call_log.append(f"{name}({str(tool_meta.get('status') or '').strip()})")
                     continue
                 schema_update = activation.apply_tool_result(
                     name, parsed_args, tool_meta, status=_exec_result.status,

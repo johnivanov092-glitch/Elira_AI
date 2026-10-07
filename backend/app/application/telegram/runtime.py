@@ -36,7 +36,7 @@ def _telegram_token() -> str:
 
         return vault.resolve(secret_ref)
     # Read-only compatibility for installations not migrated yet. No new API/UI
-    # writes this key; runtime_control can migrate it into the portable vault.
+    # writes this key.
     return get_config_value("bot_token", "")
 
 

@@ -163,10 +163,10 @@ class RuntimeActivation:
                 return None
             self.capability_groups.add(group)
             return self.rebuild()
-        if tool_name != "runtime_control":
+        if tool_name != "mcp":
             return None
 
-        operation = str(arguments.get("operation") or "").strip().lower()
+        action = str(arguments.get("action") or "").strip().lower()
         config = arguments.get("config")
         server_id = str(
             tool_meta.get("server_id")
@@ -174,12 +174,12 @@ class RuntimeActivation:
             or (config.get("id") if isinstance(config, dict) else "")
             or ""
         ).strip()
-        if operation in {"mcp_start", "mcp_restart", "mcp_tools"} and server_id:
+        if action in {"start", "restart", "tools"} and server_id:
             self.mcp_server_ids.add(server_id)
             self.mcp_schema_queries[server_id] = str(
                 arguments.get("query") or user_message
             ).strip()
-        elif operation in {"mcp_stop", "mcp_remove"}:
+        elif action in {"stop", "remove"}:
             self.mcp_server_ids.discard(server_id)
             self.mcp_schema_queries.pop(server_id, None)
         return self.rebuild()

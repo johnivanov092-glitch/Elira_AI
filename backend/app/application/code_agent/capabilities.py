@@ -22,7 +22,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
         "read_file", "write_file", "edit_file", "glob", "grep",
         "project_map", "recall", "todo_update", "delegate_task", "run_bash", "run_server",
     }),
-    "mcp": frozenset({"runtime_control"}),
+    "mcp": frozenset({"mcp"}),
     # ssh/itops also switch on their integration provider (PROVIDER_GROUPS).
     "ssh": frozenset(),
     "itops": frozenset({"itops_registry"}),
@@ -42,7 +42,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
 
 CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "project": "project overview (project_map), project index search (recall) and a sub-agent (delegate_task); files and shell are always loaded",
-    "mcp": "configured MCP servers: list, start/stop, discover their tools, add or change a server",
+    "mcp": "MCP servers (each has an <id>-mcp skill): list, start/stop, their tools, add or change a server",
     "ssh": "SSH to saved or explicit hosts: run bash/PowerShell, read/write/replace remote files, port check",
     "itops": "IT Ops: saved assets, connection profiles, MikroTik routers and typed health/inventory checks",
     "telegram": "send a Telegram message or read the bot log",
@@ -178,10 +178,9 @@ def should_escalate_web_after_failure(
     """Reveal web evidence after an external or repeated failed attempt."""
     name = str(tool_name or "").strip().lower()
     message = str(error or "")
-    if name == "runtime_control":
-        operation = str((arguments or {}).get("operation") or "").strip().lower()
+    if name == "mcp":
         # An MCP server failure may be fixed by its documentation on the web.
-        return operation.startswith("mcp_")
+        return True
     if int(failure_count) >= 2:
         return True
     return name in _EXTERNAL_FAILURE_TOOLS or bool(_EXTERNAL_FAILURE_RE.search(message))

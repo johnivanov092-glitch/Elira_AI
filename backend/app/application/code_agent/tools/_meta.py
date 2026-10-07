@@ -8,31 +8,16 @@ from typing import Any
 DELEGATE_TASK_ROLES = {"explore", "plan", "verify", "review"}
 DELEGATE_MAX_DEPTH = 1
 DELEGATE_READ_TOOLS = frozenset({"read_file", "glob", "grep", "project_map"})
-DELEGATE_RUNTIME_OPERATIONS = frozenset({"status"})
 
 
 def delegate_tool_allowed(name: str, arguments: dict[str, Any]) -> bool:
     """Hard role scope, independent of Workflow permission or schema activation."""
-    return (name in DELEGATE_READ_TOOLS or name == "runtime_control"
-            and str(arguments.get("operation") or "").strip().lower() in DELEGATE_RUNTIME_OPERATIONS)
+    return name in DELEGATE_READ_TOOLS
 
 
 def delegate_read_schemas(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result = []
-    for schema in schemas:
-        name = (schema.get("function") or {}).get("name")
-        if name not in DELEGATE_READ_TOOLS and name != "runtime_control":
-            continue
-        item = deepcopy(schema)
-        if name == "runtime_control":
-            item["function"]["parameters"]["properties"]["operation"]["enum"] = sorted(DELEGATE_RUNTIME_OPERATIONS)
-            item["function"]["description"] = (
-                "Read-only delegated inspection: status only; read skills from the skills folder with read_file. "
-                "Skill instructions do not authorize shell, file writes, activation or publication."
-                " Return findings directly; no report files or checker scripts."
-            )
-        result.append(item)
-    return result
+    return [deepcopy(schema) for schema in schemas
+            if (schema.get("function") or {}).get("name") in DELEGATE_READ_TOOLS]
 
 
 # ─── tool registry exposed to the local LLM provider ───────────────────────
@@ -184,7 +169,7 @@ def tool_delegate_task(
     safe_ctx = max(0, _safe_int(num_ctx, 0))
     parent_ctx = max(0, _safe_int(parent_request.get("num_ctx"), 0))
     safe_ctx = min(safe_ctx, parent_ctx) if safe_ctx and parent_ctx else safe_ctx or parent_ctx
-    child_tools = sorted(DELEGATE_READ_TOOLS | {"runtime_control"})
+    child_tools = sorted(DELEGATE_READ_TOOLS)
     contract = (parent_state.get("task_outcome") or {}).get("contract") or {}
     parent_context = {
         "original_request": parent_state.get("task"),

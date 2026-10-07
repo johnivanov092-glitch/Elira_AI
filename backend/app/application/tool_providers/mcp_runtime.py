@@ -8,13 +8,22 @@ Config shape:
     {"servers": [
         {
             "id": "github",
+            "description": "GitHub: репозитории, issues, pull requests",
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-github"],
-            "env": {"GITHUB_TOKEN": "..."},
+            "env_secret_refs": {"GITHUB_PERSONAL_ACCESS_TOKEN": "sref_..."},
             "enabled": true
         },
         ...
     ]}
+
+Optional fields: ``description`` (one line for the UI and ``mcp(list)``),
+``skill`` (the instruction skill, default ``<id>-mcp``) and, for stdio,
+``cwd`` (absolute, or relative to the folder of this file — a server installed
+into ``data/mcp/<id>/`` uses ``mcp/<id>``). The file is the only source of
+truth: it is read on every call, so an edit by the model, the user or the UI is
+seen at once, and ``start_server`` restarts a live process whose entry changed.
+A server with ``enabled: false`` is switched off by the user and does not start.
 
 Concurrency:
     All mutations and lookups are serialized by a module-level lock.
@@ -26,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -41,6 +51,8 @@ CONFIG_PATH: Path = data_file("mcp_servers.json")
 _LOCK = threading.Lock()
 # id → McpClient (only entries for servers we've actually started)
 _LIVE_CLIENTS: dict[str, McpClient] = {}
+# id → the config entry the live client was started with
+_LIVE_SPECS: dict[str, dict[str, Any]] = {}
 # id → last connect-attempt error message (or None on success)
 _LAST_ERROR: dict[str, str | None] = {}
 _MAX_REPORTED_TOOL_NAMES = 50
@@ -65,8 +77,9 @@ def _read_config() -> dict[str, Any]:
 def _write_config(payload: dict[str, Any]) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
 
@@ -77,6 +90,20 @@ def _str_str_map(value: Any) -> dict[str, str] | None:
     if any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
         return None
     return dict(value)
+
+
+def _optional_text(spec: dict[str, Any], fields: tuple[str, ...]) -> dict[str, str] | None:
+    """Optional one-line text fields; absent or empty ones are left out."""
+    out: dict[str, str] = {}
+    for field in fields:
+        value = spec.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            return None
+        if value.strip():
+            out[field] = value.strip()
+    return out
 
 
 def _validate_server(spec: Any) -> dict[str, Any] | None:
@@ -103,16 +130,18 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
         return None
 
     if transport == "http":
+        extra = _optional_text(spec, ("description", "skill"))
         url = spec.get("url")
         if not isinstance(url, str) or not url.strip():
             return None
         headers = _str_str_map(spec.get("headers", {}))
         secret_headers = _str_str_map(spec.get("secret_headers", {}))
         secret_header_refs = _str_str_map(spec.get("secret_header_refs", {}))
-        if headers is None or secret_headers is None or secret_header_refs is None:
+        if headers is None or secret_headers is None or secret_header_refs is None or extra is None:
             return None
         return {
             "id": sid.strip(),
+            **extra,
             "transport": "http",
             "url": url.strip(),
             "headers": headers,
@@ -132,13 +161,16 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
         return None
     env = _str_str_map(spec.get("env", {}))
     env_secret_refs = _str_str_map(spec.get("env_secret_refs", {}))
-    if env is None or env_secret_refs is None:
+    extra = _optional_text(spec, ("description", "skill", "cwd"))
+    if env is None or env_secret_refs is None or extra is None:
         return None
     return {
         "id": sid.strip(),
+        **{key: value for key, value in extra.items() if key != "cwd"},
         "transport": "stdio",
         "command": command.strip(),
         "args": [a for a in args],
+        **({"cwd": extra["cwd"]} if "cwd" in extra else {}),
         "env": env,
         "env_secret_refs": env_secret_refs,
         "enabled": enabled,
@@ -177,6 +209,45 @@ def list_servers() -> list[dict[str, Any]]:
 
 
 _SECRET_SERVER_FIELDS = ("env", "secret_headers", "env_secret_refs", "secret_header_refs")
+SECRET_MASK = "●●●"
+_CREDENTIAL_NAME = re.compile(
+    r"(?:^|[_-])(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|"
+    r"authorization|credentials?|private[_-]?key)$",
+    re.IGNORECASE,
+)
+
+
+def plaintext_credentials(old: dict[str, Any] | None, new: dict[str, Any]) -> list[str]:
+    """Names of credentials the new entry would store in plain text.
+
+    Environment also carries ordinary settings (URLs, paths, CPU counts): match
+    credential names, not substrings such as TOKENIZERS_PARALLELISM or
+    MAX_TOKENS. Values already stored before stay; only new or changed ones count.
+    A credential belongs in the vault and reaches the config as an sref_ value in
+    env_secret_refs / secret_header_refs.
+    """
+    old = old or {}
+    names: list[str] = []
+    for field, every_key in (("env", False), ("secret_headers", True)):
+        before = old.get(field) if isinstance(old.get(field), dict) else {}
+        for key, value in (new.get(field) or {}).items():
+            if value and before.get(key) != value and (every_key or _CREDENTIAL_NAME.search(key)):
+                names.append(key)
+    return names
+
+
+def restore_masked_secrets(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:
+    """A config edited from public_server_view keeps the stored values behind the mask."""
+    out = dict(new)
+    for field in _SECRET_SERVER_FIELDS:
+        values = out.get(field)
+        before = (old or {}).get(field)
+        if isinstance(values, dict):
+            out[field] = {
+                key: (before.get(key, "") if isinstance(before, dict) else "") if value == SECRET_MASK else value
+                for key, value in values.items()
+            }
+    return out
 
 
 def public_server_view(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -193,7 +264,7 @@ def public_server_view(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for field in _SECRET_SERVER_FIELDS:
             val = s.get(field)
             if isinstance(val, dict) and val:
-                s[field] = {k: "●●●" for k in val}     # write-only: keys, not values
+                s[field] = {k: SECRET_MASK for k in val}     # write-only: keys, not values
         out.append(s)
     return out
 
@@ -249,7 +320,7 @@ def _spec_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     keys = (
         "transport", "enabled",
         # stdio
-        "command", "args", "env", "env_secret_refs",
+        "command", "args", "cwd", "env", "env_secret_refs",
         # http
         "url", "headers", "secret_headers", "secret_header_refs",
         "allow_insecure_http", "allow_private_address",
@@ -328,14 +399,30 @@ def _tool_discovery_failure(
     }
 
 
+def _resolve_cwd(value: str | None) -> str | None:
+    if not value:
+        return None
+    path = Path(value)
+    return str(path if path.is_absolute() else (CONFIG_PATH.parent / path).resolve())
+
+
 def start_server(server_id: str) -> dict[str, Any]:
-    """Bring up the configured server with this id. Idempotent if the
-    server is already running."""
+    """Bring up the configured server with this id. Idempotent while the
+    server runs with its current entry; a changed entry restarts it."""
     with _LOCK:
         spec = _find_spec_locked(server_id)
         if spec is None:
             return {"ok": False, "error": f"server '{server_id}' not configured"}
+        if not spec.get("enabled", True):
+            return {"ok": False, "error": f"server '{server_id}' is switched off (enabled: false) in Settings → MCP"}
         existing = _LIVE_CLIENTS.get(server_id)
+        restarted = False
+        if (existing is not None and existing.is_alive() and server_id in _LIVE_SPECS
+                and _spec_changed(_LIVE_SPECS[server_id], spec)):
+            # data/mcp_servers.json changed past save_servers (edited by hand or
+            # by the model): the live process must pick up the new entry.
+            _stop_locked(server_id)
+            existing, restarted = None, True
         if existing is not None and existing.is_alive():
             try:
                 tool_summary = _discover_tool_names(existing, server_id)
@@ -385,10 +472,16 @@ def start_server(server_id: str) -> dict[str, Any]:
                 msg = f"MCP secret resolution failed: {exc}"
                 _LAST_ERROR[server_id] = msg
                 return {"ok": False, "error": msg}
+            cwd = _resolve_cwd(spec.get("cwd"))
+            if cwd and not Path(cwd).is_dir():
+                msg = f"MCP cwd does not exist: {cwd}"
+                _LAST_ERROR[server_id] = msg
+                return {"ok": False, "error": msg}
             client = McpClient(
                 command=spec["command"],
                 args=spec["args"],
                 env={**(spec["env"] or {}), **resolved_env} or None,
+                cwd=cwd,
             )
             start_error = McpError
 
@@ -416,10 +509,12 @@ def start_server(server_id: str) -> dict[str, Any]:
             )
 
         _LIVE_CLIENTS[server_id] = client
+        _LIVE_SPECS[server_id] = spec
         _LAST_ERROR[server_id] = None
         return {
             "ok": True,
             "already_running": False,
+            **({"restarted_for_changed_config": True} if restarted else {}),
             "server_id": server_id,
             "server_info": client.server_info,
             **tool_summary,
@@ -439,6 +534,7 @@ def stop_server(server_id: str) -> dict[str, Any]:
 def _stop_locked(server_id: str) -> None:
     """Internal helper. Caller must hold _LOCK."""
     client = _LIVE_CLIENTS.pop(server_id, None)
+    _LIVE_SPECS.pop(server_id, None)
     if client is not None:
         try:
             client.stop()
@@ -496,7 +592,7 @@ def _find_spec_locked(server_id: str) -> dict[str, Any] | None:
 def start_all_enabled() -> dict[str, Any]:
     """Explicit batch operation for maintenance; never called at app startup.
 
-    Normal agent runs select one server through ``runtime_control(mcp_start)``.
+    Normal agent runs select one server through ``mcp(action='start')``.
     Failures are captured per server and never abort the batch.
     """
     results: dict[str, Any] = {}

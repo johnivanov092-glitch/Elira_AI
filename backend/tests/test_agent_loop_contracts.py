@@ -574,7 +574,7 @@ def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_coun
 
 def verification_fixture(target, criterion="private input checked"):
     """A canonical typed result from a private deterministic registry handler."""
-    from app.application.code_agent.tools._runtime_control_contract import completed
+    from app.application.code_agent.tools._tool_contract import completed
 
     report = target.parent / "verification.json"
     checks = [{"name": criterion, "passed": True}]

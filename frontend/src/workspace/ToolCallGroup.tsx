@@ -58,6 +58,7 @@ const ACTIVE_LABELS: Record<string, string> = {
   todo_update: "Обновляю план",
   delegate_task: "Передаю задачу агенту",
   capability_load: "Подключаю инструменты",
+  mcp: "Работаю с MCP",
   runtime_control: "Работаю с MCP",
   telegram: "Работаю с Telegram",
   itops_registry: "Смотрю цели IT Ops",

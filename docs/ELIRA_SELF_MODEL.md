@@ -90,7 +90,8 @@
 
 ## Интеграции
 
-- `runtime_control` (группа mcp) — только MCP: list/start/stop/restart/tools/upsert/remove
+- `mcp` (группа mcp) — MCP-серверы: list/start/stop/restart/tools/add/remove; у каждого
+  сервера навык `<id>-mcp`, новый сервер — по навыку `mcp-install` (папка `data/mcp/<id>/`)
 - SSH, IT Ops (`itops_registry` + typed `itops_*`), Telegram (`telegram` send/messages) —
   группы по требованию через `capability_load`
 - Настройка Telegram-бота и хранилище секретов — только UI (Настройки)

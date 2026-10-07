@@ -10,7 +10,7 @@ Two engines, one door:
 
 ``recall()`` combines both into one ready-to-inject context blob. The live
 chat/code-agent runtime exposes this path through ``recall`` and
-``runtime_control(memory_recall)``; the per-engine helpers stay for callers that
+``memory``; the per-engine helpers stay for callers that
 need one side.
 
 Engine imports are lazy (inside functions) to match the house style and avoid

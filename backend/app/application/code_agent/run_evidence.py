@@ -862,7 +862,7 @@ class RunEvidence:
         if len(self._tool_operations) >= _TOOL_OPERATION_LIMIT:
             self._operations_complete = False
             return
-        operation = str(arguments.get("operation") or "").strip() if tool == "runtime_control" else ""
+        operation = str(arguments.get("action") or "").strip() if tool == "mcp" else ""
         output_status = str(output.get("status") or "").strip()
         if any(len(value) > 80 for value in (tool, operation, execution_status, output_status)):
             self._operations_complete = False

@@ -1,5 +1,4 @@
-"""MCP control (runtime_control) and the small integration tools that replaced
-its other operations: telegram, memory, library, recall, itops_registry."""
+"""The integration tools: mcp, telegram, memory, library, recall, itops_registry."""
 from __future__ import annotations
 
 import sys
@@ -15,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.code_agent.tools._itops import tool_itops_registry  # noqa: E402
 from app.application.code_agent.tools._memory import tool_library, tool_memory  # noqa: E402
-from app.application.code_agent.tools._runtime_control import tool_runtime_control  # noqa: E402
+from app.application.code_agent.tools._mcp import tool_mcp  # noqa: E402
 from app.application.code_agent.tools._search import tool_recall  # noqa: E402
 from app.application.code_agent.tools._telegram import tool_telegram  # noqa: E402
 
@@ -23,26 +22,75 @@ from app.application.code_agent.tools._telegram import tool_telegram  # noqa: E4
 class McpControlTest(unittest.TestCase):
     def test_inner_runtime_result_requires_boolean_ok(self) -> None:
         with patch(
-            "app.application.code_agent.tools._runtime_control._mcp_control",
+            "app.application.code_agent.tools._mcp._mcp_control",
             return_value={"status": "completed"},
         ):
-            result = tool_runtime_control(ROOT, operation="mcp_list")
+            result = tool_mcp(ROOT, action="list")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"]["message"], "invalid_tool_result")
 
-    def test_unknown_operation_names_the_supported_ones(self) -> None:
-        result = tool_runtime_control(ROOT, operation="telegram_send")
+    def test_unknown_action_names_the_supported_ones(self) -> None:
+        result = tool_mcp(ROOT, action="telegram_send")
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "unsupported_operation")
-        self.assertIn("mcp_start", result["text"])
+        self.assertEqual(result["error"], "unsupported_action")
+        self.assertIn("start", result["text"])
+
+    def test_list_shows_purpose_state_and_skill_without_config(self) -> None:
+        with patch(
+            "app.application.tool_providers.mcp_runtime.list_servers",
+            return_value=[
+                {"id": "homeassistant", "description": "Умный дом", "transport": "http", "url": "http://h/mcp",
+                 "secret_header_refs": {"Authorization": "sref_ha"}, "enabled": True, "status": "running",
+                 "last_error": None},
+                {"id": "blender", "command": "blendmcp", "enabled": False, "status": "stopped", "last_error": None},
+            ],
+        ):
+            result = tool_mcp(ROOT, action="list")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"]["servers"], [
+            {"id": "homeassistant", "description": "Умный дом", "status": "running", "skill": "homeassistant-mcp"},
+            {"id": "blender", "description": "", "status": "switched_off", "skill": "blender-mcp"},
+        ])
+        self.assertNotIn("sref_ha", result["text"])
+
+    def test_add_changes_only_given_fields_and_keeps_secret_refs(self) -> None:
+        stored = {"id": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+                  "env": {}, "env_secret_refs": {"GITHUB_PERSONAL_ACCESS_TOKEN": "sref_github"},
+                  "enabled": True, "status": "stopped", "last_error": None}
+        with (
+            patch("app.application.tool_providers.mcp_runtime.list_servers", return_value=[stored]),
+            patch("app.application.tool_providers.mcp_runtime.save_servers",
+                  side_effect=lambda servers: servers) as save,
+        ):
+            result = tool_mcp(ROOT, action="add", server_id="github",
+                              config={"description": "GitHub: репозитории и PR"})
+
+        self.assertTrue(result["ok"], result)
+        saved = save.call_args.args[0][0]
+        self.assertEqual(saved["description"], "GitHub: репозитории и PR")
+        self.assertEqual(saved["env_secret_refs"], {"GITHUB_PERSONAL_ACCESS_TOKEN": "sref_github"})
+        self.assertEqual(saved["args"], ["-y", "@modelcontextprotocol/server-github"])
+        self.assertNotIn("sref_github", result["text"])
+
+    def test_remove_of_unknown_server_is_correctable(self) -> None:
+        with (
+            patch("app.application.tool_providers.mcp_runtime.list_servers", return_value=[]),
+            patch("app.application.tool_providers.mcp_runtime.save_servers") as save,
+        ):
+            result = tool_mcp(ROOT, action="remove", server_id="ghost")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("not configured", result["error"]["message"])
+        save.assert_not_called()
 
     def test_missing_mcp_id_returns_model_error_without_workflow_request(self) -> None:
         with patch("app.application.tool_providers.mcp_runtime.save_servers") as save:
-            result = tool_runtime_control(
-                ROOT, operation="mcp_upsert",
+            result = tool_mcp(
+                ROOT, action="add",
                 config={"command": "python", "args": ["stock_server.py"]},
             )
         self.assertFalse(result["ok"])
@@ -59,16 +107,16 @@ class McpControlTest(unittest.TestCase):
             patch("app.application.tool_providers.mcp_runtime.save_servers",
                   side_effect=lambda servers: servers) as save,
         ):
-            result = tool_runtime_control(ROOT, operation="mcp_upsert", server_id="stock",
-                                          config={"command": "python", "env": settings})
+            result = tool_mcp(ROOT, action="add", server_id="stock",
+                              config={"command": "python", "env": settings})
         self.assertTrue(result["ok"], result)
         self.assertNotIn("request", result)
         self.assertEqual(save.call_args.args[0][0]["env"], settings)
 
     def test_mcp_upsert_credential_environment_still_requests_secret(self) -> None:
         with patch("app.application.tool_providers.mcp_runtime.save_servers") as save:
-            result = tool_runtime_control(ROOT, operation="mcp_upsert", server_id="stock",
-                                          config={"command": "python", "env": {"STOCK_API_KEY": "canary-credential"}})
+            result = tool_mcp(ROOT, action="add", server_id="stock",
+                              config={"command": "python", "env": {"STOCK_API_KEY": "canary-credential"}})
         self.assertEqual(result["status"], "needs_secret")
         self.assertNotIn("canary-credential", result["text"])
         save.assert_not_called()
@@ -79,8 +127,8 @@ class McpControlTest(unittest.TestCase):
                   return_value=[{"id": "stock", "command": "python", "args": ["existing.py"]}]),
             patch("app.application.tool_providers.mcp_runtime.save_servers") as save,
         ):
-            result = tool_runtime_control(ROOT, operation="mcp_upsert", server_id="stock",
-                                          config={"command": "python", "env": ["malformed"]})
+            result = tool_mcp(ROOT, action="add", server_id="stock",
+                              config={"command": "python", "env": ["malformed"]})
         self.assertEqual(result["status"], "failed")
         self.assertNotIn("request", result)
         save.assert_not_called()
@@ -94,7 +142,7 @@ class McpControlTest(unittest.TestCase):
             patch("app.infrastructure.secrets.vault.status", return_value={"initialized": True, "locked": True}),
             patch("app.application.tool_providers.mcp_runtime.start_server") as start,
         ):
-            result = tool_runtime_control(ROOT, operation="mcp_start", server_id="mikrotik")
+            result = tool_mcp(ROOT, action="start", server_id="mikrotik")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "needs_secret")
@@ -108,7 +156,7 @@ class McpControlTest(unittest.TestCase):
             return_value={"ok": True, "server_id": "unity", "available_tool_count": 47,
                           "available_tool_names": ["unity__read_console"]},
         ) as discover:
-            result = tool_runtime_control(ROOT, operation="mcp_tools", server_id="unity", query="read_console")
+            result = tool_mcp(ROOT, action="tools", server_id="unity", query="read_console")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "completed")

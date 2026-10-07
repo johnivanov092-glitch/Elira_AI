@@ -137,7 +137,7 @@ if not release_runtime.is_staging():
 
 # Workflow-owned interval triggers replace the old separate Pipelines control
 # plane. Tests never start daemon schedulers; production starts it with the
-# backend and manages it through runtime_control.
+# backend.
 try:
     import sys as _sys
 

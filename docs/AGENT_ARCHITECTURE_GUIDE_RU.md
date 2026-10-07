@@ -70,7 +70,7 @@ Transcript + Workflow request card
 | Runtime registry | Собирает схемы и направляет call владельцу | `application/tool_providers/runtime_registry.py` |
 | Providers | Builtin, SSH, IT Ops, MCP | `application/tool_providers/` |
 | Capability catalog | Группирует необязательные builtin-схемы для загрузки моделью | `application/code_agent/capabilities.py` |
-| MCP control | Список, запуск и настройка MCP-серверов (группа mcp) | `application/code_agent/tools/_runtime_control.py` |
+| MCP | Инструмент `mcp`: список, запуск и настройка MCP-серверов (группа mcp) | `application/code_agent/tools/_mcp.py`, `tool_providers/mcp_runtime.py` |
 | TaskOutcome | Решение о повторном использовании, свежие проверки и receipts выдачи файлов | `application/code_agent/task_outcomes.py` |
 | Навыки | Папка `data/skills`: каталог в промпте, закрепление прочитанного SKILL.md, git-история | `application/code_agent/task_skills.py` |
 | Самообновление | Проверка и переключение цельного backend/UI с восстановлением | `scripts/elira_release.py` стабильной платформы |
@@ -221,7 +221,7 @@ Windows, сервера или сети.
 | Группа | Что появляется |
 |---|---|
 | `project` | `project_map`, `recall` (индекс проекта), `delegate_task` (подагент) |
-| `mcp` | `runtime_control`: MCP list/start/stop/tools/upsert/remove |
+| `mcp` | `mcp(action=list/start/stop/restart/tools/add/remove)` |
 | `ssh` | ssh_run/ssh_run_ps/ssh_read/ssh_write/ssh_replace/ssh_port_check/ssh_list_hosts |
 | `itops` | `itops_registry` и typed `itops_*` health/inventory |
 | `telegram` | `telegram` (send/messages) |
@@ -472,13 +472,26 @@ Workflow response и Stop ветка `ask_user` сначала сохраняе�
 
 | Что | Как модель это делает | Что в UI |
 |---|---|---|
-| MCP | группа `mcp`: `runtime_control(mcp_list/start/stop/restart/tools/upsert/remove)` | Настройки → MCP (статус, start/stop) |
+| MCP | группа `mcp`: `mcp(action=list/start/stop/restart/tools/add/remove)`; навык `<id>-mcp` на сервер | Настройки → MCP (статус, старт/стоп, вкл./выкл., правка записи, добавить, удалить) |
 | SSH | группа `ssh`: ssh_run, ssh_run_ps, ssh_read, ssh_write, ssh_replace, ssh_port_check, ssh_list_hosts | — |
 | IT Ops | группа `itops`: `itops_registry` (активы, профили, MikroTik) + typed `itops_*` | — |
 | Telegram | группа `telegram`: `telegram(action=send/messages)` | Настройки → Telegram (токен, старт/стоп, пользователи) |
 | Хранилище секретов | только `secret_ref` через карточку Workflow | Настройки → Секреты (создать, разблокировать, копия) |
 | Память, Библиотека | группа `memory`: `memory` (search/list/add/delete), `library` (search/read) | Настройки → Память / Библиотека |
 | Индекс проекта | группа `project`: `recall(action=search/index/status)` | — |
+
+MCP как навыки (трек 2, 2026-10-07). Источник правды — `data/mcp_servers.json`:
+запись `{id, description, command/args/cwd/env | transport=http, url, headers,
+enabled, skill?}`; секреты только ссылками `sref_…` в `env_secret_refs` /
+`secret_header_refs`. Файл читается на каждый вызов, поэтому правка моделью,
+человеком или из UI видна сразу и кандидата релиза не требует; `start` сам
+перезапускает живой процесс, если его запись изменилась. `enabled: false` —
+сервер выключен и не запускается. На каждый сервер — навык `<id>-mcp`
+(заводские лежат в `skills/`, подчёркивание в id становится дефисом): что умеет,
+какие инструменты передать в `query` при `start`, порядок и ограничения; каталог
+навыков в промпте и есть каталог MCP. Новый сервер — навык `mcp-install`: папка
+`data/mcp/<id>/` со своим окружением, `mcp(action=add)` с `cwd`, свой навык,
+проверочный вызов. `mcp(action=add)` меняет только переданные поля записи.
 
 LSP-подсистема и плагины удалены (символы и ссылки по коду — serena MCP по
 требованию; повторно используемые скрипты — навыки в `data/skills`). Операции
@@ -498,16 +511,16 @@ waiting_approval(exact tool digest)
 cancelled
 ```
 
-Контракт и общий `run_operation` лежат в `_runtime_control_contract.py`; адаптеры —
-`_runtime_control.py` (MCP), `_telegram.py`, `_itops.py`. Они не исполняют чужие
+Контракт и общий `run_operation` лежат в `_tool_contract.py`; адаптеры —
+`_mcp.py`, `_telegram.py`, `_itops.py`. Они не исполняют чужие
 tools и не создают второй registry.
 
 FastAPI не запускает MCP автоматически. Новый прогон не добавляет схемы
 MCP/SSH/IT Ops по ключевым словам или профилю:
 
 ```text
-MCP: capability_load(mcp) → runtime_control(mcp_list)
-  → runtime_control(mcp_start, server_id)
+MCP: навык <id>-mcp из каталога (read_file) → capability_load(mcp)
+  → mcp(action=start, server_id, query)
   → schemas только выбранного MCP на следующем model turn
 
 SSH: capability_load(ssh) → ssh_list_hosts / ssh_run …
@@ -871,7 +884,7 @@ evidence и audit events разные lifecycle и recovery semantics.
 | LLM payload/cache | `infrastructure/llm/openai_compatible.py` |
 | Новый built-in tool | `capabilities.py` + существующие `tool_schemas.py`/`_dispatch.py`, без второго registry |
 | Новый provider | `application/tool_providers/`, зарегистрировать в runtime registry |
-| Integration tools | `_runtime_control.py` (MCP), `_telegram.py`, `_itops.py`, `_memory.py` |
+| Integration tools | `_mcp.py`, `_telegram.py`, `_itops.py`, `_memory.py` |
 | Workflow request | `workflows/request_lifecycle.py`, `request_recovery.py`, `request_validation.py`, `WorkflowRequestCard.tsx` |
 | Vault/UAC | `infrastructure/secrets/vault.py`, `src-tauri/src/main.rs` |
 | API mount | `api/routes/registry.py` |
@@ -892,7 +905,7 @@ run timeout. Для скорости переключите chip на `medium/lo
 
 Для основного встроенного tool проверьте `tool_policy.BASE_TOOLS` и фактические
 схемы первого запроса; для дополнительного — успешный `capability_load(group)`.
-Для MCP проверьте `runtime_control(mcp_list/start)`. В обоих случаях registry
+Для MCP проверьте `mcp(action=list/start)`. В обоих случаях registry
 обновляется на следующем turn; выбранное состояние видно в journal run.
 
 ### Windows вернула Access denied

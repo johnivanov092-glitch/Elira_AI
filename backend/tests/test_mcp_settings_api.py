@@ -25,6 +25,7 @@ def client(tmp_path, monkeypatch):
     }]}), encoding="utf-8")
     monkeypatch.setattr(mcp_runtime, "CONFIG_PATH", config)
     monkeypatch.setattr(mcp_runtime, "_LIVE_CLIENTS", {})
+    monkeypatch.setattr(mcp_runtime, "_LIVE_SPECS", {})
     monkeypatch.setattr(mcp_runtime, "_LAST_ERROR", {})
     app = FastAPI()
     app.middleware("http")(make_auth_middleware(set()))
@@ -57,7 +58,7 @@ def test_list_does_not_expose_config_or_credentials(client):
     assert "private-value" not in response.text
     assert "another-secret" not in response.text
     row = response.json()["servers"][0]
-    assert set(row) == {"id", "transport", "enabled", "status", "last_error"}
+    assert set(row) == {"id", "description", "transport", "enabled", "status", "last_error"}
     assert row["status"] == "error"
     client.post("/api/mcp/servers/test/lifecycle", json={"action": "stop"})
     assert client.get("/api/mcp/servers").json()["servers"][0]["status"] == "stopped"
@@ -84,7 +85,7 @@ def test_locked_vault_returns_actionable_error(client, monkeypatch):
     monkeypatch.setattr(vault, "status", lambda: {"locked": True})
     response = client.post("/api/mcp/servers/test/lifecycle", json={"action": "start"})
     assert response.status_code == 409
-    assert "Workflow" in response.json()["detail"]
+    assert "Секреты" in response.json()["detail"]
     assert "vault:example" not in response.text
 
 
@@ -95,3 +96,47 @@ def test_vault_value_echo_is_not_exposed_after_vault_locks(client):
     mcp_runtime._LAST_ERROR["test"] = "unlabelled-vault-credential-echo"
     response = client.get("/api/mcp/servers")
     assert "unlabelled-vault-credential-echo" not in response.text
+
+
+def test_editor_sees_masked_config_and_keeps_stored_secret(client):
+    config = client.get("/api/mcp/servers/test/config").json()["config"]
+    assert config["env"] == {"SECRET": "●●●"} and "status" not in config
+    config["description"] = "Тестовый сервер"
+    assert client.put("/api/mcp/servers/test", json={"config": config}).status_code == 200
+    stored = json.loads(mcp_runtime.CONFIG_PATH.read_text(encoding="utf-8"))["servers"][0]
+    assert stored["description"] == "Тестовый сервер"
+    assert stored["env"] == {"SECRET": "private-value"}
+    assert client.get("/api/mcp/servers").json()["servers"][0]["description"] == "Тестовый сервер"
+
+
+def test_new_plaintext_credential_is_refused(client):
+    config = client.get("/api/mcp/servers/test/config").json()["config"]
+    config["env"]["GITHUB_TOKEN"] = "ghp_plain"
+    response = client.put("/api/mcp/servers/test", json={"config": config})
+    assert response.status_code == 422 and "Секреты" in response.json()["detail"]
+    assert "ghp_plain" not in mcp_runtime.CONFIG_PATH.read_text(encoding="utf-8")
+
+
+def test_add_switch_off_and_delete(client):
+    new = {"id": "docs", "transport": "http", "url": "https://example.org/mcp", "description": "Документация"}
+    assert client.post("/api/mcp/servers", json={"config": new}).status_code == 200
+    assert client.post("/api/mcp/servers", json={"config": new}).status_code == 409
+    assert client.post("/api/mcp/servers", json={"config": {"id": "bad", "command": ""}}).status_code == 422
+    assert client.post("/api/mcp/servers/docs/enabled", json={"enabled": False}).status_code == 200
+    response = client.post("/api/mcp/servers/docs/lifecycle", json={"action": "start"})
+    assert response.status_code == 409 and "switched off" in response.json()["detail"]
+    assert client.delete("/api/mcp/servers/docs").status_code == 200
+    assert [row["id"] for row in client.get("/api/mcp/servers").json()["servers"]] == ["test"]
+
+
+def test_changed_entry_restarts_the_live_process(client):
+    path = "/api/mcp/servers/test/lifecycle"
+    assert client.post(path, json={"action": "start"}).status_code == 200
+    live = mcp_runtime.get_live_client("test")
+    raw = json.loads(mcp_runtime.CONFIG_PATH.read_text(encoding="utf-8"))
+    raw["servers"][0]["args"].append("--changed")
+    mcp_runtime.CONFIG_PATH.write_text(json.dumps(raw), encoding="utf-8")  # edited past save_servers
+    result = mcp_runtime.start_server("test")
+    assert result["ok"] and result.get("restarted_for_changed_config") is True
+    assert not live.is_alive() and mcp_runtime.get_live_client("test") is not live
+    assert mcp_runtime.start_server("test")["already_running"] is True

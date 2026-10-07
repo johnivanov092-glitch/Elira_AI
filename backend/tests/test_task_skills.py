@@ -9,7 +9,7 @@ import pytest
 from app.application.code_agent import agent_loop, task_skills as skills
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.tool_schemas import build_tool_schemas
-from app.application.code_agent.tools._runtime_control import tool_runtime_control
+from app.application.code_agent.tools._mcp import tool_mcp
 
 
 @pytest.fixture
@@ -154,11 +154,10 @@ def test_history_snapshot_commits_skill_changes(data):
 
 
 def test_no_skill_operations_remain(tmp_path):
-    result = tool_runtime_control(tmp_path, operation="skill_load")
+    result = tool_mcp(tmp_path, action="skill_load")
     assert result["ok"] is False
-    runtime = next(item for item in build_tool_schemas() if item["function"]["name"] == "runtime_control")
-    operations = runtime["function"]["parameters"]["properties"]["operation"]["enum"]
-    assert not [operation for operation in operations if operation.startswith("skill")]
+    names = {item["function"]["name"] for item in build_tool_schemas()}
+    assert not [name for name in names if name.startswith("skill")]
 
 
 def _reply(tool=None, arguments=None):

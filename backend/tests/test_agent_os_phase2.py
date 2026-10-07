@@ -159,7 +159,7 @@ class TestSeedBuiltinTools(ToolRegistryTestCase):
         names = [t["name"] for t in tools]
         self.assertIn("read_file", names)
         self.assertIn("run_bash", names)
-        self.assertIn("runtime_control", names)
+        self.assertIn("mcp", names)
 
     def test_seed_idempotent(self) -> None:
         reg._BUILTIN_SEEDED = False

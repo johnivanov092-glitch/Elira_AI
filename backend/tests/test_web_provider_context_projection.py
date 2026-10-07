@@ -146,7 +146,7 @@ def test_coordinator_projects_only_readonly_web_and_keeps_raw_results_and_tools(
     monkeypatch.setattr("app.infrastructure.search.web_search.search_web",
                         lambda *args, **kwargs: {"ok": True, "sources": discovery})
     monkeypatch.setattr(_web, "_fetch_one", lambda url, limit: PageFetchResult(text=BODY, final_url=url))
-    tools = {"web_search", "web_fetch", "write_file", "runtime_control"}
+    tools = {"web_search", "web_fetch", "write_file", "mcp"}
     run_id = "projection-" + str(work) + "-" + tmp_path.name
     calls = []
     steps = []

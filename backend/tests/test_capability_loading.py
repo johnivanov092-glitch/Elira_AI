@@ -357,8 +357,8 @@ def test_memory_tool_schemas_distinguish_project_rag_from_user_memory() -> None:
     assert schemas["recall"]["parameters"]["properties"]["action"]["enum"] == ["search", "index", "status"]
     assert schemas["memory"]["parameters"]["properties"]["action"]["enum"] == ["search", "list", "add", "delete"]
     assert "before concluding something is absent" in schemas["library"]["description"]
-    operations = schemas["runtime_control"]["parameters"]["properties"]["operation"]["enum"]
-    assert all(operation.startswith("mcp_") for operation in operations)
+    assert schemas["mcp"]["parameters"]["properties"]["action"]["enum"] == [
+        "list", "start", "stop", "restart", "tools", "add", "remove"]
 
 
 def test_unknown_capability_group_fails_without_changing_visibility() -> None:
@@ -408,7 +408,7 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
         ))
 
         assert {"capability_load", "read_file", "web_search", "web_fetch"} <= seen_tool_names[0]
-        assert "runtime_control" not in seen_tool_names[0]
+        assert "mcp" not in seen_tool_names[0]
         assert "Режим работы:" not in seen_system_prompts[0]
         run_started = next(event for event in events if event["type"] == "run_started")
         assert run_started["profile_name"] == "Баланс"

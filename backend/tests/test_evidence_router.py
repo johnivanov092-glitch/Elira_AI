@@ -166,10 +166,10 @@ def test_local_code_edit_does_not_load_web_without_external_evidence_need() -> N
 
 def test_external_integration_failure_escalates_web_on_first_failure() -> None:
     assert should_escalate_web_after_failure(
-        tool_name="runtime_control",
+        tool_name="mcp",
         error="MCP server start failed: unsupported RouterOS version",
         failure_count=1,
-        arguments={"operation": "mcp_start"},
+        arguments={"action": "start"},
     ) is True
 
 

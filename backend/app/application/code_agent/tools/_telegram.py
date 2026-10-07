@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.application.code_agent.tools._runtime_control_contract import (
+from app.application.code_agent.tools._tool_contract import (
     input_request,
     run_operation,
     secret_request,

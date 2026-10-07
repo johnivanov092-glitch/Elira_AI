@@ -18,8 +18,8 @@ from app.application.agent_kernel.executor import ToolExecutionRequest, permissi
 
 @pytest.mark.parametrize("mode", ["ask", "accept_edits", "bypass"])
 @pytest.mark.parametrize("tool,args", [
-    ("runtime_control", {"operation": "mcp_tools"}),
-    ("runtime_control", {"operation": "mcp_list"}),
+    ("mcp", {"action": "tools"}),
+    ("mcp", {"action": "list"}),
     ("telegram", {"action": "messages"}),
     ("itops_registry", {"action": "mikrotik_list"}),
     ("memory", {"action": "search"}),

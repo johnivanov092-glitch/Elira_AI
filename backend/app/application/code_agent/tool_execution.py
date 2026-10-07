@@ -375,5 +375,5 @@ def run_runtime_workflow(
     )
     if waited.cancelled:
         return WorkflowOutcome(response=waited.response, cancelled=True, terminal=_cancelled_event(step))
-    text = "Workflow UI response for runtime_control: " + json.dumps(waited.response or {}, ensure_ascii=False)
+    text = f"Workflow UI response for {tool_name}: " + json.dumps(waited.response or {}, ensure_ascii=False)
     return WorkflowOutcome(text, waited.response)

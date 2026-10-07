@@ -102,27 +102,27 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "runtime_control",
+                "name": "mcp",
                 "description": (
-                    "MCP servers from the user's config. mcp_list shows them; mcp_start "
-                    "(server_id) starts one and its tools appear on the next turn; mcp_tools "
-                    "(server_id, query) reveals more of its tools; mcp_stop/mcp_restart; "
-                    "mcp_upsert (server_id, config) adds or changes a server, mcp_remove deletes it. "
-                    "Start only the server the task needs. Credentials go in config as "
-                    "env_secret_refs/secret_header_refs with sref_ values, never plain text."
+                    "MCP servers from data/mcp_servers.json. First read the server's skill "
+                    "(<id>-mcp in the skills catalog). action=list shows servers; start "
+                    "(server_id, query) starts one and its tools appear on the next turn; tools "
+                    "(server_id, query) reveals more of its tools; stop/restart; add (server_id, "
+                    "config) adds or changes a server; remove deletes it. Start only the server "
+                    "the task needs. Credentials go in config as env_secret_refs/"
+                    "secret_header_refs with sref_ values, never plain text."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": [
-                            "mcp_list", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
-                            "mcp_upsert", "mcp_remove",
+                        "action": {"type": "string", "enum": [
+                            "list", "start", "stop", "restart", "tools", "add", "remove",
                         ]},
                         "server_id": {"type": "string"},
-                        "query": {"type": "string", "description": "mcp_tools/mcp_start: which tools are needed."},
-                        "config": {"type": "object", "description": "mcp_upsert: server config (command/args/env or url)."},
+                        "query": {"type": "string", "description": "start/tools: which tools are needed."},
+                        "config": {"type": "object", "description": "add: description, command/args/env/cwd or url/headers."},
                     },
-                    "required": ["operation"],
+                    "required": ["action"],
                 },
             },
         },

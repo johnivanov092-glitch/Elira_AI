@@ -245,13 +245,13 @@ def test_failed_repeated_attempts_store_and_runtime_operation_are_observed():
     _record(evidence, "web_search", {"queries": ["first", "first"]}, status="error")
     _record(evidence, "web_fetch", {"urls": ["https://example.org/a", "https://example.org/a"], "store": True},
             status="error")
-    _record(evidence, "runtime_control", {"operation": "task_decide"})
+    _record(evidence, "mcp", {"action": "start", "server_id": "atlas"})
     assert evidence.operations_complete
     assert evidence.tool_operations[0]["query_count"] == 2
     assert evidence.tool_operations[1]["read_urls"] == ["https://example.org/a"] * 2
     assert evidence.tool_operations[1]["store"] is True
     assert evidence.tool_operations[1]["execution_status"] == "error"
-    assert evidence.tool_operations[2]["operation"] == "task_decide"
+    assert evidence.tool_operations[2]["operation"] == "start"
     snapshot = evidence.tool_operations
     snapshot[1]["read_urls"].clear()
     assert len(evidence.tool_operations[1]["read_urls"]) == 2
@@ -274,7 +274,7 @@ def test_imported_source_history_and_operation_overflow_fail_closed():
     assert RunEvidence(sources=sources).operations_complete is False
     evidence = RunEvidence()
     for _ in range(257):
-        _record(evidence, "runtime_control", {"operation": "task_decide"})
+        _record(evidence, "mcp", {"action": "list"})
     assert len(evidence.tool_operations) == 256
     assert evidence.operations_complete is False
 

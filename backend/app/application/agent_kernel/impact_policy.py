@@ -237,8 +237,8 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
         return str(payload.get("action") or "").strip().lower() not in {"search", "list"}
     if name == "recall":
         return str(payload.get("action") or "search").strip().lower() == "index"
-    if name == "runtime_control":
-        return str(payload.get("operation") or "").strip().lower() not in {"mcp_list", "mcp_tools"}
+    if name == "mcp":
+        return str(payload.get("action") or "").strip().lower() not in {"list", "tools"}
     if name == "telegram":
         return str(payload.get("action") or "").strip().lower() != "messages"
     if name == "itops_registry":
