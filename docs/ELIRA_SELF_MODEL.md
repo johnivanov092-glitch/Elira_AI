@@ -116,7 +116,7 @@ Thread-local: `run_id`, `execution_channel`, `permission_mode`
 - `route_request_capabilities` — compatibility/evidence hints; intent и выбор
   tools принадлежат Qwen. Download keyword не устанавливает delivery contract.
 - База каждого запроса (`tool_policy.BASE_TOOLS`): read_file, write_file, edit_file,
-  glob, grep, run_bash, run_server, web_search, web_fetch, todo_update, capability_load
+  glob, grep, run_bash, run_server, web_search, web_fetch, todo_update, calc, capability_load
   (+ ask_user). Остальное модель загружает сама через `capability_load(group)`.
 - Domain policies (hidden): Личный, Баланс, Инженерный, Деловой, Инфраструктура, Научный, Медицина
 

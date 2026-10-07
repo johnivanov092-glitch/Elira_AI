@@ -94,10 +94,11 @@ a successfully completed run.
 - The UI exposes one personality: `Elira / Auto`, with one sampling temperature.
   Legacy profiles remain readable but do not switch identity, tone or sampling.
   Their evidence/calculation requirements survive as relevant task instructions.
-- Every normal first turn sees ten work tools from `tool_policy.BASE_TOOLS`
+- Every normal first turn sees eleven work tools from `tool_policy.BASE_TOOLS`
   (read/write/edit_file, glob, grep, run_bash, run_server, web_search, web_fetch,
-  todo_update) plus `capability_load` and `ask_user` (track «Elira на диете»,
-  2026-10-07). Workflow questions remain available through the runtime.
+  todo_update, calc) plus `capability_load` and `ask_user` (track «Elira на
+  диете», 2026-10-07; calc stays visible so calculations go through a tool).
+  Workflow questions remain available through the runtime.
   Explicit search, attachments and resumed activations may add schemas. The model loads other
   groups through the existing registry; routing hints do not preload them. An external
   first failure, repeated local failure, or a false denial of available Web
@@ -169,8 +170,8 @@ a successfully completed run.
   a tool" is executed with read-only tools (`side_effect=False`, no approval
   card in "ask"): `calc` (exact decimal/rational arithmetic, percentages,
   algebra via SymPy built from an AST allowlist — input is never evaluated as
-  code), `unit_convert`, `finance_calc` (invoices, VAT, markup vs margin,
-  discounts, loans, splits) and `csv` filters/aggregates — all in group `math`
+  code; always in the base), group `math` with `unit_convert`, `finance_calc`
+  (invoices, VAT, markup vs margin, discounts, loans, splits) and `csv` filters/aggregates
   (its old `eval` of the question was removed). Shared Decimal parsing lives in
   `application/calculation/numbers.py`. Scripts
   remain for complex modelling and ask for approval in "ask" mode.
