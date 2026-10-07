@@ -124,7 +124,7 @@ def test_add_switch_off_and_delete(client):
     assert client.post("/api/mcp/servers", json={"config": {"id": "bad", "command": ""}}).status_code == 422
     assert client.post("/api/mcp/servers/docs/enabled", json={"enabled": False}).status_code == 200
     response = client.post("/api/mcp/servers/docs/lifecycle", json={"action": "start"})
-    assert response.status_code == 409 and "switched off" in response.json()["detail"]
+    assert response.status_code == 409 and "выключен" in response.json()["detail"]
     assert client.delete("/api/mcp/servers/docs").status_code == 200
     assert [row["id"] for row in client.get("/api/mcp/servers").json()["servers"]] == ["test"]
 

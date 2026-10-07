@@ -57,6 +57,18 @@ def test_background_start_and_stop_keep_ordinary_local_permission():
             assert permission_mode_auto_approves(request)
 
 
+def test_mcp_server_lifecycle_is_ordinary_local_work_but_config_changes_ask():
+    for args, accept_edits in (({"action": "start", "server_id": "atlas"}, True),
+                               ({"action": "restart", "server_id": "atlas"}, True),
+                               ({"action": "add", "server_id": "x", "config": {"command": "x"}}, False),
+                               ({"action": "remove", "server_id": "atlas"}, False)):
+        request = _local_ask_request("mcp", args)
+        with patch("app.application.tool_registry.runtime.get_tool", return_value={"side_effect": True}):
+            assert not permission_mode_auto_approves(request)
+            request.permission_mode = "accept_edits"
+            assert permission_mode_auto_approves(request) is accept_edits
+
+
 def test_permission_modes_have_one_workflow_contract() -> None:
     ordinary = SafetyEvidence(impact="material")
     dangerous = SafetyEvidence(impact="high")

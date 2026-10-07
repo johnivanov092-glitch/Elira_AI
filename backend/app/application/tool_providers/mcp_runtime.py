@@ -414,7 +414,7 @@ def start_server(server_id: str) -> dict[str, Any]:
         if spec is None:
             return {"ok": False, "error": f"server '{server_id}' not configured"}
         if not spec.get("enabled", True):
-            return {"ok": False, "error": f"server '{server_id}' is switched off (enabled: false) in Settings → MCP"}
+            return {"ok": False, "error": f"сервер {server_id} выключен (enabled: false) в Настройки → MCP"}
         existing = _LIVE_CLIENTS.get(server_id)
         restarted = False
         if (existing is not None and existing.is_alive() and server_id in _LIVE_SPECS

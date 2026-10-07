@@ -127,7 +127,7 @@ class LifecycleTest(McpProviderTestBase):
         self.runtime.save_servers([self._fake_spec("disabled", enabled=False)])
         result = self.runtime.start_server("disabled")
         self.assertFalse(result["ok"])
-        self.assertIn("switched off", result["error"])
+        self.assertIn("выключен", result["error"])
         self.assertIsNone(self.runtime.get_live_client("disabled"))
 
     def test_start_then_stop_lifecycle(self) -> None:

@@ -323,6 +323,11 @@ def evidence_for_tool_call(tool_name: str, args: dict[str, Any] | None) -> Safet
         # Dedicated editor primitives are bounded to the open scene/project. Local
         # bypass may proceed; ask/accept_edits still pause under the shared policy.
         return SafetyEvidence(impact="material")
+    if name == "mcp":
+        # Starting, stopping or restarting a server from the user's own config is an
+        # ordinary local process action; add/remove change that config and still ask.
+        action = str(payload.get("action") or "").strip().lower()
+        return SafetyEvidence(impact="material") if action in {"start", "stop", "restart"} else SafetyEvidence()
     if name in _LOW_RISK_REVERSIBLE_TOOLS:
         return SafetyEvidence.low_risk_reversible()
     if name == "itops_change_apply":
