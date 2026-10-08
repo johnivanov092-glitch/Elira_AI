@@ -52,6 +52,8 @@ def _identity(record: dict[str, Any]) -> str:
         "origin_run_id", "tool", "url", "content_hash", "excerpt_hash",
         "doc_id", "chunk_id", "offset", "status",
     )}
+    if record.get("provenance"):
+        fields["provenance"] = record["provenance"]
     return "w_" + digest(json.dumps(fields, sort_keys=True, ensure_ascii=False))[:20]
 
 
@@ -61,6 +63,7 @@ def make_source(
     content_hash: str = "", doc_id: str = "", chunk_id: int | None = None,
     offset: int | None = None, quote_verified: bool = False, error: str = "",
     dates: dict[str, str] | None = None, tier: str = "unknown",
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_url = redact_text(str(url or "").strip())[:4096]
     try:
@@ -84,6 +87,8 @@ def make_source(
         "error": redact_text(str(error or ""))[:300],
         "dates": _source_dates(dates), "tier": tier if tier in TIERS else "unknown",
     }
+    if provenance:
+        record["provenance"] = dict(provenance)
     record["id"] = _identity(record)
     return record
 
@@ -92,6 +97,25 @@ def valid_source(value: Any) -> bool:
     """Reject malformed/modified persisted records instead of rebinding an ID."""
     if not isinstance(value, dict) or not isinstance(value.get("status"), str) or value["status"] not in _STATUSES:
         return False
+    provenance = value.get("provenance")
+    if provenance:
+        if not isinstance(provenance, dict) or set(provenance) != {
+                "requested_url", "final_url", "raw_sha256", "extraction_sha256", "complete"}:
+            return False
+        if type(provenance["complete"]) is not bool:
+            return False
+        for key in ("raw_sha256", "extraction_sha256"):
+            if not isinstance(provenance[key], str) or not re.fullmatch(r"[0-9a-f]{64}", provenance[key]):
+                return False
+        for key in ("requested_url", "final_url"):
+            if not isinstance(provenance[key], str) or len(provenance[key]) > 4096:
+                return False
+            try:
+                parsed_source = urlsplit(provenance[key])
+                if parsed_source.scheme not in {"http", "https"} or not parsed_source.hostname or parsed_source.username:
+                    return False
+            except ValueError:
+                return False
     if not isinstance(value.get("quote"), str) or len(value["quote"]) > EXCERPT_CHARS:
         return False
     if value.get("excerpt_hash") != (digest(value["quote"]) if value["quote"] else ""):
@@ -139,6 +163,12 @@ def merge_sources(*groups: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def format_source(source: dict[str, Any]) -> str:
     header = f"{source['title'] or source['url']}\nURL: {source['url']}"
+    provenance = source.get("provenance") or {}
+    if provenance:
+        header += (f"\nИсходный файл SHA-256: {provenance['raw_sha256']}. "
+                   "Цитата сверена с текстом навыка; качество извлечения отдельно не проверено.")
+        if not provenance.get("complete"):
+            header += " Документ прочитан частично: проверь пропуски и OCR в результате навыка."
     dates = _source_dates(source.get("dates"))
     if dates:
         labels = {"published": "Опубликовано", "modified": "Изменено"}
@@ -155,10 +185,13 @@ def format_source(source: dict[str, Any]) -> str:
 
 
 def excerpt_sources(*, run_id: str, tool: str, url: str, text: str, fetched_at: float,
-                    offset_base: int = 0) -> list[dict[str, Any]]:
-    body_hash = digest(text)
+                    offset_base: int = 0, document: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    document = document or {}
+    body_hash = document.get("content_hash") or digest(text)
     return [record for start in range(0, len(text), EXCERPT_CHARS) if (record := make_source(
         run_id=run_id, tool=tool, url=url, status="excerpt", fetched_at=fetched_at,
         content_hash=body_hash, quote=text[start:start + EXCERPT_CHARS],
         offset=offset_base + start, quote_verified=True,
+        doc_id=document.get("doc_id") or "", provenance=document.get("provenance"),
+        tier=document.get("tier") or "unknown",
     ))][:MAX_SOURCES]

@@ -327,6 +327,39 @@ def _render_to_pdf(source: Path, output_dir: Path) -> tuple[Path | None, str]:
     return None, "unavailable"
 
 
+_PREVIEW_LOCK = Lock()
+
+
+def document_preview(source: Path, cache_dir: Path) -> Path:
+    """Render immutable source bytes once; the original remains downloadable."""
+    if not _PREVIEW_LOCK.acquire(timeout=90):
+        raise RuntimeError("Document renderer is busy")
+    try:
+        digest = document_sha256(source)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = cache_dir / f"{digest}.pdf"
+        if cached.is_file():
+            return cached
+        with tempfile.TemporaryDirectory(prefix="render-", dir=cache_dir) as temporary:
+            directory = Path(temporary)
+            snapshot = directory / source.name
+            shutil.copyfile(source, snapshot)
+            if document_sha256(snapshot) != digest:
+                raise RuntimeError("Document changed before rendering")
+            pdf, renderer = _render_to_pdf(snapshot, directory)
+            if pdf is None:
+                raise RuntimeError(f"Document renderer unavailable: {renderer}")
+            with pdf.open("rb") as handle:
+                if handle.read(5) != b"%PDF-":
+                    raise RuntimeError("Document renderer did not produce a PDF")
+            if document_sha256(source) != digest:
+                raise RuntimeError("Document changed during rendering")
+            os.replace(pdf, cached)
+        return cached
+    finally:
+        _PREVIEW_LOCK.release()
+
+
 def _page_count(pdf_path: Path) -> int | None:
     try:
         from pypdf import PdfReader

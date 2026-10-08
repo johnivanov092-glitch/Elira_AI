@@ -18,10 +18,12 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 function pdfPreviewUrl(url: string, name: string): string | null {
-  if (!/\.pdf$/i.test(name) && !/\.pdf(?:$|[?#])/i.test(url)) return null;
+  const isDocx = /\.docx$/i.test(name) || /\.docx(?:$|[?#])/i.test(url);
+  if (!isDocx && !/\.pdf$/i.test(name) && !/\.pdf(?:$|[?#])/i.test(url)) return null;
   const full = buildApiUrl(url);
   try {
     const parsed = new URL(full);
+    if (isDocx && !parsed.pathname.startsWith("/api/skills/download/")) return null;
     parsed.pathname = parsed.pathname.replace("/api/skills/download/", "/api/skills/view/");
     return parsed.toString();
   } catch {

@@ -3,6 +3,7 @@ skills_routes.py — доставка файлов, SQL, HTTP и скриншо�
 """
 from __future__ import annotations
 import mimetypes
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -17,6 +18,7 @@ from app.application.skills import (
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 OUTPUT_DIR = GENERATED_DIR
+logger = logging.getLogger(__name__)
 
 
 @router.get("/download/{filename}")
@@ -30,8 +32,17 @@ def download_file(filename: str):
 @router.get("/view/{filename}")
 def view_file(filename: str):
     path = OUTPUT_DIR / filename
-    if not path.exists():
+    if path.resolve().parent != OUTPUT_DIR.resolve() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Не найден: {filename}")
+    if path.suffix.lower() == ".docx":
+        from app.application.code_agent.document_validation import document_preview
+
+        try:
+            preview = document_preview(path, OUTPUT_DIR / ".previews")
+        except (OSError, RuntimeError) as exc:
+            logger.warning("DOCX preview failed for %s: %s", filename, exc)
+            raise HTTPException(status_code=503, detail="Превью пока недоступно. Исходный DOCX можно скачать.") from exc
+        return FileResponse(preview, media_type="application/pdf")
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return FileResponse(path, media_type=media_type)
 

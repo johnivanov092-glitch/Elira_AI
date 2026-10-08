@@ -607,13 +607,15 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "SEVERAL pages in PARALLEL in one call (far faster than one "
                     "at a time); otherwise pass a single `url`. Plain text up to "
                     "max_chars per page. Model-facing text is fitted within 12000 characters; "
-                    "Use find to read the passage around a known phrase in HTML, plain text or PDF without persistent storage; do not increase max_chars repeatedly or guess PDF #page anchors. "
+                    "Use find to read the passage around a known phrase in HTML or plain text; do not increase max_chars repeatedly. "
+                    "For PDF/DOCX read the document-read skill, run it with --url, --download and --json-output, then pass url plus extraction_path here to bind its text to the verified source bytes. The core does not parse documents. "
                     "For complete large pages use store=true then web_query only when task persistence permits."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "Single full http(s) URL."},
+                        "extraction_path": {"type": "string", "description": "Full document-read --json-output file for this single URL. Retain its original local_path. Rechecks final URL and original SHA-256, stores extracted text and returns citable excerpts; requires task persistence. Extraction quality belongs to the skill. Continue with web_query."},
                         "urls": {
                             "type": "array",
                             "items": {"type": "string"},

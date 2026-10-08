@@ -179,6 +179,7 @@ def web_query(run_id: str, query: str, *, doc_id: str | None = None,
             "content_hash": d.get("content_hash"), "fetched_at": d.get("fetched_at"),
             "bm25_score": scores[f"{c['doc_id']}:{c['chunk_id']}"],
             "dates": d.get("dates") or {}, "tier": d.get("tier") or "unknown",
+            "provenance": d.get("provenance") or {},
         })
     return {"ok": True, "results": results,
             "ranker": "bm25+embed" if reranked else "bm25"}

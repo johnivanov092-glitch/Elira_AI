@@ -263,3 +263,50 @@ def envelope(text: str, *, source: str) -> str:
         f"{text}\n"
         "DATA>>>"
     )
+
+
+def ingest_extraction(url: str, run_id: str, *, extraction: dict[str, Any],
+                      original: bytes, extraction_sha256: str) -> dict[str, Any]:
+    """Bind skill text to independently fetched bytes; never parse PDF in core.
+
+    The skill owns extraction quality. Hashes prove byte provenance and retained
+    text identity, not that the extraction captured every fact on every page.
+    """
+    source = extraction.get("source")
+    text = extraction.get("text")
+    if (extraction.get("ok") is not True or not isinstance(source, dict)
+            or not isinstance(text, str) or not text.strip()
+            or type(extraction.get("complete")) is not bool):
+        return {"ok": False, "error": "Expected full document-read JSON with text, complete and URL provenance"}
+    raw_hash = hashlib.sha256(original).hexdigest()
+    if source.get("requested_url") != url or source.get("sha256") != raw_hash:
+        return {"ok": False, "error": "Original file URL/SHA-256 does not match skill provenance"}
+    raw = _fetch_raw(url)
+    if not raw.get("ok"):
+        return {"ok": False, "error": raw.get("error") or "Source unavailable"}
+    if raw["mime"] not in (_MIME_PDF, _MIME_DOCX):
+        return {"ok": False, "error": "Expected PDF or DOCX web source"}
+    if (raw["final_url"] != source.get("final_url")
+            or hashlib.sha256(raw["content"]).hexdigest() != raw_hash):
+        return {"ok": False, "error": "Web source changed: final URL or bytes differ from the retained original"}
+    canonical = _clean_text(text)
+    if not canonical:
+        return {"ok": False, "error": "Empty extracted text"}
+    content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    provenance = {"requested_url": url, "final_url": raw["final_url"],
+                  "raw_sha256": raw_hash, "extraction_sha256": extraction_sha256,
+                  "complete": extraction["complete"]}
+    doc_id = hashlib.sha256(
+        f"{raw['final_url']}\n{raw_hash}\n{extraction_sha256}\n{content_hash}".encode("utf-8")
+    ).hexdigest()[:24]
+    from app.application.web_evidence.tiers import classify_tier
+    from app.infrastructure.web_corpus import store
+    doc = {"doc_id": doc_id, "url": url, "final_url": raw["final_url"],
+           "content_hash": content_hash, "mime": raw["mime"], "title": "",
+           "canonical_text": canonical, "nbytes": len(canonical.encode("utf-8")),
+           "tier": classify_tier(raw["final_url"]), "provenance": provenance}
+    try:
+        stored = store.store_document(run_id=run_id, doc=doc, chunks=_chunk(canonical))
+    except (store.QuotaExceeded, store.StoreUnavailable) as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **doc, "deduped": stored["deduped"]}

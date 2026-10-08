@@ -95,6 +95,10 @@ def _connect():
             );
             """
         )
+        # Additive migration: retain existing HTML evidence and allow rollback.
+        if "provenance" not in {row[1] for row in conn.execute("PRAGMA table_info(documents)")}:
+            conn.execute("ALTER TABLE documents ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}'")
+            conn.commit()
         return conn
     except sqlite3.Error as exc:
         raise StoreUnavailable(f"web corpus store unavailable: {exc}") from exc
@@ -138,9 +142,15 @@ def _evict_global(conn) -> None:
 def store_document(*, run_id: str, doc: dict[str, Any], chunks: list[dict]) -> dict[str, Any]:
     def op(conn):
         _expire(conn)
-        dup = conn.execute(
-            "SELECT doc_id, final_url, url, dates, tier FROM documents WHERE run_id=? AND content_hash=?",
-            (run_id, doc["content_hash"])).fetchone()
+        if doc.get("provenance"):
+            dup = conn.execute(
+                "SELECT doc_id, final_url, url, dates, tier FROM documents WHERE run_id=? AND doc_id=?",
+                (run_id, doc["doc_id"])).fetchone()
+        else:
+            dup = conn.execute(
+                "SELECT doc_id, final_url, url, dates, tier FROM documents "
+                "WHERE run_id=? AND content_hash=? AND provenance='{}'",
+                (run_id, doc["content_hash"])).fetchone()
         if dup:
             # contract §7: a re-fetch refreshes BOTH timestamps (the page was seen
             # again NOW — TTL restarts; v1 only touched last_access).
@@ -170,14 +180,14 @@ def store_document(*, run_id: str, doc: dict[str, Any], chunks: list[dict]) -> d
         conn.execute(
             """INSERT INTO documents
                (run_id, doc_id, url, final_url, fetched_at, last_access, content_hash,
-                mime, title, outline, dates, tier, trust, analyzer_ver, nbytes, canonical_text)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                mime, title, outline, dates, tier, trust, analyzer_ver, nbytes, canonical_text, provenance)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (run_id, doc["doc_id"], doc.get("url"), doc.get("final_url"), ts, ts,
              doc["content_hash"], doc.get("mime"), doc.get("title"),
              json.dumps(doc.get("outline") or [], ensure_ascii=False),
              json.dumps(doc.get("dates") or {}, ensure_ascii=False),
              doc.get("tier"), "untrusted", ANALYZER_VERSION, doc["nbytes"],
-             doc["canonical_text"]),
+             doc["canonical_text"], json.dumps(doc.get("provenance") or {}, ensure_ascii=False)),
         )
         conn.executemany(
             "INSERT INTO chunks (run_id, doc_id, chunk_id, offset, length, text) VALUES (?,?,?,?,?,?)",
@@ -293,13 +303,14 @@ def list_documents(run_id: str) -> list[dict[str, Any]]:
         conn.commit()
         rows = conn.execute(
             """SELECT doc_id, url, final_url, content_hash, mime, title, outline, dates,
-                      tier, trust, analyzer_ver, nbytes, fetched_at
+                      tier, trust, analyzer_ver, nbytes, fetched_at, provenance
                FROM documents WHERE run_id=? ORDER BY fetched_at ASC""", (run_id,)).fetchall()
         return [{
             "doc_id": r[0], "url": r[1], "final_url": r[2], "content_hash": r[3],
             "mime": r[4], "title": r[5], "outline": json.loads(r[6] or "[]"),
             "dates": json.loads(r[7] or "{}"), "tier": r[8], "trust": r[9],
             "analyzer_ver": r[10], "nbytes": r[11], "fetched_at": r[12],
+            "provenance": json.loads(r[13] or "{}"),
         } for r in rows]
     return _wrap(op)
 
@@ -324,12 +335,13 @@ def get_document(run_id: str, doc_id: str) -> dict[str, Any] | None:
         conn.commit()
         r = conn.execute(
             """SELECT doc_id, run_id, url, final_url, content_hash, mime, title,
-                      canonical_text, trust FROM documents WHERE run_id=? AND doc_id=?""",
+                      canonical_text, trust, provenance FROM documents WHERE run_id=? AND doc_id=?""",
             (run_id, doc_id)).fetchone()
         return None if not r else {
             "doc_id": r[0], "run_id": r[1], "url": r[2], "final_url": r[3],
             "content_hash": r[4], "mime": r[5], "title": r[6],
             "canonical_text": r[7], "trust": r[8],
+            "provenance": json.loads(r[9] or "{}"),
         }
     return _wrap(op)
 

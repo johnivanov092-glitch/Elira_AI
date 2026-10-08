@@ -4,6 +4,8 @@ import contextvars
 import json
 import re
 import time
+import hashlib
+from pathlib import Path
 from dataclasses import replace
 from urllib.parse import quote, unquote, urlsplit
 
@@ -677,7 +679,7 @@ def _format_page_links(links: tuple[tuple[str, str], ...], truncated: bool) -> s
     return "\n".join(lines)
 
 
-def _fetch_receipts(url: str, page: PageFetchResult) -> tuple[str, list[dict[str, Any]]]:
+def _fetch_receipts(url: str, page: PageFetchResult, document: dict[str, Any] | None = None) -> tuple[str, list[dict[str, Any]]]:
     final_url = page.final_url or url
     fragment_hint = ""
     if page.available_fragments and (page.truncated or page.fragment_found is False):
@@ -695,7 +697,7 @@ def _fetch_receipts(url: str, page: PageFetchResult) -> tuple[str, list[dict[str
     header = f"[fetched: {final_url}{note}]\n{_READ_EXCERPT_LABEL}"
     records = excerpt_sources(
         run_id=_current_run_id(), tool="web_fetch", url=final_url,
-        text=page.text, fetched_at=time.time(), offset_base=page.text_offset,
+        text=page.text, fetched_at=time.time(), offset_base=page.text_offset, document=document,
     )
     from app.application.web_evidence.corpus import envelope
     payload = "\n\n".join(format_source(source) for source in records)
@@ -728,19 +730,20 @@ def _page_metadata(requested_url: str, page: PageFetchResult) -> dict[str, Any]:
             "rendered": page.rendered}
 
 
-def _fit_fetch_receipts(url: str, page: PageFetchResult, budget: int) -> tuple[str, list[dict[str, Any]], PageFetchResult]:
+def _fit_fetch_receipts(url: str, page: PageFetchResult, budget: int,
+                        document: dict[str, Any] | None = None) -> tuple[str, list[dict[str, Any]], PageFetchResult]:
     """Give each batch page space before the loop's global text truncation.
 
     Rebuild receipts from the exact retained text. Cropping the already formatted
     multi-page response would lose middle pages and break excerpt identities.
     """
-    formatted, sources = _fetch_receipts(url, page)
+    formatted, sources = _fetch_receipts(url, page, document)
     if len(formatted) <= budget:
         return formatted, sources, page
     kept = replace(page, text=page.text[:max(1, budget // 2)],
                    truncated=page.truncated or len(page.text) > budget // 2)
     while True:
-        formatted, sources = _fetch_receipts(url, kept)
+        formatted, sources = _fetch_receipts(url, kept, document)
         excess = len(formatted) - budget
         if excess <= 0:
             return formatted, sources, kept
@@ -776,8 +779,52 @@ def _find_page_text(page: PageFetchResult, phrase: str, limit: int) -> PageFetch
                    truncated=page.truncated or start > 0 or len(page.text) > start + limit)
 
 
+def _fetch_skill_extraction(project_root: Path | None, url: str, extraction_path: str,
+                           max_chars: int, find: str) -> dict[str, Any]:
+    from app.application.code_agent.tools._sandbox import _resolve_safe
+    from app.application.code_agent.loop_helpers import run_persistence_policy, web_cache_write_allowed
+    from app.application.web_evidence import corpus
+
+    run_id = _current_run_id()
+    if not run_id or project_root is None:
+        return {"ok": False, "text": "ERROR: skill extraction requires a run and workspace"}
+    if not web_cache_write_allowed(run_persistence_policy(run_id)):
+        return {"ok": False, "text": "ERROR: web cache storage is disabled by task persistence policy"}
+    try:
+        extraction_file = _resolve_safe(project_root, extraction_path)
+        with extraction_file.open("rb") as handle:
+            data = handle.read(15 * 1024 * 1024 + 1)
+        if len(data) > 15 * 1024 * 1024:
+            raise ValueError("Extraction JSON exceeds 15MB")
+        extraction = json.loads(data)
+        if not isinstance(extraction, dict) or not isinstance(extraction.get("source"), dict):
+            raise ValueError("Use full --json-output from document-read --url")
+        original_path = extraction["source"].get("local_path")
+        if not isinstance(original_path, str) or not original_path:
+            raise ValueError("Missing retained original local_path")
+        with _resolve_safe(project_root, original_path).open("rb") as handle:
+            original = handle.read(corpus._MAX_RESPONSE_BYTES + 1)
+        if len(original) > corpus._MAX_RESPONSE_BYTES:
+            raise ValueError("Original exceeds web corpus 8MB limit")
+        result = corpus.ingest_extraction(url, run_id, extraction=extraction, original=original,
+                                          extraction_sha256=hashlib.sha256(data).hexdigest())
+    except (OSError, ValueError, TypeError) as exc:
+        return {"ok": False, "text": f"ERROR: {exc}", "sources": []}
+    if not result["ok"]:
+        return {**result, "text": f"ERROR: {result['error']}", "sources": []}
+    page = PageFetchResult(text=result["canonical_text"], final_url=result["final_url"], mime="text/plain")
+    page = _find_page_text(page, find, max(500, min(int(max_chars), 50000)))
+    from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
+    text, sources, page = _fit_fetch_receipts(url, page, WEB_TOOL_RESULT_LLM_LIMIT - 300, result)
+    return {"ok": page.ok, "sources": sources, "doc_id": result["doc_id"],
+            "provenance": result["provenance"],
+            "text": (f"doc_id={result['doc_id']}; полный текст навыка сохранён, продолжение — web_query.\n"
+                     + text)}
+
+
 def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
-                   store: bool = False, force_refresh: bool = False, find: str = "") -> dict[str, Any]:
+                   store: bool = False, force_refresh: bool = False, find: str = "",
+                   extraction_path: str = "", project_root: Path | None = None) -> dict[str, Any]:
     """Fetch a web page and extract its main readable text (nav/ads/scripts
     stripped). JS-rendered pages (SPA/dashboards/tickers) are transparently
     re-fetched with a headless browser when static extraction is thin.
@@ -797,6 +844,10 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
     if not isinstance(find, str) or len(find) > 200:
         return {"ok": False, "text": "ERROR: find must be a phrase of at most 200 characters"}
     find = find.strip()
+    if extraction_path:
+        if urls or not url or not isinstance(extraction_path, str):
+            return {"ok": False, "text": "ERROR: extraction_path requires a single url and a JSON file path"}
+        return _fetch_skill_extraction(project_root, url, extraction_path, max_chars, find)
     if find and store:
         return {"ok": False, "text": "ERROR: use find with store=false; stored documents are read through web_query"}
     if find and _coerce_str_list(urls):
@@ -888,6 +939,7 @@ def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str,
             chunk_id=result["chunk_id"], offset=result["offset"],
             fetched_at=result.get("fetched_at"), quote_verified=True,
             dates=result.get("dates"), tier=result.get("tier") or "unknown",
+            provenance=result.get("provenance"),
         )
         if source:
             sources.append(source)

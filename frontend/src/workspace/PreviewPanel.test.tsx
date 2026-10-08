@@ -78,4 +78,20 @@ describe("PreviewPanel live server", () => {
     expect(html).toContain("proposal-ddr5.pdf");
     expect(html).toContain("/api/skills/view/proposal-ddr5.pdf");
   });
+
+  it("previews DOCX as rendered pages while keeping the original download", () => {
+    const html = renderToStaticMarkup(
+      <PreviewPanel
+        artifacts={{ downloads: [{
+          url: "/api/skills/download/report.docx", name: "report.docx",
+          key: "1:/api/skills/download/report.docx",
+        }] }}
+        project="C:/workspace/crm" onClose={() => undefined}
+      />,
+    );
+    expect(html).toContain('title="PDF preview"');
+    expect(html).toContain("/api/skills/view/report.docx");
+    expect(html).toContain("/api/skills/download/report.docx");
+    expect(html).not.toContain("Встроенное визуальное превью для этого формата недоступно");
+  });
 });

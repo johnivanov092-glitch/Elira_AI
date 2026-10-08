@@ -261,7 +261,8 @@ def test_loop_restores_exact_excerpts_missing_from_truncated_tool_output(tmp_pat
     body = "".join((f"Section {index}. " + "Natural fixture prose with words and spaces. " * 40)[:1500]
                    for index in range(100))
 
-    def oversized_fetch(*, url, max_chars):
+    def oversized_fetch(*, url, max_chars, project_root):
+        assert project_root == tmp_path
         # Native fetch now fits receipts before returning them. Exercise the
         # canonical restoration boundary with a legacy/provider-sized packet.
         assert len(body) < max_chars
