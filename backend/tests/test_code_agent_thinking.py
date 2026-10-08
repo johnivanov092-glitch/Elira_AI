@@ -62,6 +62,7 @@ class CodeAgentThinkingTest(unittest.TestCase):
                     {
                         "enable_thinking": True,
                         "reasoning_effort": effort,
+                        "preserve_thinking": True,
                     },
                 )
 
@@ -73,6 +74,7 @@ class CodeAgentThinkingTest(unittest.TestCase):
             {
                 "enable_thinking": True,
                 "reasoning_effort": "xhigh",
+                "preserve_thinking": True,
             },
         )
         # DRY anti-repetition rides along on every run (see below for non-think).
@@ -93,6 +95,7 @@ class CodeAgentThinkingTest(unittest.TestCase):
             {
                 "enable_thinking": False,
                 "reasoning_effort": "none",
+                "preserve_thinking": True,
             },
         )
         # DRY anti-repetition now applies to EVERY run — a live non-think run

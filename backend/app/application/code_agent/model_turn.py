@@ -13,7 +13,6 @@ from typing import Any, Callable, Iterator
 from app.application.code_agent.inline_tool_calls import _contains_tool_trace, _extract_inline_tool_calls
 from app.application.code_agent.loop_helpers import _strip_think_blocks
 from app.application.monitoring.inference import extract_llm_usage
-from app.application.persona.service import mode_temperature
 from app.infrastructure.llm.openai_compatible import (
     LLMStreamCancelHandle,
     chat_completion_event_stream,
@@ -81,10 +80,12 @@ def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
         return {
             "enable_thinking": True,
             "reasoning_effort": normalized,
+            "preserve_thinking": True,
         }
     return {
         "enable_thinking": False,
         "reasoning_effort": "none",
+        "preserve_thinking": True,
     }
 
 
@@ -92,9 +93,27 @@ def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
 # runtime never forces extra turns, rewrites the answer, or auto-runs verification.
 _LLM_HEARTBEAT_EVERY = 10.0
 _LLM_CANCEL_POLL_SECONDS = 0.1
-def _effective_temperature(profile_name: str, role: str | None) -> float:
-    """Compatibility arguments never switch the single personality's sampling."""
-    return float(mode_temperature(profile_name))
+def _qwen_generation_options(reasoning_effort: str) -> dict[str, Any]:
+    """Qwen3.8-27B's published instruct/thinking sampling and history controls.
+
+    The provider filters backend-specific keys. Legacy llama.cpp DRY remains
+    available there; vLLM receives the native Qwen parameters below.
+    """
+    effort = _normalize_reasoning_effort(reasoning_effort)
+    thinking = effort != "none"
+    return {
+        "temperature": 1.0 if thinking else 0.7,
+        "top_p": 0.95 if thinking else 0.8,
+        "sampling": {
+            **_ANTI_REPEAT_SAMPLING,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 0.0 if thinking else 1.5,
+            "repetition_penalty": 1.0,
+        },
+        "reasoning_effort": effort,
+        "chat_template_kwargs": _thinking_template_kwargs(effort),
+    }
 
 
 def _chat_events(
@@ -260,8 +279,8 @@ def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
             continue
         if llm_event["type"] == "reasoning":
             # Surface thinking tokens on their own SSE event so the UI
-            # can show them in a separate, collapsible block. Kept out
-            # of the answer stream and out of message history.
+            # can show them in a separate, collapsible block. The coordinator
+            # retains the final reasoning field for Qwen's next model turn.
             rtext = str(llm_event["value"] or "")
             if rtext:
                 yield {"type": "reasoning_delta", "step": step, "text": rtext}
