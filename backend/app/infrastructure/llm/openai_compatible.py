@@ -506,6 +506,7 @@ def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, A
             "tool_calls": _normalize_tool_calls(message.get("tool_calls")),
         },
         "done": True,
+        "finish_reason": first.get("finish_reason"),
         "prompt_eval_count": prompt_tokens,
         "eval_count": completion_tokens,
         "total_duration": elapsed_ns,
@@ -757,6 +758,7 @@ def chat_completion_event_stream(
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
     timings: dict[str, Any] = {}
+    finish_reason: str | None = None
     first_token_ns: int | None = None
     try:
         response = requests.post(
@@ -786,6 +788,8 @@ def chat_completion_event_stream(
                 timings = dict(data["timings"])
             choices = data.get("choices") if isinstance(data.get("choices"), list) else []
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
+            if isinstance(first.get("finish_reason"), str):
+                finish_reason = first["finish_reason"]
             delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
             if first_token_ns is None and any(
                 delta.get(field) for field in ("reasoning_content", "reasoning", "content", "tool_calls")
@@ -851,6 +855,7 @@ def chat_completion_event_stream(
                 "tool_calls": [calls[index] for index in sorted(calls)],
             },
             "done": True,
+            "finish_reason": finish_reason,
             "reasoning_runaway": False,
             "content_runaway": False,
             "prompt_eval_count": prompt_tokens,

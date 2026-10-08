@@ -6,6 +6,7 @@ call to the established heartbeat, reasoning, delta and response events.
 from __future__ import annotations
 
 import queue
+import re
 import threading
 import time
 from typing import Any, Callable, Iterator
@@ -255,12 +256,40 @@ def recover_tool_calls(content: str, tool_calls: list[dict[str, Any]],
     return content, tool_calls
 
 
+_THINK_OPEN_TAG_RE = re.compile(r"<think>", re.IGNORECASE | re.ASCII)
+_THINK_CLOSE_TAG_RE = re.compile(r"</think>", re.IGNORECASE | re.ASCII)
+
+
+def _strip_thinking_delta(text: str, *, inside_think: bool) -> tuple[str, str, bool]:
+    """Incremental counterpart of _strip_think_blocks; retain only a tag prefix."""
+    visible: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        marker = "</think>" if inside_think else "<think>"
+        pattern = _THINK_CLOSE_TAG_RE if inside_think else _THINK_OPEN_TAG_RE
+        match = pattern.search(text, cursor)
+        if match is not None:
+            if not inside_think:
+                visible.append(text[cursor:match.start()])
+            cursor = match.end()
+            inside_think = not inside_think
+            continue
+        held = next((size for size in range(min(len(text) - cursor, len(marker) - 1), 0, -1)
+                     if text[-size:].lower() == marker[:size]), 0)
+        if not inside_think:
+            visible.append(text[cursor:len(text) - held])
+        return "".join(visible), text[-held:] if held else "", inside_think
+    return "".join(visible), "", inside_think
+
+
 def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
                       cancel_event: threading.Event, upstream_cancel_handle: LLMStreamCancelHandle,
                       step: int, emit_content_deltas: bool = True):
     """Relay one exchange; content visibility never changes its final payload."""
     response: dict[str, Any] = {}
     pending_delta = ""
+    thinking_prefix = ""
+    inside_think = False
     suppress_deltas = False
     for llm_event in _chat_events(
         chat_fn=chat,
@@ -287,7 +316,10 @@ def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
             continue
         if llm_event["type"] != "delta" or not emit_content_deltas:
             continue
-        pending_delta += str(llm_event["value"] or "")
+        visible, thinking_prefix, inside_think = _strip_thinking_delta(
+            thinking_prefix + str(llm_event["value"] or ""), inside_think=inside_think,
+        )
+        pending_delta += visible
         marker_text = pending_delta.lower()
         if "<tool" in marker_text or "<function=" in marker_text:
             suppress_deltas = True
@@ -298,6 +330,9 @@ def stream_model_turn(*, chat, stream_chat, kwargs: dict[str, Any],
             if visible:
                 yield {"type": "delta", "step": step, "text": visible, "answer_state": "draft"}
     response_content = str(((response.get("message") or {}).get("content") or ""))
-    if emit_content_deltas and not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
+    if not inside_think:
+        pending_delta += thinking_prefix
+    if (emit_content_deltas and not suppress_deltas
+            and not _contains_tool_trace(_strip_think_blocks(response_content)) and pending_delta):
         yield {"type": "delta", "step": step, "text": pending_delta, "answer_state": "draft"}
     return response

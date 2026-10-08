@@ -176,3 +176,29 @@ def test_hidden_content_preserves_synchronous_provider_response():
     events, response = _collect(stream)
     assert events == [] and response == payload and len(calls) == 1
     assert "emit_content_deltas" not in calls[0]
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 5, 1000])
+@pytest.mark.parametrize("content, visible", [
+    ("before<think>private reasoning</think>after", "beforeafter"),
+    ("before<ThInK>private reasoning</tHiNk>after", "beforeafter"),
+    ("before<think>private reasoning without a closing tag", "before"),
+    ("before<think><tool_call>private tool trace</think>after", "beforeafter"),
+    ("İ" * 16 + "<think>PRIVATE</think>after", "İ" * 16 + "after"),
+    ("a<think>first</think>b<think>second</think>c", "abc"),
+    ("ordinary text and a literal <thi", "ordinary text and a literal <thi"),
+])
+def test_streamed_think_blocks_never_enter_answer_deltas(chunk_size, content, visible):
+    payload = {"message": {"content": content, "reasoning_content": REASONING, "tool_calls": []},
+               "finish_reason": "length"}
+
+    def provider(**kwargs):
+        yield {"type": "reasoning", "content": REASONING}
+        for start in range(0, len(content), chunk_size):
+            yield {"type": "delta", "content": content[start:start + chunk_size]}
+        yield {"type": "message", "response": payload}
+
+    events, response = _collect(_turn(provider))
+    assert "".join(event["text"] for event in events if event["type"] == "delta") == visible
+    assert "".join(event["text"] for event in events if event["type"] == "reasoning_delta") == REASONING
+    assert response == payload
