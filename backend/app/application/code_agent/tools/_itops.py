@@ -152,6 +152,8 @@ def _itops_control(
                 "Для профиля подключения нужен credential secret_ref.",
                 kind=str(config.get("secret_kind") or "password"),
             )
+        os_platform_meta = config.get("os_platform_meta")
+        last_health = config.get("last_health")
         return {
             "ok": True,
             "profile": store.put_connection_profile(
@@ -163,13 +165,13 @@ def _itops_control(
                 ssh_alias=str(config.get("ssh_alias") or ""),
                 host_key_fingerprint=str(config.get("host_key_fingerprint") or ""),
                 os_platform_meta=(
-                    dict(config.get("os_platform_meta"))
-                    if isinstance(config.get("os_platform_meta"), dict)
+                    dict(os_platform_meta)
+                    if isinstance(os_platform_meta, dict)
                     else {}
                 ),
                 last_health=(
-                    dict(config.get("last_health"))
-                    if isinstance(config.get("last_health"), dict)
+                    dict(last_health)
+                    if isinstance(last_health, dict)
                     else {}
                 ),
             ),
