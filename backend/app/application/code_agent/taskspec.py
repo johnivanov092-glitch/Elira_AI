@@ -207,6 +207,15 @@ _QUESTION_GOAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An explicitly ordered procedure describes actions, as a "Порядок работы"
+# section does. Its numbered steps are not implicit acceptance criteria.
+_ORDERED_ACTION_GOAL_RE = re.compile(
+    r"^\s*(?:выполни(?:те)?|сделай(?:те)?|perform|execute|do(?!\s+not\b))\b[^:]*"
+    r"(?:\bпо\s+порядку\b|\bв\s+(?:следующем|указанном|этом)\s+порядке\b|"
+    r"\bin\s+(?:this\s+)?order\b(?!\s+to\b))",
+    re.IGNORECASE,
+)
+
 
 def _is_question_goal(goal_lines: list[str]) -> bool:
     goal = " ".join(goal_lines).strip()
@@ -284,7 +293,8 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
         # task has no explicit criteria section; otherwise it's spec/detail, not a gate.
         # Under a question-goal a bullet is an aspect of the answer unless it states a
         # checkable requirement itself.
-        goal_bullet_target = "details" if has_explicit_criteria else "criteria"
+        ordered_actions = any(_ORDERED_ACTION_GOAL_RE.match(item) for item in goal_lines)
+        goal_bullet_target = "details" if has_explicit_criteria or ordered_actions else "criteria"
         if bullet:
             item = bullet.group(1).strip()
             target = goal_bullet_target
