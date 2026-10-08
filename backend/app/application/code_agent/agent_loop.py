@@ -359,6 +359,15 @@ def _stream_code_agent_core(
                 "task_spec": taskspec_report(task_spec) if task_spec else None,
                 "task_spec_source": task_spec_source,
             }
+
+        def _incomplete_model_output(*, step: int, error: str, error_code: str) -> dict:
+            return {
+                "type": "done", "ok": False, "steps": step,
+                "stop_reason": "error", "answer_status": "degraded",
+                "error": error, "error_code": error_code, "resumable": True,
+                **_completion_fields(criteria, terminated_incomplete=True),
+                "completion_status": "partial", "criteria_confirmed": False,
+            }
         yield {
             "type": "run_started",
             "run_id": rid,
@@ -384,7 +393,6 @@ def _stream_code_agent_core(
             "reasoning_effort": selected_reasoning_effort,
         }
 
-        last_text = ""
         tool_round_trips = 0
         compaction_count = 0
         call_log: list[str] = []
@@ -913,6 +921,17 @@ def _stream_code_agent_core(
                 "profile": context_profile,
             }
 
+            if response.get("finish_reason") == "length":
+                # Even valid-looking arguments may be a truncated proposal.
+                # Keep this turn's visible draft; never recover or dispatch it.
+                if stream_chat is None and content and not _contains_tool_trace(content):
+                    yield {"type": "delta", "step": step, "text": content, "answer_state": "draft"}
+                yield _incomplete_model_output(
+                    step=step, error_code="model_output_truncated",
+                    error="Модель исчерпала лимит генерации; ответ не завершён. Запуск можно продолжить.",
+                )
+                return
+
             # Some local tool-calling models emit tool calls as JSON in
             # content instead of structured tool_calls. Recover them so the
             # loop still works.
@@ -954,11 +973,14 @@ def _stream_code_agent_core(
                 call_log.append("repaired malformed internal tool trace")
                 continue
 
-            if content:
-                last_text = content
-
             if not tool_calls:
-                final_text = _strip_tool_call_markup(content or last_text)
+                final_text = _strip_tool_call_markup(content)
+                if not final_text.strip():
+                    yield _incomplete_model_output(
+                        step=step, error_code="empty_model_response",
+                        error="Модель не вернула содержательный ответ. Запуск можно продолжить.",
+                    )
+                    return
                 answer_decision = acceptance.evaluate(
                     final_text=final_text, raw_user_message=turn_context.raw_user_message,
                     pending_redirected_jobs=pending_redirected_jobs,
@@ -976,10 +998,6 @@ def _stream_code_agent_core(
                         schema_update = activation.rebuild()
                         registry, all_schemas = schema_update.registry, schema_update.schemas
                     turn_context.messages.extend(answer_decision.messages)
-                    if not answer_decision.retain_rejected_answer:
-                        # An invalid Web draft is neither evidence nor a safe
-                        # fallback if this correction later fails or is stopped.
-                        last_text = ""
                     acceptance.commit(answer_decision)
                     if answer_decision.log_note is not None:
                         call_log.append(answer_decision.log_note)
@@ -2091,7 +2109,11 @@ def run_code_agent(
         read_only=read_only,
     ):
         et = event.get("type")
-        if et == "tool_call":
+        if et == "step_started":
+            response_text = ""
+        elif et == "delta":
+            response_text += str(event.get("text") or "")
+        elif et == "tool_call":
             tool_calls_log.append({
                 "step": event["step"],
                 "tool": event["tool"],
@@ -2120,6 +2142,7 @@ def run_code_agent(
         elif et == "done":
             ok = bool(event.get("ok"))
             partial = bool(event.get("partial"))
+            answer_status = str(event.get("answer_status") or answer_status)
             stop_reason = str(event.get("stop_reason", "error"))
             error = event.get("error")
             steps = int(event.get("steps", 0))
