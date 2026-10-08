@@ -91,7 +91,8 @@ a successfully completed run.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- The UI exposes one personality: `Elira / Auto`, with one sampling temperature.
+- The UI exposes one personality: `Elira / Auto`. Qwen3.8-27B sampling follows
+  its published instruct/thinking profiles, selected by the user's reasoning mode.
   Legacy profiles remain readable but do not switch identity, tone or sampling.
   Their evidence/calculation requirements survive as relevant task instructions.
 - Every normal first turn sees eleven work tools from `tool_policy.BASE_TOOLS`

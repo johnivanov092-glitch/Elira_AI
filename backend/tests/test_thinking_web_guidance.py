@@ -58,7 +58,7 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
     def chat_stream(**kwargs):
         assert kwargs["options"]["reasoning_effort"] == "xhigh"
         assert kwargs["options"]["chat_template_kwargs"] == {
-            "enable_thinking": True, "reasoning_effort": "xhigh",
+            "enable_thinking": True, "reasoning_effort": "xhigh", "preserve_thinking": True,
         }
         captures.append({"messages": deepcopy(kwargs["messages"])})
         index = len(captures) - 1

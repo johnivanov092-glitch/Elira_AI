@@ -32,7 +32,7 @@ from app.application.code_agent.model_turn import (
     _ANTI_REPEAT_SAMPLING,
     _normalize_reasoning_effort,
     _thinking_template_kwargs,
-    _effective_temperature,
+    _qwen_generation_options,
     _chat_events,
     _local_chat_stream,
     stream_model_turn,
@@ -491,10 +491,7 @@ def _stream_code_agent_core(
                         "num_ctx": safe_num_ctx,
                         "active_context_limit": safe_num_ctx,
                         "max_tokens": _planner_max_tokens,
-                        "reasoning_effort": selected_reasoning_effort,
-                        "chat_template_kwargs": _thinking_template_kwargs(
-                            selected_reasoning_effort
-                        ),
+                        **_qwen_generation_options(selected_reasoning_effort),
                     },
                 }
                 for _planner_event in _chat_events(
@@ -791,25 +788,15 @@ def _stream_code_agent_core(
                 yield {"type": "source_evidence", "step": step, "sources": run_evidence.sources}
             llm_start = time.monotonic()
             try:
-                llm_options: dict[str, Any] = {
-                    "num_ctx": safe_num_ctx,
-                    "active_context_limit": safe_num_ctx,
-                    "temperature": _effective_temperature(
-                        profile_name, getattr(_route_decision, "role", None)
-                    ),
-                }
-                # Per-request DRY anti-repetition on EVERY run: the answer channel
-                # degenerated into a ×20-paragraph loop on a non-think run, so the
-                # protection can no longer be think-only.
-                llm_options["sampling"] = dict(_ANTI_REPEAT_SAMPLING)
                 # Always send an explicit per-request mode. Reasoning-capable
                 # server profiles default to ON, so omitting kwargs when the chip
                 # is off would silently re-enable thinking after a profile switch.
                 active_reasoning_effort = selected_reasoning_effort
-                llm_options["reasoning_effort"] = active_reasoning_effort
-                llm_options["chat_template_kwargs"] = _thinking_template_kwargs(
-                    active_reasoning_effort
-                )
+                llm_options: dict[str, Any] = {
+                    "num_ctx": safe_num_ctx,
+                    "active_context_limit": safe_num_ctx,
+                    **_qwen_generation_options(active_reasoning_effort),
+                }
                 llm_kwargs = {
                     "model": model,
                     "messages": provider_messages,
@@ -1082,11 +1069,15 @@ def _stream_code_agent_core(
 
             if content:
                 yield {"type": "step_note", "step": step, "note_id": uuid.uuid4().hex, "text": content}
-            turn_context.messages.append({
+            assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": content,
                 "tool_calls": tool_calls,
-            })
+            }
+            reasoning_content = (response.get("message") or {}).get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
+            turn_context.messages.append(assistant_message)
 
             for call_index, call in enumerate(tool_calls):
                 fn = call.get("function") or {}

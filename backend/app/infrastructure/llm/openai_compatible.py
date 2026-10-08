@@ -388,6 +388,12 @@ def _normalize_messages_for_request(messages: list[dict[str, Any]]) -> list[dict
 
         if role == "assistant":
             item: dict[str, Any] = {"role": "assistant", "content": content_text}
+            reasoning = raw_message.get("reasoning_content") or raw_message.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                # Qwen's preserved-thinking history uses reasoning_content;
+                # vLLM also accepts/returns the reasoning alias.
+                item["reasoning_content"] = reasoning
+                item["reasoning"] = reasoning
             raw_calls = raw_message.get("tool_calls")
             if isinstance(raw_calls, list) and raw_calls:
                 calls = [
@@ -397,7 +403,7 @@ def _normalize_messages_for_request(messages: list[dict[str, Any]]) -> list[dict
                 if calls:
                     item["tool_calls"] = calls
                     pending_tool_call_ids.extend(str(call["id"]) for call in calls)
-            if content_text.strip() or item.get("tool_calls"):
+            if content_text.strip() or item.get("tool_calls") or item.get("reasoning_content"):
                 normalized.append(item)
             continue
 
@@ -405,6 +411,8 @@ def _normalize_messages_for_request(messages: list[dict[str, Any]]) -> list[dict
             tool_call_id = str(raw_message.get("tool_call_id") or "").strip()
             if not tool_call_id and pending_tool_call_ids:
                 tool_call_id = pending_tool_call_ids.pop(0)
+            elif tool_call_id in pending_tool_call_ids:
+                pending_tool_call_ids.remove(tool_call_id)
             if not tool_call_id:
                 name = str(raw_message.get("name") or "tool").strip() or "tool"
                 normalized.append({"role": "assistant", "content": f"[tool result {name}] {content_text}"})
@@ -424,6 +432,8 @@ def _normalize_messages_for_request(messages: list[dict[str, Any]]) -> list[dict
         and normalized[-2].get("role") == "assistant"
         and not normalized[-1].get("tool_calls")
         and not normalized[-2].get("tool_calls")
+        and not normalized[-1].get("reasoning_content")
+        and not normalized[-2].get("reasoning_content")
     ):
         latter = normalized.pop()
         former = normalized.pop()
@@ -650,6 +660,8 @@ def chat_completion(
     _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
+    if "top_p" in opts:
+        payload["top_p"] = opts["top_p"]
     _apply_thinking_option(payload, opts)
     _apply_response_format(payload, opts)
     _apply_sampling_extra(payload, opts)
@@ -726,6 +738,8 @@ def chat_completion_event_stream(
     _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
+    if "top_p" in opts:
+        payload["top_p"] = opts["top_p"]
     _apply_thinking_option(payload, opts)
     _apply_response_format(payload, opts)
     _apply_sampling_extra(payload, opts)
