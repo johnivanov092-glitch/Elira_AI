@@ -1,9 +1,9 @@
-import { Brain, CheckCircle2, ChevronDown, Download, Loader2, RotateCcw, Volume2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, Download, Loader2, RotateCcw, Volume2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer, { SourceCitationLink } from "../components/MarkdownRenderer";
 import { DownloadLink } from "../components/DownloadLink";
 import { AnswerMediaGallery } from "./AnswerMediaGallery";
-import { ToolCallGroup } from "./ToolCallGroup";
+import { ToolActivity } from "./ToolCallGroup";
 import type { AnswerMediaItem, SourceCitation, CompletionStatus, CriterionState } from "../api/codeAgent";
 import type { AgentTurnData } from "./types";
 import { deriveArtifacts } from "./artifacts";
@@ -50,7 +50,8 @@ function AnswerWithMedia({ text, media, citations }: { text: string; media: Answ
 // reference of every UNCHANGED turn, so memo skips re-rendering all the finished
 // turns on each token (callbacks from useAgentRun are stable useCallbacks).
 export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { turn: AgentTurnData; onResume?: (turnId: string, runId: string) => void }) {
-  const idle = turn.running && !turn.text && !turn.reasoning && !turn.brainPhase && turn.toolCalls.length === 0 && !turn.activeTool;
+  const visibleText = turn.answerState === "draft" ? "" : turn.text;
+  const idle = turn.running && !visibleText && !turn.reasoning && !turn.brainPhase && turn.toolCalls.length === 0 && !turn.activeTool;
   // John 2026-10-06: Elira lists pages that did not open; the model no longer has to write it.
   const unopened = isAcceptedAnswer(turn) && !/Не открылись/i.test(turn.text) ? unopenedSources(turn.sources) : [];
   const downloads = deriveArtifacts([turn]).downloads;
@@ -80,7 +81,7 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
 
   return (
     <div className="my-2 mb-6">
-      <ToolCallGroup calls={turn.toolCalls} activeTool={turn.running ? turn.activeTool : undefined} stopReason={turn.running ? undefined : turn.stopReason} />
+      <ToolActivity calls={turn.toolCalls} notes={turn.stepNotes} activeTool={turn.running ? turn.activeTool : undefined} stopReason={turn.running ? undefined : turn.stopReason} reasoning={turn.running && turn.reasoningActive} />
 
       {turn.running && turn.brainPhase && (
         <div className="my-2 flex items-center gap-2 text-[12.5px] text-mut">
@@ -93,15 +94,13 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
         </div>
       )}
 
-      {turn.reasoning && <ReasoningBlock text={turn.reasoning} running={turn.running} />}
-
       {idle && (
         <div className="flex items-center gap-2 text-[12.5px] text-mut">
           <Loader2 size={14} className="animate-spin" /> Думает…
         </div>
       )}
 
-      {turn.text && (
+      {visibleText && (
         <div className="text-[13.8px] leading-relaxed">
           {turn.media?.length
             ? <AnswerWithMedia text={turn.text} media={turn.media} citations={turn.answerState === "draft" ? undefined : turn.citations} />
@@ -109,7 +108,6 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
         </div>
       )}
 
-      {turn.text && turn.answerState === "draft" && <div className="text-[11px] text-mut">Черновик · ответ формируется</div>}
       {turn.text && turn.answerState === "interrupted" && <div className="text-[11px] text-mut">Черновик · ответ прерван</div>}
       {isAcceptedAnswer(turn) && Boolean(turn.citations?.length) && (
         <details className="mt-2 text-[12px] text-mut">
@@ -338,36 +336,6 @@ function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; statu
             });
           })()}
         </ul>
-      )}
-    </div>
-  );
-}
-
-/** Collapsible «Рассуждение» block — the model's chain-of-thought streamed on
- *  the separate reasoning channel (when the composer's think toggle is on).
- *  Opens live while the turn is thinking so you can watch it, then auto-collapses
- *  once done (unless the user manually toggled it). Never part of the answer. */
-function ReasoningBlock({ text, running }: { text: string; running: boolean }) {
-  const [open, setOpen] = useState(running);
-  const touched = useRef(false);
-  useEffect(() => {
-    if (!running && !touched.current) setOpen(false);
-  }, [running]);
-  return (
-    <div className="mb-2 rounded-lg border border-line bg-surface/60">
-      <button
-        type="button"
-        onClick={() => { touched.current = true; setOpen((v) => !v); }}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] text-mut transition-colors hover:text-tx"
-      >
-        {running ? <Loader2 size={12} className="shrink-0 animate-spin" /> : <Brain size={12} className="shrink-0" />}
-        <span>Рассуждение</span>
-        <ChevronDown size={12} className={cn("ml-auto shrink-0 transition-transform", open ? "" : "-rotate-90")} />
-      </button>
-      {open && (
-        <div className="border-t border-line px-2.5 py-2 text-[12px] leading-relaxed text-t2">
-          <MarkdownRenderer content={text} />
-        </div>
       )}
     </div>
   );

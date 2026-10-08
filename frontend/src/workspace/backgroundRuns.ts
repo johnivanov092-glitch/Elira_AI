@@ -37,8 +37,7 @@ import { isAcceptedAnswer } from "./answerLifecycle";
  * background is to never drop the reader. This manager is that kept-alive reader.
  */
 
-let _seq = 0;
-const nid = () => `t${++_seq}`;
+const nid = () => `t${crypto.randomUUID()}`;
 
 /** The accumulating, renderable state of one run. Mirrors what useAgentRun
  *  used to hold in React state, but lives outside React so it survives view
@@ -340,7 +339,7 @@ function wire(
       else if (e.type === "planning_fallback") {
         patch((a) => ({ ...a, brainPhase: "execution" }));
       }
-      else if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool }));
+      else if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, reasoningActive: false }));
       else if (e.type === "user_input_applied") {
         recordUserInput(entry, agentId, e.run_id, { request_id: e.request_id, text: e.text, state: "applied" });
       }
@@ -355,13 +354,19 @@ function wire(
         // abort paths (LLM error / cancel / stream timeout) no final arrives and
         // the multi-step concat got persisted as the answer — and then fed back
         // into the next turn's history, teaching the model to repeat itself.
-        patch((a) => (a.running ? { ...a, text: "", reasoning: undefined, answerState: "draft", citations: undefined, sourceStatus: "none" } : a));
+        patch((a) => (a.running ? { ...a, text: "", reasoning: undefined, reasoningActive: false, answerState: "draft", citations: undefined, sourceStatus: "none" } : a));
       }
-      else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text, answerState: "draft" }));
+      else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text, reasoningActive: false, answerState: "draft" }));
+      else if (e.type === "step_note") patch((a) => a.stepNotes?.some(note => note.id === e.note_id) ? a : ({
+        ...a, text: "", reasoningActive: false, stepNotes: [
+          ...(a.stepNotes ?? []),
+          { id: e.note_id, step: e.step, text: e.text, toolCallIndex: a.toolCalls.length },
+        ],
+      }));
       else if (e.type === "source_evidence") patch((a) => ({ ...a, sources: e.sources }));
-      else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text }));
+      else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text, reasoningActive: true }));
       else if (e.type === "tool_call") {
-        patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined }));
+        patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, reasoningActive: false }));
         const result = e.result.trim();
         pushLedger({
           timestamp: Date.now(),
@@ -678,7 +683,7 @@ export function resume(sessionId: string, agentId: string, runId: string): void 
     runControlState: "running",
     cancelError: null,
     turns: s.turns.map((t) => (t.kind === "agent" && t.id === agentId
-      ? { ...t, running: true, answerState: "draft", error: undefined, resumable: false, runControlState: "running", cancelError: null }
+      ? { ...t, running: true, reasoningActive: false, answerState: "draft", error: undefined, resumable: false, runControlState: "running", cancelError: null }
       : t)),
   }));
   wire(entry, agentId, (handlers) => resumeCodeAgent(runId, handlers));

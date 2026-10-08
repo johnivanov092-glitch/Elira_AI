@@ -4,6 +4,40 @@ import { AgentTurnView } from "./AgentTurn";
 import type { AgentTurnData } from "./types";
 
 describe("AgentTurn structured analysis status", () => {
+  it("renders visible notes before their tools and keeps unclassified text out of the answer", () => {
+    const turn: AgentTurnData = {
+      kind: "agent", id: "agent-notes", running: true, answerState: "draft", text: "Незавершённый ответ",
+      reasoning: "Отдельное рассуждение",
+      stepNotes: [
+        { id: "before-resume", step: 1, text: "Читаю конфиг.", toolCallIndex: 0 },
+        { id: "after-resume", step: 1, text: "Проверяю порт.", toolCallIndex: 1 },
+      ],
+      toolCalls: [
+        { step: 1, tool: "read_file", arguments: { path: "config.txt" }, result: "ok", ok: true },
+        { step: 1, tool: "run_bash", arguments: { command: "check-port" }, result: "ok", ok: true },
+      ],
+    };
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+    expect(html.indexOf("Читаю конфиг.")).toBeLessThan(html.indexOf("config.txt"));
+    expect(html.indexOf("config.txt")).toBeLessThan(html.indexOf("Проверяю порт."));
+    expect(html.indexOf("Проверяю порт.")).toBeLessThan(html.indexOf("check-port"));
+    expect(html).not.toContain("Незавершённый ответ");
+    expect(html).not.toContain("Отдельное рассуждение");
+    expect(html).not.toContain("Рассуждение");
+    const thinking = renderToStaticMarkup(<AgentTurnView turn={{ ...turn, text: "", reasoningActive: true }} />);
+    expect(thinking).toContain("Рассуждаю");
+    expect(thinking.match(/Рассуждаю/g)).toHaveLength(1);
+    expect(thinking).not.toContain("Отдельное рассуждение");
+    const beforeTools = renderToStaticMarkup(<AgentTurnView turn={{ ...turn, text: "", reasoningActive: true, toolCalls: [], stepNotes: [] }} />);
+    expect(beforeTools).toContain("Рассуждаю");
+    expect(beforeTools).not.toContain("<details");
+    const restored = JSON.parse(JSON.stringify({ ...turn, running: false, answerState: "accepted", text: "Готово." }));
+    const accepted = renderToStaticMarkup(<AgentTurnView turn={restored} />);
+    expect(accepted).toContain("data-step-note=\"before-resume\"");
+    expect(accepted).toContain("Готово.");
+    expect(accepted).not.toContain("Рассуждаю");
+    expect(accepted).not.toContain("Рассуждение");
+  });
   it.each([false, true])("uses site citation chips in the answer and source details (media=%s)", (withMedia) => {
     const turn: AgentTurnData = {
       kind: "agent", id: "agent-source", toolCalls: [], running: false,

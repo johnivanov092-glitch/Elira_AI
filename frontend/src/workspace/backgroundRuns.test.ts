@@ -27,6 +27,48 @@ beforeEach(() => {
   fake.cancel.mockReset().mockImplementation(async (id: string) => ({ ok: true, state: "stopped", run_id: id }));
 });
 
+describe("step notes", () => {
+  it("keeps notes separate from the answer through reload and Resume", async () => {
+    const sessionId = "step-notes-resume";
+    const previous = { kind: "agent" as const, id: "t1", text: "Сохранённый ответ", toolCalls: [], running: false, answerState: "accepted" as const };
+    seed(sessionId, [previous]);
+    send({ sessionId, text: "проверь файл", mode: "code", projectRoot: "", model: "auto" });
+    const handler = fake.handlers.at(-1)!;
+    handler.onRunId?.("notes-run");
+    handler.onEvent?.({ type: "reasoning_delta", step: 1, text: "Внутреннее рассуждение" });
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ reasoningActive: true });
+    handler.onEvent?.({ type: "delta", step: 1, text: "Читаю файл." });
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ reasoningActive: false });
+    handler.onEvent?.({ type: "step_note", step: 1, note_id: "first-note", text: "Читаю файл." });
+    handler.onEvent?.({ type: "tool_call", step: 1, tool: "read_file", arguments: {}, result: "ok", ok: true });
+    handler.onEvent?.({ type: "step_started", step: 2 });
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ text: "", stepNotes: [{ id: "first-note", step: 1, text: "Читаю файл.", toolCallIndex: 0 }] });
+    handler.onEvent?.({ type: "reasoning_delta", step: 2, text: "Думаю над результатом" });
+    handler.onError?.(new Error("connection lost"));
+    const saved = JSON.parse(JSON.stringify(getSnapshot(sessionId).turns));
+    seed(sessionId, saved);
+    const agent = getSnapshot(sessionId).turns.at(-1)!;
+    resume(sessionId, agent.id, "notes-run");
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({ reasoningActive: false });
+    const continued = fake.resumed.at(-1)!;
+    continued.onRunId?.("notes-run");
+    continued.onEvent?.({ type: "step_note", step: 1, note_id: "first-note", text: "Читаю файл." });
+    continued.onEvent?.({ type: "step_note", step: 1, note_id: "resumed-note", text: "Проверяю результат." });
+    continued.onEvent?.({ type: "final_response", step: 4, text: "Сделано: прочитан. Проверено: ok. Осталось: ничего." });
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({
+      text: "Сделано: прочитан. Проверено: ok. Осталось: ничего.",
+      stepNotes: [
+        { id: "first-note", step: 1, text: "Читаю файл.", toolCallIndex: 0 },
+        { id: "resumed-note", step: 1, text: "Проверяю результат.", toolCallIndex: 1 },
+      ],
+      answerState: "accepted",
+    });
+    expect(getSnapshot(sessionId).turns[0]).toEqual(previous);
+    expect(new Set(getSnapshot(sessionId).turns.map(turn => turn.id)).size).toBe(getSnapshot(sessionId).turns.length);
+    await stop(sessionId);
+  });
+});
+
 describe("updates to a live run", () => {
   afterEach(() => { fake.cancels.length = 0; fake.input.mockReset(); });
   it("waits for the same starting stream identity and preserves the draft if stopped first", async () => {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
 import type { CodeAgentToolCall } from "../api/codeAgent";
+import type { AgentTurnData } from "./types";
 import { toolIcon } from "./toolIcon";
 import { cn } from "../ui/cn";
 import "./ToolCallGroup.css";
@@ -88,6 +89,30 @@ function StatusDot({ ok, exitCode }: { ok?: boolean; exitCode?: number }) {
 
 type Run = { tool: string; items: { call: CodeAgentToolCall; idx: number }[] };
 
+/** Notes stay visible; each step's tool details can be expanded independently. */
+export function ToolActivity({ calls, notes = [], activeTool, stopReason, reasoning }: {
+  calls: CodeAgentToolCall[];
+  notes?: AgentTurnData["stepNotes"];
+  activeTool?: string;
+  stopReason?: string;
+  reasoning?: boolean;
+}) {
+  if (!notes.length) return <ToolCallGroup calls={calls} activeTool={activeTool} stopReason={stopReason} reasoning={reasoning} />;
+  // Step numbers restart on Resume/delivery. Anchor notes to the append-only
+  // tool log instead, preserving the exact chronology across continuations.
+  return <div>
+    <ToolCallGroup calls={calls.slice(0, notes[0].toolCallIndex)} />
+    {notes.map((note, index) => {
+      const last = index === notes.length - 1;
+      const end = notes[index + 1]?.toolCallIndex ?? calls.length;
+      return <div key={note.id}>
+        <p data-step-note={note.id} className="my-2 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-t2">{note.text}</p>
+        <ToolCallGroup calls={calls.slice(note.toolCallIndex, end)} activeTool={last ? activeTool : undefined} stopReason={last ? stopReason : undefined} reasoning={last && reasoning} />
+      </div>;
+    })}
+  </div>;
+}
+
 function groupRuns(calls: CodeAgentToolCall[]): Run[] {
   const runs: Run[] = [];
   calls.forEach((call, idx) => {
@@ -98,7 +123,7 @@ function groupRuns(calls: CodeAgentToolCall[]): Run[] {
   return runs;
 }
 
-export function ToolCallGroup({ calls, activeTool, stopReason }: { calls: CodeAgentToolCall[]; activeTool?: string; stopReason?: string }) {
+export function ToolCallGroup({ calls, activeTool, stopReason, reasoning }: { calls: CodeAgentToolCall[]; activeTool?: string; stopReason?: string; reasoning?: boolean }) {
   const errors = useMemo(() => calls.filter((c) => c.ok === false), [calls]);
   const runs = useMemo(() => groupRuns(calls), [calls]);
   // Stop live animation at a terminal event. Diagnostics belong to the history,
@@ -106,17 +131,21 @@ export function ToolCallGroup({ calls, activeTool, stopReason }: { calls: CodeAg
   const failedLabel = stopReason ? FAILED_STOP_LABELS[stopReason] : undefined;
   const liveTool = failedLabel ? undefined : activeTool;
 
-  if (calls.length === 0 && !activeTool) return null;
+  if (calls.length === 0 && !activeTool) return reasoning ? (
+    <span role="status" className="my-2.5 inline-flex items-center gap-2 text-[12.5px] text-mut">
+      <Loader2 size={13} className="tool-activity-spinner shrink-0" aria-hidden /> Рассуждаю
+    </span>
+  ) : null;
 
   return (
     <details className="tool-activity tool-activity-disclosure my-2.5 min-w-0">
       <summary className="flex cursor-pointer items-center gap-2 rounded-lg py-1.5 text-[12.5px] text-mut hover:text-t2">
         <ChevronRight size={13} className="tool-activity-chevron shrink-0" aria-hidden />
         <span className="shrink-0 font-medium">Действия</span>
-        {liveTool && (
+        {(liveTool || reasoning) && (
           <span role="status" aria-live="polite" aria-atomic="true" className="flex min-w-0 items-center gap-2 text-t2">
             <Loader2 size={13} className="tool-activity-spinner shrink-0" aria-hidden />
-            <span className="tool-activity-live break-words">{activeLabel(liveTool)}</span>
+            <span className="tool-activity-live break-words">{reasoning ? "Рассуждаю" : activeLabel(liveTool ?? "")}</span>
           </span>
         )}
       </summary>

@@ -233,6 +233,7 @@ export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
   | { type: "run_resumed"; run_id: string; from_step: number }
   | { type: "step_started"; step: number }
+  | { type: "step_note"; step: number; note_id: string; text: string }
   | { type: "user_input_applied"; step: number; run_id: string; request_id: string; text: string }
   | { type: "user_input_reply"; step: number; run_id: string; request_ids: string[]; text: string }
   | { type: "heartbeat"; step?: number; phase?: "planning" }

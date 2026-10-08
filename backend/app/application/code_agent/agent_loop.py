@@ -1080,6 +1080,8 @@ def _stream_code_agent_core(
                 }
                 return
 
+            if content:
+                yield {"type": "step_note", "step": step, "note_id": uuid.uuid4().hex, "text": content}
             turn_context.messages.append({
                 "role": "assistant",
                 "content": content,

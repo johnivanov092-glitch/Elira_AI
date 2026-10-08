@@ -16,15 +16,17 @@ export type AgentTurnData = {
   kind: "agent";
   id: string;
   toolCalls: CodeAgentToolCall[];
+  /** Visible model text from tool-bearing steps, separate from the answer. */
+  stepNotes?: { id: string; step: number; text: string; toolCallIndex: number }[];
   text: string;
   answerState?: AnswerState;
   citations?: SourceCitation[];
   sourceStatus?: SourceStatus;
   sources?: WebSourceEvidence[];
-  /** Model reasoning streamed on the separate `reasoning_delta` channel when the
-   *  «Рассуждение» toggle is on. Shown in a collapsible block, kept out of the
-   *  answer text and out of conversation history. */
+  /** Separate reasoning channel, kept out of visible text and conversation history. */
   reasoning?: string;
+  /** True only while reasoning tokens are arriving in the current step. */
+  reasoningActive?: boolean;
   /** Coarse runtime phase only. Raw chain-of-thought is never stored here. */
   brainPhase?: "planning" | "execution" | "verification";
   /** Compact digest of facts the discovery tools established this turn (which
