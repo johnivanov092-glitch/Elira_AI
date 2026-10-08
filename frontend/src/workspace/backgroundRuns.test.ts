@@ -27,6 +27,34 @@ beforeEach(() => {
   fake.cancel.mockReset().mockImplementation(async (id: string) => ({ ok: true, state: "stopped", run_id: id }));
 });
 
+describe("server history reference", () => {
+  it("uses the last visible accepted answer, without requiring citations", () => {
+    const sessionId = "history-reference";
+    seed(sessionId, [
+      { kind: "user", id: "u1", text: "Read" },
+      { kind: "agent", id: "a1", text: "Observed", toolCalls: [], running: false,
+        answerState: "accepted", stopReason: "answer", answerStatus: "degraded", runId: "visible-run" },
+      { kind: "agent", id: "draft", text: "Hidden draft", toolCalls: [], running: false,
+        answerState: "interrupted", stopReason: "error", runId: "hidden-run" },
+      { kind: "agent", id: "empty", text: "", toolCalls: [], running: false,
+        answerState: "accepted", stopReason: "answer", runId: "empty-run" },
+    ]);
+    send({ sessionId, text: "Continue", mode: "code", projectRoot: "", model: "auto" });
+    expect(fake.handlers.at(-1)?.historyRunId).toBe("visible-run");
+    expect(fake.handlers.at(-1)?.conversationHistory).not.toContainEqual({ role: "assistant", content: "Hidden draft" });
+  });
+
+  it("does not reuse an earlier run ID when the newest visible answer has none", () => {
+    const sessionId = "history-reference-legacy";
+    seed(sessionId, [
+      { kind: "agent", id: "a1", text: "Old", toolCalls: [], running: false, runId: "old-run" },
+      { kind: "agent", id: "a2", text: "Legacy visible answer", toolCalls: [], running: false },
+    ]);
+    send({ sessionId, text: "Continue", mode: "code", projectRoot: "", model: "auto" });
+    expect(fake.handlers.at(-1)?.historyRunId).toBeUndefined();
+  });
+});
+
 describe("step notes", () => {
   it("keeps notes separate from the answer through reload and Resume", async () => {
     const sessionId = "step-notes-resume";

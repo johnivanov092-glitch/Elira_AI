@@ -179,6 +179,7 @@ export type CodeAgentRunArgs = {
    *  authorized or scoped by a transient chat/run binding. */
   sessionId?: string;
   sourceRunIds?: string[];
+  historyRunId?: string;
   /** Compatibility field. The UI always sends "Авто"; backend domain and
    *  evidence routers select internal policies per request. */
   profileName?: string;
@@ -409,6 +410,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     resources,
     sessionId,
     sourceRunIds,
+    historyRunId,
     profileName,
     permissionMode,
     reasoningEffort,
@@ -445,6 +447,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         ...(sessionId ? { session_id: sessionId } : {}),
         ...(sourceRunIds?.length ? { source_run_ids: sourceRunIds.slice(-8) } : {}),
+        ...(historyRunId ? { history_run_id: historyRunId } : {}),
         ...(wireResources.length ? { resources: wireResources } : {}),
       }),
       signal,

@@ -63,6 +63,18 @@ describe("streamCodeAgent request body — resource boundary", () => {
     expect(body.thinking).toBeUndefined();
   });
 
+  it("sends the opaque server history reference without client protocol messages", async () => {
+    let body: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return emptyStreamResponse();
+    });
+    await streamCodeAgent({ message: "continue", projectRoot: "", historyRunId: "accepted-run",
+      conversationHistory: [{ role: "assistant", content: "Accepted" }] });
+    expect(body.history_run_id).toBe("accepted-run");
+    expect(body.conversation_history).toEqual([{ role: "assistant", content: "Accepted" }]);
+  });
+
   it("sends historical user attachments as IDs only, apart from current resources", async () => {
     let body: Record<string, unknown> = {};
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {

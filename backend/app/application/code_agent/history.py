@@ -175,6 +175,26 @@ def is_runtime_block(message: dict[str, Any]) -> bool:
     return False
 
 
+def visible_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Client-visible conversational boundary, excluding grounding/runtime blocks."""
+    result = []
+    for item in history or []:
+        normalized = _coerce_history([item])
+        if isinstance(item, dict) and item.get("role") == "user" and item.get("content") == "":
+            normalized = [{"role": "user", "content": ""}]
+        for message in normalized:
+            if is_runtime_block(message):
+                continue
+            visible = {"role": message["role"], "content": message["content"]}
+            if message["role"] == "user" and isinstance(item.get("resources"), list):
+                refs = [{"resource_id": ref["resource_id"]} for ref in item["resources"]
+                        if isinstance(ref, dict) and isinstance(ref.get("resource_id"), str)]
+                if refs:
+                    visible["resources"] = refs
+            result.append(visible)
+    return result
+
+
 def project_runtime_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Provider view of the conversation (owner's decision 2026-10-06).
 

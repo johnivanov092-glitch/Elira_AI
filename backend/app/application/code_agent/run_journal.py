@@ -6,6 +6,7 @@ and ToolExecutor. It does not execute tools or call models itself.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -41,6 +42,7 @@ _TOKEN_METRIC_KEYS = re.compile(
     re.I,
 )
 _MAX_STRING = 40_000
+_MAX_MODEL_HISTORY_BYTES = 16 * 1024 * 1024
 
 
 @dataclass
@@ -172,6 +174,7 @@ class RunJournal:
         self.run_dir = self.runs_root / run_id
         self.events_path = self.run_dir / "events.jsonl"
         self.state_path = self.run_dir / "state.json"
+        self.model_history_path = self.run_dir / "model-history.json"
         self.commands_path = self.run_dir / "logs" / "commands.jsonl"
         self.health_path = self.run_dir / "health.json"
         self.lock_path = self.run_dir / "run.lock"
@@ -198,6 +201,226 @@ class RunJournal:
     @property
     def state(self) -> dict[str, Any]:
         return dict(self._state)
+
+    def checkpoint_model_history(self, messages: list[dict[str, Any]], *,
+                                 final_text: str | None = None,
+                                 represented_workflow_ids: tuple[str, ...] = (),
+                                 visible_request: dict[str, Any] | None = None) -> None:
+        """Technical log only: atomically retain complete protocol groups.
+
+        Incomplete calls are observations for Resume, never an execution queue.
+        No per-string truncation may damage tool arguments or reasoning; the
+        complete file has a hard size cap and uses the journal's redaction.
+        """
+        from app.application.code_agent.history import is_runtime_block, visible_history
+        from app.application.context.compaction import _SUMMARY_PREFIX, RUNTIME_BLOCK_KEY
+
+        canonical: list[dict[str, Any]] = []
+        pending: dict[str, Any] | None = None
+        expected: list[dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") == "system":
+                continue
+            if is_runtime_block(message):
+                if (str(message.get("content") or "").startswith(_SUMMARY_PREFIX)
+                        or message.get(RUNTIME_BLOCK_KEY) == "interrupted_tool_batch"):
+                    canonical.append({"role": "assistant", "content": message["content"],
+                                      RUNTIME_BLOCK_KEY: message.get(RUNTIME_BLOCK_KEY) or "history_summary"})
+                continue
+            item = {key: message[key] for key in (
+                "role", "content", "reasoning_content", "tool_calls", "name", "tool_call_id",
+            ) if key in message}
+            role = item.get("role")
+            if role == "assistant" and item.get("tool_calls"):
+                if expected:
+                    raise ValueError("overlapping tool-call batches")
+                expected = list(item["tool_calls"])
+                pending = {"assistant": item, "completed_results": []}
+            elif role == "tool":
+                if not expected or pending is None:
+                    raise ValueError("orphan tool result in model history")
+                call = expected.pop(0)
+                if item.get("tool_call_id") and item["tool_call_id"] != call.get("id"):
+                    raise ValueError("mismatched tool-call result")
+                pending["completed_results"].append(item)
+                if not expected:
+                    canonical.extend([pending["assistant"], *pending["completed_results"]])
+                    pending = None
+            elif expected and final_text is not None and role == "assistant" and item.get("content") == final_text:
+                continue
+            elif expected:
+                raise ValueError("interrupted tool-call batch in model history")
+            elif role in {"user", "assistant"}:
+                canonical.append(item)
+        if pending is not None:
+            previous = self._state.get("model_history_pending") or {}
+            pending["event_offset"] = (
+                previous.get("event_offset", 0) if previous.get("assistant") == _clean(pending["assistant"])
+                else self.events_path.stat().st_size if self.events_path.exists() else 0
+            )
+            self._state["model_history_pending"] = _clean(pending)
+            if final_text is None:
+                self._write_state()
+                return
+        if final_text is not None and not (
+            canonical and canonical[-1].get("role") == "assistant" and not canonical[-1].get("tool_calls")
+            and canonical[-1].get("content") == final_text
+        ):
+            canonical.append({"role": "assistant", "content": final_text})
+        req = self._state.get("request") or {}
+        visible_request = visible_request or {
+            "history": req.get("conversation_history") or [],
+            "current": {"role": "user", "content": str(
+                req.get("memory_query") if isinstance(req.get("memory_query"), str)
+                else req.get("user_message") or "")},
+        }
+        binding_was_redacted = visible_request.get("binding_redacted") is True
+        visible_request = {"history": visible_history(visible_request.get("history")),
+                           "current": visible_history([visible_request["current"]])[0]}
+        visible = visible_history(visible_request.get("history"))
+        visible.extend(visible_history([visible_request["current"]]))
+        workflow_ids = list(represented_workflow_ids)
+        insertion = len(canonical) - int(final_text is not None)
+        for row in self._state.get("workflow_inputs") or []:
+            if not isinstance(row, dict) or not isinstance(row.get("answer"), str):
+                continue
+            if row.get("request_id") not in workflow_ids:
+                canonical.insert(insertion, {"role": "user", "content": row["answer"]})
+                insertion += 1
+                workflow_ids.append(row.get("request_id"))
+            visible.append({"role": "user", "content": "Ответ пользователя на уточнение Workflow:\n" + json.dumps(
+                {key: row[key] for key in ("request_id", "question", "answer")},
+                ensure_ascii=False, separators=(",", ":"))})
+        ledger = self.read_user_inputs() or {}
+        for row in ledger.get("items") or []:
+            if row.get("state") == "applied":
+                visible.append({"role": "user", "content": row["text"]})
+        if final_text is not None:
+            visible.append({"role": "assistant", "content": final_text})
+        visible = visible_history(visible)
+        binding_was_redacted = binding_was_redacted or _clean(visible, bound_strings=False) != visible
+        visible_request["binding_redacted"] = binding_was_redacted
+        payload = _clean({"schema": 1, "run_id": self.run_id, "messages": canonical,
+                          "visible_history": visible, "final_text": final_text,
+                          "visible_binding_redacted": binding_was_redacted,
+                          "visible_request": visible_request,
+                          "workflow_input_ids": workflow_ids,
+                          "user_input_ids": [row.get("request_id") for row in ledger.get("items") or []
+                                             if row.get("state") == "applied"]}, bound_strings=False)
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")) + 100 > _MAX_MODEL_HISTORY_BYTES:
+            self._state["model_history_error"] = "snapshot_size_exceeded"
+            self._write_state()
+            logger.warning("model history exceeds size cap for %s", self.run_id)
+            return
+        payload["sha256"] = hashlib.sha256(encoded).hexdigest()
+        if (payload["sha256"] == (self._state.get("model_history") or {}).get("sha256")
+                and not self._state.get("model_history_pending") and not self._state.get("model_history_error")):
+            return
+        try:
+            _atomic_json(self.model_history_path, payload, clean_payload=False)
+        except OSError:
+            logger.exception("model history checkpoint unavailable for %s", self.run_id)
+            self._state["model_history_error"] = "snapshot_write_failed"
+            self._write_state()
+            return
+        self._state["model_history"] = {"schema": 1, "sha256": payload["sha256"]}
+        if pending is None:
+            self._state.pop("model_history_pending", None)
+        self._state.pop("model_history_error", None)
+        self._write_state()
+
+    def load_model_history(self) -> dict[str, Any]:
+        """Read a bounded, checksummed server snapshot; old journals use fallback."""
+        if self.model_history_path.stat().st_size > _MAX_MODEL_HISTORY_BYTES + 1024:
+            raise ValueError("model history exceeds size cap")
+        payload = json.loads(self.model_history_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema") != 1 or payload.get("run_id") != self.run_id:
+            raise ValueError("invalid model history schema or identity")
+        digest = payload.pop("sha256", None)
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if digest != hashlib.sha256(encoded).hexdigest() or digest != (self._state.get("model_history") or {}).get("sha256"):
+            raise ValueError("model history checksum mismatch")
+        if not isinstance(payload.get("messages"), list) or not isinstance(payload.get("visible_history"), list):
+            raise ValueError("invalid model history messages")
+        return payload
+
+    def pending_model_history_context(self) -> list[dict[str, Any]]:
+        """Incomplete-batch observations are runtime data, not fabricated results."""
+        from app.application.context.compaction import RUNTIME_BLOCK_KEY
+
+        pending = self._state.get("model_history_pending")
+        if not isinstance(pending, dict):
+            return []
+        pending = dict(pending)
+        observed = []
+        try:
+            with self.events_path.open("rb") as handle:
+                handle.seek(max(0, int(pending.get("event_offset") or 0)))
+                data = handle.read(40_001)
+            pending["observations_truncated"] = len(data) > 40_000
+            for line in data[:40_000].splitlines():
+                try:
+                    event = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if event.get("type") == "tool_call":
+                    observed.append({key: event[key] for key in (
+                        "tool", "arguments", "result", "ok", "state_changed", "execution_status",
+                    ) if key in event})
+        except (OSError, ValueError, TypeError):
+            pending["observations_unavailable"] = True
+        pending["observed_events"] = observed
+        return [{"role": "assistant", RUNTIME_BLOCK_KEY: "interrupted_tool_batch",
+                 "content": "[Незавершённая группа инструментов] Последний полный checkpoint восстановлен. "
+                 "Вызовы из этой записи не исполнены повторно. completed_results — реально полученные результаты; "
+                 "observed_events — реальные опубликованные receipts. Вызовы без этих наблюдений "
+                 "имеют неизвестный исход и могли успеть изменить систему. "
+                 "Это наблюдения runtime, не новые результаты инструментов:\n"
+                 + json.dumps(pending, ensure_ascii=False)}]
+
+    @classmethod
+    def history_for_next_message(cls, run_id: str, *, session_id: str | None,
+                                 project_root: Path | str,
+                                 conversation_history: list[dict[str, Any]],
+                                 prepared_history: list[dict[str, Any]] | None = None) -> list[dict[str, Any]] | None:
+        """Resolve an opaque reference only against the exact visible transcript."""
+        from app.application.code_agent.history import _coerce_history, is_runtime_block, visible_history
+
+        try:
+            journal = cls.load(run_id)
+            state, request = journal.state, journal.state.get("request") or {}
+            if not session_id or request.get("session_id") != session_id:
+                raise ValueError("session mismatch")
+            if Path(str(request.get("project_root") or "")).resolve() != Path(project_root).resolve():
+                raise ValueError("project mismatch")
+            payload = journal.load_model_history()
+            if payload.get("visible_binding_redacted") is not False:
+                raise ValueError("visible binding changed by redaction")
+            final = payload.get("final_text")
+            final_hash = hashlib.sha256(str(final or "").encode("utf-8")).hexdigest()
+            if state.get("answer_state") != "accepted" or not final or final_hash != state.get("last_response_sha256"):
+                raise ValueError("no displayed accepted final response")
+            visible = visible_history(conversation_history)
+            last_assistant = max((index for index, message in enumerate(visible)
+                                  if message["role"] == "assistant"), default=-1)
+            if payload["visible_history"] != visible[:last_assistant + 1]:
+                raise ValueError("visible transcript mismatch")
+            suffix = visible[last_assistant + 1:]
+            if suffix:
+                prepared = [message for message in _coerce_history(
+                    prepared_history if prepared_history is not None else conversation_history,
+                ) if not is_runtime_block(message)]
+                if [m["role"] for m in prepared] != [m["role"] for m in visible]:
+                    raise ValueError("prepared transcript boundary mismatch")
+                # Only real client user messages may follow the accepted anchor.
+                # Resource binding/enrichment stays with the route's existing owner.
+                suffix = [{"role": "user", "content": message["content"]}
+                          for message in prepared[last_assistant + 1:] if message["role"] == "user"]
+            return [*payload["messages"], *journal.pending_model_history_context(), *suffix]
+        except (OSError, ValueError, TypeError) as exc:
+            logger.info("model history reference %s unavailable: %s; using visible history", run_id, exc)
+            return None
 
     @classmethod
     def active_state(cls, run_id: str, *, runs_root: Path | None = None) -> dict[str, Any]:
@@ -427,6 +650,9 @@ class RunJournal:
             self._state["answer_state"] = "accepted"
             self._state["answer_status"] = str(event.get("answer_status") or "complete")
             self._state["last_response"] = str(event.get("text") or "")
+            self._state["last_response_sha256"] = hashlib.sha256(
+                str(_clean(event.get("text") or "", bound_strings=False)).encode("utf-8")
+            ).hexdigest()
             self._state["citations"] = _clean(event.get("citations") or [])
             self._state["source_status"] = str(event.get("source_status") or "none")
         if event_type == "tool_call" and event.get("tool") == "ask_user" and event.get("ok") is True:

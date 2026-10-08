@@ -253,6 +253,32 @@ def build_continuation_kwargs(
     except RuntimeError:
         pass  # Older journals have no user input ledger.
     history.append({"role": "assistant", "content": _resume_facts_block(run_id, state, delivery_shaped=shaped)})
+    server_history = None
+    history_workflow_input_ids = ()
+    visible_request = None
+    try:
+        checkpoint = journal.load_model_history()
+        visible_request = checkpoint.get("visible_request")
+        server_history = list(checkpoint["messages"])
+        # A clarification accepted after the last completed group is not part
+        # of that checkpoint. Restore real input only, never missing tool output.
+        for workflow_input in state.get("workflow_inputs") or []:
+            if (isinstance(workflow_input, dict) and workflow_input.get("request_id") not in checkpoint.get("workflow_input_ids", [])
+                    and isinstance(workflow_input.get("answer"), str)):
+                server_history.append({"role": "user", "content": workflow_input["answer"]})
+        try:
+            for row in session_user_inputs(run_id, str(req.get("session_id") or "")):
+                if row["state"] == "applied" and row["request_id"] not in checkpoint.get("user_input_ids", []):
+                    server_history.append({"role": "user", "content": row["text"]})
+        except RuntimeError:
+            pass
+        server_history.extend(journal.pending_model_history_context())
+        server_history.append(history[-1])
+        history_workflow_input_ids = tuple(row["request_id"] for row in state.get("workflow_inputs") or []
+                                           if isinstance(row, dict) and isinstance(row.get("answer"), str))
+    except (OSError, ValueError, TypeError) as exc:
+        logger.info("model history unavailable on Resume %s: %s; using legacy history", run_id, exc)
+        history.extend(journal.pending_model_history_context())
 
     user_message = _DELIVERY_CONTINUATION_MESSAGE if shaped else _CONTINUATION_MESSAGE
     open_item = _first_open_checklist_item(_checklist_items(run_id)) if shaped else None
@@ -284,6 +310,9 @@ def build_continuation_kwargs(
         "model": str(req.get("model") or "auto"),
         "agent_id": str(req.get("agent_id") or "code-agent"),
         "conversation_history": history,
+        "_server_history": server_history,
+        "_history_workflow_input_ids": history_workflow_input_ids,
+        "_visible_request": visible_request,
         "run_id": run_id,
         "session_id": req.get("session_id"),
         "num_ctx": req.get("num_ctx") or None,
@@ -323,6 +352,8 @@ def stream_delivery_session(
     reasoning_effort: str | None = None,
     resource_refs: list[dict[str, Any]] | None = None,
     source_run_ids: list[str] | None = None,
+    history_run_id: str | None = None,
+    _visible_request: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Public stream for a NEW user submission (`POST /api/code-agent/stream`)."""
     rid = run_id or uuid.uuid4().hex
@@ -353,6 +384,8 @@ def stream_delivery_session(
         "reasoning_effort": reasoning_effort,
         "resource_refs": list(resource_refs or []),
         "source_run_ids": list(source_run_ids or [])[-8:],
+        "history_run_id": history_run_id,
+        "_visible_request": _visible_request,
     }
     shaped = _delivery_shaped(user_message, project_root)
     if not shaped:
