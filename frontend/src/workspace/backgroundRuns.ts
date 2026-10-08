@@ -582,6 +582,7 @@ export function send(args: SendArgs): void {
   const history: ConversationMessage[] = [];
   const seenWorkflowInputs = new Set<string>();
   let latestRecentOutput: string | undefined;  // most-recent agent turn's raw tool output
+  let historyRunId: string | undefined;
   const rollingSummary = typeof entry.snapshot.contextState?.rolling_summary_text === "string"
     ? entry.snapshot.contextState.rolling_summary_text.trim()
     : "";
@@ -608,6 +609,7 @@ export function send(args: SendArgs): void {
         });
       }
       if (!t.text || !isAcceptedAnswer(t)) continue;
+      historyRunId = t.runId;
       history.push({ role: "assistant", content: t.text });
       // Carry the turn's tool-established facts back as an authoritative grounding
       // block (backend _coerce_history re-tags the [ПРОВЕРЕННЫЕ ФАКТЫ] prefix to a
@@ -664,6 +666,7 @@ export function send(args: SendArgs): void {
   // session id retains provenance; historical IDs stay on their original turns.
   wire(entry, agentId, (handlers) =>
     streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort, runId: entry.runId || undefined,
+      historyRunId,
       sourceRunIds: entry.snapshot.turns.filter((t): t is AgentTurnData => t.kind === "agent" && isAcceptedAnswer(t) && Boolean(t.citations?.length && t.runId)).map(t => t.runId!).slice(-8),
       ...handlers }));
 }

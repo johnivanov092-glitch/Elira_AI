@@ -378,6 +378,7 @@ class CodeAgentRequest(BaseModel):
         "model reads them only via resource_process, never as auto-extracted text.",
     )
     source_run_ids: list[str] = Field(default_factory=list, max_length=8)
+    history_run_id: Optional[str] = Field(default=None, max_length=128)
     profile_name: str = Field(
         default="Авто",
         description="Compatibility field. Elira/Auto selects internal domain policies per request; concrete legacy values no longer lock routing.",
@@ -704,6 +705,12 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 run_id=run_id,
                 session_id=payload.session_id,
                 source_run_ids=payload.source_run_ids,
+                history_run_id=payload.history_run_id,
+                _visible_request={
+                    "history": [message.model_dump(exclude_none=True) for message in payload.conversation_history or []],
+                    "current": {"role": "user", "content": payload.message,
+                                "resources": [{"resource_id": ref.resource_id} for ref in payload.resources or []]},
+                },
                 # Route Auto from the user's actual request, not from injected
                 # attachment/library text. Terse continuations may use recent
                 # chat history to retain the previous task profile.

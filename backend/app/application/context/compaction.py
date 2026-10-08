@@ -230,6 +230,33 @@ def _deterministic_summary(
     return _cap_text("\n".join(lines), limit)
 
 
+def _split_recent_messages(
+    messages: list[dict[str, Any]], keep_count: int, pinned_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep the real user boundary and atomic call/result batches in order."""
+    pinned = {index for index, message in enumerate(messages)
+              if str(message.get("_msg_id") or "") in pinned_ids}
+    eligible = [index for index in range(len(messages)) if index not in pinned]
+    selected = pinned | set(eligible[-keep_count:] if keep_count > 0 else eligible)
+    current_user = next((index for index in reversed(range(len(messages)))
+                         if messages[index].get("role") == "user"
+                         and not messages[index].get(RUNTIME_BLOCK_KEY)), None)
+    if current_user is not None:
+        selected.add(current_user)
+    index = 0
+    while index < len(messages):
+        end = index + 1
+        if messages[index].get("role") == "assistant" and messages[index].get("tool_calls"):
+            while end < len(messages) and messages[end].get("role") == "tool":
+                end += 1
+            if any(position in selected for position in range(index, end)):
+                selected.update(range(index, end))
+        index = end
+    older = [message for index, message in enumerate(messages) if index not in selected]
+    recent = [message for index, message in enumerate(messages) if index in selected]
+    return older, recent
+
+
 def maybe_compact(
     messages: list[dict[str, Any]],
     num_ctx: int,
@@ -308,11 +335,8 @@ def maybe_compact(
         message for message in non_system
         if str(message.get("_msg_id") or "") in pinned_ids
     ]
-    compactable = [message for message in non_system if message not in pinned]
-
     keep_count = keep_pairs * 2  # keep_pairs pairs = keep_count messages
-    recent = compactable[-keep_count:] if len(compactable) > keep_count else compactable
-    to_summarize = compactable[:-keep_count] if len(compactable) > keep_count else []
+    to_summarize, recent = _split_recent_messages(non_system, keep_count, pinned_ids)
 
     if not to_summarize:
         # Nothing old enough to summarize; keep any rolling summary as one
@@ -321,9 +345,8 @@ def maybe_compact(
         summary_msgs = (
             [_make_summary_message(summary, limit=summary_limit)] if summary else []
         )
-        result_messages = (
-            system_msgs + state_msgs + summary_msgs + pinned + compactable[-fallback_keep:]
-        )
+        _, fallback_recent = _split_recent_messages(non_system, fallback_keep, pinned_ids)
+        result_messages = system_msgs + state_msgs + summary_msgs + fallback_recent
         _emit_audit(
             audit_sink, messages, result_messages,
             protected_count=len(pinned), trigger_reason=trigger_reason,
@@ -365,7 +388,7 @@ def maybe_compact(
             len(to_summarize),
             len(recent),
         )
-        result_messages = system_msgs + state_msgs + [summary_msg] + pinned + recent
+        result_messages = system_msgs + state_msgs + [summary_msg] + recent
         _emit_audit(
             audit_sink, messages, result_messages,
             protected_count=len(pinned), trigger_reason=trigger_reason,
@@ -385,9 +408,8 @@ def maybe_compact(
         ),
         limit=summary_limit,
     )
-    result_messages = (
-        system_msgs + state_msgs + [fallback_msg] + pinned + compactable[-fallback_keep:]
-    )
+    _, fallback_recent = _split_recent_messages(non_system, fallback_keep, pinned_ids)
+    result_messages = system_msgs + state_msgs + [fallback_msg] + fallback_recent
     _emit_audit(
         audit_sink, messages, result_messages,
         protected_count=len(pinned), trigger_reason=trigger_reason,

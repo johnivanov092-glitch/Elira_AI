@@ -102,7 +102,12 @@ def test_accepted_answer_survives_public_resume_after_provider_failure(tmp_path,
     resumed = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
     assert resumed[-1]["type"] == "done" and resumed[-1]["ok"] is True
     assert any(m["role"] == "user" and answer in m.get("content", "") for m in seen)
-    assert not any(m["role"] != "user" and answer in m.get("content", "") for m in seen)
+    assert not any(m["role"] in {"assistant", "system"} and answer in m.get("content", "") for m in seen)
+    assert sum(m["role"] == "user" and m.get("content") == answer for m in seen) == 1
+    assert any(m["role"] == "tool" and answer in m.get("content", "") for m in seen)
+    seen.clear()
+    list(stream_resume_session("workflow-input-history", chat_fn=continued_chat))
+    assert sum(m["role"] == "user" and m.get("content") == answer for m in seen) == 1
 
 
 def test_accepted_answer_is_preserved_when_stop_races_response(tmp_path, monkeypatch):

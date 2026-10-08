@@ -218,6 +218,8 @@ def _stream_code_agent_core(
     resource_refs: list[dict[str, Any]] | None = None,
     initial_sources: list[dict[str, Any]] | None = None,
     read_only: bool = False,
+    _server_history: list[dict[str, Any]] | None = None,
+    _history_checkpoint: Callable[..., None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -339,6 +341,7 @@ def _stream_code_agent_core(
             resource_refs=resource_refs, active_schemas=all_schemas,
             system_prompt_builder=_build_system_prompt, turn_context_builder=_build_turn_context,
             current_message_is_runtime=resume,
+            server_history=_server_history,
         )
         task_spec, task_spec_source = initial_turn.task_spec, initial_turn.task_spec_source
         document_page_count_contract = initial_turn.document_page_count_contract
@@ -1026,6 +1029,12 @@ def _stream_code_agent_core(
                         yield {**event, "task_spec": taskspec_report(task_spec) if task_spec else None,
                                "task_outcome": task_outcome.snapshot(), "code_input_epoch": observations.code_input_epoch}
                     continue
+                final_message = {"role": "assistant", "content": final_text}
+                final_reasoning = (response.get("message") or {}).get("reasoning_content")
+                if isinstance(final_reasoning, str) and final_reasoning:
+                    final_message["reasoning_content"] = final_reasoning
+                if _history_checkpoint:
+                    _history_checkpoint([*turn_context.messages, final_message], final_text=final_text)
                 yield {
                     "type": "final_response", "step": step, "text": final_text,
                     "answer_state": "accepted",
@@ -1069,6 +1078,8 @@ def _stream_code_agent_core(
 
             if content:
                 yield {"type": "step_note", "step": step, "note_id": uuid.uuid4().hex, "text": content}
+            if _history_checkpoint:
+                _history_checkpoint(turn_context.messages)
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": content,
@@ -1080,6 +1091,8 @@ def _stream_code_agent_core(
             turn_context.messages.append(assistant_message)
 
             for call_index, call in enumerate(tool_calls):
+                if _history_checkpoint:
+                    _history_checkpoint(turn_context.messages)
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
@@ -1305,6 +1318,8 @@ def _stream_code_agent_core(
                             user_request=turn_context.raw_user_message,
                         )
                     if recovery["status"] == "blocked":
+                        if _history_checkpoint:
+                            _history_checkpoint(turn_context.messages, final_text=recovery["text"])
                         yield {"type": "final_response", "step": step, "text": recovery["text"],
                                "answer_state": "accepted", "answer_status": "degraded",
                                "task_outcome": task_outcome.snapshot()}
@@ -1628,6 +1643,8 @@ def _stream_code_agent_core(
                 _recent = _recent_tool_snippet(name, _hint, text_result)
                 if _recent:
                     recent_tool_outputs.append(_recent)
+            if _history_checkpoint:
+                _history_checkpoint(turn_context.messages)
 
     finally:
         try:
@@ -1755,8 +1772,12 @@ def stream_code_agent(
     workflow_approval: dict[str, Any] | None = None,
     resource_refs: list[dict[str, Any]] | None = None,
     source_run_ids: list[str] | None = None,
+    history_run_id: str | None = None,
     parent_run_id: str | None = None,
     read_only: bool = False,
+    _server_history: list[dict[str, Any]] | None = None,
+    _history_workflow_input_ids: tuple[str, ...] = (),
+    _visible_request: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities, related_sources, sanitize_event
@@ -1764,6 +1785,16 @@ def stream_code_agent(
     rid = run_id or uuid.uuid4().hex
     initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
     journal = RunJournal.load(rid) if resume else RunJournal(rid, parent_run_id=parent_run_id)
+    if _visible_request is None and not resume:
+        _visible_request = {"history": list(conversation_history or []), "current": {
+            "role": "user", "content": memory_query if isinstance(memory_query, str) else user_message,
+        }}
+    if not resume and history_run_id:
+        _server_history = RunJournal.history_for_next_message(
+            history_run_id, session_id=session_id, project_root=project_root,
+            conversation_history=list((_visible_request or {}).get("history", conversation_history or [])),
+            prepared_history=conversation_history,
+        )
     read_only = bool(read_only or resume and (journal.state.get("request") or {}).get("read_only"))
     persistence_policy = (
         persistence_policy_from_state(journal.state) if resume else task_persistence_policy(
@@ -1796,6 +1827,7 @@ def stream_code_agent(
         "pause_for_workflow_request": bool(pause_for_workflow_request),
         "resource_refs": list(resource_refs or []),
         "source_run_ids": list(source_run_ids or [])[-8:],
+        "history_run_id": history_run_id,
         "parent_run_id": parent_run_id,
         "delegation_depth": 1 if parent_run_id else 0,
         "read_only": read_only,
@@ -1829,6 +1861,13 @@ def stream_code_agent(
         def audit_sink(payload: dict[str, Any]) -> None:
             journal.append_event({"type": "compaction_audit", **payload})
 
+        def history_checkpoint(messages: list[dict[str, Any]], **kwargs: Any) -> None:
+            try:
+                journal.checkpoint_model_history(messages, represented_workflow_ids=_history_workflow_input_ids,
+                                                 visible_request=_visible_request, **kwargs)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning("model history checkpoint unavailable for %s: %s", rid, exc)
+
         core_stream = _stream_code_agent_core(
             user_message=user_message,
             memory_query=memory_query,
@@ -1858,6 +1897,8 @@ def stream_code_agent(
                 else related_sources(session_id, list(source_run_ids or []), list(conversation_history or []))
             ),
             read_only=read_only,
+            _server_history=_server_history,
+            _history_checkpoint=history_checkpoint,
         )
         for raw_event in core_stream:
             # Display/persistence only: keep canonical tool output and approval

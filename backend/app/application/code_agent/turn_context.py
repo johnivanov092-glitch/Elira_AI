@@ -72,6 +72,7 @@ def build_initial_turn(
     system_prompt_builder: PromptBuilder = _build_system_prompt,
     turn_context_builder: PromptBuilder = _build_turn_context,
     current_message_is_runtime: bool = False,
+    server_history: list[dict[str, Any]] | None = None,
 ) -> InitialTurn:
     """Assemble the stable system/history prefix and current-request tail."""
     initial_tools = tuple(dict.fromkeys(
@@ -87,7 +88,7 @@ def build_initial_turn(
         memory_query=memory_query or "", resource_refs=resource_refs,
     )
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    messages.extend(_coerce_history(conversation_history))
+    messages.extend(server_history if server_history is not None else _coerce_history(conversation_history))
     # The current request is the owner's raw text only; its runtime context is a
     # separate block that the provider projection moves into the system message.
     request_block = ""
