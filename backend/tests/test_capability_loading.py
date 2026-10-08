@@ -177,7 +177,8 @@ def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
     )
 
     names = _tool_names(registry)
-    assert {"resource_process", "read_image", "file_gen"} <= names
+    assert {"resource_process", "read_image"} <= names
+    assert "file_gen" not in names
     assert {"web_search", "computer", "csv", "memory"}.isdisjoint(names)
 
 

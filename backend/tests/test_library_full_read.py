@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-
 from app.application.library import runtime
 from app.application.media.resource_store import ResourceRecord
 
@@ -80,55 +78,6 @@ def test_library_read_pages_through_the_complete_extracted_text(
     assert tail["next_offset"] is None
 
 
-def test_library_full_text_includes_docx_tables(tmp_path, monkeypatch) -> None:
-    from docx import Document
-
-    _isolated_library(tmp_path, monkeypatch)
-    document = Document()
-    document.add_paragraph("Вводный текст")
-    table = document.add_table(rows=1, cols=2)
-    table.cell(0, 0).text = "Ключ"
-    table.cell(0, 1).text = "TABLE_TARGET"
-    payload = io.BytesIO()
-    document.save(payload)
-
-    added = runtime.add_file_contents(
-        filename="table.docx",
-        contents=payload.getvalue(),
-        use_in_context=False,
-    )
-    page = runtime.read_library_file(added["id"], limit=10000)
-
-    assert "Вводный текст" in page["text"]
-    assert "TABLE_TARGET" in page["text"]
-
-
-def test_library_full_text_reads_late_xlsx_sheets_and_rows(tmp_path, monkeypatch) -> None:
-    from openpyxl import Workbook
-
-    _isolated_library(tmp_path, monkeypatch)
-    workbook = Workbook()
-    workbook.remove(workbook.active)
-    for sheet_index in range(6):
-        sheet = workbook.create_sheet(f"Sheet{sheet_index + 1}")
-        for row_index in range(250):
-            sheet.append([f"row-{row_index}"])
-    workbook["Sheet6"]["A250"] = "LATE_XLSX_TARGET"
-    payload = io.BytesIO()
-    workbook.save(payload)
-    workbook.close()
-
-    added = runtime.add_file_contents(
-        filename="large.xlsx",
-        contents=payload.getvalue(),
-        use_in_context=False,
-    )
-    search = runtime.search_files("LATE_XLSX_TARGET")
-
-    assert search["items"][0]["id"] == added["id"]
-    assert "LATE_XLSX_TARGET" in search["items"][0]["excerpt"]
-
-
 def test_import_resource_reuses_the_existing_library_owner(
     tmp_path, monkeypatch,
 ) -> None:
@@ -179,7 +128,7 @@ def test_import_resource_rejects_unknown_id(tmp_path, monkeypatch) -> None:
     assert result == {"ok": False, "error": "resource_not_found"}
 
 
-def test_corrupt_document_is_not_reported_as_indexed(tmp_path, monkeypatch) -> None:
+def test_binary_document_is_not_reported_as_extracted(tmp_path, monkeypatch) -> None:
     _isolated_library(tmp_path, monkeypatch)
 
     result = runtime.add_file_contents(
@@ -189,7 +138,7 @@ def test_corrupt_document_is_not_reported_as_indexed(tmp_path, monkeypatch) -> N
     )
 
     assert result["ok"] is True
-    assert result["status"] == "failed"
+    assert result["status"] == "not_processed"
     assert result["content_chars"] == 0
 
 

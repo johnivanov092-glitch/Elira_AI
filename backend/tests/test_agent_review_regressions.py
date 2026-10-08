@@ -83,7 +83,7 @@ def test_fresh_slice_that_still_cannot_start_does_not_repeat(tmp_path, monkeypat
     events = []
     for event in delivery_session.stream_delivery_session(
         user_message=QUERY + "\nContext: " + "kept input " * 12000, project_root=tmp_path,
-        run_id="no-progress", chat_fn=chat, num_ctx=4096, auto_remember=False,
+        run_id="no-progress", chat_fn=chat, num_ctx=8192, auto_remember=False,
         base_tools=["capability_load"],  # Isolate oversized input from schema size.
     ):
         events.append(event)

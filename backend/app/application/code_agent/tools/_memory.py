@@ -6,6 +6,7 @@ removing and bookmarking Library files stay UI actions.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 _MEMORY_ACTIONS = ("search", "list", "add", "delete")
@@ -126,6 +127,11 @@ def tool_library(
                         "text": "ERROR: укажи id документа из library(action='search')."}
             res = library.read_library_file(int(id), offset=max(0, int(offset or 0)))
             if not res.get("ok"):
+                if res.get("error") == "processing_required":
+                    ref = json.dumps(res["resource"], ensure_ascii=False)
+                    return {**res, "text": f"{res['text']}\nResourceRef: {ref}"}
+                if res.get("error") == "resource_unavailable":
+                    return res
                 return {"ok": False, "error": str(res.get("error") or "read_failed"),
                         "text": f"ERROR: документ id={id} не прочитан: {res.get('error')}"}
             more = f"\n[... продолжение: offset={res['next_offset']}]" if res.get("has_more") else ""

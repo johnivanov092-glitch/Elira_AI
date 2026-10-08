@@ -11,7 +11,6 @@ from app.application.code_agent.document_validation import (
     infer_expected_page_count,
     validate_document,
 )
-from app.application.code_agent.tools._content import tool_file_gen
 from app.application.code_agent.tools._resources import tool_resource_publish
 
 
@@ -240,52 +239,6 @@ def test_resource_publish_retry_cap_is_per_artifact_even_when_bytes_change(tmp_p
     assert validator.call_count == 2
 
 
-def test_file_gen_does_not_return_download_for_unverified_document(tmp_path) -> None:
-    generated = tmp_path / "generated.docx"
-    generated.write_bytes(b"generated-document")
-    qa = {
-        "status": "unverified",
-        "sha256": "e" * 64,
-        "format": "docx",
-        "renderer": "unavailable",
-        "page_count": None,
-        "expected_page_count": 1,
-        "vision_status": "not_run",
-        "issues": [{"code": "renderer_unavailable", "message": "No renderer."}],
-    }
-
-    with (
-        patch(
-            "app.application.skills.generate_word",
-            return_value={
-                "ok": True,
-                "path": str(generated),
-                "filename": "generated.docx",
-                "size": generated.stat().st_size,
-                "download_url": "/api/skills/download/generated.docx",
-            },
-        ),
-        patch(
-            "app.application.code_agent.tools._content.validate_document",
-            return_value=qa,
-        ),
-    ):
-        result = tool_file_gen(
-            tmp_path,
-            format="word",
-            title="Report",
-            content="Body",
-            expected_page_count=1,
-        )
-
-    assert result["ok"] is False
-    assert result["error"] == "document_validation_unverified"
-    assert result["document_qa"] == {
-        **qa,
-        "attempt": 1,
-        "target": result["download_name"],
-    }
-    assert "download_url" not in result
 
 
 def test_document_tools_reject_fractional_page_count_before_work(tmp_path) -> None:
@@ -297,16 +250,7 @@ def test_document_tools_reject_fractional_page_count_before_work(tmp_path) -> No
         project_path="proposal.docx",
         expected_page_count=1.5,  # type: ignore[arg-type]
     )
-    with patch("app.application.skills.generate_word") as generator:
-        generated = tool_file_gen(
-            tmp_path,
-            format="word",
-            expected_page_count=1.5,  # type: ignore[arg-type]
-        )
-
     assert publish["error"] == "invalid_expected_page_count"
-    assert generated["error"] == "invalid_expected_page_count"
-    generator.assert_not_called()
 
 
 def test_page_count_contract_is_inferred_only_from_explicit_document_wording() -> None:
@@ -322,17 +266,7 @@ def test_taken_download_name_is_refused_before_render_and_qa(tmp_path, private_d
     (private_downloads / "Report.docx").write_bytes(b"published earlier")
     (tmp_path / "proposal.docx").write_bytes(b"new version")
 
-    with (
-        patch("app.application.code_agent.tools._resources.validate_document") as publish_qa,
-        patch("app.application.code_agent.tools._content.validate_document") as generate_qa,
-        patch("app.application.skills.generate_word") as generator,
-    ):
+    with patch("app.application.code_agent.tools._resources.validate_document") as publish_qa:
         published = tool_resource_publish(tmp_path, project_path="proposal.docx")
-        generated = tool_file_gen(tmp_path, format="word", title="Report", content="Body", filename="Report.docx")
-
     assert published["error"] == "destination_exists"
-    assert generated["error"] == "destination_exists"
     publish_qa.assert_not_called()
-    generate_qa.assert_not_called()
-    generator.assert_not_called()
-

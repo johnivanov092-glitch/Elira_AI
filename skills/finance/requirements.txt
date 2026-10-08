@@ -1,0 +1,2 @@
+# Python 3.10+; only Python standard library (Decimal, JSON, argparse).
+# No installation into the application environment is needed.

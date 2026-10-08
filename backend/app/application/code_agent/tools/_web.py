@@ -662,6 +662,8 @@ def _fetch_into_corpus(url_list: list[str], *, force_refresh: bool = False) -> d
                 error=str(res.get("error") or "page unavailable"),
             ))
             lines.append(f"- {u}: ERROR {res.get('error')}")
+            if res.get("error") == "processing_required":
+                lines.append(str(res.get("message") or "Прочитай документ навыком document-read."))
     return {"text": "\n".join(lines), "ok": any_ok, "sources": [source for source in sources if source]}
 
 

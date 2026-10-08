@@ -75,45 +75,6 @@ def _decode_text_content(content: bytes, declared_charset: str = "") -> tuple[st
     return content.decode("utf-8", errors="replace"), "utf-8-replace"
 
 
-# file_extract swallows extractor failures and returns the ERROR as text with
-# ok=True (e.g. "[DOCX ошибка: File is not a zip file]", "[pypdf не установлен: …]").
-# Storing that as a "document" is a false success (John's W2 review). Detect the
-# bracketed extractor-error sentinels — matched as the WHOLE text, so success
-# markers ("[OCR распознавание]", "--- Страница N ---") and real docs that merely
-# CONTAIN a bracket are never misread as errors.
-_EXTRACTOR_ERROR_RE = re.compile(r"^\s*\[[^\]]*(?:ошибка|не установлен)\s*:[^\]]*\]\s*$")
-
-
-class DocumentExtractError(Exception):
-    """The extractor reported a failure (returned a bracketed error sentinel)."""
-
-
-def _extract_document(content: bytes, mime: str, url: str) -> tuple[str, str]:
-    """W2: extract text from a web PDF/DOCX via the EXISTING file_extract pipeline
-    (pypdf → pdfplumber → OCR :8002 for PDFs; python-docx for DOCX) — no new
-    provider. Returns (canonical_text, title). Raises DocumentExtractError when the
-    pipeline reports a failure via its bracketed-error sentinel — so a corrupt
-    document surfaces as an honest ok=False, never stored as its own error text."""
-    from urllib.parse import urlparse
-    ext = ".pdf" if mime == _MIME_PDF else ".docx"
-    base = (urlparse(url).path.rsplit("/", 1)[-1] or "web").strip()
-    filename = base if base.lower().endswith(ext) else f"web{ext}"
-    from app.application.file_extract.runtime import extract_file
-    res = extract_file(filename, content)
-    raw = str(res.get("text") or "")
-    if _EXTRACTOR_ERROR_RE.match(raw.strip()):
-        raise DocumentExtractError(raw.strip()[:200])
-    text = _clean_text(raw)
-    # title: the document filename, or its first substantial line
-    title = base if base and base != "web" else ""
-    if not title:
-        for line in text.splitlines():
-            if len(line.strip()) >= 4:
-                title = line.strip()[:120]
-                break
-    return text, title
-
-
 def _canonicalize(html_or_text: str, mime: str, *, final_url: str = "",
                   link_metadata: dict[str, Any] | None = None) -> tuple[str, str, list[str]]:
     """(canonical_text, title, outline). Strips scripts/style and dangerous
@@ -228,10 +189,9 @@ def _fetch_raw(url: str) -> dict[str, Any]:
 def ingest(url: str, run_id: str) -> dict[str, Any]:
     """Fetch → canonicalize → chunk → store one URL for `run_id`. Returns a
     passport {ok, doc_id, title, url, final_url, mime, encoding, nbytes,
-    n_chunks, outline, deduped} or {ok:False, error}. Handles HTML/plain text and (W2) PDF/DOCX
-    documents through the existing file_extract pipeline (OCR fallback for scanned
-    PDFs). Everything converges on the same chunk+store path — a web PDF becomes a
-    corpus document exactly like an HTML page (untrusted, dedup/quota/TTL apply)."""
+    n_chunks, outline, deduped} or {ok:False, error}. HTML and plain text become
+    untrusted corpus documents; binary PDF/DOCX require the mutable document-read
+    skill and are never implicitly parsed or stored as verified source text."""
     raw = _fetch_raw(url)
     if not raw.get("ok"):
         return {"ok": False, "error": raw.get("error", "fetch failed"),
@@ -252,14 +212,12 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
         canonical, title, outline = _canonicalize(decoded, mime, final_url=raw["final_url"],
                                                   link_metadata=link_metadata)
     elif mime in (_MIME_PDF, _MIME_DOCX):
-        try:
-            canonical, title = _extract_document(raw["content"], mime, raw["final_url"])
-        except DocumentExtractError as exc:
-            # extractor reported a failure (corrupt file / missing lib) — honest
-            # ok=False; the error text is NOT stored as a document (review P1)
-            return {"ok": False, "error": f"документ не извлечён: {exc}"}
-        except Exception as exc:  # noqa: BLE001 — extraction never crashes the tool
-            return {"ok": False, "error": f"document extraction failed: {exc}"}
+        return {
+            "ok": False, "error": "processing_required", "mime": mime,
+            "final_url": raw["final_url"], "skill": "document-read",
+            "message": ("Прочитай документ через data/skills/document-read/read_document.py --url. "
+                        "Бинарный файл не добавлен в корпус прочитанных веб-страниц."),
+        }
     else:
         return {"ok": False, "error": f"unsupported MIME '{mime}'"}
 

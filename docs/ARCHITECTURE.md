@@ -115,8 +115,9 @@ a successfully completed run.
   `TaskOutcome` binds successful publication to the exact local target (when
   mapped), current SHA-256 and canonical stored download. A generic artifact
   receipt is insufficient; Resume rechecks the files and preserves stale status.
-  `resource_publish`, `file_gen` and published local-GPU transcription use this
-  owner. Unmapped publications cannot satisfy an arbitrary local target.
+  `resource_publish` uses this owner. Historical file_gen and transcription receipts
+  remain readable; removed handlers cannot register new deliveries.
+  Unmapped publications cannot satisfy an arbitrary local target.
   Missing delivery or an unbacked canonical Markdown/autolink gets one correction,
   then a degraded answer with a diagnostic; unsupported links are made non-clickable.
   Ordinary prose is preserved. External source/product links require no local
@@ -124,8 +125,8 @@ a successfully completed run.
   successful publication remains available as its own download chip and as an
   item in the preview panel, including repeated publications with the same
   visible filename.
-  Local GPU transcription also emits a receipt after saving and publishing its
-  complete TXT through the same Resource Store publication primitive.
+  Mutable skills create files through ordinary script execution and publish
+  their output with `resource_publish`, including local GPU transcription TXT.
 - PDF/DOCX publication is fail-closed: the runtime binds structural checks,
   rendered page count and vision inspection to the exact published SHA-256.
   Failed or incomplete QA emits no download artifact. An exact page count is an
@@ -135,9 +136,10 @@ a successfully completed run.
   truncated `read_file` path may be replaced only by one unique same-directory,
   same-extension prefix match from the immediately preceding `glob`; a third
   identical failed path is refused without another filesystem read. A missing
-  project filename may also resolve to one exact attached ResourceRef name and
-  is then read through the existing resource extractor without materializing a
-  copy. Ambiguous matches fail closed.
+  project filename may also resolve to one exact attached ResourceRef by name.
+  The reader returns a safe ResourceRef for materialization and the matching mutable skill.
+  Binary content is processed by document-read, ocr or audio-transcribe; ordinary
+  text remains readable directly. Ambiguous matches fail closed.
   Approximate filename similarity alone never selects another file.
 - Uploaded ResourceRef IDs persist on their original user turns through session
   save/reload and follow-up requests. Historical metadata is resolved from the
@@ -172,11 +174,12 @@ a successfully completed run.
   a tool" is executed with read-only tools (`side_effect=False`, no approval
   card in "ask"): `calc` (exact decimal/rational arithmetic, percentages,
   algebra via SymPy built from an AST allowlist — input is never evaluated as
-  code; always in the base), group `math` with `unit_convert`, `finance_calc`
-  (invoices, VAT, markup vs margin, discounts, loans, splits) and `csv` filters/aggregates
+  code; always in the base), group `math` with `unit_convert` and `csv` filters/aggregates
   (its old `eval` of the question was removed). Shared Decimal parsing lives in
-  `application/calculation/numbers.py`. Scripts
-  remain for complex modelling and ask for approval in "ask" mode.
+  `application/calculation/numbers.py`. The mutable `finance` skill combines
+  invoice/VAT/markup/margin/discount/loan/split formulas and the former kz-vat
+  guidance. Its script uses ordinary execution permissions, including approval
+  in "ask" mode; it is not a privileged replacement tool.
   Correct task execution takes priority over short-chat TTFT; the discovery-only
   default was reverted on 2026-09-06 after a live current-events refusal.
 - Task guidance arrives with tools, including Web and external MCP/SSH/IT Ops
@@ -422,22 +425,18 @@ hardware/runtime. An explicit user device is passed as a strict target; delegate
 choice or `bypass` does not trigger a mandatory placement question. The loop no
 longer rewrites `resource_process` into `ask_user` or extracts device intent with
 regular expressions. Ordinary `ask_user` remains available for material ambiguity.
-`resource_process` with `auto` considers only `local_gpu -> local_cpu`; it never
-probes or falls back to the voice server. An explicit `server_cpu` call remains
-supported, and legacy `server_gpu` input normalizes to that canonical target.
-The `/api/voice` STT/TTS conversation path is unchanged. For user workloads the
-agent first inspects local hardware, favors repairing/installing GPU support for
-long audio, and may build and use a missing processor through the existing
-materialize/file/shell/MCP tools. Server infrastructure is a separately considered
-option when suitable alternatives are unavailable.
-
-Local GPU transcription consumes all decoded segments without a character cap.
-It saves the complete UTF-8 TXT as a ResourceRef and downloadable artifact before
-returning an explicitly labelled preview of at most 8,000 characters. The result
-includes the full character count, resource ID, download URL and SHA-256;
-`resource_materialize` exposes the complete text for further processing. CPU and
-server transcription retain their existing limits. GPU power settings are not
-part of this processing contract.
+`resource_process` supports metadata inspection only. Document reading, creation
+and OCR use mutable scripts in `data/skills/document-read`, `document-create`
+and `ocr`. OCR sends the original PDF/image to the LAN service; PDF rendering,
+recognition and Tesseract fallback execute on that server. There is no local OCR
+fallback or built-in audio transcription or GPU/server execution target.
+The `/api/voice` STT/TTS conversation path is unchanged. For user audio workloads
+the agent inspects local hardware and uses the mutable `audio-transcribe` skill;
+its command-line parameters choose the model and device. Missing support is
+handled through the existing materialize/file/shell/MCP tools and Workflow.
+The complete transcript is saved by the skill, then separately published with
+`resource_publish`; script output or a preview is not a delivery receipt.
+Historical built-in transcription receipts remain readable for Resume.
 
 ## Integration boundary
 

@@ -1,12 +1,10 @@
-import io
 import os
 from pathlib import Path
 
 import pytest
 from PIL import Image
-from pypdf import PdfWriter
 
-from app.application.pdf import poppler, runtime
+from app.application.pdf import poppler
 from app.application.code_agent import document_validation
 
 
@@ -36,27 +34,12 @@ def test_incomplete_project_install_does_not_silently_use_unrelated_path(bundled
         poppler.poppler_options()
 
 
-@pytest.mark.parametrize("operation", ["preview", "ocr", "document_qa"])
-def test_all_pdf_conversion_paths_use_project_poppler(bundled_poppler, tmp_path, monkeypatch, operation):
-    pdf = PdfWriter()
-    pdf.add_blank_page(width=100, height=100)
-    buffer = io.BytesIO()
-    pdf.write(buffer)
-    data = buffer.getvalue()
+def test_document_qa_render_keeps_project_poppler(bundled_poppler, monkeypatch):
     seen = []
     def convert(*args, **kwargs):
         seen.append(kwargs["poppler_path"])
         return [Image.new("RGB", (32, 32), "white")]
-    monkeypatch.setattr("pdf2image.convert_from_bytes", convert)
     monkeypatch.setattr("pdf2image.convert_from_path", convert)
-    if operation == "preview":
-        monkeypatch.setattr(runtime, "OUTPUT_DIR", tmp_path)
-        assert runtime.render_pdf_pages(data)["rendered"] == 1
-    elif operation == "ocr":
-        monkeypatch.setattr(runtime, "_ensure_tesseract", lambda module: True)
-        monkeypatch.setattr("pytesseract.image_to_string", lambda *a, **k: "OCR fixture")
-        assert "OCR fixture" in runtime._try_ocr(data, 100)
-    else:
-        monkeypatch.setattr("app.infrastructure.llm.vision_ocr.describe_image", lambda *a, **k: '{"layout_issue": false, "issues": []}')
-        assert document_validation._inspect_pages(Path("fixture.pdf"), 1)[0] == "passed"
+    monkeypatch.setattr("app.infrastructure.llm.vision_ocr.describe_image", lambda *a, **k: '{"layout_issue": false, "issues": []}')
+    assert document_validation._inspect_pages(Path("fixture.pdf"), 1)[0] == "passed"
     assert seen == [str(bundled_poppler)]

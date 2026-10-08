@@ -1217,22 +1217,17 @@ def _stream_code_agent_core(
                     # permission is inherited so bypass stays bypass end-to-end.
                     parsed_args["run_id"] = rid
                     parsed_args["permission_mode"] = permission_mode
-                if name in {"file_gen", "resource_publish"}:
+                if name == "resource_publish":
                     # Bind document-QA retry accounting to this run. The schema does
                     # not expose run_id, so the model cannot choose or reuse it.
                     parsed_args["run_id"] = rid
                 if document_page_count_contract is not None:
-                    is_generated_document = (
-                        name == "file_gen"
-                        and str(parsed_args.get("format") or "").strip().lower()
-                        in {"word", "docx", "pdf"}
-                    )
                     is_published_document = (
                         name == "resource_publish"
                         and str(parsed_args.get("project_path") or "").strip().lower()
                         .endswith((".docx", ".pdf"))
                     )
-                    if is_generated_document or is_published_document:
+                    if is_published_document:
                         # The user contract outranks a model-supplied guess/omission.
                         parsed_args["expected_page_count"] = document_page_count_contract
                 # Phase is presentation-only. Evidence is recorded only after

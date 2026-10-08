@@ -3,11 +3,11 @@
 #   cd backend && .venv\Scripts\pip install -r requirements-optional.txt
 # Or pick a profile by copy-pasting just the section you need.
 
-# === Document parsing (Excel, PDF tables, OCR) ===
-pdfplumber>=0.11
+# === Shared tabular tools and document publication QA ===
+# PDF/Office reading and OCR dependencies live in data/skills/<skill>/requirements.txt.
+# openpyxl is still used by bom-check; pdf2image renders publication QA pages.
 pandas>=2.2
 openpyxl>=3.1
-pytesseract>=0.3.13
 pdf2image>=1.17
 
 # === Browser screenshots ===
@@ -23,29 +23,24 @@ pyautogui>=0.9.54
 # Provides pyright for project checks; the built-in agent LSP was removed.
 pyright>=1.1,<2
 
-# === Local speech-to-text (resource_process transcribe on local_gpu/local_cpu) ===
-# The local faster-whisper / CTranslate2 workload behind resource_process. WITHOUT
-# these packages local_gpu/local_cpu stay UNAVAILABLE (honest) and `auto` falls
-# through to the server STT — nothing here changes behavior until installed.
+# === Local speech-to-text used by the mutable audio-transcribe skill ===
+# data/skills/audio-transcribe/transcribe.py uses the application's Python and
+# these packages. There is no built-in resource_process transcription runtime.
 #
 # CPU-only (works on any host): faster-whisper pulls ctranslate2 + av (PyAV,
 # audio decode) + onnxruntime (VAD) + tokenizers/huggingface_hub.
 faster-whisper==1.1.1
 ctranslate2==4.5.0
 #
-# GPU (NVIDIA CUDA 12) — this optional bundle installs these for local_gpu.
+# GPU (NVIDIA CUDA 12) — used by the skill's --device cuda/auto modes.
 # CTranslate2 4.5 targets
-# CUDA 12 + cuDNN 9; on Windows the runtime adds these package bin dirs to the
-# DLL search path automatically (see media/local_transcription._ensure_cuda_dll_path).
+# CUDA 12 + cuDNN 9; on Windows the skill adds these package bin directories to
+# its process DLL search path.
 # Exact Windows wheels are pinned as one reproducible CUDA 12 pair; live
 # compatibility remains part of the deferred GPU smoke gate.
 nvidia-cublas-cu12==12.4.5.8
 nvidia-cudnn-cu12==9.5.0.50
 #
-# NOTE: the Systran faster-whisper-large-v3 (and -small) CTranslate2 weights are
-# already in this workstation's Hugging Face cache — no download is needed if
-# ELIRA_LOCAL_STT_CACHE_DIR points at it; otherwise the model downloads once into
-# the server-owned data/model_cache. Model/compute/cache are all server-owned:
-#   ELIRA_LOCAL_STT_MODEL         (allowlisted; default large-v3)
-#   ELIRA_LOCAL_STT_COMPUTE_TYPE  (allowlisted; default int8_float16 GPU / int8 CPU)
-#   ELIRA_LOCAL_STT_CACHE_DIR     (validated absolute path; default data/model_cache)
+# The skill optionally reads ELIRA_LOCAL_STT_CACHE_DIR as its Whisper cache.
+# Without it faster-whisper uses its normal cache. Model and device are selected
+# by the skill's command-line parameters; no built-in STT settings apply.

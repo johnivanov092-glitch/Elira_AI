@@ -18,7 +18,6 @@ from app.application.tool_registry.runtime import get_tool, seed_builtin_tools
 STAGE1_TOOLS = {
     "csv": ("auto", False, ["fs.read"]),
     "http_api": ("require_approval", True, ["net.outbound"]),
-    "file_gen": ("require_approval", True, ["fs.write"]),
 }
 
 
@@ -54,38 +53,17 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
         return_value={"ok": True, "status": 200, "body": "ok"},
     ):
         checks.append(("http_api", provider.dispatch("http_api", {"url": "https://example.com"})))
-    with (
-        patch(
-            "app.application.skills.generate_word",
-            return_value={
-                "ok": True,
-                "filename": "fake.docx",
-                "path": str(tmp_path / "fake.docx"),
-                "size": 4,
-                "download_url": "/download",
-            },
-        ),
-        patch(
-            "app.application.code_agent.tools._content.validate_document",
-            return_value={
-                "status": "passed",
-                "sha256": "a" * 64,
-                "format": "docx",
-                "renderer": "test",
-                "page_count": 1,
-                "expected_page_count": None,
-                "vision_status": "passed",
-                "issues": [],
-            },
-        ),
-        patch(
-            "app.application.media.resource_store.publish_copy",
-            return_value=(4, "a" * 64),
-        ),
-    ):
-        checks.append(("file_gen", provider.dispatch("file_gen", {"format": "word", "content": "hello"})))
-
     for name, result in checks:
         text = str(result.get("text") or "")
         assert text, name
         assert "ERROR:" not in text, (name, text)
+
+
+def test_retired_generator_has_no_schema_dispatch_or_builtin_inventory(tmp_path):
+    from app.application.tool_registry.builtins import build_builtin_tools
+    names = {item["function"]["name"] for item in build_tool_schemas()}
+    assert "file_gen" not in names
+    assert "file_gen" not in {item["name"] for item in build_builtin_tools()}
+    provider = BuiltinToolProvider(tmp_path)
+    assert provider.owns("file_gen") is False
+    assert provider.dispatch("file_gen", {"format": "word"})["error"] == "unknown_tool"

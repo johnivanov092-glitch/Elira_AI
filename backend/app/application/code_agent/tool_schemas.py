@@ -12,7 +12,6 @@ from app.application.code_agent.capabilities import (
     CAPABILITY_GROUPS,
     capability_catalog_text,
 )
-from app.application.media.execution import accepted_execution_targets
 
 
 # Web-corpus schema additions are always available; runtime availability is the
@@ -178,8 +177,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file from the project. Returns lines with line numbers. "
-                               "PDF, DOCX, PPTX, XLS/XLSX and image scans return their extracted text.",
+                "description": "Read a plain text file. Returns lines with line numbers. "
+                               "For PDF/Office or OCR, read the matching skill and run its script; "
+                               "materialize attached ResourceRefs first.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -241,31 +241,19 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "resource_process",
                 "description": (
-                    "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) по явному запросу: "
-                    "прочитать файл, извлечь текст, расшифровать/транскрибировать аудио или "
-                    "видео (включая .mp4/.ogg голосовые). Process an attached resource / "
-                    "attachment by its resource_id — read file, extract text, transcribe "
-                    "audio/video. Read-only, one call = one operation. operation='inspect' "
-                    "returns metadata; 'extract_text' extracts document text; 'transcribe' "
-                    "runs speech-to-text. Takes a resource_id (NOT a path); the file must be "
-                    "attached to THIS run. execution_target chooses WHERE compute runs: "
-                    "'auto' (runtime picks local GPU → local CPU only), 'local_gpu' "
-                    "(строго локальная видеокарта — «используй локальное железо/видеокарту / "
-                    "обработай локально на GPU»; если недоступна — честная ошибка, файл НЕ "
-                    "уходит на сервер), 'local_cpu' (локальный CPU), 'server_cpu' (серверный "
-                    "CPU STT, selected explicitly, never an automatic fallback). 'server_gpu' "
-                    "is a deprecated input alias for server_cpu. Inspect client hardware and "
-                    "honor the user's chosen device; choose autonomously when delegated. "
-                    "If a suitable runtime is missing, use resource_materialize and the "
-                    "existing file/shell tools to build, verify and use one."
+                    "Inspect metadata of an attached resource by resource_id (NOT a path). "
+                    "The only operation is 'inspect'; execution_target accepts 'auto' or "
+                    "'local_cpu'. For content, use resource_materialize and the matching "
+                    "mutable document-read, ocr or audio-transcribe skill. Run its script "
+                    "with ordinary tools and publish finished files with resource_publish."
                 ),
                 "parameters": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
-                        "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
-                        "execution_target": {"type": "string", "enum": list(accepted_execution_targets()), "description": "Where to run compute. Honor an explicit user device with the corresponding strict target. auto uses local GPU then local CPU; it never uses server STT. server_gpu is a deprecated alias for explicitly selected server_cpu."},
+                        "operation": {"type": "string", "enum": ["inspect"], "description": "Inspect metadata only."},
+                        "execution_target": {"type": "string", "enum": ["auto", "local_cpu"], "description": "Metadata inspection runs on local CPU; auto selects it."},
                     },
                     "required": ["resource_id", "operation"],
                 },
@@ -306,7 +294,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "(кнопка «Скачать» в интерфейсе). Publish an already-produced workspace "
                     "file to the user as a downloadable artifact. Use this AFTER you have "
                     "created/converted/encoded the file with the normal tools (run_bash / "
-                    "ffmpeg / python / file_gen). Takes project_path (a RELATIVE path to an "
+                    "ffmpeg / python / a skill script). Takes project_path (a RELATIVE path to an "
                     "existing file in the project workspace, NOT absolute) and an optional "
                     "download_name (a plain filename, no directories; default = the source's "
                     "safe basename). For PDF/DOCX the runtime performs external document QA "
@@ -744,41 +732,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "finance_calc",
-                "description": (
-                    "Exact money formulas, rounded half up to `places` (default 2). invoice: items "
-                    "[{name, qty, price}] + markup_percent, discount_percent, vat_percent, "
-                    "prices_include_vat; vat_add/vat_extract: amount, vat_percent; markup: cost, "
-                    "markup_percent; margin: cost, price; price_from_margin: cost, margin_percent; "
-                    "discount: amount, discount_percent; percent_change: old, new; percent_of: part, "
-                    "whole; loan_payment: amount, rate_percent (annual), months; split: amount, weights."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "operation": {"type": "string", "enum": [
-                            "invoice", "vat_add", "vat_extract", "markup", "margin", "price_from_margin",
-                            "discount", "percent_change", "percent_of", "loan_payment", "split"]},
-                        "items": {"type": "array", "items": {"type": "object", "properties": {
-                            "name": {"type": "string"}, "qty": {"type": "string"}, "price": {"type": "string"}},
-                            "required": ["price"]}},
-                        "amount": {"type": "string"}, "cost": {"type": "string"}, "price": {"type": "string"},
-                        "vat_percent": {"type": "string"}, "markup_percent": {"type": "string"},
-                        "margin_percent": {"type": "string"}, "discount_percent": {"type": "string"},
-                        "prices_include_vat": {"type": "boolean"},
-                        "old": {"type": "string"}, "new": {"type": "string"},
-                        "part": {"type": "string"}, "whole": {"type": "string"},
-                        "rate_percent": {"type": "string"}, "months": {"type": "string"},
-                        "weights": {"type": "array", "items": {"type": "string"}},
-                        "places": {"type": "integer", "minimum": 0, "maximum": 6},
-                    },
-                    "required": ["operation"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "calc",
                 "description": (
                     "Exact calculator, no side effects. evaluate: arithmetic with exact decimals and "
@@ -822,44 +775,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "file_gen",
-                "description": (
-                    "Generate a Word (.docx), Excel (.xlsx), or PDF (.pdf) document. "
-                    "Returns a download URL and saves the file into the project's "
-                    "generated/ folder. For Word, pass `content` as plain text; lines "
-                     "starting with '## '/'### ' become headings, '- '/'* ' bullets, "
-                    "'N. ' numbered list items. For PDF, pass `content` as plain text "
-                    "(rendered verbatim, line breaks preserved). For Excel, pass "
-                    "`headers` (column names) and `data` (a list of row arrays). "
-                    "PDF/DOCX are rendered and externally inspected before a download URL is returned. "
-                    "Pass expected_page_count only when the task explicitly requires an exact count."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "format": {"type": "string", "description": "Output format: 'word', 'excel', or 'pdf'."},
-                        "title": {"type": "string", "description": "Document title (Word/PDF heading / Excel sheet name)."},
-                        "content": {"type": "string", "description": "Body text. Required for format=word (markdown-lite) or format=pdf (plain text)."},
-                        "headers": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Excel column headers. Used when format=excel.",
-                        },
-                        "data": {
-                            "type": "array",
-                            "items": {"type": "array"},
-                            "description": "Excel rows, each a list of cell values. Used when format=excel.",
-                        },
-                        "filename": {"type": "string", "description": "Optional output filename (extension appended if missing)."},
-                        "expected_page_count": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Optional exact page-count contract for PDF/DOCX."},
-                    },
-                    "required": ["format"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "read_image",
                 "description": (
                     "Describe an attached image by resource_id or an image file from "
@@ -893,9 +808,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "size before clicking — coordinates are absolute pixels and grounding is "
                     "approximate, so re-screenshot to verify the result of each action. "
                     "This tool controls the GUI only; it does not select or run compute "
-                    "on the local GPU. For attached audio/video, inspect the local runtime "
-                    "and use resource_process with execution_target='local_gpu' when suitable, "
-                    "or materialize the resource and build the needed processor with code tools. "
+                    "on the local GPU. For attached audio/video transcription, read the "
+                    "audio-transcribe skill and materialize the resource for its script. "
                     "Actions: 'screenshot' (returns a description + screen size), 'left_click'/"
                     "'right_click'/'double_click'/'middle_click' (need x,y), 'move' (x,y), "
                     "'type' (text), 'key' (keys, e.g. [\"ctrl\",\"c\"] or [\"enter\"]), 'scroll' "

@@ -6,10 +6,48 @@ a 25 % markup is a 20 % margin.
 """
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 from typing import Any, Literal, overload
 
-from app.application.calculation.numbers import money, parse_decimal, plain
+import argparse
+import json
+from pathlib import Path
+import sys
+
+_CURRENCY_TOKENS = ("₸", "тг.", "тг", "тенге", "KZT", "kzt", "₽", "руб.", "руб", "RUB", "$", "USD", "€", "EUR")
+
+def parse_decimal(value: Any) -> Decimal:
+    """Parse a number as written in price lists: spaces, NBSP, currency, comma decimals.
+
+    Raises ``InvalidOperation`` for anything that is not a finite number.
+    """
+    if isinstance(value, bool) or value is None:
+        raise InvalidOperation
+    if isinstance(value, (int, float, Decimal)):
+        number = Decimal(str(value))
+    else:
+        raw = str(value).strip().replace(" ", "").replace(" ", "").replace(" ", "")
+        for token in _CURRENCY_TOKENS:
+            raw = raw.replace(token, "")
+        if "," in raw and "." not in raw:
+            raw = raw.replace(",", ".")
+        elif "," in raw and "." in raw:
+            raw = raw.replace(",", "")
+        number = Decimal(raw)
+    if not number.is_finite():
+        raise InvalidOperation
+    return number
+
+def money(value: Decimal, places: int = 2) -> Decimal:
+    """Round half up to ``places`` decimal places (2 = tiyn/kopecks)."""
+    return value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+def plain(value: Decimal) -> str:
+    """Decimal without exponent or trailing zeros after the point."""
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"-0", ""} else text
 
 OPERATIONS = (
     "invoice", "vat_add", "vat_extract", "markup", "margin", "price_from_margin",
@@ -175,3 +213,47 @@ def calculate(operation: str, params: dict[str, Any] | None = None, *, places: i
     else:
         result = _split(params, places)
     return {"ok": True, "operation": operation, "places": places, **result}
+
+
+def run_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the former finance tool result/error envelope for a JSON request."""
+    if not isinstance(request, dict):
+        return {"ok": False, "error": "finance_error", "text": "ERROR: нужен JSON-объект расчёта"}
+    params = dict(request)
+    operation = params.pop("operation", "")
+    places = params.pop("places", 2)
+    try:
+        result = calculate(operation, params, places=int(places if places not in (None, "") else 2))
+    except (FinanceError, ValueError, TypeError) as exc:
+        return {"ok": False, "error": "finance_error", "text": f"ERROR: {exc}"}
+    return {"ok": True, "text": f"Финансовый расчёт:\n{json.dumps(result, ensure_ascii=False, indent=2)}", "result": result}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Standalone Decimal finance formulas; input is a JSON object.")
+    parser.add_argument("--input", required=True, type=Path, help="UTF-8 JSON request (operation, places, parameters)")
+    parser.add_argument("--output", type=Path, help="Optional UTF-8 JSON result; existing files are protected")
+    parser.add_argument("--overwrite", action="store_true", help="Explicitly allow replacing --output")
+    args = parser.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        if args.input.stat().st_size > 2_000_000:
+            raise ValueError("входной JSON: не больше 2 МБ")
+        if args.output and args.input.resolve() == args.output.resolve():
+            raise ValueError("входной файл и результат должны иметь разные пути")
+        request = json.loads(args.input.read_text(encoding="utf-8"))
+        result = run_request(request)
+        serialized = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+        if args.output:
+            with args.output.open("w" if args.overwrite else "x", encoding="utf-8", newline="\n") as target:
+                target.write(serialized)
+    except (OSError, ValueError, TypeError, DecimalException, OverflowError) as exc:
+        result = {"ok": False, "error": "finance_error", "text": f"ERROR: {exc}"}
+        serialized = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    sys.stdout.write(serialized)
+    return 0 if result.get("ok") is True else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

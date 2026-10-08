@@ -34,3 +34,14 @@ def test_pdf_download_and_inline_view_use_pdf_media_type(tmp_path: Path) -> None
     assert preview.status_code == 200
     assert preview.headers["content-type"] == "application/pdf"
     assert "attachment" not in preview.headers.get("content-disposition", "").lower()
+
+
+def test_retired_generation_endpoints_return_404_and_shared_routes_remain():
+    client = _client()
+    for operation in ("word", "excel", "pdf"):
+        response = client.post(f"/api/skills/generate/{operation}", json={"content": "Body"})
+        assert response.status_code == 404
+    paths = {route.path for route in skills_routes.router.routes}
+    assert {"/api/skills/download/{filename}", "/api/skills/view/{filename}",
+            "/api/skills/files", "/api/skills/sql/query", "/api/skills/http",
+            "/api/skills/screenshot"} <= paths

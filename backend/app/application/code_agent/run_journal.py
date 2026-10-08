@@ -680,17 +680,7 @@ def discover_capabilities(*, model: str, tools: list[str]) -> dict[str, Any]:
     llm = local_llm_config()
     embed = local_embed_config()
     tesseract = shutil.which("tesseract")
-    if not tesseract:
-        try:
-            from app.application.pdf.runtime import _TESSERACT_CANDIDATES
-
-            tesseract = next((path for path in _TESSERACT_CANDIDATES if Path(path).is_file()), None)
-        except (ImportError, OSError):
-            tesseract = None
-    # Explicit tools always attempt their configured server. Report CONFIGURED
-    # state only (no network probe — keep run-start fast and non-blocking); the
-    # tool result itself reports reachability failures. Local tesseract remains
-    # an OCR fallback.
+    # Report configured services only; mutable skills own document/OCR execution.
     vision = vision_config()
     ocr = ocr_config()
     vision_ok = bool(vision.base_url)

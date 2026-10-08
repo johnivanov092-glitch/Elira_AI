@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import logging
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.application.file_extract.runtime import _AUDIO_EXTS, is_extract_error
 from app.core.config import DATA_DIR, UPLOAD_DIR
 from app.infrastructure.db.connection import connect_sqlite
 
@@ -32,12 +30,6 @@ _LIBRARY_INTENT_RE = re.compile(
     r"(?:документ\w*|файл\w*)\s+(?:из\s+)?(?:library|библиотек\w*))\b",
     re.IGNORECASE,
 )
-
-# Routing per user decision: images always go to the vision model (:8004),
-# which returns a text description we store as the preview. Document OCR
-# (scanned PDFs) goes to the server OCR service (:8002) with local pytesseract
-# as a fallback. See app.infrastructure.llm.vision_ocr.
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
 
 _MAX_PREVIEW_CHARS = 12000
 _MAX_LIBRARY_CONTENT_CHARS = 1_000_000
@@ -189,135 +181,20 @@ def safe_disk_name(filename: str, data: bytes) -> str:
     return f"{safe_stem}_{digest}{suffix}"
 
 
-def _describe_image_preview(filename: str, contents: bytes) -> str:
-    """Images route to the vision model (:8004); the returned text description
-    becomes the preview. Empty string if vision is disabled/unreachable."""
-    try:
-        from app.infrastructure.llm.vision_ocr import describe_image
-
-        description = describe_image(filename, contents)
-    except Exception as exc:
-        logger.warning("vision preview failed for %s: %s", filename, exc)
-        return ""
-    return (description or "")[:12000]
-
-
-def _ocr_pdf_preview(filename: str, contents: bytes) -> str:
-    """Scanned-PDF text: server OCR (:8002) first, local pytesseract fallback.
-    Empty string if neither produces text."""
-    try:
-        from app.infrastructure.llm.vision_ocr import ocr_document
-
-        text = ocr_document(filename, contents)
-        if text and text.strip():
-            return text[:12000]
-    except Exception as exc:
-        logger.warning("server OCR failed for %s: %s", filename, exc)
-    try:
-        from app.application.pdf.runtime import _try_ocr
-
-        local = _try_ocr(contents, 12000)
-        if local and local.strip():
-            return local[:12000]
-    except Exception as exc:
-        logger.warning("local OCR fallback failed for %s: %s", filename, exc)
-    return ""
-
-
-def _extract_via_file_extract(filename: str, contents: bytes) -> str:
-    """Delegate to the composer's extractor (file_extract.extract_file) for
-    formats the Library shares with it but doesn't parse itself: audio (whisper
-    STT), legacy .xls (xlrd), .pptx (python-pptx). One implementation, no drift.
-    Empty string on failure."""
-    try:
-        from app.application.file_extract.runtime import extract_file
-
-        text = extract_file(filename, contents).get("text") or ""
-    except Exception as exc:
-        logger.warning("library extract via file_extract failed for %s: %s", filename, exc)
-        return ""
-    return "" if is_extract_error(text) else text[:12000]
-
-
 def extract_preview(filename: str, contents: bytes) -> str:
-    ext = Path(filename).suffix.lower()
-    preview = ""
-    if ext in TEXT_EXTS:
-        return contents.decode("utf-8", errors="replace")[:12000]
-    if ext in IMAGE_EXTS:
-        return _describe_image_preview(filename, contents)
-    # audio (whisper) / legacy .xls (xlrd) / .pptx — reuse the composer extractor.
-    if ext in _AUDIO_EXTS or ext in (".xls", ".pptx"):
-        return _extract_via_file_extract(filename, contents)
-    if ext == ".pdf":
-        try:
-            from pypdf import PdfReader
-
-            reader = PdfReader(io.BytesIO(contents))
-            parts = [(page.extract_text() or "") for page in reader.pages[:20]]
-            preview = "\n".join(parts)[:12000]
-        except Exception:
-            preview = ""
-        # Scanned PDF: little/no embedded text → route to OCR.
-        if len(preview.strip()) < 100:
-            ocr_preview = _ocr_pdf_preview(filename, contents)
-            if ocr_preview.strip():
-                preview = ocr_preview
-    elif ext in (".docx", ".doc"):
-        try:
-            from docx import Document
-
-            doc = Document(io.BytesIO(contents))
-            preview = "\n".join(p.text for p in doc.paragraphs if p.text.strip())[:12000]
-        except Exception:
-            preview = ""
-    elif ext in (".xlsx", ".xlsm"):
-        try:
-            from openpyxl import load_workbook
-
-            wb = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
-            parts = []
-            for sheet in wb.sheetnames[:3]:
-                ws = wb[sheet]
-                parts.append(f"=== {sheet} ===")
-                for row in ws.iter_rows(max_row=100, values_only=True):
-                    parts.append(" | ".join(str(c) if c is not None else "" for c in row))
-            preview = "\n".join(parts)[:12000]
-            wb.close()
-        except Exception:
-            preview = ""
-    return preview
+    """Preview existing plain text; binary formats are processed by skills."""
+    return extract_full_text(filename, contents)[:_MAX_PREVIEW_CHARS]
 
 
 def extract_full_text(filename: str, contents: bytes) -> str:
-    """Extract reusable Library text once; request prompts receive only excerpts.
-
-    The one-million-character storage cap is a physical ingestion boundary, not
-    a per-request reading limit. ``read_library_file`` exposes the stored text in
-    small repeatable pages so the model can consume the complete document.
-    """
-    ext = Path(filename).suffix.lower()
-    if ext in IMAGE_EXTS:
-        return _describe_image_preview(filename, contents)[:_MAX_LIBRARY_CONTENT_CHARS]
-    try:
-        from app.application.file_extract.runtime import extract_file
-
-        result = extract_file(
-            filename,
-            contents,
-            max_chars=_MAX_LIBRARY_CONTENT_CHARS,
-        )
-        if not isinstance(result, dict) or result.get("ok") is False:
-            return ""
-        text = str(result.get("text") or "")
-        return "" if is_extract_error(text) else text[:_MAX_LIBRARY_CONTENT_CHARS]
-    except Exception as exc:
-        logger.warning("library full-text extraction failed for %s: %s", filename, exc)
+    """Index plain text only. Store binary files without OCR, STT or parsing."""
+    if Path(filename).suffix.lower() not in TEXT_EXTS:
         return ""
+    return contents.decode("utf-8-sig", errors="replace")[:_MAX_LIBRARY_CONTENT_CHARS]
 
 
 def read_disk_preview(stored_path: str, max_chars: int) -> str:
-    if not stored_path:
+    if not stored_path or Path(stored_path).suffix.lower() not in TEXT_EXTS:
         return ""
     try:
         return Path(stored_path).read_text(encoding="utf-8", errors="ignore")[:max_chars]
@@ -325,10 +202,12 @@ def read_disk_preview(stored_path: str, max_chars: int) -> str:
         return ""
 
 
-def _extraction_status(content: str, preview: str) -> str:
+def _extraction_status(content: str, preview: str, *, filename: str = "") -> str:
     if content:
         return "capped" if len(content) >= _MAX_LIBRARY_CONTENT_CHARS else "ready"
-    return "preview_only" if preview else "failed"
+    if preview:
+        return "preview_only"
+    return "not_processed" if filename and Path(filename).suffix.lower() not in TEXT_EXTS else "failed"
 
 
 def _public_row(row: sqlite3.Row, *, active_key: bool) -> dict[str, Any]:
@@ -395,7 +274,10 @@ def add_file_contents(
     finally:
         conn.close()
 
-    if existing is not None and str(existing["content"] or ""):
+    if existing is not None and (
+        str(existing["content"] or "")
+        or (str(existing["preview"] or "") and Path(filename).suffix.lower() not in TEXT_EXTS)
+    ):
         active = bool(existing["use_in_context"]) or bool(use_in_context)
         conn = _conn()
         try:
@@ -414,7 +296,7 @@ def add_file_contents(
             "name": str(existing["name"] or filename),
             "preview_len": len(preview),
             "content_chars": len(content),
-            "status": _extraction_status(content, preview),
+            "status": _extraction_status(content, preview, filename=filename),
             "active": active,
             "duplicate": True,
         }
@@ -423,7 +305,7 @@ def add_file_contents(
     preview = content[:_MAX_PREVIEW_CHARS]
     if not preview:
         preview = extract_preview(filename, contents)[:_MAX_PREVIEW_CHARS]
-    status = _extraction_status(content, preview)
+    status = _extraction_status(content, preview, filename=filename)
 
     if existing is not None:
         active = bool(existing["use_in_context"]) or bool(use_in_context)
@@ -499,12 +381,12 @@ def _hydrate_file(file_id: int) -> sqlite3.Row | None:
     stored_path = str(row["stored_path"] or "")
     try:
         source = Path(stored_path)
-        contents = source.read_bytes() if source.is_file() else b""
+        contents = source.read_bytes() if source.is_file() and source.suffix.lower() in TEXT_EXTS else b""
     except Exception:
         contents = b""
     content = extract_full_text(str(row["name"] or "unknown"), contents) if contents else ""
     preview = str(row["preview"] or "") or content[:_MAX_PREVIEW_CHARS]
-    status = _extraction_status(content, preview)
+    status = _extraction_status(content, preview, filename=str(row["name"] or "unknown"))
     conn = _conn()
     try:
         conn.execute(
@@ -532,11 +414,12 @@ def toggle_context(file_id: int, *, enabled: bool = True) -> dict[str, Any]:
         return {"ok": False, "error": "file_not_found", "id": file_id}
     content = str(row["content"] or "") if row is not None else ""
     preview = str(row["preview"] or "") if row is not None else ""
+    filename = str(row["name"] or "unknown") if row is not None else ""
     return {
         "ok": True,
         "id": file_id,
         "use_in_context": enabled,
-        "status": _extraction_status(content, preview) if enabled else "inactive",
+        "status": _extraction_status(content, preview, filename=filename) if enabled else "inactive",
     }
 
 
@@ -620,6 +503,45 @@ def get_context_files() -> dict[str, Any]:
     return {"ok": True, "items": [dict(row) for row in rows], "count": len(rows)}
 
 
+def _unprocessed_file_result(row: sqlite3.Row) -> dict[str, Any]:
+    """Expose a raw ResourceRef for an explicit read, without processing bytes."""
+    from app.application.media import resource_store
+    from app.core.config import MAX_UPLOAD_BYTES
+
+    result: dict[str, Any] = {
+        "ok": False, "error": "processing_required", "file_id": int(row["id"]),
+        "name": str(row["name"] or "unknown"), "status": "not_processed",
+    }
+    try:
+        source = Path(str(row["stored_path"] or "")).resolve()
+        source.relative_to(UPLOADS_DIR.resolve())
+        if not source.is_file() or source.stat().st_size > MAX_UPLOAD_BYTES:
+            raise ValueError("Raw Library source is unavailable")
+        with source.open("rb") as stream:
+            contents = stream.read(MAX_UPLOAD_BYTES + 1)
+        if len(contents) > MAX_UPLOAD_BYTES:
+            raise ValueError("Raw Library source exceeds the upload limit")
+        expected = str(row["sha256"] or "")
+        if expected and hashlib.sha256(contents).hexdigest() != expected:
+            raise ValueError("Raw Library source changed")
+        record = resource_store.register_resource(
+            original_name=result["name"], content_type=str(row["type"] or ""),
+            owner_session="library", data=contents,
+        )
+    except (OSError, ValueError, resource_store.ResourceError):
+        logger.warning("Raw Library source unavailable for file_id=%s", int(row["id"]))
+        return {**result, "error": "resource_unavailable",
+                "text": "Library original is unavailable; processing was not started."}
+    if record.kind in {"audio", "video"}:
+        skill = "audio-transcribe"
+    elif record.kind == "image":
+        skill = "ocr"
+    else:
+        skill = "document-read"
+    return {**result, "resource": resource_store.resource_ref(record), "skill": skill,
+            "text": f"No extracted text. Read data/skills/{skill}/SKILL.md, materialize the resource and process it with that skill."}
+
+
 def read_library_file(
     file_id: int,
     *,
@@ -631,6 +553,8 @@ def read_library_file(
     if row is None:
         return {"ok": False, "error": "file_not_found", "file_id": int(file_id)}
     content = str(row["content"] or row["preview"] or "")
+    if not content and Path(str(row["name"] or "")).suffix.lower() not in TEXT_EXTS:
+        return _unprocessed_file_result(row)
     start = max(0, int(offset))
     page_limit = max(1, min(int(limit), _MAX_READ_CHARS))
     text = content[start:start + page_limit]

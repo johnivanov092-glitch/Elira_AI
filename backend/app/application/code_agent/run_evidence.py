@@ -51,7 +51,6 @@ _OBSERVATION_TOOLS = frozenset({
 _VERIFICATION_TOOLS = frozenset({
     "browser",
     "http_api",
-    "file_gen",
     "resource_publish",
     "ssh_port_check",
     "ssh_read",
@@ -305,7 +304,6 @@ class RunEvidence:
     def __init__(self, *, sources: Iterable[dict[str, Any]] = (), operations_complete: bool = True) -> None:
         self._project_epoch = 0
         self._receipts: list[EvidenceReceipt] = []
-        self._generated_documents: set[str] = set()
         self._grounding_fragments: list[str] = []
         self._web_research_started = False
         source_records = list(sources)
@@ -597,10 +595,6 @@ class RunEvidence:
         return [(url, titles.get(url, "")) for url in self.read_site_urls]
 
     @property
-    def generated_documents(self) -> tuple[str, ...]:
-        return tuple(sorted(self._generated_documents))
-
-    @property
     def has_document_artifacts(self) -> bool:
         return any(
             receipt.target.lower().endswith(_QA_DOCUMENT_EXTENSIONS)
@@ -860,35 +854,7 @@ class RunEvidence:
 
         if (
             provider_ok
-            and tool == "file_gen"
-            and str(output.get("download_name") or "").strip()
-        ):
-            name = str(output["download_name"]).strip()
-            self._generated_documents.add(name)
-            self._receipts.append(EvidenceReceipt(
-                EvidenceKind.ARTIFACT,
-                tool,
-                self._project_epoch,
-                True,
-                _basename(name),
-                str(output.get("sha256") or ""),
-            ))
-
-        transcript_resource = output.get("resource")
-        published_gpu_transcript = (
-            tool == "resource_process"
-            and arguments.get("operation") == "transcribe"
-            and output.get("operation") == "transcribe"
-            and output.get("execution_target") == "local_gpu"
-            and isinstance(transcript_resource, dict)
-            and bool(transcript_resource.get("resource_id"))
-            and transcript_resource.get("kind") == "document"
-            and str(transcript_resource.get("content_type") or "").startswith("text/plain")
-            and re.fullmatch(r"[0-9a-f]{64}", str(output.get("sha256") or "")) is not None
-        )
-        if (
-            provider_ok
-            and (tool == "resource_publish" or published_gpu_transcript)
+            and tool == "resource_publish"
             and str(output.get("download_name") or "").strip()
             and str(output.get("download_url") or "").strip()
         ):

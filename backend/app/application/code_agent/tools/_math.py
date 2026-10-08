@@ -1,4 +1,4 @@
-"""Read-only math contour tools: calc, unit_convert, finance_calc (decision 2026-10-06)."""
+"""Read-only arithmetic and unit conversion; financial formulas live in skills."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ from decimal import InvalidOperation
 from typing import Any
 
 from app.application.calculation import expression as calc_expression
-from app.application.calculation import finance, units
+from app.application.calculation import units
 
 
 def _ok(label: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -40,11 +40,3 @@ def tool_unit_convert(*, value: Any, from_unit: str, to_unit: str) -> dict[str, 
     except (InvalidOperation, ValueError):
         return _error("invalid_value", f"value: не число ({value!r})")
     return _ok("Перевод единиц", result)
-
-
-def tool_finance_calc(*, operation: str, places: int = 2, **params: Any) -> dict[str, Any]:
-    try:
-        result = finance.calculate(operation, params, places=int(places if places not in (None, "") else 2))
-    except (finance.FinanceError, ValueError, TypeError) as exc:
-        return _error("finance_error", str(exc))
-    return _ok("Финансовый расчёт", result)

@@ -57,7 +57,6 @@ from app.application.code_agent.tools._meta import (  # noqa: F401
 )
 from app.application.code_agent.tools._content import (  # noqa: F401
     tool_csv,
-    tool_file_gen,
     tool_http_api,
 )
 from app.application.code_agent.tools._vision import (  # noqa: F401
@@ -107,6 +106,5 @@ __all__ = [
     "tool_browser",
     "tool_csv",
     "tool_http_api",
-    "tool_file_gen",
     "tool_read_image",
 ]

@@ -128,7 +128,7 @@ def test_ssh_requires_executed_observation_and_postcheck_after_change() -> None:
     assert evidence.has_current_passing_verification
 
 
-def test_published_local_gpu_transcript_is_a_download_artifact() -> None:
+def test_retired_transcription_result_is_not_a_download_artifact() -> None:
     output = {
         "ok": True, "operation": "transcribe", "execution_target": "local_gpu",
         "resource": {"resource_id": "transcript-id", "kind": "document", "content_type": "text/plain", "size": 50000},
@@ -137,15 +137,25 @@ def test_published_local_gpu_transcript_is_a_download_artifact() -> None:
     }
     evidence = RunEvidence()
     _record(evidence, "resource_process", args={"operation": "transcribe"}, output=output)
-    receipts = evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
-    assert len(receipts) == 1
-    assert receipts[0].target == "transcript.txt"
-    assert receipts[0].sha256 == "a" * 64
+    assert not evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
 
     for patch in ({"ok": False}, {"sha256": ""}, {"resource": {}}, {"execution_target": "server_cpu"}):
         invalid = RunEvidence()
         _record(invalid, "resource_process", args={"operation": "transcribe"}, output={**output, **patch})
         assert not invalid.receipts_of_kind(EvidenceKind.ARTIFACT)
+
+
+def test_skill_transcript_published_as_an_ordinary_file_is_an_artifact() -> None:
+    evidence = RunEvidence()
+    _record(evidence, "resource_publish", output={
+        "ok": True, "project_path": "transcript.txt",
+        "download_name": "transcript.txt", "download_url": "/api/skills/download/transcript.txt",
+        "sha256": "a" * 64,
+    })
+    receipts = evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
+    assert len(receipts) == 1
+    assert receipts[0].target == "transcript.txt"
+    assert receipts[0].sha256 == "a" * 64
 
 
 def test_document_qa_receipt_must_match_published_artifact_hash() -> None:
@@ -195,16 +205,17 @@ def test_document_qa_receipt_must_match_published_artifact_hash() -> None:
     assert matching.has_verified_document_artifacts is True
 
 
-def test_file_gen_qa_and_artifact_share_the_mutation_epoch() -> None:
+def test_skill_document_publication_qa_and_artifact_share_the_mutation_epoch() -> None:
     evidence = RunEvidence()
     digest = "f" * 64
 
     _record(
         evidence,
-        "file_gen",
+        "resource_publish",
         output={
             "ok": True,
             "download_name": "proposal.pdf",
+            "download_url": "/api/skills/download/proposal.pdf",
             "sha256": digest,
             "touched_path": "generated/proposal.pdf",
             "document_qa": {

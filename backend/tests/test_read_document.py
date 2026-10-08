@@ -1,10 +1,4 @@
-"""read_file must extract text from on-disk pdf/docx/pptx/xlsx, not reject them.
-
-Live catch (medical-docs run): read_file returned "binary file (not text)" for a
-.pdf/.docx, so the model fumbled with run_bash+PyMuPDF/PowerShell. Now read_file
-routes document types through the shared file_extract pipeline (pypdf/pdfplumber
-+OCR fallback / python-docx / pptx / openpyxl).
-"""
+"""Plain reads stay local; document and OCR work require mutable skills."""
 from __future__ import annotations
 
 import sys
@@ -20,42 +14,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.code_agent.tools._files import tool_read_file  # noqa: E402
 
-_EXTRACT = "app.application.file_extract.runtime.extract_file"
 
 
 class ReadDocumentTest(unittest.TestCase):
-    def test_real_docx_is_extracted_not_rejected(self):
-        # end-to-end through python-docx (installed in the app venv)
-        try:
-            from docx import Document
-        except Exception:
-            self.skipTest("python-docx not installed")
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "real.docx"
-            doc = Document()
-            doc.add_paragraph("СЕКРЕТНАЯ СТРОКА в документе 7391")
-            doc.save(str(p))
-            r = tool_read_file(Path(tmp), path="real.docx")
-        self.assertNotIn("binary file", r["text"])
-        self.assertIn("СЕКРЕТНАЯ СТРОКА", r["text"])
-        self.assertIn("7391", r["text"])
 
-    def test_pdf_is_routed_through_file_extract(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "doc.pdf").write_bytes(b"%PDF-1.4 fake bytes")
-            with mock.patch(_EXTRACT, return_value={"ok": True, "text": "Текст из PDF, строка A"}):
-                r = tool_read_file(Path(tmp), path="doc.pdf")
-        self.assertNotIn("binary file", r["text"])
-        self.assertIn("Текст из PDF, строка A", r["text"])
-        self.assertIn("file_extract", r["text"])  # header marks the source
 
-    def test_scanned_pdf_empty_text_gives_helpful_hint(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "scan.pdf").write_bytes(b"%PDF fake scan")
-            with mock.patch(_EXTRACT, return_value={"ok": True, "text": "   \n  "}):
-                r = tool_read_file(Path(tmp), path="scan.pdf")
-        self.assertIn("не извлечён", r["text"])
-        self.assertIn("OCR", r["text"])
 
     def test_plain_text_file_unchanged(self):
         # regression: normal text reads still work the old way
@@ -88,28 +51,7 @@ class ReadDocumentTest(unittest.TestCase):
         self.assertNotIn("OTHER DOCUMENT VERIFICATION", r["text"])
         self.assertNotIn("touched_path", r)
 
-    def test_image_is_auto_ocred(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "scan.jpeg").write_bytes(b"\xff\xd8\xff\xe0 fake\x00\x01 jpeg")
-            with mock.patch(
-                "app.application.code_agent.tools._vision.ocr_file_text",
-                return_value={"text": "РАСПОЗНАННЫЙ текст со скана 42"},
-            ):
-                r = tool_read_file(Path(tmp), path="scan.jpeg")
-        self.assertNotIn("binary file", r["text"])
-        self.assertIn("РАСПОЗНАННЫЙ текст со скана 42", r["text"])
-        self.assertIn("OCR", r["text"])
 
-    def test_image_with_no_text_points_to_read_image(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "photo.png").write_bytes(b"\x89PNG\r\n fake\x00\x01")
-            with mock.patch(
-                "app.application.code_agent.tools._vision.ocr_file_text",
-                return_value={"text": "   "},
-            ):
-                r = tool_read_file(Path(tmp), path="photo.png")
-        self.assertNotIn("binary file", r["text"])
-        self.assertIn("read_image", r["text"])
 
     def test_missing_file_with_no_match_lists_the_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -121,3 +63,41 @@ class ReadDocumentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_documents_and_images_require_skill_without_reading_binary_payload(tmp_path, monkeypatch):
+    import pytest
+    for extension in (".pdf", ".docx", ".doc", ".pptx", ".xls", ".xlsx", ".xlsm", ".png", ".jpg"):
+        path = tmp_path / ("private" + extension)
+        path.write_bytes(b"PRIVATE_BINARY_CAN_LOOK_ASCII")
+        with monkeypatch.context() as context:
+            context.setattr(Path, "read_bytes", lambda _: pytest.fail("builtin read document bytes"))
+            result = tool_read_file(tmp_path, path=path.name)
+        assert result["ok"] is False and result["error"] == "skill_required"
+        assert ("document-read" if extension not in {".png", ".jpg"} else "ocr") in result["text"]
+        assert "PRIVATE_BINARY" not in result["text"]
+
+
+def test_runtime_bound_resource_requires_materialization_without_content_lookup(tmp_path, monkeypatch):
+    import pytest
+    from app.application.media import resource_store
+    monkeypatch.setattr(resource_store, "read_bytes", lambda _: pytest.fail("resource contents read"))
+    result = tool_read_file(tmp_path, path="attachment.docx", _runtime_resource_id="a" * 32,
+                            _runtime_resource_name="attachment.docx")
+    assert result["ok"] is False and result["error"] == "resource_requires_materialize"
+    assert result["resolved_from_resource"] is True
+    assert result["resource_id"] == "a" * 32
+    assert "resource_materialize" in result["text"] and "document-read" in result["text"]
+
+
+def test_all_known_audio_video_extensions_refuse_even_ascii_bytes_before_read(tmp_path, monkeypatch):
+    import pytest
+    from app.core.file_types import AUDIO_EXTS, VIDEO_EXTS
+    for extension in sorted(set(AUDIO_EXTS) | VIDEO_EXTS):
+        source = tmp_path / ("private" + extension)
+        source.write_bytes(b"PRIVATE_MEDIA_CAN_LOOK_ASCII")
+        with monkeypatch.context() as context:
+            context.setattr(Path, "read_bytes", lambda _: pytest.fail("media payload read as text"))
+            result = tool_read_file(tmp_path, path=source.name)
+        assert result["ok"] is False and result["error"] == "binary_file"
+        assert "PRIVATE_MEDIA" not in result["text"]

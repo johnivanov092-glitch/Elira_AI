@@ -68,35 +68,65 @@ def test_final_download_link_requires_observed_publication_without_declared_inte
     assert marked == example + "Результат (публикация не подтверждена) Ссылка на файл (публикация не подтверждена)"
 
 
-def test_gpu_transcript_publication_binds_only_actual_materialized_resource(workspace, monkeypatch):
-    from app.application.code_agent.tools._resources import tool_resource_materialize
-    from app.application.media import execution, resource_store
+@pytest.mark.parametrize("retired_tool", ["resource_process", "file_gen"])
+def test_retired_result_cannot_register_new_delivery(workspace, monkeypatch, retired_tool):
+    from app.application.media import resource_store
     from app.core import data_files
 
     monkeypatch.setattr(data_files, "DATA_DIR", config.DATA_DIR)
-    original = resource_store.register_resource(
-        original_name="voice.ogg", content_type="audio/ogg", owner_session="test", data=b"OggS")
-    output = execution._local_gpu_transcript_result(original, "Полная запись, включая конец.")
+    text = "[00:00:17] Полная запись, включая конец.\n"
+    (workspace / "transcript.txt").write_text(text, encoding="utf-8", newline="\n")
+    output = tool_resource_publish(workspace, "transcript.txt")
+    assert output["ok"] is True
+    record = resource_store.register_resource(
+        original_name="transcript.txt", content_type="text/plain", owner_session="test", data=text.encode("utf-8"))
+    legacy_output = {**output, "touched_path": "transcript.txt", "operation": "transcribe", "execution_target": "local_gpu",
+                     "resource": resource_store.resource_ref(record)}
+    outcome = TaskOutcome()
+    outcome.observe(retired_tool, {"operation": "transcribe"}, legacy_output, project_root=workspace)
+    assert outcome.deliveries == {}
+    link = f"[Расшифровка]({output['download_url']})"
+    assert outcome.unbacked_download_links(link) == [output["download_url"]]
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+def test_legacy_file_gen_snapshot_preserves_only_real_target_binding(workspace, mirror):
+    from openpyxl import Workbook
+    from app.application.code_agent.task_outcomes import file_digest
+
+    published = config.GENERATED_DIR / "report.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["Число", 12345])
+    workbook.save(published)
+    workbook.close()
+    target = workspace / "report.xlsx"
+    target.write_bytes(published.read_bytes())
+    url = "/api/skills/download/report.xlsx"
+    receipt = {"target": str(target) if mirror else "", "tool": "file_gen",
+               "status": "published", "download_name": published.name,
+               "download_url": url, "sha256": file_digest(published)}
+    saved = {"deliveries": {str(target) if mirror else url: receipt},
+             "delivery_attempts": [str(target)]}
+    restored = TaskOutcome(json.loads(json.dumps(saved)))
+    link = f"[Отчёт]({url})"
+    assert restored.unbacked_download_links(link) == []
+    assert restored.missing_deliveries() == ([] if mirror else [str(target)])
+    published.write_bytes(b"changed publication")
+    stale = TaskOutcome(restored.snapshot())
+    assert stale.unbacked_download_links(link) == [url]
+    assert stale.missing_deliveries() == [str(target)]
+
+
+def test_skill_transcript_uses_ordinary_publication_and_staleness(workspace):
+    target = workspace / "transcript.txt"
+    target.write_text("[00:00:17] Полная запись, включая конец.\n", encoding="utf-8", newline="\n")
+    output = tool_resource_publish(workspace, "transcript.txt")
     assert output["ok"] is True
     outcome = TaskOutcome()
-    # The delivery target is a fact: a publication of transcript.txt was attempted (it did not exist yet).
-    outcome.observe("resource_publish", {"project_path": "transcript.txt"}, {"ok": False}, project_root=workspace)
-    outcome.observe("resource_process", {"operation": "transcribe"}, output, project_root=workspace)
+    outcome.observe("resource_publish", {"project_path": "transcript.txt"}, output, project_root=workspace)
     link = f"[Расшифровка]({output['download_url']})"
+    assert outcome.missing_deliveries() == []
     assert outcome.unbacked_download_links(link) == []
-    assert outcome.missing_deliveries() == [str(workspace / "transcript.txt")]
-    derived = resource_store.get_record(output["resource"]["resource_id"])
-    assert derived.storage_path not in json.dumps(outcome.snapshot())
-
-    unrelated = resource_store.register_resource(
-        original_name="same.txt", content_type="text/plain", owner_session="test",
-        data=resource_store.read_bytes(derived))
-    other = tool_resource_materialize(workspace, unrelated.resource_id, "other.txt")
-    outcome.observe("resource_materialize", {}, other, project_root=workspace)
-    assert outcome.missing_deliveries() == [str(workspace / "transcript.txt")]
-    materialized = tool_resource_materialize(workspace, derived.resource_id, "transcript.txt")
-    assert materialized["ok"] is True
-    outcome.observe("resource_materialize", {}, materialized, project_root=workspace)
     restored = TaskOutcome(json.loads(json.dumps(outcome.snapshot())))
     assert restored.missing_deliveries() == []
     assert restored.unbacked_download_links(link) == []
@@ -110,6 +140,53 @@ def test_gpu_transcript_publication_binds_only_actual_materialized_resource(work
     stale_context = TaskOutcome(restored.snapshot()).context(0)
     assert output["download_url"] in stale_context
     assert all(item["status"] == "stale" for item in json.loads(stale_context.split("\n", 1)[1])["downloads"])
-    assert derived.storage_path not in stale_context
+
+
+@pytest.mark.parametrize("blob_change", ["overwrite", "delete"])
+def test_legacy_transcript_snapshot_keeps_verified_download_and_materialization(workspace, monkeypatch, blob_change):
+    from app.application.code_agent.tools._resources import tool_resource_materialize
+    from app.application.media import resource_store
+    from app.core import data_files
+
+    monkeypatch.setattr(data_files, "DATA_DIR", config.DATA_DIR)
+    text = "[00:00:17] Ранее опубликованная расшифровка.\n".encode("utf-8")
+    derived = resource_store.register_resource(
+        original_name="transcript.txt", content_type="text/plain", owner_session="test", data=text)
+    stored = config.GENERATED_DIR / "transcript.txt"
+    stored.write_bytes(text)
+    url = "/api/skills/download/transcript.txt"
+    target = str((workspace / "transcript.txt").resolve())
+    # Restore a historical receipt without calling or rebuilding the retired runtime.
+    outcome = TaskOutcome({"deliveries": {url: {
+        "target": "", "tool": "resource_process", "status": "published",
+        "resource_id": derived.resource_id, "sha256": derived.sha256,
+        "download_name": "transcript.txt", "download_url": url,
+    }}, "delivery_attempts": [target]})
+    link = f"[Расшифровка]({url})"
+    assert outcome.unbacked_download_links(link) == []
+    assert outcome.missing_deliveries() == [target]
+
+    unrelated = resource_store.register_resource(
+        original_name="other.txt", content_type="text/plain", owner_session="test", data=text)
+    other = tool_resource_materialize(workspace, unrelated.resource_id, "other.txt")
+    assert other["ok"] is True
+    outcome.observe("resource_materialize", {}, other, project_root=workspace)
+    assert outcome.missing_deliveries() == [target]
+    materialized = tool_resource_materialize(workspace, derived.resource_id, "transcript.txt")
+    assert materialized["ok"] is True
+    outcome.observe("resource_materialize", {}, materialized, project_root=workspace)
+    restored = TaskOutcome(json.loads(json.dumps(outcome.snapshot())))
+    assert restored.missing_deliveries() == []
+    assert restored.unbacked_download_links(link) == []
+    assert derived.storage_path not in json.dumps(restored.snapshot())
+
+    blob = Path(derived.storage_path)
+    if blob_change == "overwrite":
+        blob.write_bytes(b"changed historical resource")
+    else:
+        blob.unlink()
+    stale = TaskOutcome(restored.snapshot())
+    assert stale.missing_deliveries() == [target]
+    assert stale.unbacked_download_links(link) == [url]
 
 

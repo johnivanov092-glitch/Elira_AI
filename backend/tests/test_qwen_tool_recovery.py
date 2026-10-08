@@ -112,11 +112,13 @@ def test_read_file_maps_missing_attachment_name_to_unique_resource(tmp_path) -> 
         event for event in events
         if event.get("type") == "tool_call" and event.get("tool") == "read_file"
     )
-    assert read_event["ok"] is True
+    assert read_event["ok"] is False
+    assert read_event["error"] == "resource_requires_materialize"
     assert read_event["arguments"] == {"path": "Бланк фирменный.DOCX"}
     assert read_event["resolved_from_resource"] is True
     assert read_event["resource_id"] == record.resource_id
-    assert "РЕКВИЗИТЫ ФИРМЕННОГО БЛАНКА 9184" in read_event["result"]
+    assert "РЕКВИЗИТЫ ФИРМЕННОГО БЛАНКА 9184" not in read_event["result"]
+    assert "resource_materialize" in read_event["result"]
 
 
 def test_existing_project_file_wins_over_same_named_resource(tmp_path) -> None:

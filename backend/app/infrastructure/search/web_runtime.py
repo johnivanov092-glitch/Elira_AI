@@ -276,19 +276,12 @@ def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
                 content_type = str(resp.headers.get("Content-Type", "")).split(";", 1)[0].lower()
                 body = getattr(resp, "content", b"")
                 if content_type == "application/pdf" or (isinstance(body, bytes) and body.lstrip().startswith(b"%PDF-")):
-                    from app.application.file_extract.runtime import extract_file, is_extract_error
-
-                    fragment = urlsplit(final).fragment
                     final = urlunsplit(urlsplit(final)._replace(fragment=""))
-                    if not isinstance(body, bytes) or len(body) > 8 * 1024 * 1024:
-                        return PageFetchResult(final_url=final, status_code=status, mime="application/pdf", error="PDF exceeds the 8 MiB web extraction limit")
-                    extracted = extract_file("web.pdf", body, max_chars=max_chars + 1)
-                    text = str(extracted.get("text") or "").strip()
-                    if not text or is_extract_error(text):
-                        return PageFetchResult(final_url=final, status_code=status, mime="application/pdf", error="PDF text extraction failed")
-                    return PageFetchResult(text=text[:max_chars], final_url=final, status_code=status, mime="application/pdf",
-                        fragment_found=False if fragment else None,
-                        truncated=len(text) > max_chars or bool(extracted.get("document", {}).get("truncated")))
+                    return PageFetchResult(
+                        final_url=final, status_code=status, mime="application/pdf",
+                        error=("processing_required: PDF следует прочитать навыком document-read "
+                               "(read_document.py --url); встроенное извлечение удалено"),
+                    )
                 if resp.encoding and resp.encoding.lower() != "utf-8":
                     resp.encoding = resp.apparent_encoding or "utf-8"
                 if content_type == "text/plain":

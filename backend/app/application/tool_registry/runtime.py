@@ -266,6 +266,16 @@ def seed_builtin_tools() -> int:
     if _BUILTIN_SEEDED:
         return 0
 
+    # Retire only app-owned inventory; a same-named plugin remains user-owned.
+    with _conn() as con:
+        for name in ("file_gen", "finance_calc"):
+            row = con.execute(
+                "SELECT name FROM tools WHERE name = ? AND source = 'code_agent'", (name,)
+            ).fetchone()
+            if row is not None:
+                con.execute("DELETE FROM tools WHERE name = ? AND source = 'code_agent'", (name,))
+                _handlers.pop(name, None)
+
     created = 0
     for tool_def in build_builtin_tools():
         tool_copy = dict(tool_def)

@@ -26,7 +26,9 @@ def test_retrieval_guidance_keeps_source_fidelity_and_operational_contracts():
     assert "предупреждения поисковых движков" in guidance
     assert "web_fetch(store=true)" in guidance and "web_query" in guidance and "store=false" in guidance
     assert "force_refresh — только по прямому запросу" in guidance
-    assert "find работает для HTML, текста и PDF" in guidance and "используй browser" in guidance
+    assert "find работает для HTML и текста" in guidance and "используй browser" in guidance
+    assert "PDF читай навыком document-read" in guidance
+    assert "find работает для HTML, текста и PDF" not in guidance
 
 
 def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tmp_path, monkeypatch):

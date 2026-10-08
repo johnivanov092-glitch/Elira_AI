@@ -138,7 +138,7 @@ def shell_command_is_high_impact(command: str) -> bool:
 
 
 _LOW_RISK_REVERSIBLE_TOOLS = frozenset({
-    "write_file", "edit_file", "file_gen", "git_commit",
+    "write_file", "edit_file", "git_commit",
     "resource_materialize", "resource_publish",
 })
 _REMOTE_WRITE_TOOLS = frozenset({"ssh_write", "ssh_replace"})

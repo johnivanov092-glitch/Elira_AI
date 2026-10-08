@@ -12,6 +12,7 @@ export function libraryIndexLabel(file: LibraryFile): string {
   if (file.status === "ready") return "проиндексирован";
   if (file.status === "capped") return "индекс ограничен";
   if (file.status === "failed") return "ошибка индексации";
+  if (file.status === "not_processed") return "без извлечённого текста";
   return "только превью";
 }
 

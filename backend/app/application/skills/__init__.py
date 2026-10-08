@@ -3,9 +3,6 @@ from __future__ import annotations
 from app.application.skills.runtime import (
     OUTPUT_DIR,
     describe_db,
-    generate_excel,
-    generate_pdf,
-    generate_word,
     http_request,
     list_databases,
     run_sql,
@@ -16,9 +13,6 @@ from app.application.skills.runtime import (
 __all__ = [
     "OUTPUT_DIR",
     "describe_db",
-    "generate_excel",
-    "generate_pdf",
-    "generate_word",
     "http_request",
     "list_databases",
     "run_sql",

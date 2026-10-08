@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app.application.code_agent.tools._sandbox import SandboxError, _resolve_safe
+from app.core.file_types import AUDIO_EXTS, VIDEO_EXTS
 
 # ── Encoding-safe file IO ────────────────────────────────────────────────────
 # The code-agent operates on whatever source tree the user opens, which on
@@ -25,11 +26,10 @@ except Exception:  # pragma: no cover - dependency missing → fall back to pere
     _HAS_CN = False
 
 _BOM_UTF8 = b"\xef\xbb\xbf"
-# Binary document types read_file extracts text from (via file_extract) instead
-# of rejecting as "binary". Images/audio are NOT here — images are OCR'd below
-# (read_image describes a photo).
+# Documents and images are processed by mutable skills, never decoded as text.
 _DOCUMENT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".xls", ".xlsx", ".xlsm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+_BINARY_EXTS = {".zip", ".7z", ".rar"} | set(AUDIO_EXTS) | VIDEO_EXTS
 # Latin→Cyrillic visual look-alikes: the local model often mangles long Cyrillic
 # filenames by swapping in Latin twins (лечеbной, метаcтатическом), which makes
 # an exact path miss. Fold them only for bounded recovery from observed glob
@@ -251,22 +251,16 @@ def tool_read_file(
     _runtime_resource_name: str = "",
 ) -> dict[str, Any]:
     if _runtime_resource_id:
-        from app.application.code_agent.tools._resources import tool_resource_process
-
-        result = tool_resource_process(
-            resource_id=_runtime_resource_id,
-            operation="extract_text",
-            execution_target="auto",
-        )
-        result["resolved_from_resource"] = True
-        result["resource_name"] = _runtime_resource_name
-        if result.get("ok"):
-            result["text"] = (
-                "[runtime: имя отсутствующего project-файла однозначно сопоставлено "
-                f"с прикреплённым ResourceRef '{_runtime_resource_name}']\n"
-                + str(result.get("text") or "")
-            )
-        return result
+        return {
+            "ok": False, "error": "resource_requires_materialize",
+            "resolved_from_resource": True, "resource_id": _runtime_resource_id,
+            "resource_name": _runtime_resource_name,
+            "text": (
+                "ERROR: прикреплённый ResourceRef нужно материализовать через "
+                "resource_materialize(resource_id), затем прочитать текстовый файл через "
+                "read_file или применить подходящий навык document-read/ocr/audio-transcribe."
+            ),
+        }
     if _runtime_refuse_reason:
         return {
             "ok": False,
@@ -280,66 +274,25 @@ def tool_read_file(
     if not target.is_file():
         return {"ok": False, "error": "file_not_found",
                 "text": f"ERROR: not a file or does not exist: {path}{_dir_hint(target)}"}
+    extension = target.suffix.lower()
+    if extension in _DOCUMENT_EXTS or extension in _IMAGE_EXTS:
+        skill = "document-read" if extension in _DOCUMENT_EXTS else "ocr"
+        return {
+            "ok": False, "error": "skill_required",
+            "text": (
+                f"ERROR: {target.name} не является обычным текстовым файлом. "
+                f"Прочитай SKILL.md навыка {skill} и запусти его скрипт. "
+                "Для описания изображения используй read_image."
+            ),
+        }
+    if extension in _BINARY_EXTS:
+        return {"ok": False, "error": "binary_file",
+                "text": f"ERROR: binary file (not text): {path}; use the matching skill."}
     try:
         raw = target.read_bytes()
     except Exception as exc:
         return {"ok": False, "error": "read_failed", "text": f"ERROR: {exc}"}
-
-    # Documents (pdf/docx/pptx/xls/xlsx): extract text via the shared file_extract
-    # pipeline (pdf: pypdf→pdfplumber→OCR fallback for scans; docx/pptx/excel via
-    # python-docx/pptx/openpyxl) instead of rejecting them as "binary". Without
-    # this read_file refuses them and the model fumbles with run_bash+PyMuPDF/
-    # PowerShell (seen live on the medical-docs run).
-    if target.suffix.lower() in _DOCUMENT_EXTS:
-        try:
-            from app.application.file_extract.runtime import extract_file
-            doc_text = str((extract_file(target.name, raw) or {}).get("text") or "")
-        except Exception as exc:
-            return {"ok": False, "error": "extraction_failed",
-                    "text": f"ERROR: не удалось извлечь текст из {target.suffix} ({path}): {exc}"}
-        if not doc_text.strip():
-            return {
-                "ok": False,
-                "error": "document_text_empty",
-                "text": (
-                    f"[{target.suffix}: текст не извлечён — вероятно скан без текстового "
-                    f"слоя (нужен OCR) или пустой файл: {path}]"
-                ),
-            }
-        text = _to_text_newlines(doc_text)
-        lines = text.splitlines(keepends=True)
-        start = max(0, int(offset))
-        end = start + max(1, int(limit))
-        selected = lines[start:end]
-        numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
-        suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
-        header = f"[текст извлечён из {target.suffix} через file_extract: {target.name}]\n"
-        return {"ok": True, "text": header + numbered + suffix, "touched_path": path}
-
     if _looks_binary(raw):
-        if target.suffix.lower() in _IMAGE_EXTS:
-            # Auto-OCR images so "прочитай это фото/скан" just works (like documents);
-            # empty OCR (a real photo, not a document scan) → point at read_image.
-            try:
-                from app.application.code_agent.tools._vision import ocr_file_text
-                _ocr = str((ocr_file_text(project_root, str(target)) or {}).get("text") or "").strip()
-            except Exception as exc:
-                _ocr = f"ERROR: OCR failed: {exc}"
-            if _ocr and not _ocr.startswith("ERROR"):
-                return {"ok": True, "text": f"[текст с изображения через OCR: {target.name}]\n{_ocr}", "touched_path": path}
-            if _ocr.startswith("ERROR"):
-                return {
-                    "ok": False,
-                    "error": "ocr_failed",
-                    "text": f"[{target.name}: {_ocr}. Для описания картинки вызови `read_image`.]",
-                }
-            return {
-                "ok": True,
-                "text": (
-                    f"[{target.suffix} {target.name}: OCR не нашёл текста (похоже, обычное "
-                    f"фото, а не скан документа). Для описания изображения вызови `read_image`.]"
-                ),
-            }
         return {"ok": False, "error": "binary_file",
                 "text": f"ERROR: binary file (not text): {path}"}
 

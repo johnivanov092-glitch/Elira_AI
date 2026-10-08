@@ -288,8 +288,8 @@ class TaskOutcome:
         return answer
 
     def _observe_publication(self, name: str, output: dict[str, Any], root: Path) -> None:
-        # A file_gen mirror carries its real touched_path. Unmapped artifacts
-        # cannot satisfy a local target merely because their basenames match.
+        # Unmapped artifacts cannot satisfy a local target merely because
+        # their basenames match. Restored historical receipts remain readable.
         if name == "resource_materialize":
             for published in list(self.deliveries.values()):
                 if (published.get("status") == "published" and published.get("resource_id")
@@ -303,19 +303,10 @@ class TaskOutcome:
                     except (OSError, ValueError, TypeError):
                         logger.debug("Materialized publication could not be bound", exc_info=True)
             return
-        if name not in {"resource_publish", "file_gen", "resource_process"}:
+        if name != "resource_publish":
             return
-        value = output.get("project_path") if name == "resource_publish" else output.get("touched_path")
-        resource = output.get("resource")
-        resource_id = ""
-        if name == "resource_process":
-            if (output.get("operation") != "transcribe" or output.get("execution_target") != "local_gpu"
-                    or not isinstance(resource, dict) or resource.get("kind") != "document"
-                    or not str(resource.get("content_type") or "").startswith("text/plain")):
-                return
-            resource_id = str(resource.get("resource_id") or "")
-            value = None  # ResourceRecord.storage_path never crosses the model boundary.
-        if not value and name == "resource_publish":
+        value = output.get("project_path")
+        if not value:
             return
         try:
             target = str(_path(root, value, field="published target")) if value else ""
@@ -323,8 +314,6 @@ class TaskOutcome:
                 self.delivery_attempts.append(target)
             receipt = {"target": target, "tool": name, "status": "published",
                        **{key: output.get(key) for key in ("sha256", "download_name", "download_url")}}
-            if resource_id:
-                receipt["resource_id"] = resource_id
             if _publication_current(receipt):
                 self.deliveries[target or receipt["download_url"]] = receipt
             else:

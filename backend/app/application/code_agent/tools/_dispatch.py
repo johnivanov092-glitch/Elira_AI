@@ -31,10 +31,9 @@ from app.application.code_agent.tools._web import (
 )
 from app.application.code_agent.tools._content import (
     tool_csv,
-    tool_file_gen,
     tool_http_api,
 )
-from app.application.code_agent.tools._math import tool_calc, tool_finance_calc, tool_unit_convert
+from app.application.code_agent.tools._math import tool_calc, tool_unit_convert
 from app.application.code_agent.tools._vision import (
     tool_read_image,
 )
@@ -78,9 +77,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "csv": lambda **kw: tool_csv(project_root, **kw),
         "calc": lambda **kw: tool_calc(**kw),
         "unit_convert": lambda **kw: tool_unit_convert(**kw),
-        "finance_calc": lambda **kw: tool_finance_calc(**kw),
         "http_api": lambda **kw: tool_http_api(project_root, **kw),
-        "file_gen": lambda **kw: tool_file_gen(project_root, **kw),
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
         "computer": lambda **kw: tool_computer(project_root, **kw),
         # Reads a run-bound resource by opaque id (no project path involved).

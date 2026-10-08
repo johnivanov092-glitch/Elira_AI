@@ -1,5 +1,5 @@
 """
-skills_routes.py — API скиллов: генерация файлов, SQL, HTTP, скриншоты.
+skills_routes.py — доставка файлов, SQL, HTTP и скриншоты.
 """
 from __future__ import annotations
 import mimetypes
@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from app.core.config import GENERATED_DIR
 from app.application.skills import (
-    generate_word, generate_excel, generate_pdf,
     run_sql, list_databases, describe_db,
     http_request, screenshot_url,
 )
@@ -19,36 +18,6 @@ from app.application.skills import (
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 OUTPUT_DIR = GENERATED_DIR
 
-
-# ── Генерация файлов ──
-
-class WordRequest(BaseModel):
-    title: str = ""
-    content: str
-    filename: str = ""
-
-class ExcelRequest(BaseModel):
-    title: str = "Sheet1"
-    headers: list[str] = []
-    data: list[list[Any]] = []
-    filename: str = ""
-
-@router.post("/generate/word")
-def api_word(payload: WordRequest):
-    return generate_word(payload.title, payload.content, payload.filename)
-
-@router.post("/generate/excel")
-def api_excel(payload: ExcelRequest):
-    return generate_excel(payload.title, payload.data, payload.headers, payload.filename)
-
-class PdfRequest(BaseModel):
-    title: str = ""
-    content: str
-    filename: str = ""
-
-@router.post("/generate/pdf")
-def api_pdf(payload: PdfRequest):
-    return generate_pdf(payload.title, payload.content, payload.filename)
 
 @router.get("/download/{filename}")
 def download_file(filename: str):

@@ -32,10 +32,10 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "desktop": frozenset({"computer"}),
     "resources": frozenset({
         "resource_process", "resource_materialize", "resource_publish",
-        "read_image", "file_gen",
+        "read_image",
     }),
     "memory": frozenset({"memory", "library"}),
-    "math": frozenset({"calc", "unit_convert", "finance_calc", "csv"}),
+    "math": frozenset({"calc", "unit_convert", "csv"}),
 }
 
 

@@ -30,9 +30,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
         ("calc",        "Calculator",   "math",    "Exact arithmetic, percentages and algebra (no code execution)", 30, 20000, True),
         ("unit_convert", "Unit Convert", "math",   "Exact unit conversion (data, power, length, temperature...)", 15, 5000, True),
-        ("finance_calc", "Finance Calc", "math",   "Exact invoices, VAT, markup/margin, discounts, loans", 15, 30000, True),
         ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
-        ("resource_process", "Resource Process", "media", "Process a file attached to this run by resource_id on a chosen execution target (auto/local_gpu/server_cpu/local_cpu; legacy server_gpu alias accepted): inspect metadata, extract document text, or transcribe audio/video (mp4/ogg). Read-only, no path.", 3630, 20000, True),
+        ("resource_process", "Resource Inspect", "media", "Inspect metadata of an attached resource by resource_id on local CPU. Content processing uses materialize and mutable skills; no path.", 15, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
     approval_tools = [
@@ -41,7 +40,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("run_bash",       "Run Bash",       "system",  "Execute a shell command in project",   120, 20000, False),
         ("run_server",     "Run Server",     "system",  "Start/manage a long-lived background server", 30, 20000, False),
         ("http_api",       "HTTP API",       "web",     "Send an outbound HTTP API request",      30, 30000, False),
-        ("file_gen",       "File Gen",       "media",   "Generate and validate a Word/Excel/PDF file", 120, 10000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Validate and publish an already-produced project file as a downloadable artifact (streaming, hash-bound, no overwrite) via the existing download route", 120, 10000, True),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
@@ -64,7 +62,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"], "browser": ["net.outbound"],
         "web_query": ["fs.read"],   # reads the local corpus, no network
         "csv": ["fs.read"],
-        "calc": [], "unit_convert": [], "finance_calc": [],
+        "calc": [], "unit_convert": [],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "mcp": ["shell.exec", "net.outbound", "fs.read", "fs.write"],
@@ -73,17 +71,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
         "run_bash": ["shell.exec"], "run_server": ["shell.exec"],
         "http_api": ["net.outbound"],
-        "file_gen": ["fs.write"],
         "read_image": ["fs.read", "net.outbound"],
-        # Reads the run-bound resource blob (fs.read) and may call remote STT (net.outbound).
-        "resource_process": ["fs.read", "net.outbound"],
+        # Reads authorized resource metadata; content is materialized explicitly.
+        "resource_process": ["fs.read"],
         # Reads the run-bound resource blob (fs.read) and writes a new workspace file (fs.write).
         "resource_materialize": ["fs.read", "fs.write"],
         # Reads a workspace file (fs.read) and writes a new download artifact (fs.write).
         "resource_publish": ["fs.read", "fs.write"],
-        # Reads the run-bound resource blob (fs.read), sends it to the remote OCR
-        # worker (net.outbound), and registers the recognized text as a new
-        # durable resource — a blob + meta sidecar written under the data root.
         # Desktop control is shell-level power and is classified by Workflow impact.
         "computer": ["shell.exec", "net.outbound"],
     }
@@ -123,21 +117,11 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
 
     # Russian descriptions keep provider metadata readable in diagnostics.
     _ru_search_terms = {
-        "file_gen": (
-            "Генерация файла Word/Excel/PDF",
-            "Сгенерировать документ Word (.docx), таблицу Excel (.xlsx) или PDF (.pdf): "
-            "ворд, word, docx, doc, эксель, excel, xlsx, таблица, документ, "
-            "PDF, пдф, документ PDF, экспорт в PDF, "
-            "отчёт, письмо, создать файл, сгенерировать файл",
-        ),
         "resource_process": (
-            "Обработка прикреплённого файла / ресурса (авто / локальный GPU / CPU / сервер)",
-            "Прочитать прикреплённый файл, извлечь текст, расшифровать/транскрибировать "
-            "аудио или видео, проанализировать вложение: ресурс, вложение, attachment, "
-            "resource, прочитай файл, извлеки текст, расшифруй, транскрибируй, transcribe, "
-            "extract text, inspect, аудио, видео, mp4, ogg, голосовое, документ, "
-            "локально, локальное железо, локальная видеокарта, на GPU, local gpu, "
-            "local cpu, server, вычислительная цель, execution target",
+            "Метаданные прикреплённого файла / ресурса",
+            "Посмотреть метаданные вложения по resource_id: inspect, имя, тип, размер, "
+            "хеш. Чтение документов, OCR и расшифровка выполняются изменяемыми навыками "
+            "после resource_materialize; resource_process не читает содержимое.",
         ),
         "resource_materialize": (
             "Материализовать вложение/ресурс в папку проекта",

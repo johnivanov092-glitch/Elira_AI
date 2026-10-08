@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.application.file_extract.runtime import TEXT_EXTS, _AUDIO_EXTS
+from app.core.file_types import AUDIO_EXTS, TEXT_EXTS, VIDEO_EXTS as _VIDEO_EXTS
 from app.core.data_files import data_subdir
 
 _RESOURCE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -46,10 +46,8 @@ _TEMP_SWEEP_AGE_SECONDS = 3600
 _DEFAULT_RETENTION_SECONDS = 30 * 24 * 3600
 _STORE_LOCK = threading.RLock()
 
-# ── kind classification (cosmetic for the model; processing support is decided
-#    from the extension in `processing`, not from kind) ─────────────────────────
+# ── kind classification (processing checks kind + extension before extracting)
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
-_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".wmv", ".mpg", ".mpeg"}
 _DOCUMENT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xls", ".xlsx",
                   ".xlsm", ".rtf", ".odt"}
 _ARCHIVE_EXTS = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".7z", ".rar"}
@@ -148,7 +146,7 @@ def _safe_display_name(name: str) -> str:
 def classify_kind(name: str, content_type: str) -> str:
     """Return one of audio|video|image|document|archive|other. MIME leads;
     extension resolves the rest. Note: audio-container extensions like .mp4/.webm
-    map to video/audio by MIME but remain transcribable (see `processing`)."""
+    map to video/audio by MIME; transcription belongs to the audio-transcribe skill."""
     mime = str(content_type or "").split(";", 1)[0].strip().lower()
     if mime.startswith("image/"):
         return "image"
@@ -159,7 +157,7 @@ def classify_kind(name: str, content_type: str) -> str:
     ext = Path(_safe_display_name(name)).suffix.lower()
     if ext in _IMAGE_EXTS:
         return "image"
-    if ext in _AUDIO_EXTS and ext not in _VIDEO_EXTS:
+    if ext in AUDIO_EXTS and ext not in _VIDEO_EXTS:
         return "audio"
     if ext in _VIDEO_EXTS:
         return "video"

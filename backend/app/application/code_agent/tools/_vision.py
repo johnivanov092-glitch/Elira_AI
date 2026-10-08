@@ -80,25 +80,3 @@ def tool_read_image(
     if result_resource_id:
         out["resource_id"] = result_resource_id
     return out
-
-
-def ocr_file_text(project_root: Path, path: str, language: str = "") -> dict[str, Any]:
-    """OCR one local image/scan through the OCR service (read_file's image fallback)."""
-    try:
-        from app.infrastructure.llm.vision_ocr import ocr_document
-    except Exception as exc:  # pragma: no cover - import guard
-        return {"text": f"ERROR: OCR support unavailable: {exc}", "ok": False}
-
-    target = _resolve_safe(project_root, path)
-    if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {path}", "ok": False}
-
-    try:
-        contents = target.read_bytes()
-    except OSError as exc:
-        return {"text": f"ERROR: failed to read file {path}: {exc}", "ok": False}
-
-    text = ocr_document(target.name, contents, language=(language or None))
-    if not text:
-        return {"text": f"ERROR: OCR found no text in {path} (service unreachable or no recognizable text).", "ok": False}
-    return {"ok": True, "text": f"OCR text from {path}:\n{text}"}
