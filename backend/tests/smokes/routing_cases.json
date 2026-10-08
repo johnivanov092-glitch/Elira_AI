@@ -1,36 +1,52 @@
 {
   "personal_memory": {
     "suite": "core",
-    "task": "Поговори со мной и вспомни через свою долговременную память, какие предпочтения пользователя о стиле ответа уже сохранены. Не придумывай: если ничего нет, так и скажи.",
-    "expected_profile": "Личный",
-    "required_tools": ["runtime_control"],
+    "task": "Найди в своей долговременной памяти сохранённые предпочтения пользователя о стиле ответа. Отдельно перечисли последние сохранённые пользовательские факты, даже если они не про стиль ответа. Не придумывай: если нужных записей нет, так и скажи.",
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "memory"],
     "forbidden_tools": ["recall"],
-    "required_runtime_operations": ["memory_search", "memory_list"],
     "expected_initial_activation": {
       "itops": false,
-      "capability_groups": ["memory"]
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
     "required_answer_contains": ["памят"],
-    "max_tool_calls": 4
+    "max_tool_calls": 4,
+    "required_tool_sequence": [
+      {"tool": "capability_load", "group": "memory"},
+      {"tool": "memory", "action": "search"},
+      {"tool": "memory", "action": "list"}
+    ],
+    "expected_final_activation": {
+      "capability_groups": ["memory"]
+    }
   },
   "balanced_chat": {
     "task": "Объясни в двух предложениях, почему утром бывает роса.",
     "expected_profile": "Баланс",
     "expected_initial_activation": {
       "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
       "capability_groups": []
     },
     "required_answer_contains": ["рос"],
-    "forbidden_runtime_operations": ["mcp_list", "mcp_start"],
-    "max_tool_calls": 1
+    "max_tool_calls": 1,
+    "forbidden_tool_calls": [
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "action": "start"}
+    ]
   },
   "engineering_project": {
     "suite": "core",
     "task": "Проверь код проекта: прочитай README.md и назови точное значение маркера EVAL_SENTINEL. Не угадывай содержимое файла.",
-    "expected_profile": "Инженерный",
+    "expected_profile": "Баланс",
     "required_tools": ["read_file"],
     "expected_initial_activation": {
       "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
       "capability_groups": []
     },
     "files": {
@@ -45,7 +61,7 @@
     "files": {
       "durable_probe.py": "import time\nprint('DURABLE_LIVE_STARTED', flush=True)\ntime.sleep(2)\nprint('DURABLE_LIVE_DONE', flush=True)\n"
     },
-    "expected_profile": "Инженерный",
+    "expected_profile": "Баланс",
     "required_tools": ["run_server"],
     "forbidden_tools": ["run_bash"],
     "required_tool_sequence": [
@@ -54,6 +70,8 @@
     ],
     "expected_initial_activation": {
       "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
       "capability_groups": []
     },
     "required_answer_contains": ["DURABLE_LIVE_DONE", "0"],
@@ -61,11 +79,13 @@
   },
   "business_document": {
     "task": "Составь короткое коммерческое предложение на русском для внедрения локального AI-ассистента и создай готовый скачиваемый DOCX-документ.",
-    "expected_profile": "Деловой",
+    "expected_profile": "Баланс",
     "required_tools": ["file_gen"],
     "expected_initial_activation": {
       "itops": false,
-      "capability_groups": ["data", "resources", "web"]
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
     "required_answer_contains": ["DOCX"],
     "max_tool_calls": 6
@@ -73,12 +93,14 @@
   "infrastructure_tcp": {
     "suite": "itops",
     "task": "Проверь TCP-порты 8000 и 65534 на локальном адресе 127.0.0.1 и сообщи, какие открыты. Используй безопасную параллельную сетевую инвентаризацию.",
-    "expected_profile": "Инфраструктура",
+    "expected_profile": "Баланс",
     "required_tools": ["itops_network_inventory"],
     "forbidden_tools": ["run_bash"],
     "expected_initial_activation": {
-      "itops": true,
-      "capability_groups": ["web"]
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
     "required_answer_contains": ["8000", "65534"],
     "require_network_answer_grounding": true,
@@ -87,11 +109,13 @@
   "science_web": {
     "opt_in": true,
     "task": "Найди в интернете одну актуальную научную публикацию о квантовой запутанности и дай ссылку на источник.",
-    "expected_profile": "Научный",
+    "expected_profile": "Баланс",
     "required_tools": ["web_search"],
     "expected_initial_activation": {
       "itops": false,
-      "capability_groups": ["data", "web"]
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
     "required_answer_contains": ["https://"],
     "answer_source_tools": ["web_search"],
@@ -100,11 +124,13 @@
   "medical_web": {
     "opt_in": true,
     "task": "Найди актуальную официальную рекомендацию ВОЗ о симптомах пневмонии, кратко перескажи её и дай ссылку. Не ставь диагноз.",
-    "expected_profile": "Медицина",
+    "expected_profile": "Баланс",
     "required_tools": ["web_search"],
     "expected_initial_activation": {
       "itops": false,
-      "capability_groups": ["resources", "web"]
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
     "required_answer_contains": ["ВОЗ", "https://"],
     "answer_source_tools": ["web_search", "web_fetch"],
@@ -114,25 +140,27 @@
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Context7 найди актуальную документацию FastAPI о BackgroundTasks и кратко перескажи её. После ответа останови использованную интеграцию.",
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["context7__"],
     "forbidden_tools": ["web_search", "run_bash"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_list"},
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "context7"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "context7", "action": "start"},
       {"tool_prefix": "context7__"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "context7"}
+      {"tool": "mcp", "server_id": "context7", "action": "stop"}
     ],
     "required_mcp_servers": ["context7"],
     "expected_initial_activation": {
       "itops": false,
+      "ssh": false,
       "mcp_server_ids": [],
-      "capability_groups": ["resources", "web"]
+      "capability_groups": []
     },
     "expected_final_activation": {
-      "mcp_server_ids": []
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
     },
     "required_answer_contains": ["BackgroundTasks"],
     "max_tool_calls": 10
@@ -141,50 +169,70 @@
     "suite": "integration",
     "task": "Объясни простыми словами разницу между JSON и YAML. Внешние интеграции не требуются.",
     "expected_profile": "Баланс",
-    "forbidden_runtime_operation_prefixes": ["mcp_"],
     "forbid_mcp_activation": true,
     "expected_initial_activation": {
       "itops": false,
+      "ssh": false,
       "mcp_server_ids": [],
       "capability_groups": []
     },
     "expected_final_activation": {
-      "mcp_server_ids": []
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
     "required_answer_contains": ["JSON", "YAML"],
-    "max_tool_calls": 1
+    "max_tool_calls": 1,
+    "forbidden_tool_calls": [
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp"}
+    ]
   },
   "project_corpus_workflow": {
     "suite": "integration",
     "opt_in": true,
     "task": "Проиндексируй подключённый проект в Project Corpus, проверь состояние индекса и найди в нём PROJECT_WORKFLOW_CANARY_20260824. Назови точное значение и файл-источник.",
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "recall"],
     "forbidden_tools": ["read_file", "grep", "run_bash"],
-    "required_runtime_operations": ["project_status", "project_index", "memory_recall"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "project_status"},
-      {"tool": "runtime_control", "operation": "project_index"},
-      {"tool": "runtime_control", "operation": "memory_recall"}
+      {"tool": "capability_load", "group": "project"},
+      {"tool": "recall", "action": "status"},
+      {"tool": "recall", "action": "index"},
+      {"tool": "recall", "action": "search"}
     ],
     "files": {
       "src/project_workflow_canary.py": "PROJECT_WORKFLOW_CANARY_20260824 = \"corpus-workflow-417\"\n"
     },
     "required_answer_contains": ["corpus-workflow-417", "src/project_workflow_canary.py"],
-    "max_tool_calls": 5
+    "max_tool_calls": 5,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "capability_groups": ["project"]
+    }
   },
   "web_corpus": {
     "suite": "integration",
     "opt_in": true,
     "task": "Сохрани страницу https://example.com в web Corpus, затем найди в сохранённом документе точное название домена и объяснение его назначения. Не отвечай только по памяти.",
-    "expected_profile": "Научный",
+    "expected_profile": "Баланс",
     "required_tools": ["web_fetch", "web_query"],
     "required_tool_sequence": [
       {"tool": "web_fetch"},
       {"tool": "web_query"}
     ],
     "required_answer_contains": ["Example Domain"],
-    "max_tool_calls": 5
+    "max_tool_calls": 5,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "workflow_stop": {
     "suite": "itops",
@@ -193,300 +241,372 @@
     "files": {
       "long_running_probe.py": "import time\nprint('LONG_PROBE_STARTED', flush=True)\ntime.sleep(300)\nprint('LONG_PROBE_SHOULD_NOT_FINISH', flush=True)\n"
     },
-    "expected_profile": "Инженерный",
+    "expected_profile": "Баланс",
     "forbidden_tools": ["run_server"],
     "cancel_on_tool": "run_bash",
     "require_workflow_stop": true,
     "expected_stop_reason": "cancelled",
-    "max_tool_calls": 2
+    "max_tool_calls": 2,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "ssh_discovery": {
     "suite": "itops",
     "opt_in": true,
     "task": "Проверь настройки SSH без подключения к удалённым машинам и перечисли сохранённые SSH shortcuts.",
-    "expected_profile": "Инфраструктура",
-    "required_tools": ["runtime_control", "ssh_list_hosts"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "ssh_list_hosts"],
     "forbidden_tools": ["ssh_run", "ssh_run_ps", "run_bash"],
-    "required_runtime_operations": ["ssh_hosts"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "ssh_hosts"},
+      {"tool": "capability_load", "group": "ssh"},
       {"tool": "ssh_list_hosts"}
     ],
-    "max_tool_calls": 4
+    "max_tool_calls": 4,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "ssh": true,
+      "capability_groups": ["ssh"]
+    }
   },
   "business_pdf": {
     "opt_in": true,
     "task": "Составь одностраничное коммерческое предложение на русском для внедрения локального AI-ассистента и создай готовый скачиваемый PDF-документ.",
-    "expected_profile": "Деловой",
+    "expected_profile": "Баланс",
     "required_tools": ["file_gen"],
     "required_answer_contains": ["PDF"],
-    "max_tool_calls": 6
-  },
-  "lsp_python": {
-    "suite": "integration",
-    "opt_in": true,
-    "task": "Проверь probe.py подключённого проекта через Python LSP: покажи диагностику типов, найди определение и все ссылки для функции total. После проверки останови LSP и убери созданную для теста конфигурацию.",
-    "files": {
-      "probe.py": "def total(left: int, right: int) -> int:\n    return left + right\n\nvalue: str = total(1, 2)\nother = total(3, 4)\n"
-    },
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control", "lsp_diagnostics", "lsp_definition", "lsp_references"],
-    "required_runtime_operations": ["lsp_list", "lsp_upsert", "lsp_start", "lsp_stop", "lsp_remove"],
-    "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "lsp_list"},
-      {"tool": "runtime_control", "operation": "lsp_upsert"},
-      {"tool": "runtime_control", "operation": "lsp_start"},
-      {"tool": "lsp_diagnostics"},
-      {"tool": "lsp_definition"},
-      {"tool": "lsp_references"},
-      {"tool": "runtime_control", "operation": "lsp_stop"},
-      {"tool": "runtime_control", "operation": "lsp_remove"}
-    ],
-    "max_tool_calls": 16
-  },
-  "lsp_typescript": {
-    "suite": "integration",
-    "opt_in": true,
-    "task": "Проверь `probe.ts` подключённого проекта через TypeScript LSP: покажи диагностику, определение и ссылки для `total`, затем проверь определение ещё раз после перезапуска LSP и останови его.",
-    "files": {
-      "package.json": "{\"private\":true,\"devDependencies\":{\"typescript\":\"^5.9.2\"}}\n",
-      "probe.ts": "export function total(left: number, right: number): number {\n  return left + right;\n}\n\nconst value: string = total(1, 2);\nconst other = total(3, 4);\n"
-    },
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control", "lsp_diagnostics", "lsp_definition", "lsp_references"],
-    "required_runtime_operations": ["lsp_list", "lsp_start", "lsp_restart", "lsp_stop"],
-    "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "lsp_start", "server_id": "typescript-live"},
-      {"tool": "lsp_diagnostics"},
-      {"tool": "lsp_definition"},
-      {"tool": "lsp_references"},
-      {"tool": "runtime_control", "operation": "lsp_restart", "server_id": "typescript-live"},
-      {"tool": "runtime_control", "operation": "lsp_stop", "server_id": "typescript-live"}
-    ],
-    "max_tool_calls": 16
-  },
-  "lsp_rust": {
-    "suite": "integration",
-    "opt_in": true,
-    "task": "Проверь `probe.rs` подключённого проекта через Rust LSP: покажи диагностику, определение и ссылки для `total`, затем останови LSP.",
-    "files": {
-      "Cargo.toml": "[package]\nname = \"elira-lsp-eval\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[[bin]]\nname = \"elira-lsp-eval\"\npath = \"probe.rs\"\n",
-      "probe.rs": "fn total(left: i32, right: i32) -> i32 {\n    left + right\n}\n\nfn main() {\n    let value = missing_total(1, 2);\n    let other = total(3, 4);\n    println!(\"{value} {other}\");\n}\n"
-    },
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control", "lsp_diagnostics", "lsp_definition", "lsp_references"],
-    "forbidden_tools": ["run_bash"],
-    "required_runtime_operations": ["lsp_list", "lsp_start", "lsp_stop"],
-    "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "lsp_start", "server_id": "rust-analyzer-live"},
-      {"tool": "lsp_diagnostics"},
-      {"tool": "lsp_definition"},
-      {"tool": "lsp_references"},
-      {"tool": "runtime_control", "operation": "lsp_stop", "server_id": "rust-analyzer-live"}
-    ],
-    "max_tool_calls": 10
+    "max_tool_calls": 6,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "mcp_microsoft_docs": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Microsoft Docs найди официальную документацию команды `sc.exe create`, дай ссылку и останови интеграцию после ответа.",
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control"],
-    "forbidden_tools": ["capability_load", "web_search", "web_fetch"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "mcp"],
+    "forbidden_tools": ["web_search", "web_fetch"],
     "required_tool_prefixes": ["microsoft_docs__"],
     "required_mcp_servers": ["microsoft_docs"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "microsoft_docs"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "microsoft_docs", "action": "start"},
       {"tool_prefix": "microsoft_docs__"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "microsoft_docs"}
+      {"tool": "mcp", "server_id": "microsoft_docs", "action": "stop"}
     ],
     "required_answer_contains": ["sc.exe create"],
-    "max_tool_calls": 8
+    "max_tool_calls": 8,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_serena": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Serena получи обзор символов `backend/app/main.py`. Файл не изменяй; после ответа останови интеграцию.",
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["serena__"],
     "required_mcp_servers": ["serena"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "serena"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "serena", "action": "start"},
       {"tool_prefix": "serena__"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "serena"}
+      {"tool": "mcp", "server_id": "serena", "action": "stop"}
     ],
-    "max_tool_calls": 8
+    "max_tool_calls": 8,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_github_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию GitHub найди один публичный репозиторий по запросу `modelcontextprotocol server`, проверь тот же поиск после перезапуска интеграции и затем останови её. Ничего в GitHub не изменяй.",
-    "required_tools": ["runtime_control"],
-    "forbidden_tools": ["capability_load", "web_search", "web_fetch"],
+    "required_tools": ["capability_load", "mcp"],
+    "forbidden_tools": ["web_search", "web_fetch"],
     "required_tool_prefixes": ["github__"],
     "required_mcp_servers": ["github"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "github"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "github", "action": "start"},
       {"tool": "github__search_repositories"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "github"},
+      {"tool": "mcp", "server_id": "github", "action": "restart"},
       {"tool": "github__search_repositories"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "github"}
+      {"tool": "mcp", "server_id": "github", "action": "stop"}
     ],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_huggingface_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Hugging Face найди одну публичную модель Qwen, проверь тот же поиск после перезапуска интеграции и затем останови её. Ничего на Hub не изменяй.",
-    "required_tools": ["runtime_control"],
-    "forbidden_tools": ["capability_load", "web_search", "web_fetch"],
+    "required_tools": ["capability_load", "mcp"],
+    "forbidden_tools": ["web_search", "web_fetch"],
     "required_tool_prefixes": ["huggingface__"],
     "required_mcp_servers": ["huggingface"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "huggingface"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "huggingface", "action": "start"},
       {"tool": "huggingface__hub_repo_search"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "huggingface"},
+      {"tool": "mcp", "server_id": "huggingface", "action": "restart"},
       {"tool": "huggingface__hub_repo_search"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "huggingface"}
+      {"tool": "mcp", "server_id": "huggingface", "action": "stop"}
     ],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_playwright_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Playwright открой https://example.com, назови заголовок страницы, повтори проверку после перезапуска интеграции и затем останови её. Ничего не отправляй и не загружай.",
-    "required_tools": ["runtime_control"],
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["playwright__"],
     "required_mcp_servers": ["playwright"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "playwright"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "playwright", "action": "start"},
       {"tool": "playwright__browser_navigate"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "playwright"},
+      {"tool": "mcp", "server_id": "playwright", "action": "restart"},
       {"tool": "playwright__browser_navigate"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "playwright"}
+      {"tool": "mcp", "server_id": "playwright", "action": "stop"}
     ],
     "required_answer_contains": ["Example Domain"],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_paper_search_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Paper Search найди одну статью arXiv по retrieval augmented generation, проверь поиск после перезапуска интеграции и затем останови её. Ответ дай в чате, файл создавать и скачивать не нужно.",
-    "required_tools": ["runtime_control"],
-    "forbidden_tools": ["capability_load", "web_search", "web_fetch"],
+    "required_tools": ["capability_load", "mcp"],
+    "forbidden_tools": ["web_search", "web_fetch"],
     "required_tool_prefixes": ["paper_search__"],
     "required_mcp_servers": ["paper_search"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "paper_search"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "paper_search", "action": "start"},
       {"tool": "paper_search__search_arxiv"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "paper_search"},
+      {"tool": "mcp", "server_id": "paper_search", "action": "restart"},
       {"tool": "paper_search__search_arxiv"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "paper_search"}
+      {"tool": "mcp", "server_id": "paper_search", "action": "stop"}
     ],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_homeassistant_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию Home Assistant прочитай текущую версию, повтори проверку после перезапуска интеграции и затем останови её. Ничего в Home Assistant не изменяй.",
-    "required_tools": ["runtime_control"],
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["homeassistant__"],
     "required_mcp_servers": ["homeassistant"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "homeassistant"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "homeassistant", "action": "start"},
       {"tool": "homeassistant__get_version"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "homeassistant"},
+      {"tool": "mcp", "server_id": "homeassistant", "action": "restart"},
       {"tool": "homeassistant__get_version"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "homeassistant"}
+      {"tool": "mcp", "server_id": "homeassistant", "action": "stop"}
     ],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_dbhub_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Через настроенную интеграцию DBHub выполни безопасный запрос `SELECT 1 AS ok`, повтори его после перезапуска интеграции и затем останови её. Данные не изменяй и не выводи реквизиты подключения.",
-    "required_tools": ["runtime_control"],
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["dbhub__"],
     "required_mcp_servers": ["dbhub"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "dbhub"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "dbhub", "action": "start"},
       {"tool": "dbhub__execute_sql"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "dbhub"},
+      {"tool": "mcp", "server_id": "dbhub", "action": "restart"},
       {"tool": "dbhub__execute_sql"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "dbhub"}
+      {"tool": "mcp", "server_id": "dbhub", "action": "stop"}
     ],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_unity_transport": {
     "suite": "integration",
     "opt_in": true,
     "task": "Проверь стабильность transport настроенной Unity-интеграции до и после её перезапуска, не обращаясь к проекту или редактору. После проверки останови интеграцию.",
-    "required_tools": ["runtime_control"],
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["unity__"],
     "required_mcp_servers": ["unity"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "unity"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "unity", "action": "start"},
       {"tool": "unity__debug_request_context"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "unity"},
+      {"tool": "mcp", "server_id": "unity", "action": "restart"},
       {"tool": "unity__debug_request_context"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "unity"}
+      {"tool": "mcp", "server_id": "unity", "action": "stop"}
     ],
-    "max_tool_calls": 9
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_unity_editor_readonly": {
     "suite": "integration",
     "opt_in": true,
     "task": "Проверь через настроенную Unity-интеграцию, что MCP видит сейчас открытый редактор: прочитай последние пять сообщений Unity Console и кратко сообщи состояние. Ничего в проекте, сцене или редакторе не изменяй; после проверки останови интеграцию.",
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control", "unity__read_console"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "mcp", "unity__read_console"],
     "required_mcp_servers": ["unity"],
-    "required_runtime_operations": ["mcp_start", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "unity"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "server_id": "unity", "action": "start"},
       {"tool": "unity__read_console"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "unity"}
+      {"tool": "mcp", "server_id": "unity", "action": "stop"}
     ],
-    "max_tool_calls": 7
+    "max_tool_calls": 7,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "mcp_blender_transport": {
     "suite": "integration",
     "opt_in": true,
     "task": "Проверь read-only статус настроенной Blender-интеграции до и после её перезапуска, не изменяя сцену и не загружая ассеты. После проверки останови интеграцию.",
-    "required_tools": ["runtime_control"],
+    "required_tools": ["capability_load", "mcp"],
     "required_tool_prefixes": ["blender__"],
     "required_mcp_servers": ["blender"],
-    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_restart", "mcp_stop"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "blender"},
+      {"tool": "capability_load", "group": "mcp"},
+      {"tool": "mcp", "action": "list"},
+      {"tool": "mcp", "server_id": "blender", "action": "start"},
       {"tool": "blender__get_blender_status"},
-      {"tool": "runtime_control", "operation": "mcp_restart", "server_id": "blender"},
+      {"tool": "mcp", "server_id": "blender", "action": "restart"},
       {"tool": "blender__get_blender_status"},
-      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "blender"}
+      {"tool": "mcp", "server_id": "blender", "action": "stop"}
     ],
-    "max_tool_calls": 9
-  },
-  "vault_restore": {
-    "suite": "integration",
-    "opt_in": true,
-    "task": "На изолированном eval-backend проверь portable vault: узнай его состояние, создай резервную копию vault-backup.elira-vault внутри подключённого проекта, восстанови vault из этой копии и повторно проверь состояние. Не печатай секреты.",
-    "required_tools": ["runtime_control"],
-    "required_runtime_operations": ["vault_status", "vault_backup", "vault_restore"],
-    "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "vault_status"},
-      {"tool": "runtime_control", "operation": "vault_backup"},
-      {"tool": "runtime_control", "operation": "vault_restore"}
-    ],
-    "max_tool_calls": 7
+    "max_tool_calls": 9,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": [],
+      "capability_groups": ["mcp"]
+    }
   },
   "workflow_resume": {
     "suite": "core",
@@ -495,56 +615,19 @@
     "files": {
       "resume_probe.py": "import time\nprint('RESUME_PROBE_STARTED', flush=True)\ntime.sleep(300)\n"
     },
-    "expected_profile": "Инженерный",
+    "expected_profile": "Баланс",
     "cancel_on_tool": "run_bash",
     "resume_after_stop": true,
     "require_workflow_stop": true,
     "require_workflow_resume": true,
     "required_answer_contains": ["WORKFLOW_RESUME_COMPLETE"],
-    "max_tool_calls": 10
-  },
-  "workflow_input": {
-    "suite": "core",
-    "opt_in": true,
-    "task": "Попроси меня через карточку Workflow ввести строковое значение canary. После моего ответа назови полученное value.",
-    "required_tools": ["workflow_request"],
-    "workflow_responses": [
-      {"kind": "input", "message_contains": "canary", "values": {"value": "WORKFLOW_INPUT_731"}}
-    ],
-    "required_workflow_responses": [
-      {"kind": "input", "action": "accept"}
-    ],
-    "required_answer_contains": ["WORKFLOW_INPUT_731"],
-    "max_tool_calls": 2
-  },
-  "workflow_secret": {
-    "suite": "core",
-    "opt_in": true,
-    "task": "Попроси меня через защищённую карточку Workflow предоставить тестовый credential без передачи plaintext в чат. После ответа подтверди только получение непрозрачного secret_ref и не печатай его значение.",
-    "required_tools": ["workflow_request"],
-    "workflow_responses": [
-      {"kind": "secret", "message_contains": "credential", "values": {"secret_ref": "sref_eval_canary"}}
-    ],
-    "required_workflow_responses": [
-      {"kind": "secret", "action": "accept"}
-    ],
-    "required_answer_contains": ["secret_ref"],
-    "forbidden_answer_contains": ["sref_eval_canary"],
-    "max_tool_calls": 2
-  },
-  "workflow_elevation_cancel": {
-    "suite": "core",
-    "opt_in": true,
-    "task": "Запроси через Workflow UI повышение прав для безопасной тестовой команды cmd.exe /c exit 0. Не запускай её обычным shell; тестовая карточка UAC будет отклонена пользователем.",
-    "forbidden_tools": ["run_bash"],
-    "workflow_responses": [
-      {"kind": "elevation", "message_contains": "UAC", "action": "cancel", "values": {}}
-    ],
-    "required_workflow_responses": [
-      {"kind": "elevation", "action": "cancel"}
-    ],
-    "expected_stop_reason": "cancelled",
-    "max_tool_calls": 1
+    "max_tool_calls": 10,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "absolute_path_no_project": {
     "suite": "core",
@@ -553,94 +636,78 @@
     "files": {
       "README.md": "ABSOLUTE_PATH_CANARY=ELIRA_OUTSIDE_PROJECT_OK\n"
     },
-    "expected_profile": "Инженерный",
+    "expected_profile": "Баланс",
     "required_tools": ["read_file"],
     "forbidden_tools": ["run_bash"],
-    "required_tool_sequence": [{"tool": "read_file"}],
+    "required_tool_sequence": [
+      {"tool": "read_file"}
+    ],
     "forbidden_answer_contains": ["подключите проект", "нет доступа"],
     "required_answer_contains": ["ELIRA_OUTSIDE_PROJECT_OK"],
-    "max_tool_calls": 4
+    "max_tool_calls": 4,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "memory_roundtrip": {
     "suite": "core",
     "opt_in": true,
     "task": "Запомни как важный пользовательский факт MEMORY_HARNESS_CANARY_20260826=берёзовый чай. Затем найди этот факт в долговременной памяти, назови точное значение и удали созданную тестовую запись.",
-    "expected_profile": "Личный",
-    "required_tools": ["runtime_control"],
+    "expected_profile": "Баланс",
+    "required_tools": ["capability_load", "memory"],
     "forbidden_tools": ["write_file"],
-    "required_runtime_operations": ["memory_add", "memory_search", "memory_delete"],
     "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "memory_add"},
-      {"tool": "runtime_control", "operation": "memory_search"},
-      {"tool": "runtime_control", "operation": "memory_delete"}
+      {"tool": "capability_load", "group": "memory"},
+      {"tool": "memory", "action": "add"},
+      {"tool": "memory", "action": "search"},
+      {"tool": "memory", "action": "delete"}
     ],
     "required_answer_contains": ["берёзовый чай"],
-    "max_tool_calls": 12
-  },
-  "library_roundtrip": {
-    "suite": "integration",
-    "opt_in": true,
-    "task": "Добавь файл {ABSOLUTE_TARGET}/library_canary.txt в Library, найди через библиотечный поиск LIBRARY_HARNESS_CANARY_20260826, прочитай найденный документ и назови точное значение маркера. После проверки удали тестовый документ из Library.",
-    "files": {
-      "library_canary.txt": "LIBRARY_HARNESS_CANARY_20260826=violet-731\n"
+    "max_tool_calls": 12,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
     },
-    "expected_profile": "Инженерный",
-    "required_tools": ["runtime_control"],
-    "forbidden_tools": ["glob", "run_bash"],
-    "required_runtime_operations": ["library_add", "library_search", "library_read", "library_delete"],
-    "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "library_add"},
-      {"tool": "runtime_control", "operation": "library_search"},
-      {"tool": "runtime_control", "operation": "library_read"},
-      {"tool": "runtime_control", "operation": "library_delete"}
-    ],
-    "required_answer_contains": ["violet-731"],
-    "max_tool_calls": 7
-  },
-  "telegram_typed_roundtrip": {
-    "suite": "integration",
-    "opt_in": true,
-    "task": "Проверь настроенную интеграцию Telegram: выбери разрешённого пользователя, отправь ему точный текст TELEGRAM_HARNESS_CANARY_20260826 и убедись по журналу сообщений, что отправка зарегистрирована. Сообщай об отправке только по фактическому результату интеграции.",
-    "expected_profile": "Личный",
-    "required_tools": ["runtime_control"],
-    "forbidden_tools": ["http_api", "web_search", "web_fetch"],
-    "required_runtime_operations": ["vault_status", "telegram_status", "telegram_start", "telegram_users", "telegram_send", "telegram_messages"],
-    "required_tool_sequence": [
-      {"tool": "runtime_control", "operation": "vault_status"},
-      {"tool": "runtime_control", "operation": "telegram_status"},
-      {"tool": "runtime_control", "operation": "telegram_start"},
-      {"tool": "runtime_control", "operation": "telegram_users"},
-      {"tool": "runtime_control", "operation": "telegram_send"},
-      {"tool": "runtime_control", "operation": "telegram_messages"}
-    ],
-    "grounded_action_claims": [
-      {
-        "answer_contains_any": ["отправлено", "отправил", "доставлено"],
-        "evidence": {"tool": "runtime_control", "operation": "telegram_send"}
-      }
-    ],
-    "required_answer_contains": ["TELEGRAM_HARNESS_CANARY_20260826"],
-    "max_tool_calls": 7
+    "expected_final_activation": {
+      "capability_groups": ["memory"]
+    }
   },
   "ssh_linux": {
     "suite": "itops",
     "opt_in": true,
     "task": "Подключись к настроенному Linux SSH-хосту elira-ai-server. Выполни там read-only команду `uname -s && printf SSH_LINUX_CANARY`, затем назови ОС и точный вывод canary. Ничего на сервере не изменяй.",
-    "expected_profile": "Инфраструктура",
+    "expected_profile": "Баланс",
     "required_tools": ["ssh_run"],
     "forbidden_tools": ["run_bash", "ssh_run_ps"],
     "required_answer_contains": ["SSH_LINUX_CANARY"],
-    "max_tool_calls": 5
+    "max_tool_calls": 5,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "ssh_windows": {
     "suite": "itops",
     "opt_in": true,
     "task": "Подключись к настроенному Windows SSH-хосту home-srv01. Выполни там read-only PowerShell-команду `Write-Output SSH_WINDOWS_CANARY; [Environment]::OSVersion.VersionString`, затем назови ОС и точный вывод canary. Ничего на сервере не изменяй.",
-    "expected_profile": "Инфраструктура",
+    "expected_profile": "Баланс",
     "required_tools": ["ssh_run_ps"],
     "forbidden_tools": ["run_bash", "ssh_run"],
     "required_answer_contains": ["SSH_WINDOWS_CANARY"],
-    "max_tool_calls": 5
+    "max_tool_calls": 5,
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   },
   "workflow_approval": {
     "suite": "core",
@@ -655,6 +722,13 @@
       {"kind": "approval", "action": "accept"}
     ],
     "required_answer_contains": ["WORKFLOW_APPROVAL_842"],
-    "max_tool_calls": 4
+    "max_tool_calls": 4,
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "ssh": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    }
   }
 }

@@ -317,14 +317,18 @@ def summarize_events(
             trace_item["operation"] = operation
         if server_id:
             trace_item["server_id"] = server_id
-        for key in ("action", "kind"):
+        for key in ("action", "kind", "group"):
             value = str(arguments.get(key) or "")
             if value:
                 trace_item[key] = value
         status = str(event.get("status") or "")
         if status:
             trace_item["status"] = status
+        if event.get("ok") is True and str(event.get("result") or "").lstrip().startswith("ERROR:"):
+            trace_item["error_prefixed_success"] = True
         tool_trace.append(trace_item)
+        # Keep the old fields for journal replay. Modern tools retain their
+        # real names/actions in tool_trace; do not invent runtime_control calls.
         if tool_name == "runtime_control" and operation:
             runtime_calls.append({
                 "operation": operation,

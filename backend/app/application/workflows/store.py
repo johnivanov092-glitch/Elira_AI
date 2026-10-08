@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -9,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.infrastructure.db.connection import connect_sqlite
+from app.utils.json_values import dumps_json as _dumps, loads_json as _loads
 
 
 CREATE_SQL = """
@@ -155,19 +155,6 @@ def init_db(*, db_path: str | Path) -> None:
             "DELETE FROM workflow_templates "
             "WHERE source = 'builtin' AND id LIKE 'builtin.workflow.multi_agent.%'"
         )
-
-
-def _dumps(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False)
-
-
-def _loads(raw: Any, default: Any) -> Any:
-    if raw in (None, ""):
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return default
 
 
 def _as_bool(value: Any) -> bool:

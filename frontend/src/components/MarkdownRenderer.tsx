@@ -11,6 +11,7 @@ import { Globe } from "lucide-react";
 import type { SourceCitation } from "../api/codeAgent";
 import { buildApiUrl } from "../api/client";
 import { isLocalApiAssetUrl } from "../api/apiUtils";
+import { displayHostname } from "../ui/urlDisplay";
 import { DownloadLink } from "./DownloadLink";
 import { ExternalBrowserLink } from "./ExternalLink";
 
@@ -70,16 +71,6 @@ export function SourceCitationLink({ citation }: { citation: SourceCitation }) {
 const extractFilename = (url: string): string | null => { const p = url.split("/"); const l = p[p.length - 1]; return l && l.includes(".") ? decodeURIComponent(l) : null; };
 const isFilename = (s: string): boolean => /\.\w{1,5}$/.test(s);
 
-// Shorten a bare URL to its hostname for display — cleaner than a raw URL soup.
-// The full URL stays in href (click) and title (hover).
-function prettyUrl(raw: string): string {
-  try {
-    return new URL(raw).hostname.replace(/^www\./, "");
-  } catch {
-    return raw;
-  }
-}
-
 // ─── Inline regex patterns (создаются один раз на уровне модуля) ───
 const INLINE_PATTERNS: InlinePattern[] = [
   { re: /`([^`]+)`/, render: (m, k) => <code key={k} className="md-inline-code">{m[1]}</code> },
@@ -93,7 +84,7 @@ const INLINE_PATTERNS: InlinePattern[] = [
       return <img key={k} src={buildApiUrl(raw)} alt={m[1]} className="md-image" loading="lazy" />;
     }
     if (/^https?:\/\//i.test(raw)) {
-      return <ExternalBrowserLink key={k} href={raw} className="md-link">🖼 {m[1] || prettyUrl(raw)}</ExternalBrowserLink>;
+      return <ExternalBrowserLink key={k} href={raw} className="md-link">🖼 {m[1] || displayHostname(raw)}</ExternalBrowserLink>;
     }
     return <span key={k} className="text-mut">[изображение недоступно]</span>;
   }},
@@ -108,7 +99,7 @@ const INLINE_PATTERNS: InlinePattern[] = [
   // Bare URL (not already inside []() — the link pattern above matches earlier at
   // its "[" so it wins there). Trailing punctuation is left out of the link.
   { re: /(https?:\/\/[^\s<>()\]}"']*[^\s<>()\]}"'.,;:!?])/, render: (m, k) =>
-    <ExternalBrowserLink key={k} href={m[1]} className="md-link" title={m[1]}>{prettyUrl(m[1])}</ExternalBrowserLink> },
+    <ExternalBrowserLink key={k} href={m[1]} className="md-link" title={m[1]}>{displayHostname(m[1])}</ExternalBrowserLink> },
 ];
 
 const OUTER_FENCE_RE = /^```(?:markdown|text|md|)\s*\n([\s\S]*?)\n?```\s*$/;

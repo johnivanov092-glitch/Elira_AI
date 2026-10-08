@@ -5,13 +5,13 @@ groups through the existing runtime. Laya and the old semantic prefill classifie
 are not active. `agent_loop.py` uses the canonical `DEFAULT_PROFILE`; compatibility
 domain hints are not independently selected personas or permissions.
 
-**Legacy eval limitation (2026-09-27):** `routing_cases.json` still contains
-`expected_profile` assertions for Personal/Engineering/etc. `routing_eval.py`
-checks them literally and includes them in `profile_accuracy`. These expectations
-describe the earlier router and must be revised before treating the aggregate as
-current routing acceptance. No fresh live routing-suite PASS is claimed here.
-Tool, lifecycle and output contracts remain useful, but a case verdict must be
-read with this known mismatch. Dated results below preserve their original scope.
+The 2026-10-08 migration uses the canonical `Баланс` profile and an initially
+empty capability/MCP/SSH/IT Ops activation state. The model loads each needed
+group explicitly. The active inventory is 32 live-agent cases, three separate
+controller round-trips and three Workflow UI contracts in pytest. These preserve
+38 original capabilities, not 38 observed model successes. No fresh live
+routing-suite PASS is claimed here. Dated results below preserve the earlier
+architecture and their original scope.
 
 Persona, streaming and structured-source diagnostics are documented separately
 in [ANSWER_CONTRACT.md](ANSWER_CONTRACT.md). URL overlap in routing evals proves
@@ -56,15 +56,20 @@ backend\.venv\Scripts\python.exe -u backend\tests\smokes\routing_eval.py --suite
 Add `--include-opt-in` for stateful/external acceptance. The suites are:
 
 - `core`: absolute path with no connected project, relative paths in a
-  connected project, memory round-trip, Workflow `needs_input/secret/elevation`,
-  Stop → Resume, and grounded action claims;
-- `integration`: typed Telegram/vault, Library, Project RAG/Corpus, web Corpus,
-  MCP and Python/TypeScript/Rust LSP;
+  connected project, memory round-trip, Workflow approval, Stop → Resume, and
+  grounded action claims;
+- `integration`: Project RAG/Corpus, web Corpus and MCP;
 - `itops`: typed TCP inventory, SSH discovery/Linux/Windows, and Workflow Stop
   of a command that does not return.
 
 There is no MikroTik-specific Harness. Router targets use the same generic SSH
 tools when an ordinary SSH case is appropriate.
+
+Vault restore, Library management and Telegram setup use a separate offline
+controller entrypoint described below. They are not selected by these live
+suite commands. Built-in LSP and its three cases were removed under the approved
+architecture; the Serena MCP case exercises its own read-only scenario and does
+not claim equivalent Python/TypeScript/Rust diagnostics coverage.
 
 Harness prompts state the user outcome, not exact JSON arguments or a scripted
 tool recipe. The exact evidence contract is omitted from the task prompt:
@@ -105,10 +110,9 @@ one is required for CI.
 
 ## Coverage
 
-`backend/tests/smokes/routing_cases.json` covers:
+The 32 cases in `backend/tests/smokes/routing_cases.json` cover:
 
-- legacy assertions for Personal, Balanced, Engineering, Business, Infrastructure,
-  Science, and Medicine profiles (see the compatibility limitation above);
+- the canonical `Баланс` profile, without domain-selected permissions;
 - initial and dynamically loaded capability groups;
 - project-file reading and exact answer grounding;
 - one-off work on an explicit absolute path with no project connected;
@@ -116,25 +120,52 @@ one is required for CI.
 - downloadable document generation;
 - typed TCP inventory without a shell fallback;
 - web research for scientific and medical requests;
-- on-demand MCP discovery, start, tool use, and stop;
-- the negative MCP case: an ordinary chat must not start an integration.
-- scripted Workflow UI resolutions for input/secret/elevation/approval;
-- typed Telegram status/start/users/send/messages with a vault-backed token;
-- Library add/search/paged-read/delete;
-- Project Corpus status/index/recall through `runtime_control`;
+- on-demand `capability_load(group=mcp)` and `mcp(action=list/start/restart/stop)`
+  with actual server tools;
+- the negative MCP case: an ordinary chat must not load or start an integration;
+- scripted Workflow UI approval resolution;
+- user-memory search/list and add/search/delete through `memory`;
+- Project Corpus status/index/search through `recall`;
 - Workflow Stop followed by durable Resume of the same run;
-- Python/TypeScript/Rust LSP diagnostics, definition, references and stop;
 - Microsoft Docs HTTP MCP and Serena stdio MCP dynamic tools;
 - opt-in read-only GitHub, Hugging Face, Playwright, Paper Search and Home
   Assistant MCP cycles, plus transport-only Unity/Blender checks;
-- portable-vault backup/restore on an isolated eval data directory.
-- Linux and Windows SSH commands through configured shortcuts.
+- SSH discovery after `capability_load(group=ssh)`, and Linux/Windows commands
+  through configured shortcuts.
 
 Each case can assert the effective profile, initial/final runtime activation,
-successful ordered tool sequences, forbidden operation families, MCP servers,
+successful ordered tool sequences, forbidden calls, MCP servers,
 answer fragments, action claims grounded by successful tool results, citations returned by source tools, network states grounded
 in typed inventory output, background-job action/kind/status, and the maximum
 number of tool calls.
+
+`required_tool_sequence` is an ordered subsequence of successful results. Its
+match fields include `tool`/`tool_prefix`, `group`, `action`, `kind` and `server_id`;
+a failed result or an `ERROR:` result cannot prove an action. A
+`forbidden_tool_calls` match rejects the attempt regardless of success. Legacy
+`runtime_control` operation fields remain for reading older reports, not for
+modern case expectations.
+
+The 16 direct migrations retain their original tool budgets. The table counts
+mandatory successful calls, including capability loading; skill reads and any
+extra provider calls must fit the remaining allowance.
+
+| Cases | Mandatory calls | Maximum calls |
+|---|---:|---:|
+| `mcp_context7` | 5 | 10 |
+| `mcp_microsoft_docs`, `mcp_serena` | 5 | 8 |
+| MCP restart cycles: GitHub, Hugging Face, Playwright, Paper Search, Home Assistant, DBHub, Unity transport, Blender transport | 7 | 9 |
+| `mcp_unity_editor_readonly` | 4 | 7 |
+| `personal_memory` | 3 | 4 |
+| `memory_roundtrip` | 4 | 12 |
+| `project_corpus_workflow` | 4 | 5 |
+| `ssh_discovery` | 2 | 4 |
+
+`personal_memory` explicitly requests two outcomes: search saved answer-style
+preferences and separately list recent user facts. Thus search and list are
+both required even when search finds a preference. The contract does not infer
+an empty result from localized tool text or force a list against a conditional
+task instruction.
 
 The `background_job_durable` case seeds its command as a project file, so the
 eval measures routing and process lifecycle instead of model-sensitive shell
@@ -159,7 +190,9 @@ It cannot fake a successful UAC elevation, so unattended elevation cases use
 decline/cancel. `resume_after_stop` records the first cancelled terminal event,
 then calls the public Resume endpoint and evaluates the final stream.
 
-The 2026-08-24 provider acceptance used the primary Qwen model and an isolated
+The following dated results use pre-migration tool names and profiles. They do
+not certify the current tool interface. The 2026-08-24 provider acceptance used
+the primary Qwen model and an isolated
 backend/data directory. Reports are under ignored
 `.agent/evals/final-runtime-live/`. Project Corpus, Microsoft Docs/Serena MCP,
 all three LSPs, vault restore and Stop→Resume passed. The live runs found and
@@ -222,6 +255,61 @@ The command exits non-zero when any contract fails. Unit coverage for the
 reporter and evaluator lives in `backend/tests/test_live_eval_driver.py`; live
 model runs remain opt-in because they require the backend and LAN inference
 server and can take several minutes.
+
+## Isolated UI/controller contracts
+
+Three former live cases keep their IDs in
+`backend/tests/smokes/controller_eval.py`: `vault_restore`, `library_roundtrip`
+and `telegram_typed_roundtrip`. Their management operations moved to Settings/UI
+under the approved architecture, so they are not repaired by restoring deleted
+agent tools. Run the controller separately in a fresh process:
+
+```powershell
+backend\.venv\Scripts\python.exe -X utf8 backend\tests\smokes\controller_eval.py `
+  --output-dir .agent\evals\controllers\manual
+```
+
+The entrypoint creates a temporary `ELIRA_DATA_DIR` before importing the app,
+blocks external network calls and uses the real local routes, stores, vault and
+typed tool adapters. Each contract has its own stores; overrides are restored,
+the Telegram receiver is stopped, and the temporary root is removed on exit.
+Reports remain in the chosen output directory.
+
+- `vault_restore`: UI create/status/secret/backup/restore/unlock, encrypted
+  backup, rejection of a tampered backup, restoration of the original
+  `secret_ref`, and rollback of a post-backup mutation.
+- `library_roundtrip`: UI upload/list, typed search and two bounded read pages
+  of a document larger than one page with the exact canary, UI deletion in
+  cleanup, and absence of the row/file with a rejected read after deletion.
+- `telegram_typed_roundtrip`: real vault-backed configuration and allowed-user
+  setup through local UI routes/store, receiver start/stop, typed
+  `telegram(action=send/messages)` and the actual out-log. Telegram transport and
+  polling are stubbed; failed transport and a locked vault must not record a
+  successful send.
+
+Reports explicitly use `kind=controller_contract` and
+`external_delivery_verified=false`. A controller PASS establishes the local
+contract only. Model routing, UI rendering and physical Telegram delivery need
+separate live integration acceptance. These results are never merged into the
+32-case live-agent success percentage. Unit coverage lives in
+`backend/tests/test_controller_eval_harness.py`.
+
+The deleted direct `workflow_request` trigger is not part of the model tool
+surface. Three former live specs (`workflow_input`, `workflow_secret`,
+`workflow_elevation_cancel`) now map to these real UI/API contracts in
+`backend/tests/test_workflow_requests.py::WorkflowRequestApiTest`:
+
+- `test_pending_input_request_is_replayed_and_resolution_resumes_once` checks
+  request replay and exactly one resumed dispatch after input resolution;
+- `test_secret_request_rejects_plaintext_and_never_returns_resolution` checks
+  opaque secret references and rejection of plaintext input;
+- `test_elevation_cancellation_never_dispatches_a_tool` checks cancellation,
+  repeated resolution, an empty pending queue, and no tool dispatch.
+
+These pytest contracts establish the controller boundaries independently of
+model tool selection. Live `workflow_resume` and `workflow_approval` remain in
+the routing inventory. No Workflow coverage is counted as a model PASS by
+moving it to a controller test.
 
 ## Deterministic memory eval
 

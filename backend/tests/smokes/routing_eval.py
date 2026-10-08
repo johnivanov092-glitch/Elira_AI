@@ -26,16 +26,20 @@ _NON_OPEN_TERMS = (
 )
 
 
-def _trace_item_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+def _trace_item_matches(
+    expected: dict[str, Any], actual: dict[str, Any], *, require_success: bool = True,
+) -> bool:
     tool_name = str(actual.get("tool") or "")
     prefix = str(expected.get("tool_prefix") or "")
     if prefix and not tool_name.startswith(prefix):
         return False
-    for key in ("tool", "operation", "server_id", "action", "kind", "status"):
+    for key in ("tool", "operation", "server_id", "action", "kind", "status", "group"):
         value = expected.get(key)
         if value is not None and str(actual.get(key) or "") != str(value):
             return False
-    return actual.get("ok") is True
+    return not require_success or (
+        actual.get("ok") is True and not actual.get("error_prefixed_success")
+    )
 
 
 def _port_states(answer: str, port: int) -> set[str]:
@@ -76,6 +80,8 @@ def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
         if str(tool_name) in tool_names:
             failures.append(f"forbidden tool used: {tool_name}")
 
+    # Legacy specs/reports remain readable; current cases use real tool_trace
+    # entries rather than translating modern actions back into removed tools.
     runtime_calls = summary.get("runtime_calls")
     if isinstance(runtime_calls, list):
         operations = {
@@ -124,6 +130,13 @@ def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
             failures.append(f"Workflow Resume failed: {summary.get('workflow_resume_error')}")
 
     tool_trace = summary.get("tool_trace") or []
+    for expected in spec.get("forbidden_tool_calls") or []:
+        if any(
+            isinstance(item, dict)
+            and _trace_item_matches(dict(expected), item, require_success=False)
+            for item in tool_trace
+        ):
+            failures.append(f"forbidden tool call: {expected}")
     cursor = 0
     for position, expected in enumerate(spec.get("required_tool_sequence") or [], 1):
         found = next(
@@ -402,18 +415,6 @@ def _prepare_case_workspace(
     task = str(spec.get("task") or "").replace(
         "{ABSOLUTE_TARGET}",
         str(workspace),
-    )
-    task = task.replace(
-        "{PYRIGHT_LANGSERVER}",
-        str(
-            (
-                REPO_ROOT
-                / "backend"
-                / ".venv"
-                / "Scripts"
-                / "pyright-langserver.exe"
-            ).resolve()
-        ),
     )
     return task, "" if mode == "none" else str(workspace)
 

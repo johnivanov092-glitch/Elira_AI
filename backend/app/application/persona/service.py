@@ -7,11 +7,8 @@ from app.application.persona import evolution as persona_evolution
 from app.application.persona import store as persona_store
 from app.core.persona_defaults import (
     DEFAULT_MODEL_CALIBRATION,
-    DEFAULT_PROFILE,
     ELIRA_TEMPERATURE,
     ELIRA_PERSONA_BASE_PAYLOAD,
-    LEGACY_PROFILE_TO_MODE,
-    PERSONA_MODES,
     PROFILE_MODE_OVERLAYS,
 )
 
@@ -85,27 +82,9 @@ class PersonaPostTurnObservation:
             )
 
 
-def to_mode(name: str) -> str:
-    """Resolve any incoming profile/mode name to a real persona mode.
-
-    Accepts a current mode, a legacy profile name, or junk — always returns one
-    of PERSONA_MODES (DEFAULT_PROFILE as the safe fallback).
-    """
-    if name in PERSONA_MODES:
-        return name
-    return LEGACY_PROFILE_TO_MODE.get(name, DEFAULT_PROFILE)
-
-
 def mode_temperature(name: str):
     """Legacy profile names no longer change live sampling."""
     return ELIRA_TEMPERATURE
-
-
-def mode_tool_posture(name: str) -> str:
-    """'readonly' (narrows the offered tools to read-only) or 'full'. All modes
-    are 'full' by default now; 'readonly' stays available as a posture but no
-    built-in mode ships with it (personal mode was un-narrowed on purpose)."""
-    return PERSONA_MODES[to_mode(name)]["tools"]
 
 
 get_persona_version = persona_store.get_persona_version

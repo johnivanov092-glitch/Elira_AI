@@ -9,9 +9,11 @@ against baseline.json.
 
 Not collected by pytest (needs a running backend at --backend and the AI-server;
 a full pass takes minutes). SSH canary SKIPs when its host is not allowlisted —
-a precondition, not a failure. One retry per smoke on stop_reason=error (the
-known llama.cpp tool-call-parse flake): retried-green is reported FLAKY-PASS.
-Exit code: 0 = no failures (skips allowed), 1 = at least one FAIL.
+a precondition, not a failure. One retry follows any failed evaluation or
+transport error. PASS means the first attempt passed; FLAKY-PASS means only
+that the second attempt passed after the first failed, without identifying
+the cause. Both attempt summaries and failures are retained in results.json.
+Exit code: 0 = no FAIL verdicts (FLAKY-PASS/skips allowed), 1 = any FAIL.
 """
 from __future__ import annotations
 
@@ -29,8 +31,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from driver import run_smoke  # noqa: E402
-
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 
 def _get_json(url: str, timeout: int = 10):
@@ -141,6 +141,7 @@ def main() -> int:
         verdict = "FAIL"
         summary: dict = {}
         fails: list[str] = []
+        attempts: list[dict] = []
         project_dir = out_root / name
         for attempt in (1, 2):
             if project_dir.exists():
@@ -157,18 +158,24 @@ def main() -> int:
             except Exception as exc:
                 summary = {"stop_reason": "transport-error", "error": str(exc)[:200]}
             fails = _evaluate(name, spec, summary, project_dir)
+            attempts.append({
+                "attempt": attempt,
+                "run_id": rid,
+                "events_file": f"events-{name}-a{attempt}.jsonl",
+                "summary": dict(summary),
+                "fails": list(fails),
+            })
             if not fails:
                 verdict = "PASS" if attempt == 1 else "FLAKY-PASS"
                 break
-            # One retry on ANY failure: a real runtime regression is deterministic and
-            # fails BOTH attempts → FAIL; a stochastic generation/infra flake usually
-            # passes the retry → FLAKY-PASS (still visible in the report, not hidden).
+            # Retry any failed evaluation once. A later pass records the outcome,
+            # not the cause of the first failure.
             if attempt == 1:
                 print(f"     attempt 1 failed ({'; '.join(fails)[:120]}) — retry")
                 continue
             break
 
-        results[name] = {"status": verdict, "fails": fails, **summary}
+        results[name] = {**summary, "status": verdict, "fails": fails, "attempts": attempts}
         line = (f"{verdict:10} {name}: {summary.get('completion_status')} "
                 f"{summary.get('confirmed')}/{summary.get('total_criteria')} "
                 f"tools={summary.get('tool_calls')} auto={summary.get('auto_verifier_calls')} "
@@ -184,7 +191,8 @@ def main() -> int:
 
     (out_root / "results.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\nИтог: {sum(1 for r in results.values() if r['status'].endswith('PASS'))} pass, "
+    print(f"\nИтог: {sum(1 for r in results.values() if r['status'] == 'PASS')} first-pass, "
+          f"{sum(1 for r in results.values() if r['status'] == 'FLAKY-PASS')} rerun-pass, "
           f"{sum(1 for r in results.values() if r['status'] == 'FAIL')} fail, "
           f"{sum(1 for r in results.values() if r['status'] == 'SKIP')} skip "
           f"→ {out_root / 'results.json'}")
@@ -192,4 +200,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     raise SystemExit(main())

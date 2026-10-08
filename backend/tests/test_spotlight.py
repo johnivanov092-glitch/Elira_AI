@@ -1,19 +1,19 @@
 """Tests for the Spotlight global search service.
 
-Each test sets ELIRA_DATA_DIR to a temp dir and reloads the four
-source modules so their DB connections point at clean databases.
+Each test patches the four source DB paths to its own temporary databases.
+Cleanup restores the original paths before removing those databases.
 That lets us seed exactly the rows we want and assert on the
 shape of search_everywhere's output deterministically.
 """
 from __future__ import annotations
 
-import importlib
 import os
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,43 +22,38 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
+def _spotlight_sources():
+    from app.application.elira_memory import service as elira_memory_service
+    from app.application.code_agent import sessions as code_sessions
+    from app.application.rag_memory import service as rag_service
+    from app.infrastructure.db import library_db
+
+    return (
+        (elira_memory_service, "elira_state.db", elira_memory_service.init_db),
+        (code_sessions, "code_agent_sessions.db", code_sessions.init_db),
+        (rag_service, "rag_memory.db", rag_service._init),
+        (library_db, "library.db", library_db.init_db),
+    )
+
+
 class SpotlightSearchTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        os.environ["ELIRA_DATA_DIR"] = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+        sources = _spotlight_sources()
+        for module, filename, initialize in sources:
+            patcher = patch.object(module, "DB_PATH", Path(self._tmp.name) / filename)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            initialize()
 
-        from app.core import data_files
-        importlib.reload(data_files)
-
-        # Reload every source module so its module-level DB_PATH
-        # picks up the new DATA_DIR.
-        from app.application.elira_memory import service as elira_memory_service
-        importlib.reload(elira_memory_service)
-        elira_memory_service.init_db()
-
-        from app.application.code_agent import sessions as code_sessions
-        importlib.reload(code_sessions)
-
-        from app.application.rag_memory import service as rag_service
-        importlib.reload(rag_service)
-
-        from app.infrastructure.db import library_db
-        importlib.reload(library_db)
-
-        # Spotlight imports the others — reload last so it captures
-        # the new DB paths via its inner imports.
         from app.application.spotlight import runtime as spotlight_runtime
-        importlib.reload(spotlight_runtime)
 
         self.spotlight = spotlight_runtime
-        self.elira_memory = elira_memory_service
-        self.code_sessions = code_sessions
-        self.rag_service = rag_service
-        self.library_db_path = library_db.DB_PATH
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-        os.environ.pop("ELIRA_DATA_DIR", None)
+        self.elira_memory = sources[0][0]
+        self.code_sessions = sources[1][0]
+        self.rag_service = sources[2][0]
+        self.library_db_path = sources[3][0].DB_PATH
 
     # ── helpers ────────────────────────────────────────────────
 
@@ -227,5 +222,58 @@ class SpotlightSearchTest(unittest.TestCase):
         self.assertEqual(len(result["sessions"]), 1)
 
 
+def test_spotlight_cleanup_restores_sources_before_next_memory_call(tmp_path, monkeypatch):
+    from app.application import memory
+    from app.application.rag_memory import service as rag_service
+
+    sources = _spotlight_sources()
+    for module, filename, initialize in sources:
+        monkeypatch.setattr(module, "DB_PATH", tmp_path / filename)
+        initialize()
+    original_paths = {module: module.DB_PATH for module, _, _ in sources}
+    original_data_dir = os.environ.get("ELIRA_DATA_DIR")
+
+    case = SpotlightSearchTest("test_empty_query_returns_all_empty_buckets")
+    result = unittest.TestResult()
+    case.run(result)
+    assert result.wasSuccessful(), result.errors or result.failures
+
+    created = None
+    try:
+        created = memory.add_semantic("spotlight cleanup regression canary", category="fact")
+        assert created.get("ok"), created
+        assert os.environ.get("ELIRA_DATA_DIR") == original_data_dir
+        assert {module: module.DB_PATH for module, _, _ in sources} == original_paths
+        assert not Path(case._tmp.name).exists()
+    finally:
+        if created and created.get("id") is not None:
+            rag_service.delete_rag(created["id"])
+
+
+def test_spotlight_setup_failure_restores_source_paths(tmp_path, monkeypatch):
+    from app.application.rag_memory import service as rag_service
+
+    sources = _spotlight_sources()
+    for module, filename, initialize in sources:
+        monkeypatch.setattr(module, "DB_PATH", tmp_path / filename)
+        initialize()
+    original_paths = {module: module.DB_PATH for module, _, _ in sources}
+    original_data_dir = os.environ.get("ELIRA_DATA_DIR")
+
+    case = SpotlightSearchTest("test_empty_query_returns_all_empty_buckets")
+    result = unittest.TestResult()
+    with patch.object(rag_service, "_init", side_effect=RuntimeError("fixture init failed")):
+        case.run(result)
+
+    assert len(result.errors) == 1
+    assert "fixture init failed" in result.errors[0][1]
+    assert os.environ.get("ELIRA_DATA_DIR") == original_data_dir
+    assert {module: module.DB_PATH for module, _, _ in sources} == original_paths
+    assert all(Path(path).is_file() for path in original_paths.values())
+    assert not Path(case._tmp.name).exists()
+
+
 if __name__ == "__main__":
-    unittest.main()
+    with tempfile.TemporaryDirectory(prefix="elira-spotlight-unittest-") as data_dir:
+        with patch.dict(os.environ, {"ELIRA_DATA_DIR": data_dir}):
+            unittest.main()

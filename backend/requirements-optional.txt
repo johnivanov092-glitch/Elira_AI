@@ -19,9 +19,8 @@ playwright>=1.45
 # fails gracefully with a clear error instead of crashing the run).
 pyautogui>=0.9.54
 
-# === Language Server Protocol (Python projects) ===
-# Installs pyright-langserver into backend/.venv/Scripts. The LSP runtime still
-# starts it only on an explicit runtime_control(lsp_start) request.
+# === Python static type checking ===
+# Provides pyright for project checks; the built-in agent LSP was removed.
 pyright>=1.1,<2
 
 # === Local speech-to-text (resource_process transcribe on local_gpu/local_cpu) ===

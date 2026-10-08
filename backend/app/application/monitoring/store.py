@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.infrastructure.db.connection import connect_sqlite
+from app.utils.json_values import dumps_json as dumps_json, loads_json as loads_json
 
 
 DEFAULT_WORKFLOW_ENGINE_AGENT_ID = "workflow-engine"
@@ -192,19 +192,6 @@ def migrate_model_profiles_table(db_path: str | Path) -> None:
                  AND model = 'local-model' AND timeout_seconds IN (120, 180)""",
             (now, *_LOCAL_LLAMA_PROFILE_IDS),
         )
-
-
-def dumps_json(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False)
-
-
-def loads_json(raw: Any, default: Any) -> Any:
-    if raw in (None, ""):
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return default
 
 
 def row_to_metric(row: sqlite3.Row | None) -> dict[str, Any] | None:

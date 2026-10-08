@@ -391,18 +391,6 @@ def test_no_project_case_uses_an_external_absolute_workspace(tmp_path: Path) -> 
     assert (tmp_path / "external" / "absolute_path_no_project" / "README.md").is_file()
 
 
-def test_case_workspace_expands_the_pinned_python_lsp_executable(tmp_path: Path) -> None:
-    task, _project_root = _prepare_case_workspace(
-        tmp_path,
-        "lsp_python",
-        {"task": "Запусти {PYRIGHT_LANGSERVER}"},
-    )
-
-    assert "{PYRIGHT_LANGSERVER}" not in task
-    assert "backend" in task
-    assert "pyright-langserver" in task
-
-
 def test_agent_sse_forwards_structured_background_job_metadata(
     tmp_path: Path,
     monkeypatch,
@@ -681,7 +669,7 @@ def test_live_eval_can_require_background_job_start_then_completed_logs() -> Non
     assert evaluate_case(spec, summary) == []
 
 
-def test_case_evaluator_checks_profile_tools_runtime_and_activation() -> None:
+def test_legacy_case_evaluator_checks_profile_tools_runtime_and_activation() -> None:
     spec = {
         "expected_profile": "Инфраструктура",
         "required_tools": ["itops_network_inventory"],
@@ -750,7 +738,7 @@ def test_case_evaluator_checks_profile_tools_runtime_and_activation() -> None:
     assert "answer is missing: Проверка завершена" in failures
 
 
-def test_case_evaluator_requires_successful_ordered_mcp_shutdown() -> None:
+def test_legacy_case_evaluator_requires_successful_ordered_mcp_shutdown() -> None:
     spec = {
         "required_tool_sequence": [
             {"tool": "runtime_control", "operation": "mcp_start", "server_id": "context7"},
@@ -786,7 +774,7 @@ def test_case_evaluator_requires_successful_ordered_mcp_shutdown() -> None:
     assert "final activation mcp_server_ids=['context7']; expected=[]" in failures
 
 
-def test_case_evaluator_forbids_any_mcp_activation_in_negative_case() -> None:
+def test_legacy_case_evaluator_forbids_any_mcp_activation_in_negative_case() -> None:
     spec = {
         "forbidden_runtime_operation_prefixes": ["mcp_"],
         "forbid_mcp_activation": True,
@@ -832,7 +820,7 @@ def test_case_evaluator_grounds_network_states_and_citations_to_tool_results() -
     assert "answer does not report port 65534 as not open" in failures
 
 
-def test_case_evaluator_rejects_an_action_claim_without_successful_evidence() -> None:
+def test_legacy_case_evaluator_rejects_an_action_claim_without_successful_evidence() -> None:
     spec = {
         "grounded_action_claims": [{
             "answer_contains_any": ["отправлено", "сообщение отправлено"],
@@ -857,6 +845,104 @@ def test_case_evaluator_rejects_an_action_claim_without_successful_evidence() ->
 
     summary["tool_trace"][0]["ok"] = True
     assert evaluate_case(spec, summary) == []
+
+
+def test_modern_mcp_trace_requires_the_correct_group_and_ordered_shutdown() -> None:
+    events = [
+        {"type": "run_started", "profile_name": "Баланс"},
+        {"type": "tool_call", "tool": "capability_load", "arguments": {"group": "mcp"}, "ok": True},
+        {"type": "tool_call", "tool": "mcp", "arguments": {"action": "start", "server_id": "context7"}, "ok": True},
+        {"type": "tool_call", "tool": "context7__query-docs", "ok": True},
+        {"type": "tool_call", "tool": "mcp", "arguments": {"action": "stop", "server_id": "context7"}, "ok": True},
+        {"type": "done", "stop_reason": "answer"},
+    ]
+    spec = {"required_tool_sequence": [
+        {"tool": "capability_load", "group": "mcp"},
+        {"tool": "mcp", "action": "start", "server_id": "context7"},
+        {"tool_prefix": "context7__"},
+        {"tool": "mcp", "action": "stop", "server_id": "context7"},
+    ]}
+    summary = summarize_events(events, run_id="modern-mcp", duration_s=1)
+    assert summary["tool_trace"][0]["group"] == "mcp"
+    assert summary["runtime_calls"] == []
+    assert summary["runtime_operations"] == []
+    assert evaluate_case(spec, summary) == []
+
+    summary["tool_trace"][0]["group"] = "ssh"
+    assert any("tool sequence item 1" in item for item in evaluate_case(spec, summary))
+    summary["tool_trace"][0]["group"] = "mcp"
+    summary["tool_trace"][-1]["ok"] = False
+    assert any("tool sequence item 4" in item for item in evaluate_case(spec, summary))
+    summary["tool_trace"][-1]["ok"] = True
+    summary["tool_trace"][1], summary["tool_trace"][-1] = summary["tool_trace"][-1], summary["tool_trace"][1]
+    assert any("tool sequence" in item for item in evaluate_case(spec, summary))
+
+
+def test_forbidden_modern_calls_reject_attempts_even_when_they_fail() -> None:
+    spec = {"forbidden_tool_calls": [{"tool": "mcp", "action": "start"}]}
+    summary = {
+        "stop_reason": "answer",
+        "tool_trace": [{"tool": "mcp", "action": "list", "ok": True}],
+    }
+    assert evaluate_case(spec, summary) == []
+    summary["tool_trace"].append({"tool": "mcp", "action": "start", "server_id": "context7", "ok": False})
+    assert any("forbidden tool call" in item for item in evaluate_case(spec, summary))
+
+
+def test_action_claim_and_sequence_reject_error_prefixed_success() -> None:
+    spec = {
+        "required_tool_sequence": [{"tool": "telegram", "action": "send"}],
+        "grounded_action_claims": [{
+            "answer_contains_any": ["отправлено"],
+            "evidence": {"tool": "telegram", "action": "send"},
+        }],
+    }
+    events = [
+        {"type": "tool_call", "tool": "telegram", "arguments": {"action": "send"}, "ok": True, "result": "ERROR: delivery failed"},
+        {"type": "final_response", "text": "Отправлено"},
+        {"type": "done", "stop_reason": "answer"},
+    ]
+    summary = summarize_events(events, run_id="false-success", duration_s=1)
+    failures = evaluate_case(spec, summary)
+    assert any("tool sequence" in item for item in failures)
+    assert any("action claim is not grounded" in item for item in failures)
+    assert summary["error_prefixed_successes"] == 1
+
+    events[0]["result"] = "message_id=123"
+    summary = summarize_events(events, run_id="successful-send", duration_s=1)
+    assert evaluate_case(spec, summary) == []
+
+
+def test_live_case_expectations_match_the_current_tool_schema() -> None:
+    from app.application.code_agent.tool_schemas import build_tool_schemas
+    from app.core.persona_defaults import DEFAULT_PROFILE
+
+    schemas = {
+        item["function"]["name"]: item["function"]["parameters"]
+        for item in build_tool_schemas()
+    }
+    cases = _load_cases(DEFAULT_CASES_PATH, set(), include_opt_in=True)
+    legacy_keys = {
+        "required_runtime_operations", "forbidden_runtime_operations",
+        "forbidden_runtime_operation_prefixes",
+    }
+    for name, spec in cases.items():
+        assert spec.get("expected_profile") == DEFAULT_PROFILE, name
+        assert not legacy_keys.intersection(spec), name
+        sequence = spec.get("required_tool_sequence") or []
+        if spec.get("max_tool_calls") is not None:
+            assert len(sequence) <= spec["max_tool_calls"], name
+        for item in [*sequence, *(spec.get("forbidden_tool_calls") or [])]:
+            schema = schemas.get(item.get("tool"))
+            if schema is None:  # provider tools/prefixes are exposed dynamically
+                continue
+            properties = schema.get("properties") or {}
+            for key in ("action", "group"):
+                if key not in item:
+                    continue
+                assert key in properties, (name, item)
+                allowed = properties[key].get("enum")
+                assert allowed is None or item[key] in allowed, (name, item)
 
 
 def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any, Callable
+
+from app.utils.json_values import dumps_json as dumps_json, loads_json as loads_json
 
 
 def init_db(*, conn_factory: Callable[[], Any], create_sql: str) -> None:
@@ -35,19 +36,6 @@ def prune_old_events(*, conn_factory: Callable[[], Any], cutoff_iso: str, vacuum
         finally:
             con2.close()
     return {"ok": True, "cutoff": cutoff_iso, "removed": removed}
-
-
-def dumps_json(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False)
-
-
-def loads_json(raw: Any, default: Any) -> Any:
-    if raw in (None, ""):
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return default
 
 
 def row_to_event(*, loads_func: Callable[[Any, Any], Any], row: Any) -> dict[str, Any] | None:

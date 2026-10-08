@@ -258,14 +258,6 @@ PERSONA_PROMOTION_RULES = {
     "max_contradiction_score": 0.25,
 }
 
-PERSONA_SIGNAL_TYPES = (
-    "persona",
-    "knowledge",
-    "user_preference",
-    "model_calibration",
-    "ephemeral",
-)
-
 DEFAULT_MODEL_CALIBRATION = {
     "verbosity": "balanced",
     "formatting": "structured",

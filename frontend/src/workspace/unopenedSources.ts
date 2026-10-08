@@ -1,16 +1,9 @@
 import type { WebSourceEvidence } from "../api/codeAgent";
+import { displayHostname } from "../ui/urlDisplay";
 
 export type UnopenedSource = { url: string; host: string; reason: string };
 
 const pageKey = (url: string) => url.split("#", 1)[0];
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
 
 /** Short reason for a page that did not open; the raw error stays in the run journal. */
 export function unopenedReason(error: string): string {
@@ -46,7 +39,7 @@ export function unopenedSources(sources: WebSourceEvidence[] | undefined): Unope
     if (source.status !== "failed" || !key || read.has(key) || seen.has(key)) continue;
     if (/find phrase not found/i.test(source.error || "")) continue;
     seen.add(key);
-    out.push({ url: key, host: hostOf(key), reason: unopenedReason(source.error || "") });
+    out.push({ url: key, host: displayHostname(key), reason: unopenedReason(source.error || "") });
   }
   return out;
 }

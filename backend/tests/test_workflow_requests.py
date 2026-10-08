@@ -349,6 +349,77 @@ class WorkflowRequestApiTest(unittest.TestCase):
         self.assertEqual(current.status_code, 200, current.text)
         self.assertEqual(current.json()["status"], "needs_elevation")
 
+    def test_elevation_cancellation_never_dispatches_a_tool(self) -> None:
+        definition = {
+            "id": "test.workflow.elevation-cancel",
+            "name": "Cancel elevation before pending command",
+            "graph": {
+                "entry_step": "collect",
+                "steps": [
+                    {
+                        "id": "collect", "type": "request", "next": "command",
+                        "config": {"kind": "elevation", "message": "UAC: cmd.exe /c exit 0"},
+                    },
+                    {
+                        "id": "command", "type": "tool", "tool_name": "run_bash",
+                        "input_map": {"command": "cmd.exe /c exit 0"}, "next": None,
+                    },
+                ],
+            },
+        }
+        created = self.client.post(
+            "/api/agent-os/workflows", json=definition,
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        waiting_run = self._start("test.workflow.elevation-cancel")
+        self.assertEqual(waiting_run["status"], "needs_elevation")
+        pending = self.client.get(
+            f"/api/agent-os/workflow-runs/{waiting_run['run_id']}/requests",
+            params={"status": "pending"},
+        ).json()["requests"][0]
+        endpoint = f"/api/agent-os/workflow-requests/{pending['request_id']}/resolve"
+        with patch(
+            "app.application.tool_registry.service.run_tool",
+            return_value={"ok": True, "text": "mocked command completion"},
+        ) as run_tool:
+            cancelled = self.client.post(endpoint, json={"action": "cancel", "values": {}})
+            self.assertEqual(cancelled.status_code, 200, cancelled.text)
+            self.assertEqual(cancelled.json()["request"]["status"], "cancelled")
+            self.assertEqual(cancelled.json()["run"]["status"], "cancelled")
+            repeated = self.client.post(endpoint, json={"action": "accept", "values": {}})
+            self.assertEqual(repeated.status_code, 200, repeated.text)
+            self.assertEqual(repeated.json()["request"]["status"], "cancelled")
+            self.assertEqual(repeated.json()["run"]["status"], "cancelled")
+            run_tool.assert_not_called()
+
+            # Positive control: the same continuation reaches the dispatcher
+            # after ordinary input acceptance, without invoking native UAC.
+            definition["id"] = "test.workflow.elevation-cancel-control"
+            definition["graph"]["steps"][0]["config"]["kind"] = "input"
+            control = self.client.post("/api/agent-os/workflows", json=definition)
+            self.assertEqual(control.status_code, 200, control.text)
+            control_run = self._start(definition["id"])
+            control_request = self.client.get(
+                f"/api/agent-os/workflow-runs/{control_run['run_id']}/requests",
+                params={"status": "pending"},
+            ).json()["requests"][0]
+            accepted = self.client.post(
+                f"/api/agent-os/workflow-requests/{control_request['request_id']}/resolve",
+                json={"action": "accept", "values": {}},
+            )
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(accepted.json()["run"]["status"], "completed")
+            run_tool.assert_called_once()
+            self.assertEqual(run_tool.call_args.args[:2], (
+                "run_bash", {"command": "cmd.exe /c exit 0"},
+            ))
+        remaining = self.client.get(
+            f"/api/agent-os/workflow-runs/{waiting_run['run_id']}/requests",
+            params={"status": "pending"},
+        )
+        self.assertEqual(remaining.status_code, 200, remaining.text)
+        self.assertEqual(remaining.json()["total"], 0)
+
     def test_bypass_suppresses_approval_request(self) -> None:
         self._create_request_workflow(
             workflow_id="test.workflow.approval-request",
