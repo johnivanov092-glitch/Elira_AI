@@ -141,12 +141,9 @@ def test_browser_permission_is_classified_from_actions() -> None:
         assert permission_mode_auto_approves(interactive) is False
 
 
-def test_computer_permission_is_classified_from_action() -> None:
-    screenshot = _local_ask_request("computer", {"action": "screenshot"})
-    click = _local_ask_request("computer", {"action": "left_click", "x": 10, "y": 20})
-    with patch(
-        "app.application.tool_registry.runtime.get_tool",
-        return_value={"side_effect": True},
-    ):
-        assert permission_mode_auto_approves(screenshot) is True
-        assert permission_mode_auto_approves(click) is False
+def test_desktop_skill_uses_normal_shell_approval() -> None:
+    request = _local_ask_request("run_bash", {"command": 'python computer.py left_click --x 10 --y 20'})
+    with patch("app.application.tool_registry.runtime.get_tool", return_value={"side_effect": True}):
+        assert permission_mode_auto_approves(request) is False
+    request.permission_mode = "bypass"
+    assert permission_mode_auto_approves(request) is True

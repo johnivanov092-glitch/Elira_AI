@@ -42,7 +42,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("http_api",       "HTTP API",       "web",     "Send an outbound HTTP API request",      30, 30000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Validate and publish an already-produced project file as a downloadable artifact (streaming, hash-bound, no overwrite) via the existing download route", 120, 10000, True),
-        ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
         ("mcp", "MCP", "system", "List, start, stop and configure MCP servers", 900, 50000, False),
         ("telegram", "Telegram", "system", "Send a Telegram message or read the bot log", 60, 20000, False),
         ("itops_registry", "IT Ops Registry", "system", "List or change saved IT Ops assets, profiles and MikroTik routers", 60, 20000, False),
@@ -79,7 +78,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         # Reads a workspace file (fs.read) and writes a new download artifact (fs.write).
         "resource_publish": ["fs.read", "fs.write"],
         # Desktop control is shell-level power and is classified by Workflow impact.
-        "computer": ["shell.exec", "net.outbound"],
     }
 
     result: list[dict[str, Any]] = []

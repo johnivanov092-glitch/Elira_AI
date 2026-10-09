@@ -29,7 +29,6 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "web": frozenset({
         "web_search", "web_fetch", "web_query", "http_api", "browser",
     }),
-    "desktop": frozenset({"computer"}),
     "resources": frozenset({
         "resource_process", "resource_materialize", "resource_publish",
         "read_image",
@@ -46,7 +45,6 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "itops": "IT Ops: saved assets, connection profiles, MikroTik routers and typed health/inventory checks",
     "telegram": "send a Telegram message or read the bot log",
     "web": "extra web tools: web_query (search saved pages), http_api, a JS browser; web_search and web_fetch are always loaded",
-    "desktop": "local Windows desktop screenshots, mouse and keyboard control",
     "resources": "attachments, vision, generated DOCX/XLSX/PDF and downloads",
     "memory": "long-term facts about the user (memory) and the user's document Library (library)",
     "math": "unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums; calc is always loaded",

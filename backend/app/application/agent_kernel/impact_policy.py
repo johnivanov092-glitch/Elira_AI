@@ -229,8 +229,6 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
             if "wait" not in keys:
                 return True
         return False
-    if name == "computer":
-        return str(payload.get("action") or "screenshot").strip().lower() != "screenshot"
     if name == "run_server":
         return str(payload.get("action") or "start").strip().lower() not in {"list", "logs"}
     if name == "memory":

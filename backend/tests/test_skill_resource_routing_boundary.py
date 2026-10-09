@@ -77,13 +77,6 @@ def test_resource_schema_is_metadata_only_and_points_to_mutable_skills():
     assert parameters["additionalProperties"] is False
 
 
-def test_computer_schema_does_not_advertise_removed_gpu_transcription():
-    description = next(item["function"]["description"] for item in build_tool_schemas()
-                       if item["function"]["name"] == "computer")
-    assert "resource_process with execution_target='local_gpu'" not in description
-    assert "audio-transcribe" in description
-
-
 def test_web_guidance_routes_pdf_to_skill_without_advertising_builtin_find():
     guidance = task_guidance_blocks({"web_fetch"})["web"]
     assert "PDF читай навыком document-read" in guidance

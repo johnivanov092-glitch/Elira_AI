@@ -37,9 +37,6 @@ from app.application.code_agent.tools._math import tool_calc, tool_unit_convert
 from app.application.code_agent.tools._vision import (
     tool_read_image,
 )
-from app.application.code_agent.tools._computer import (
-    tool_computer,
-)
 from app.application.code_agent.tools._resources import (
     tool_resource_materialize,
     tool_resource_process,
@@ -79,7 +76,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "unit_convert": lambda **kw: tool_unit_convert(**kw),
         "http_api": lambda **kw: tool_http_api(project_root, **kw),
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
-        "computer": lambda **kw: tool_computer(project_root, **kw),
         # Reads a run-bound resource by opaque id (no project path involved).
         "resource_process": lambda **kw: tool_resource_process(**kw),
         # Writes a run-bound resource into the run's project workspace (needs root).
