@@ -25,6 +25,9 @@ function pdfPreviewUrl(url: string, name: string): string | null {
     const parsed = new URL(full);
     if (isDocx && !parsed.pathname.startsWith("/api/skills/download/")) return null;
     parsed.pathname = parsed.pathname.replace("/api/skills/download/", "/api/skills/view/");
+    if (parsed.origin === new URL(buildApiUrl()).origin && parsed.pathname.startsWith("/api/skills/view/")) {
+      parsed.searchParams.set("pages", "true");
+    }
     return parsed.toString();
   } catch {
     return null;
@@ -46,6 +49,11 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
     ? pdfPreviewUrl(selectedDownload.url, selectedDownload.name)
     : null;
   const [tab, setTab] = useState<Tab>(server || isHtml || isMd || downloads.length > 0 ? "preview" : file ? "code" : "console");
+  const [previewLoading, setPreviewLoading] = useState(true);
+
+  useEffect(() => {
+    setPreviewLoading(true);
+  }, [pdfUrl]);
 
   useEffect(() => {
     if (!newestDownload) return;
@@ -142,11 +150,19 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === "preview" && (
           pdfUrl ? (
-            <iframe
-              title="PDF preview"
-              src={pdfUrl}
-              className="h-full w-full border-0 bg-white"
-            />
+            <div className="relative h-full">
+              {previewLoading && (
+                <div role="status" className="absolute inset-0 flex items-center justify-center gap-2 bg-side text-t2">
+                  <Loader2 size={16} className="animate-spin" /> Готовлю страницы…
+                </div>
+              )}
+              <iframe
+                title="PDF preview"
+                src={pdfUrl}
+                onLoad={() => setPreviewLoading(false)}
+                className="h-full w-full border-0 bg-white"
+              />
+            </div>
           ) : selectedDownload ? (
             <div className="grid h-full place-items-center px-5 text-center">
               <div className="max-w-[300px] rounded-xl border border-line bg-card px-4 py-4">

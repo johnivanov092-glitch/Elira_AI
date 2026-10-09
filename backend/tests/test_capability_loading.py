@@ -40,13 +40,13 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
     assert {"web_search", "web_fetch", "browser", "computer"}.isdisjoint(names)
 
     hidden_result = registry.dispatch_raw(
-        "unit_convert",
-        {"value": "1", "from_unit": "KB", "to_unit": "B"},
+        "memory",
+        {"action": "list"},
     )
     assert "unknown tool" not in str(hidden_result.get("text") or "").lower()
 
 
-def test_model_loads_math_group_for_next_turn(tmp_path) -> None:
+def test_model_loads_memory_group_for_next_turn(tmp_path) -> None:
     seen_tool_names: list[set[str]] = []
     responses = iter([
         {
@@ -55,7 +55,7 @@ def test_model_loads_math_group_for_next_turn(tmp_path) -> None:
                 "tool_calls": [{
                     "function": {
                         "name": "capability_load",
-                        "arguments": {"group": "math"},
+                        "arguments": {"group": "memory"},
                     },
                 }],
             },
@@ -79,15 +79,15 @@ def test_model_loads_math_group_for_next_turn(tmp_path) -> None:
 
     assert len(seen_tool_names) >= 2
     assert "capability_load" in seen_tool_names[0]
-    assert "unit_convert" not in seen_tool_names[0]
-    assert {"unit_convert"} <= seen_tool_names[1]
+    assert "memory" not in seen_tool_names[0]
+    assert {"memory"} <= seen_tool_names[1]
     assert "computer" not in seen_tool_names[1]
     load_events = [
         event for event in events
         if event.get("type") == "tool_call"
         and event.get("tool") == "capability_load"
     ]
-    assert load_events[-1]["runtime_activation"]["capability_groups"] == ["math"]
+    assert load_events[-1]["runtime_activation"]["capability_groups"] == ["memory"]
 
     resumed_tool_names: list[set[str]] = []
 
@@ -107,7 +107,7 @@ def test_model_loads_math_group_for_next_turn(tmp_path) -> None:
         resume=True,
     ))
 
-    assert {"unit_convert"} <= resumed_tool_names[0]
+    assert {"memory"} <= resumed_tool_names[0]
     assert "computer" not in resumed_tool_names[0]
 
 
@@ -186,8 +186,8 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         {
             "message": {
                 "content": (
-                    '{"name":"unit_convert","arguments":'
-                    '{"value":"1","from_unit":"KB","to_unit":"B"}}'
+                    '{"name":"memory","arguments":'
+                    '{"action":"list"}}'
                 ),
                 "tool_calls": [],
             },
@@ -200,7 +200,7 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         return next(responses)
 
     events = list(stream_code_agent(
-        user_message="Сколько байт в килобайте?",
+        user_message="Что ты обо мне помнишь?",
         project_root=tmp_path,
         run_id="capability-hidden-inline-call",
         chat_fn=fake_chat,
@@ -208,10 +208,10 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         permission_mode="ask",
     ))
 
-    assert "unit_convert" not in seen_tool_names[0]
+    assert "memory" not in seen_tool_names[0]
     assert any(
         event.get("type") == "tool_call"
-        and event.get("tool") == "unit_convert"
+        and event.get("tool") == "memory"
         and event.get("ok") is True
         for event in events
     )
@@ -526,12 +526,12 @@ def test_request_base_tools_reach_the_actual_first_turn_registry(tmp_path) -> No
         run_id="request-base-tools-registry",
         chat_fn=fake_chat,
         auto_remember=False,
-        base_tools=(*CORE_BUILTIN_TOOLS, "read_file", "calc"),
+        base_tools=(*CORE_BUILTIN_TOOLS, "read_file", "memory"),
         profile_name="Баланс",
         permission_mode="ask",
     ))
 
-    assert {"read_file", "calc"} <= seen_tool_names[0]
+    assert {"read_file", "memory"} <= seen_tool_names[0]
     assert "browser" not in seen_tool_names[0]
 
 

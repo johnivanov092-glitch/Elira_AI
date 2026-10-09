@@ -45,7 +45,7 @@ describe("PreviewPanel live server", () => {
     );
 
     expect(html).toContain('title="PDF preview"');
-    expect(html).toContain('src="http://127.0.0.1:8000/api/skills/view/report.pdf"');
+    expect(html).toContain('src="http://127.0.0.1:8000/api/skills/view/report.pdf?pages=true"');
     expect(html).toContain('data-document-qa="passed"');
     expect(html).toContain("Проверено");
     expect(html).toContain("1 стр.");

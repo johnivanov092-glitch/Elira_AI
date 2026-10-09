@@ -14,9 +14,11 @@ import json
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared_path import configure
 configure()
 from elira_common.numbers import parse_decimal, money, plain
+from elira_common.calendar_ops import date_info
 
 
 
@@ -71,7 +73,9 @@ def _invoice(params: dict[str, Any], places: int) -> dict[str, Any]:
     vat = _number(params, "vat_percent", required=False, default=0, minimum=Decimal(0))
     if discount > _HUNDRED or vat > _HUNDRED:
         raise FinanceError("discount_percent и vat_percent: от 0 до 100")
-    included = bool(params.get("prices_include_vat", False))
+    included = params.get("prices_include_vat", False)
+    if type(included) is not bool:
+        raise FinanceError("prices_include_vat: нужен JSON boolean")
     lines, subtotal = [], Decimal(0)
     for index, item in enumerate(items, 1):
         if not isinstance(item, dict):
@@ -150,21 +154,21 @@ def calculate(operation: str, params: dict[str, Any] | None = None, *, places: i
         price = money(cost * (1 + rate / _HUNDRED), places)
         margin = (price - cost) / price * _HUNDRED if price else Decimal(0)
         result = {"cost": _m(cost, places), "price": _m(price, places), "profit": _m(price - cost, places),
-                  "markup_percent": plain(rate), "margin_percent": plain(margin.quantize(Decimal("0.01")))}
+                  "markup_percent": plain(rate), "margin_percent": plain(margin.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))}
     elif operation == "margin":
         cost, price = _number(params, "cost"), _number(params, "price")
         if price == 0 or cost == 0:
             raise FinanceError("cost и price не равны нулю")
         result = {"profit": _m(price - cost, places),
-                  "margin_percent": plain(((price - cost) / price * _HUNDRED).quantize(Decimal("0.01"))),
-                  "markup_percent": plain(((price - cost) / cost * _HUNDRED).quantize(Decimal("0.01")))}
+                  "margin_percent": plain(((price - cost) / price * _HUNDRED).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+                  "markup_percent": plain(((price - cost) / cost * _HUNDRED).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))}
     elif operation == "price_from_margin":
         cost, rate = _number(params, "cost"), _number(params, "margin_percent")
         if rate >= _HUNDRED:
             raise FinanceError("margin_percent меньше 100")
         price = money(cost / (1 - rate / _HUNDRED), places)
         result = {"cost": _m(cost, places), "price": _m(price, places), "profit": _m(price - cost, places),
-                  "markup_percent": plain(((price - cost) / cost * _HUNDRED).quantize(Decimal("0.01")))
+                  "markup_percent": plain(((price - cost) / cost * _HUNDRED).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
                   if cost else "0"}
     elif operation == "discount":
         price, rate = _number(params, "amount"), _number(params, "discount_percent", minimum=Decimal(0))
@@ -175,12 +179,12 @@ def calculate(operation: str, params: dict[str, Any] | None = None, *, places: i
         if old == 0:
             raise FinanceError("old не равен нулю")
         result = {"change": plain(new - old),
-                  "percent": plain(((new - old) / abs(old) * _HUNDRED).quantize(Decimal("0.01")))}
+                  "percent": plain(((new - old) / abs(old) * _HUNDRED).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))}
     elif operation == "percent_of":
         part, whole = _number(params, "part"), _number(params, "whole")
         if whole == 0:
             raise FinanceError("whole не равен нулю")
-        result = {"percent": plain((part / whole * _HUNDRED).quantize(Decimal("0.0001")))}
+        result = {"percent": plain((part / whole * _HUNDRED).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))}
     elif operation == "loan_payment":
         result = _loan(params, places)
     else:
@@ -189,21 +193,71 @@ def calculate(operation: str, params: dict[str, Any] | None = None, *, places: i
 
 
 def run_request(request: dict[str, Any]) -> dict[str, Any]:
-    """Preserve the former finance tool result/error envelope for a JSON request."""
+    """One skill entry point; existing financial result envelopes stay compatible."""
     if not isinstance(request, dict):
         return {"ok": False, "error": "finance_error", "text": "ERROR: нужен JSON-объект расчёта"}
     params = dict(request)
-    operation = params.pop("operation", "")
-    places = params.pop("places", 2)
+    operation = str(params.pop("operation", "") or "").strip().lower()
+    places = params.pop("places", None)
     try:
-        result = calculate(operation, params, places=int(places if places not in (None, "") else 2))
-    except (FinanceError, ValueError, TypeError) as exc:
+        if operation in {"geometry", "trigonometry", "statistics", "probability", "linear_algebra", "limit", "summation", "series", "sequence", "nsolve", "inequality", "optimize", "discrete", "bits", "dates", "unit_convert", "technical", "compound_interest", "depreciation", "break_even", "dimensions", "plot"}:
+            from math_extended import calculate_extended
+            result = calculate_extended(operation, params, places)
+        elif operation == "date_info":
+            expression = params.get("expression")
+            if not isinstance(expression, str) or not expression.strip():
+                raise ValueError("expression: нужна строка с датами YYYY-MM-DD")
+            result = date_info(expression)
+        elif operation in {"evaluate", "simplify", "expand", "factor", "solve", "diff", "integrate"}:
+            try:
+                from math_expression import calculate as calculate_expression
+            except ImportError as exc:
+                raise ValueError("Для арифметики/алгебры установи requirements.txt в .venv навыка MATH") from exc
+            expression = params.pop("expression", None)
+            if not isinstance(expression, str) or not expression.strip():
+                raise ValueError("expression: нужна непустая строка выражения")
+            unknown = set(params) - {"variable", "lower", "upper", "order"}
+            if unknown:
+                raise ValueError("неизвестные параметры: " + ", ".join(sorted(unknown)))
+            for field in ("variable", "lower", "upper"):
+                if field in params and not isinstance(params[field], str):
+                    raise ValueError(f"{field}: нужна строка")
+            for field, value in (("places", places), ("order", params.get("order"))):
+                if value is not None and (type(value) is not int):
+                    raise ValueError(f"{field}: нужно целое число")
+            result = calculate_expression(expression, operation, places=places, **params)
+        else:
+            if isinstance(places, (bool, float)):
+                raise FinanceError("places: нужно целое число без дробной части")
+            result = calculate(operation, params, places=int(places if places not in (None, "") else 2))
+    except (ValueError, TypeError, KeyError, ImportError, NotImplementedError, DecimalException, OverflowError, ZeroDivisionError, SyntaxError) as exc:
         return {"ok": False, "error": "finance_error", "text": f"ERROR: {exc}"}
-    return {"ok": True, "text": f"Финансовый расчёт:\n{json.dumps(result, ensure_ascii=False, indent=2)}", "result": result}
+    label = "Финансовый расчёт" if operation in OPERATIONS else "MATH"
+    response = {"ok": True, "text": f"{label}:\n{json.dumps(result, ensure_ascii=False, indent=2)}", "result": result}
+    if operation in OPERATIONS or operation in {"evaluate", "simplify", "expand", "factor", "solve", "diff", "integrate", "date_info"}:
+        formulas = {
+            "invoice": "unit=round(price*(1+markup/100)); subtotal=sum(round(unit*qty)); discount=round(subtotal*d/100); VAT=round(net*r/100) or round(gross*r/(100+r))",
+            "vat_add": "VAT=round(amount*vat_percent/100); total=amount+VAT",
+            "vat_extract": "VAT=round(amount*vat_percent/(100+vat_percent)); net=amount-VAT",
+            "markup": "price=round(cost*(1+markup/100)); profit=price-cost; margin=profit/price*100",
+            "margin": "profit=price-cost; margin=profit/price*100; markup=profit/cost*100",
+            "price_from_margin": "price=round(cost/(1-margin_percent/100))",
+            "discount": "discount=round(amount*discount_percent/100); final=amount-discount",
+            "percent_change": "percent=(new-old)/abs(old)*100",
+            "percent_of": "percent=part/whole*100",
+            "loan_payment": "r=annual_rate/1200; payment=round(P*r/(1-(1+r)^(-months))); r=0: P/months; total=rounded_payment*months",
+            "split": "share=round(amount*weight/sum(weights)); rounding remainder to largest weight",
+        }
+        response["explanation"] = {"formula": formulas.get(operation, f"{operation}({request.get('expression', '')})"),
+                                   "substitution": request,
+                                   "units": "money in supplied currency; *_percent in %" if operation in OPERATIONS else "dimensionless or symbolic; date_info uses ISO dates",
+                                   "precision": {"places": result.get("places", places), "rounding": "ROUND_HALF_UP",
+                                                 "note": "financial percentages keep operation-specific precision" if operation in OPERATIONS else "see exact/decimal/approximate in result"}}
+    return response
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Standalone Decimal finance formulas; input is a JSON object.")
+    parser = argparse.ArgumentParser(description="MATH: exact arithmetic, algebra, calendar and Decimal finance; input is a JSON object.")
     parser.add_argument("--input", required=True, type=Path, help="UTF-8 JSON request (operation, places, parameters)")
     parser.add_argument("--output", type=Path, help="Optional UTF-8 JSON result; existing files are protected")
     parser.add_argument("--overwrite", action="store_true", help="Explicitly allow replacing --output")

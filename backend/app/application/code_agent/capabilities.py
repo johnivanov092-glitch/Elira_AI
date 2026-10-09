@@ -27,7 +27,6 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
         "resource_process", "resource_materialize", "resource_publish",
     }),
     "memory": frozenset({"memory", "library"}),
-    "math": frozenset({"calc", "unit_convert"}),
 }
 
 
@@ -36,7 +35,6 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "mcp": "MCP servers (each has an <id>-mcp skill): list, start/stop, their tools, add or change a server",
     "resources": "attachment metadata, workspace copies and verified downloads",
     "memory": "long-term facts about the user (memory) and the user's document Library (library)",
-    "math": "exact arithmetic, calendar and unit conversion; domain calculations use skills",
 }
 
 

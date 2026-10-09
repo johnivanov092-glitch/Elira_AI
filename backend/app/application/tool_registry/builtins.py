@@ -23,8 +23,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
         ("recall",      "Recall",       "project", "Search, index or report the project index", 60, 20000, True),
         ("library",     "Library",      "memory",  "Search and read the user's Library documents", 15, 20000, True),
-        ("calc",        "Calculator",   "math",    "Exact arithmetic, percentages and algebra (no code execution)", 30, 20000, True),
-        ("unit_convert", "Unit Convert", "math",   "Exact unit conversion (data, power, length, temperature...)", 15, 5000, True),
         ("resource_process", "Resource Inspect", "media", "Inspect metadata of an attached resource by resource_id on local CPU. Content processing uses materialize and mutable skills; no path.", 15, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
@@ -49,7 +47,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
         "project_map": ["fs.read"],
         "recall": ["fs.read"],
-        "calc": [], "unit_convert": [],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "mcp": ["shell.exec", "net.outbound", "fs.read", "fs.write"],

@@ -13,5 +13,4 @@ BASE_TOOLS: tuple[str, ...] = (
     "run_bash", "run_server", "todo_update",
     # Exact arithmetic stays visible: out of the base the model computes in its
     # head (golden math-solve-system, 2026-10-07), against the math-contour rule.
-    "calc",
 )

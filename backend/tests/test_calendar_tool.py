@@ -1,10 +1,12 @@
-"""Calendar boundaries and the real existing calc tool entry point."""
+"""Calendar boundaries shared by MATH and the runtime date context."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.application.calculation.calendar_ops import date_info, runtime_date_context
-from app.application.code_agent.tools._math import tool_calc
+from app.core.skill_modules import load_skill_module
+
+math_skill = load_skill_module("math", "calculate.py")
 
 
 @pytest.mark.parametrize('value,weekday,name', [
@@ -13,7 +15,7 @@ from app.application.code_agent.tools._math import tool_calc
     ('2026-12-31', 4, 'четверг'), ('2027-01-01', 5, 'пятница'),
 ])
 def test_exact_calendar_facts(value, weekday, name):
-    result = tool_calc(expression=value, operation='date_info')
+    result = math_skill.run_request({'expression': value, 'operation': 'date_info'})
     assert result['ok']
     assert result['result']['dates'] == [{'date': value, 'weekday_iso': weekday, 'weekday_ru': name}]
 
@@ -24,9 +26,9 @@ def test_exact_calendar_facts(value, weekday, name):
     '__import__("os")', ','.join(['2026-10-09'] * 32),
 ])
 def test_invalid_input_returns_tool_error(value):
-    result = tool_calc(expression=value, operation='date_info')
+    result = math_skill.run_request({'expression': value, 'operation': 'date_info'})
     assert result['ok'] is False
-    assert result['error'] == 'calc_error'
+    assert result['error'] == 'finance_error'
 
 
 def test_batch_keeps_order_and_calculates_each_date():
@@ -43,8 +45,3 @@ def test_current_context_uses_same_local_day_and_offset():
 def test_context_rejects_ambiguous_naive_time():
     with pytest.raises(ValueError, match='timezone-aware'):
         runtime_date_context(datetime(2026, 10, 9))
-
-
-def test_existing_arithmetic_contract_preserved():
-    assert tool_calc(expression='2026 - 10 - 9')['ok']
-    assert tool_calc(expression='18.7 / 3.6', places=1)['ok']

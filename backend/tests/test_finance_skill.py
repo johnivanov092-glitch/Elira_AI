@@ -11,8 +11,8 @@ import sys
 import pytest
 
 
-SKILL = Path(__file__).resolve().parents[2] / "skills" / "finance"
-SCRIPT = SKILL / "finance.py"
+SKILL = Path(__file__).resolve().parents[2] / "skills" / "math"
+SCRIPT = SKILL / "calculate.py"
 FIXTURE = Path(__file__).parent / "fixtures" / "finance_skill_parity.json"
 CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
 
@@ -27,7 +27,16 @@ def finance():
 
 @pytest.mark.parametrize("case", CASES, ids=[case["id"] for case in CASES])
 def test_original_finance_envelope_exact_parity(finance, case):
-    assert finance.run_request(case["request"]) == case["expected"]
+    actual = finance.run_request(case["request"])
+    if case["id"] in {"invoice-legacy-truthiness", "places-float-truncates", "places-bool"}:
+        # Intentional validation fixes: never silently interpret strings as booleans
+        # or truncate fractional precision. Frozen historical fixture stays intact.
+        assert actual["ok"] is False and actual["error"] == "finance_error"
+    else:
+        explanation = actual.pop("explanation", None)
+        assert actual == case["expected"]
+        if actual["ok"]:
+            assert explanation["formula"] and explanation["substitution"] == case["request"]
 
 
 def run_cli(*args):
@@ -41,8 +50,8 @@ def run_cli(*args):
 
 def test_skill_catalog_and_standard_library_boundary():
     from app.application.code_agent.task_skills import read_package
-    package = read_package("finance", SKILL)
-    assert package["name"] == "finance" and "НДС" in package["description"]
+    package = read_package("math", SKILL)
+    assert package["name"] == "math" and "НДС" in package["description"]
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
     modules = set()
     for node in ast.walk(tree):
@@ -50,7 +59,7 @@ def test_skill_catalog_and_standard_library_boundary():
             modules.update(item.name.split(".")[0] for item in node.names)
         elif isinstance(node, ast.ImportFrom):
             modules.add((node.module or "").split(".")[0])
-    assert modules <= sys.stdlib_module_names | {"elira_common", "shared_path"}
+    assert modules <= sys.stdlib_module_names | {"elira_common", "shared_path", "math_expression", "math_extended"}
     # Both local helpers remain stdlib-only; the skill never imports the backend.
     for dependency in (SKILL.parent / "_shared/shared_path.py", SKILL.parents[1] / "shared/elira_common/numbers.py"):
         for node in ast.walk(ast.parse(dependency.read_text(encoding="utf-8"))):
@@ -139,4 +148,4 @@ def test_agent_no_longer_exposes_builtin_finance(tmp_path):
     from app.application.tool_registry.builtins import _build_native_code_agent_tools
     assert "finance_calc" not in build_tool_dispatch(tmp_path)
     assert all(spec["name"] != "finance_calc" for spec in _build_native_code_agent_tools())
-    assert "finance_calc" not in CAPABILITY_GROUPS["math"]
+    assert "math" not in CAPABILITY_GROUPS

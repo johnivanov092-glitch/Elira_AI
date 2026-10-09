@@ -95,10 +95,9 @@ a successfully completed run.
   its published instruct/thinking profiles, selected by the user's reasoning mode.
   Legacy profiles remain readable but do not switch identity, tone or sampling.
   Their evidence/calculation requirements survive as relevant task instructions.
-- Every normal first turn sees eleven work tools from `tool_policy.BASE_TOOLS`
-  (read/write/edit_file, glob, grep, run_bash, run_server, web_search, web_fetch,
-  todo_update, calc) plus `capability_load` and `ask_user` (track «Elira на
-  диете», 2026-10-07; calc stays visible so calculations go through a tool).
+- Every normal first turn sees the work tools in `tool_policy.BASE_TOOLS`
+  (read/write/edit_file, glob, grep, run_bash, run_server, todo_update)
+  plus `capability_load` and `ask_user`. Calculations use the mutable MATH skill.
   Workflow questions remain available through the runtime.
   Explicit search, attachments and resumed activations may add schemas. The model loads other
   groups through the existing registry; routing hints do not preload them. An external
@@ -170,16 +169,13 @@ a successfully completed run.
 - The base tools are visible from the first turn (`tool_policy.BASE_TOOLS`).
   Their work and source-verification instructions are runtime blocks in the
   system section.
-- Math contour (owner's decision 2026-10-06): the rule "check calculations with
-  a tool" is executed with read-only tools (`side_effect=False`, no approval
-  card in "ask"): `calc` (exact decimal/rational arithmetic, percentages,
-  algebra via SymPy built from an AST allowlist — input is never evaluated as
-  code; always in the base), group `math` with `unit_convert` and `csv` filters/aggregates
-  (its old `eval` of the question was removed). Shared Decimal parsing lives in
-  `application/calculation/numbers.py`. The mutable `finance` skill combines
-  invoice/VAT/markup/margin/discount/loan/split formulas and the former kz-vat
-  guidance. Its script uses ordinary execution permissions, including approval
-  in "ask" mode; it is not a privileged replacement tool.
+- MATH (`skills/math`, owner decision 2026-10-09) combines the former finance
+  skill and native calc through one JSON CLI, `calculate.py`: exact arithmetic,
+  AST-allowlisted SymPy algebra, calendar and Decimal financial formulas.
+  Native calc and unit_convert are retired, including stale app-owned registry
+  rows. Unit conversion uses the same MATH CLI; table aggregation uses data-analysis.
+  Shared Decimal/calendar utilities live in `shared/elira_common`.
+  The skill runs with ordinary shell permissions; it is not a privileged tool.
   Correct task execution takes priority over short-chat TTFT; the discovery-only
   default was reverted on 2026-09-06 after a live current-events refusal.
 - Task guidance arrives with tools, including Web and external MCP/SSH/IT Ops

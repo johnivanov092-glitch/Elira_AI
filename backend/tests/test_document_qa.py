@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 import hashlib
 
 import pytest
@@ -54,7 +54,7 @@ def test_glued_centered_docx_heading_fails_validation(tmp_path) -> None:
     assert result["status"] == "failed"
     assert result["sha256"]
     assert result["page_count"] == 1
-    inspect_pages.assert_called_once_with(path, 1)
+    inspect_pages.assert_called_once_with(path, 1, deadline=ANY)
     assert {issue["code"] for issue in result["issues"]} == {
         "suspicious_glued_heading",
     }
@@ -271,3 +271,17 @@ def test_taken_download_name_is_refused_before_render_and_qa(tmp_path, private_d
         published = tool_resource_publish(tmp_path, project_path="proposal.docx")
     assert published["error"] == "destination_exists"
     publish_qa.assert_not_called()
+
+
+def test_renaming_download_does_not_reset_source_qa_attempts(tmp_path):
+    source = tmp_path / "same.docx"
+    source.write_bytes(b"same document")
+    failure = {"status": "unverified", "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+               "issues": [{"code": "vision_timeout", "message": "timeout"}]}
+    with patch("app.application.code_agent.tools._resources.validate_document", return_value=failure) as validate:
+        for name in ("first.docx", "second.docx"):
+            result = tool_resource_publish(tmp_path, project_path="same.docx", download_name=name, run_id="rename-budget")
+            assert result["ok"] is False
+        result = tool_resource_publish(tmp_path, project_path="same.docx", download_name="third.docx", run_id="rename-budget", expected_page_count=1)
+        assert result["error"] == "document_validation_attempts_exhausted"
+        assert validate.call_count == 2

@@ -7,16 +7,17 @@ temperature is affine and handled separately.
 from __future__ import annotations
 
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
-from app.application.calculation.numbers import parse_decimal, plain
+from elira_common.numbers import parse_decimal, plain
 
-D = Decimal
-_UNITS: dict[str, tuple[str, Decimal]] = {}
-_FOLDED: dict[str, tuple[str, Decimal] | None] = {}
+D = Fraction
+_UNITS: dict[str, tuple[str, Fraction]] = {}
+_FOLDED: dict[str, tuple[str, Fraction] | None] = {}
 
 
-def _add(dimension: str, factor: Decimal | str | int, *names: str) -> None:
+def _add(dimension: str, factor: Fraction | str | int, *names: str) -> None:
     """Exact names are case-sensitive (mW ≠ MW, b ≠ B); a case-insensitive
     alias exists only while it stays unambiguous."""
     for name in names:
@@ -128,7 +129,7 @@ class UnitError(ValueError):
     """Unknown unit or incompatible dimensions."""
 
 
-def _lookup(unit: str) -> tuple[str, Decimal]:
+def _lookup(unit: str) -> tuple[str, Fraction]:
     key = str(unit or "").strip().replace(" ", "")
     if key in _UNITS:
         return _UNITS[key]
@@ -140,13 +141,20 @@ def _lookup(unit: str) -> tuple[str, Decimal]:
     raise UnitError(f"неизвестная единица: {unit}")
 
 
-def _temperature(value: Decimal, source: str, target: str) -> Decimal:
+def _temperature(value: Fraction, source: str, target: str) -> Fraction:
     kelvin = {"C": value + D("273.15"), "F": (value - 32) * 5 / 9 + D("273.15"), "K": value}[source]
+    if kelvin < 0:
+        raise UnitError("температура ниже абсолютного нуля")
     return {"C": kelvin - D("273.15"), "F": (kelvin - D("273.15")) * 9 / 5 + 32, "K": kelvin}[target]
 
 
-def convert(value: Any, from_unit: str, to_unit: str) -> dict[str, Any]:
-    number = parse_decimal(value)
+def convert(value: Any, from_unit: str, to_unit: str, places: int | None = None) -> dict[str, Any]:
+    if len(str(value)) > 2000:
+        raise UnitError("число слишком длинное")
+    decimal = parse_decimal(value)
+    if abs(decimal.adjusted()) > 1000:
+        raise UnitError("число вне поддерживаемого диапазона")
+    number = Fraction(decimal)
     source = _TEMPERATURE.get(str(from_unit or "").strip().casefold())
     target = _TEMPERATURE.get(str(to_unit or "").strip().casefold())
     if source or target:
@@ -160,7 +168,11 @@ def convert(value: Any, from_unit: str, to_unit: str) -> dict[str, Any]:
         if dimension != target_dimension:
             raise UnitError(f"несовместимые величины: {from_unit} ({dimension}) → {to_unit} ({target_dimension})")
         result = number * factor_from / factor_to
-    exact = result == result.quantize(D("1e-12"))
-    shown = plain(result if exact else result.quantize(D("1e-12")))
-    return {"ok": True, "value": plain(number), "from": from_unit, "to": to_unit, "dimension": dimension,
-            "result": shown, "approximate": not exact}
+    from math_expression import describe_number
+    import sympy as sp
+    numeric = describe_number(sp.Rational(result.numerator, result.denominator), places)
+    return {"ok": True, "value": plain(decimal), "from": from_unit, "to": to_unit, "dimension": dimension,
+            "result": numeric["decimal"], "exact": numeric["exact"], "approximate": numeric["approximate"],
+            "formula": "target=(source*factor+offset)/target_factor",
+            "substitution": {"value": plain(decimal), "from_unit": from_unit, "to_unit": to_unit},
+            "units": {"result": to_unit}, "precision": {"places": places, "rounding": "ROUND_HALF_UP"}}

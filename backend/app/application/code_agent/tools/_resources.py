@@ -292,10 +292,11 @@ def tool_resource_publish(
     document_qa: dict[str, Any] | None = None
     if src.suffix.lower() in {".docx", ".pdf"}:
         source_sha256 = document_sha256(src)
-        previous_attempts = document_qa_attempts(
-            str(run_id or ""),
-            name,
-            expected_page_count,
+        # Renaming or changing the expected page count cannot reset the source budget.
+        qa_keys = ((name, expected_page_count), (f"source:{src}", None))
+        previous_attempts = max(
+            document_qa_attempts(str(run_id or ""), key, pages)
+            for key, pages in qa_keys
         )
         if previous_attempts >= DOCUMENT_QA_ATTEMPT_LIMIT:
             return _document_qa_refusal(
@@ -312,7 +313,7 @@ def tool_resource_publish(
                     "target": name,
                     "issues": [{
                         "code": "qa_attempts_exhausted",
-                        "message": "Документ с этим именем уже дважды не прошёл document QA в текущем запуске.",
+                        "message": "Документ уже дважды не прошёл document QA в текущем запуске. Смена имени загрузки не сбрасывает лимит.",
                     }],
                 },
             )
@@ -326,10 +327,9 @@ def tool_resource_publish(
         document_qa["target"] = name
         qa_status = str(document_qa.get("status") or "unverified")
         if qa_status != "passed":
-            attempt = record_document_qa_failure(
-                str(run_id or ""),
-                name,
-                expected_page_count,
+            attempt = max(
+                record_document_qa_failure(str(run_id or ""), key, pages)
+                for key, pages in qa_keys
             )
             document_qa["attempt"] = attempt
             code = (
@@ -338,7 +338,8 @@ def tool_resource_publish(
                 else "document_validation_unverified"
             )
             return _document_qa_refusal(code, document_qa)
-        clear_document_qa_failures(str(run_id or ""), name)
+        for key, _ in qa_keys:
+            clear_document_qa_failures(str(run_id or ""), key)
 
     try:
         size, sha256 = resource_store.publish_copy(

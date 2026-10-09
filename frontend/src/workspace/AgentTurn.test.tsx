@@ -4,6 +4,25 @@ import { AgentTurnView } from "./AgentTurn";
 import type { AgentTurnData } from "./types";
 
 describe("AgentTurn structured analysis status", () => {
+  it.each([false, true])("collapses the complete activity after the answer, including history (legacy=%s)", (legacy) => {
+    const turn: AgentTurnData = {
+      kind: "agent", id: "collapsed-history", running: false, text: "Итог аудита.",
+      ...(legacy ? {} : { answerState: "accepted" as const, stopReason: "answer" }),
+      stepNotes: [{ id: "note", step: 1, text: "Проверяю сервер.", toolCallIndex: 0 }],
+      toolCalls: [{ step: 1, tool: "ssh_run", arguments: {}, result: "ok", ok: true }],
+    };
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+    const activity = html.match(/<details[^>]*data-turn-activity[^>]*>/)?.[0];
+    expect(activity).toBeDefined();
+    expect(activity).not.toContain("open=");
+    expect(html).toContain("Ход работы");
+    expect(html).toContain("Проверяю сервер.");
+    expect(html.lastIndexOf("</details>")).toBeLessThan(html.indexOf("Итог аудита."));
+    for (const state of [{ running: true }, { error: "Сбой" }, { answerState: "interrupted" as const, stopReason: "cancelled" }]) {
+      expect(renderToStaticMarkup(<AgentTurnView turn={{ ...turn, ...state }} />)).not.toContain("data-turn-activity");
+    }
+    expect(renderToStaticMarkup(<AgentTurnView turn={{ ...turn, toolCalls: [], stepNotes: [] }} />)).not.toContain("Ход работы");
+  });
   it("renders visible notes before their tools and keeps unclassified text out of the answer", () => {
     const turn: AgentTurnData = {
       kind: "agent", id: "agent-notes", running: true, answerState: "draft", text: "Незавершённый ответ",

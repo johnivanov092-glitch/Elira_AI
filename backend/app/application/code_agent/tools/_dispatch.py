@@ -23,7 +23,6 @@ from app.application.code_agent.tools._run import (
     tool_run_bash,
     tool_run_server,
 )
-from app.application.code_agent.tools._math import tool_calc, tool_unit_convert
 from app.application.code_agent.tools._resources import (
     tool_resource_materialize,
     tool_resource_process,
@@ -50,8 +49,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "run_server": lambda **kw: tool_run_server(project_root, **kw),
         "mcp": lambda **kw: tool_mcp(project_root, **kw),
-        "calc": lambda **kw: tool_calc(**kw),
-        "unit_convert": lambda **kw: tool_unit_convert(**kw),
         # Reads a run-bound resource by opaque id (no project path involved).
         "resource_process": lambda **kw: tool_resource_process(**kw),
         # Writes a run-bound resource into the run's project workspace (needs root).

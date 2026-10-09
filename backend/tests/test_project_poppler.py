@@ -40,6 +40,7 @@ def test_document_qa_render_keeps_project_poppler(bundled_poppler, monkeypatch):
         seen.append(kwargs["poppler_path"])
         return [Image.new("RGB", (32, 32), "white")]
     monkeypatch.setattr("pdf2image.convert_from_path", convert)
-    monkeypatch.setattr("app.application.skill_services.vision.describe_image", lambda *a, **k: '{"layout_issue": false, "issues": []}')
+    from app.application.skill_services.vision import VisionResult
+    monkeypatch.setattr("app.application.skill_services.vision.describe_image_result", lambda *a, **k: VisionResult(text='{"layout_issue": false, "issues": []}'))
     assert document_validation._inspect_pages(Path("fixture.pdf"), 1)[0] == "passed"
     assert seen == [str(bundled_poppler)]

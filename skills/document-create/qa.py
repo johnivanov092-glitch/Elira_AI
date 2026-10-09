@@ -17,8 +17,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -26,19 +26,30 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTENSIONS = {".docx", ".pdf"}
-# Four parallel calls keep an ordinary 1-12 page business document inside the
-# 120-second tool budget. Longer documents fail closed instead of being only
-# partially inspected or silently blocking the Qwen tool loop for minutes.
+# The CPU vision server serializes image encoding. Parallel page requests spend
+# their timeout in its queue; inspect sequentially within one publication budget.
 _MAX_VISION_PAGES = 12
-_VISION_WORKERS = 4
 _WORD_TIMEOUT_SECONDS = 45
-_VISION_TIMEOUT_SECONDS = 15.0
+_VISION_TIMEOUT_SECONDS = 30.0
+_DOCUMENT_QA_BUDGET_SECONDS = 105.0
 _GLUED_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{20,}", re.UNICODE)
 _GLUED_TITLE_SIGNALS = ("ДЛЯ", "СБОРКА", "КОМПЬЮТЕР", "DDR", "ПК")
 DOCUMENT_QA_ATTEMPT_LIMIT = 2
 _ATTEMPT_CACHE_LIMIT = 2048
 _ATTEMPTS: OrderedDict[tuple[str, str, int | None], int] = OrderedDict()
 _ATTEMPTS_LOCK = Lock()
+
+_LAYOUT_SCHEMA = {"oneOf": [
+    {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "layout_issue": {"const": has_issue},
+            "issues": {"type": "array", "items": {"type": "string", "minLength": 1},
+                       "minItems": 1 if has_issue else 0, "maxItems": 20 if has_issue else 0},
+        },
+        "required": ["layout_issue", "issues"],
+    } for has_issue in (False, True)
+]}
 
 _LAYOUT_PROMPT = """Ты внешний QA-валидатор страницы документа. Проверь только видимую вёрстку:
 - обрезанный, наложенный или вышедший за границы текст;
@@ -48,6 +59,7 @@ _LAYOUT_PROMPT = """Ты внешний QA-валидатор страницы �
 Не оценивай содержание и подбор товаров. Ответь строго одним JSON-объектом без Markdown:
 {"layout_issue": false, "issues": []}
 Если дефект есть, layout_issue=true, а issues — короткий список конкретных дефектов на русском.
+Если дефектов нет, layout_issue=false и issues=[]; не перечисляй в issues проверенные критерии.
 """
 
 
@@ -285,6 +297,13 @@ try {{
 
 def _render_docx_with_libreoffice(source: Path, output_dir: Path) -> Path | None:
     executable = shutil.which("soffice") or shutil.which("libreoffice")
+    if not executable and os.name == "nt":
+        for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(variable)
+            candidate = Path(root) / "LibreOffice" / "program" / "soffice.exe" if root else None
+            if candidate is not None and candidate.is_file():
+                executable = str(candidate)
+                break
     if not executable:
         return None
     try:
@@ -364,23 +383,77 @@ def _page_count(pdf_path: Path) -> int | None:
         return None
 
 
-def _parse_layout_response(response: str) -> tuple[bool, list[str]] | None:
-    match = re.search(r"\{.*\}", response or "", flags=re.DOTALL)
-    if not match:
-        return None
+def document_page_preview(pdf: Path, page: int) -> Path:
+    """Rasterize one page of the immutable preview PDF using the existing renderer."""
+    from pdf2image import convert_from_path
+    from app.application.pdf.poppler import poppler_options
+
+    if type(page) is not int or page < 1:
+        raise ValueError("Invalid preview page")
+    cached = pdf.with_name(f"{pdf.stem}-page-{page}.png")
+    if not _PREVIEW_LOCK.acquire(timeout=45):
+        raise RuntimeError("Document renderer is busy")
     try:
-        payload = json.loads(match.group(0))
-    except (TypeError, ValueError):
-        return None
-    layout_issue = payload.get("layout_issue")
-    issues = payload.get("issues")
-    if not isinstance(layout_issue, bool) or not isinstance(issues, list):
-        return None
-    clean_issues = [str(item).strip()[:300] for item in issues if str(item).strip()]
-    return layout_issue, clean_issues
+        if cached.is_file():
+            return cached
+        count = _page_count(pdf)
+        if count is None or page > count:
+            raise ValueError("Preview page does not exist")
+        try:
+            images = convert_from_path(
+                str(pdf), dpi=120, fmt="png", first_page=page, last_page=page,
+                timeout=30, **poppler_options(),
+            )
+        except Exception as exc:  # Renderer failures become a visible HTTP 503.
+            raise RuntimeError("Page renderer unavailable") from exc
+        try:
+            if len(images) != 1:
+                raise RuntimeError("Page renderer returned an incomplete result")
+            with tempfile.TemporaryDirectory(prefix="page-", dir=pdf.parent) as temporary:
+                image_path = Path(temporary) / "page.png"
+                images[0].save(image_path, format="PNG")
+                os.replace(image_path, cached)
+        finally:
+            for image in images:
+                image.close()
+        return cached
+    finally:
+        _PREVIEW_LOCK.release()
 
 
-def _inspect_pages(pdf_path: Path, pages: int) -> tuple[str, list[dict[str, str]]]:
+def _parse_layout_response(response: str) -> tuple[bool, list[str]] | None:
+    if not isinstance(response, str) or len(response) > 10000:
+        return None
+    raw = response.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
+    if fenced:
+        raw = fenced.group(1)
+    def unique_object(pairs):
+        payload = {}
+        for key, value in pairs:
+            if key in payload:
+                raise ValueError("duplicate JSON key")
+            payload[key] = value
+        return payload
+    try:
+        payload = json.loads(raw, object_pairs_hook=unique_object)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"layout_issue", "issues"}:
+        return None
+    layout_issue, issues = payload["layout_issue"], payload["issues"]
+    if type(layout_issue) is not bool or not isinstance(issues, list) or len(issues) > 20:
+        return None
+    if any(not isinstance(item, str) or not item.strip() for item in issues):
+        return None
+    if issues and not layout_issue:
+        return None
+    return layout_issue, [item.strip()[:300] for item in issues]
+
+
+def _inspect_pages(pdf_path: Path, pages: int, *, deadline: float | None = None) -> tuple[str, list[dict[str, str]]]:
+    if deadline is None:
+        deadline = time.monotonic() + _DOCUMENT_QA_BUDGET_SECONDS
     if pages < 1:
         return "failed", [_issue("empty_render", "После рендера в документе нет страниц.")]
     if pages > _MAX_VISION_PAGES:
@@ -391,26 +464,48 @@ def _inspect_pages(pdf_path: Path, pages: int) -> tuple[str, list[dict[str, str]
     try:
         from pdf2image import convert_from_path
         from app.application.pdf.poppler import poppler_options
-        from app.application.skill_services.vision import describe_image
+        from app.application.skill_services.vision import describe_image_result
 
-        images = convert_from_path(str(pdf_path), dpi=120, fmt="png", **poppler_options())
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "unverified", [_issue("qa_budget_exhausted", "Истекло время проверки документа; не все страницы проверены.")]
+        images = convert_from_path(str(pdf_path), dpi=120, fmt="png", timeout=min(30, remaining), **poppler_options())
     except Exception:  # noqa: BLE001 - dependency/provider details stay in logs
         return "unverified", [_issue("page_render_unavailable", "Не удалось растрировать страницы для vision-QA.")]
     if len(images) != pages:
+        for image in images:
+            image.close()
         return "unverified", [_issue("page_render_incomplete", "Не все страницы переданы на vision-QA.")]
 
     def inspect_page(item: tuple[int, Any]) -> tuple[int, str, list[dict[str, str]]]:
         index, image = item
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        response = describe_image(
+        with io.BytesIO() as buffer:
+            image.save(buffer, format="PNG")
+            contents = buffer.getvalue()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return index, "unverified", [_issue(
+                "qa_budget_exhausted", f"Истекло время Vision-QA; страница {index} не проверена.",
+            )]
+        response = describe_image_result(
             f"page-{index}.png",
-            buffer.getvalue(),
+            contents,
             prompt=_LAYOUT_PROMPT,
-            timeout_seconds=_VISION_TIMEOUT_SECONDS,
+            timeout_seconds=min(_VISION_TIMEOUT_SECONDS, remaining),
+            response_schema=_LAYOUT_SCHEMA,
         )
-        parsed = _parse_layout_response(response or "")
+        logger.info("document vision page=%s error=%s http=%s finish=%s elapsed_ms=%s",
+                    index, response.error, response.status_code, response.finish_reason, response.elapsed_ms)
+        if response.error:
+            return index, "unverified", [_issue(response.error,
+                f"Vision-QA: страница {index}, {response.error}, HTTP={response.status_code}, elapsed_ms={response.elapsed_ms}.")]
+        if time.monotonic() >= deadline:
+            return index, "unverified", [_issue(
+                "qa_budget_exhausted", f"Истекло время Vision-QA; страница {index} не проверена в пределах бюджета.",
+            )]
+        parsed = _parse_layout_response(response.text or "")
         if parsed is None:
+            logger.warning("document vision page=%s: invalid layout JSON (characters=%s)", index, len(response.text or ""))
             return index, "unverified", [_issue(
                 "vision_response_invalid",
                 f"Vision-QA не вернул структурированный результат для страницы {index}.",
@@ -425,8 +520,11 @@ def _inspect_pages(pdf_path: Path, pages: int) -> tuple[str, list[dict[str, str]
             ]
         return index, "passed", []
 
-    with ThreadPoolExecutor(max_workers=min(_VISION_WORKERS, pages)) as executor:
-        inspected = list(executor.map(inspect_page, enumerate(images, start=1)))
+    try:
+        inspected = [inspect_page(item) for item in enumerate(images, start=1)]
+    finally:
+        for image in images:
+            image.close()
     inspected.sort(key=lambda item: item[0])
     if any(status == "unverified" for _, status, _ in inspected):
         issues = [issue for _, _, page_issues in inspected for issue in page_issues]
@@ -441,6 +539,7 @@ def validate_document(
     expected_page_count: int | None = None,
 ) -> dict[str, Any]:
     """Validate one immutable document snapshot and return JSON-safe evidence."""
+    deadline = time.monotonic() + _DOCUMENT_QA_BUDGET_SECONDS
     target = Path(path)
     result = _base_result(target, expected_page_count)
     if target.suffix.lower() not in _SUPPORTED_EXTENSIONS:
@@ -478,7 +577,7 @@ def validate_document(
                 f"Ожидалось страниц: {expected_page_count}; после рендера: {pages}.",
             ))
 
-        vision_status, vision_issues = _inspect_pages(pdf_path, pages)
+        vision_status, vision_issues = _inspect_pages(pdf_path, pages, deadline=deadline)
         result["vision_status"] = vision_status
         result["issues"] = structural_issues + count_issues + vision_issues
         if structural_issues or count_issues or vision_status == "failed":

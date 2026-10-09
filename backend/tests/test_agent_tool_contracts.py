@@ -89,8 +89,6 @@ def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Pa
         "resource_publish": {},
         "read_image": {},
         "csv": {"file_path": "missing.csv"},
-        "calc": {"expression": ""},
-        "unit_convert": {"value": "x", "from_unit": "?", "to_unit": "?"},
         "recall": {"action": "__invalid__"},
         "memory": {"action": "__invalid__"},
         "library": {"action": "__invalid__"},

@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, Download, Loader2, RotateCcw, Volume2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Download, Loader2, RotateCcw, Volume2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer, { SourceCitationLink } from "../components/MarkdownRenderer";
 import { DownloadLink } from "../components/DownloadLink";
@@ -64,6 +64,8 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
     }
   }
   const downloads = deriveArtifacts([turn]).downloads;
+  const activity = <ToolActivity calls={turn.toolCalls} notes={turn.stepNotes} activeTool={turn.running ? turn.activeTool : undefined} stopReason={turn.running ? undefined : turn.stopReason} reasoning={turn.running && turn.reasoningActive} />;
+  const collapseActivity = isAcceptedAnswer(turn) && Boolean(turn.stepNotes?.length || turn.toolCalls.length);
   const [speaking, setSpeaking] = useState(false);
 
   // Auto-speak: only when this turn transitions running -> done while mounted
@@ -90,7 +92,15 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
 
   return (
     <div className="my-2 mb-6">
-      <ToolActivity calls={turn.toolCalls} notes={turn.stepNotes} activeTool={turn.running ? turn.activeTool : undefined} stopReason={turn.running ? undefined : turn.stopReason} reasoning={turn.running && turn.reasoningActive} />
+      {collapseActivity ? (
+        <details className="tool-activity-disclosure my-2.5 min-w-0" data-turn-activity>
+          <summary className="flex cursor-pointer items-center gap-2 rounded-lg py-1.5 text-[12.5px] text-mut hover:text-t2">
+            <ChevronRight size={13} className="tool-activity-chevron shrink-0" aria-hidden />
+            <span>Ход работы</span>
+          </summary>
+          {activity}
+        </details>
+      ) : activity}
 
       {turn.running && turn.brainPhase && (
         <div className="my-2 flex items-center gap-2 text-[12.5px] text-mut">
