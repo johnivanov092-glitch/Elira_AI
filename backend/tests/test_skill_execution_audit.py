@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -123,7 +124,8 @@ def test_saved_weather_forecast_never_rewrites_its_input(tmp_path, same_director
     out_dir = tmp_path if same_directory else tmp_path / "result"
     result = subprocess.run([sys.executable, str(SKILLS / "weather/weather.py"), "forecast",
         "--lat", "43.24", "--lon", "76.95", "--days", "1", "--input-json", str(source),
-        "--out-dir", str(out_dir)], capture_output=True, text=True, encoding="utf-8", timeout=20)
+        "--out-dir", str(out_dir)], capture_output=True, text=True, encoding="utf-8", timeout=20,
+        env={**os.environ, "PYTHONIOENCODING": "cp1251", "PYTHONUTF8": "0"})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2026-10-12 Пн" in result.stdout
     assert source.read_bytes() == original

@@ -83,7 +83,7 @@
       "path": "data/skills/weather/weather.py",
       "source": "skills/weather/weather.py",
       "before_sha256": "ead4ab55c1a8682dfdaa9d0f44122402e36d11a046718a3842185a834b28369e",
-      "after_sha256": "bea66ed5e163848c4118a8a0eec3710418102d5c43c6ec5aec7d0d3433ec77cc"
+      "after_sha256": "1e8f5442cc5dbbb75ff54ba5de8f1a437698ec684ae827e3d6e4913455593416"
     },
     {
       "path": "data/skills/web-research/SKILL.md",

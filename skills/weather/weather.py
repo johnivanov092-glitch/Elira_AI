@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -260,6 +261,9 @@ def cmd_archive(a):
 # ------------------------------------------------------------------- main
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="strict")
     p = argparse.ArgumentParser(description="Погода: прогноз (Forecast) и архив (ERA5), Open-Meteo")
     sub = p.add_subparsers(dest="mode", required=True)
 
