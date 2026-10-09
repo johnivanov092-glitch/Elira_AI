@@ -144,6 +144,11 @@ def _to_text_newlines(text: str) -> str:
 def _looks_binary(raw: bytes) -> bool:
     """Heuristic: a file is binary if its first 8 KiB hold a NUL byte or a high
     ratio of non-text control characters. Keeps us from numbering a PNG."""
+    if raw.startswith((_BOM_UTF16_LE, _BOM_UTF16_BE)):
+        try:
+            raw = raw.decode("utf-16").encode("utf-8")
+        except UnicodeError:
+            return True
     sample = raw[:8192]
     if not sample:
         return False
@@ -158,8 +163,8 @@ def _looks_binary(raw: bytes) -> bool:
 def _detect_encoding(raw: bytes, *, strict: bool) -> tuple[str, bool] | None:
     """Return (codec, had_bom) for ``raw`` or None when undecodable.
 
-    BOMs are authoritative and checked first. Otherwise charset-normalizer picks
-    the codec; in ``strict`` mode (write/edit of an existing file) we additionally
+    BOMs are authoritative and checked first, followed by strict UTF-8.
+    Otherwise charset-normalizer picks the codec; in ``strict`` mode we additionally
     require low chaos *and* a byte-exact round-trip, so a misdetection can never
     silently rewrite the file in the wrong codepage. ``strict=False`` (read) is
     more forgiving and the caller degrades to cp1252+replace if this returns None.
@@ -170,6 +175,12 @@ def _detect_encoding(raw: bytes, *, strict: bool) -> tuple[str, bool] | None:
         return ("utf-16", True)
     if raw == b"":
         return ("utf-8", False)
+
+    try:
+        raw.decode("utf-8")
+        return ("utf-8", False)
+    except UnicodeDecodeError:
+        pass
 
     if _HAS_CN and _cn_from_bytes is not None:
         best = _cn_from_bytes(raw).best()
