@@ -23,15 +23,8 @@ from app.application.code_agent.tools._run import (
     tool_run_bash,
     tool_run_server,
 )
-from app.application.code_agent.tools._web import (
-    tool_browser,
-    tool_web_fetch,
-    tool_web_query,
-    tool_web_search,
-)
 from app.application.code_agent.tools._content import (
     tool_csv,
-    tool_http_api,
 )
 from app.application.code_agent.tools._math import tool_calc, tool_unit_convert
 from app.application.code_agent.tools._vision import (
@@ -67,14 +60,9 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "mcp": lambda **kw: tool_mcp(project_root, **kw),
         "telegram": lambda **kw: tool_telegram(**kw),
         "itops_registry": lambda **kw: tool_itops_registry(**kw),
-        "web_search": lambda **kw: tool_web_search(**kw),
-        "web_fetch": lambda **kw: tool_web_fetch(project_root=project_root, **kw),
-        "web_query": lambda **kw: tool_web_query(**kw),
-        "browser": lambda **kw: tool_browser(**kw),
         "csv": lambda **kw: tool_csv(project_root, **kw),
         "calc": lambda **kw: tool_calc(**kw),
         "unit_convert": lambda **kw: tool_unit_convert(**kw),
-        "http_api": lambda **kw: tool_http_api(project_root, **kw),
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
         # Reads a run-bound resource by opaque id (no project path involved).
         "resource_process": lambda **kw: tool_resource_process(**kw),

@@ -40,35 +40,3 @@ def tool_csv(
             return {"ok": False, "error": "csv_query_error", "text": f"ERROR: {exc}"}
         return _format_runtime_result("CSV query", result)
     return _format_runtime_result("CSV analysis", analyze_csv(str(target), query=query))
-
-
-def tool_http_api(
-    project_root: Path,
-    *,
-    url: str,
-    method: str = "GET",
-    headers: dict[str, Any] | None = None,
-    body: Any = None,
-    timeout: int = 15,
-) -> dict[str, Any]:
-    from app.application.code_agent.tools._run import active_server_ports
-    from app.application.skills.runtime import http_request
-
-    result = http_request(
-        url, method=method, headers=headers, body=body, timeout=int(timeout),
-        allow_loopback_ports=active_server_ports(),
-    )
-    # Blocked / timeout / connection error: the check could NOT run → ok=False and
-    # NO verifier flag, so a matched page_open criterion stays unconfirmed (not failed).
-    if not result.get("ok"):
-        return {"text": f"ERROR: {result.get('error') or 'unknown error'}", "ok": False}
-    # A completed request IS a verdict: 2xx/3xx → page opens (pass); 4xx/5xx → fail.
-    status = int(result.get("status") or 0)
-    page_ok = 200 <= status < 400
-    final_url = str(result.get("url") or url)
-    return {
-        "text": f"HTTP {status} {final_url}:\n{json.dumps(result, ensure_ascii=False, indent=2)}",
-        "ok": page_ok,
-        "verifier": True,
-        "evidence": f"HTTP {status} {final_url}",
-    }

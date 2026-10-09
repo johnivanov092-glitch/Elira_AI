@@ -10,7 +10,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from app.application.web.ssrf_guard import check_ssrf
+from app.core.http_urls import check_ssrf
 
 
 MAX_ANSWER_MEDIA = 6

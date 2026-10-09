@@ -10,7 +10,7 @@ from __future__ import annotations
 BASE_TOOLS: tuple[str, ...] = (
     "capability_load",
     "read_file", "write_file", "edit_file", "glob", "grep",
-    "run_bash", "run_server", "web_search", "web_fetch", "todo_update",
+    "run_bash", "run_server", "todo_update",
     # Exact arithmetic stays visible: out of the base the model computes in its
     # head (golden math-solve-system, 2026-10-07), against the math-contour rule.
     "calc",

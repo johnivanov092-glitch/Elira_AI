@@ -1,0 +1,4 @@
+requests==2.33.1
+beautifulsoup4==4.14.3
+charset-normalizer==3.4.6
+playwright==1.58.0

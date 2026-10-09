@@ -11,12 +11,9 @@ import json
 from typing import Any, Literal
 
 from app.application.code_agent.answer_contracts import (
-    explicit_quote_request, explicit_web_check_requested, normalize_quote_word_counts, quote_word_limit_correction,
-    quote_word_limit_violations, web_cadence_citation_correction,
-    mark_unread_web_links, render_numbered_citations, web_cadence_citation_violations,
-    web_source_citation_violations,
+    explicit_quote_request, normalize_quote_word_counts, quote_word_limit_correction,
+    quote_word_limit_violations,
 )
-from app.application.code_agent.capabilities import should_escalate_web_from_answer
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
@@ -111,35 +108,6 @@ class AnswerAcceptance:
                 "Выполни исходный запрос существующими инструментами и дай содержательный ответ пользователю. "
                 "Для поиска прочитай источники, изложи подтверждённое со ссылками; не печатай контракт или план вместо ответа."
             ))
-        missing_web_check = (explicit_web_check_requested(raw_user_message)
-                             and not run_evidence.has_web_research and not run_evidence.has_external_source
-                             and not any(source.get("status") in {"discovered", "fetched", "excerpt"}
-                                         for source in run_evidence.sources))
-        if missing_web_check and not self.evidence_answer_correction_sent:
-            return AcceptanceDecision("retry", final_text, reason="evidence", correction=(
-                "[Проверка выполнения] Пользователь поручил проверить внешние источники, но runtime "
-                "не получил ни одного результата поиска или чтения. Напечатанный текст web_search/JSON "
-                "не является вызовом инструмента. Вызови web_search или web_fetch через structured tool_calls, "
-                "прочитай нужный источник и ответь на исходный вопрос. Не выдумывай результаты или ссылки."
-            ), activate_groups=("web",) if "web" not in active_capability_groups else ())
-        if ("web" not in active_capability_groups
-                and not self.evidence_answer_correction_sent
-                and should_escalate_web_from_answer(final_text, raw_user_message)):
-            return AcceptanceDecision(
-                "retry", final_text, reason="evidence", correction=(
-                    "[internal evidence correction] Ответ не проверен инструментами. "
-                    "Web tools доступны: отсутствие актуальных знаний модели не "
-                    "означает отсутствие доступа к источникам. Самостоятельно выполни "
-                    "нужный поиск и прочитай первичные источники, затем ответь на исходный "
-                    "вопрос; не спрашивай, выполнять ли поиск или загружать инструменты. "
-                    "Явные ограничения пользователя сохраняются. Локальное состояние "
-                    "по-прежнему проверяй локальными tools."
-                ),
-                activate_groups=("web",),
-                event={"type": "runtime_activation_changed", "run_id": run_id,
-                       "step": step, "source": "evidence_uncertain_answer"},
-                event_runtime_activation=True,
-            )
         if quote_word_limit is not None:
             final_text = normalize_quote_word_counts(final_text)
         # Names in «…» are typography, not quotations, unless quotes were requested.
@@ -166,44 +134,6 @@ class AnswerAcceptance:
                 retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
             )
         quote_source_failed = bool(quote_source_problems)
-        web_source_problems = ()
-        if run_evidence.sources and not task_outcome.artifact_contract_seen:
-            web_source_problems = web_source_citation_violations(
-                final_text,
-                read_source_urls={source["url"] for source in run_evidence.presented_sources
-                                  if source.get("quote_verified") is True},
-                known_source_urls={source["url"] for source in run_evidence.sources},
-            )
-        if web_source_problems and not self.web_source_correction_sent:
-            return AcceptanceDecision(
-                "retry", final_text, reason="web_source", correction=(
-                    "[Проверка прочитанных источников] Ссылки рядом с утверждениями ведут на страницы, "
-                    "чей текст не прочитан: "
-                    + json.dumps([{"block": item.block_index, "url": item.url, "reason": item.reason}
-                                  for item in web_source_problems[:8]], ensure_ascii=False)
-                    + ". Исправь ответ по уже показанным выдержкам: укажи именно прочитанный источник "
-                    "или удали неподтверждённое утверждение. Если этот факт нужен для исходного вопроса, "
-                    "прочитай конкретную недостающую страницу. Сниппет, оглавление и ссылка из соседней "
-                    "статьи не подтверждают содержание целевой страницы. Не оставляй утверждение только "
-                    "с оговоркой о непроверенной ссылке и не заменяй ссылку ради прохождения проверки. "
-                    "Не повторяй уже успешное чтение."
-                ),
-                log_note="ordinary Web answer cites unread sources",
-                event={"type": "answer_format_correction", "step": step,
-                       "contract": "web_source_citation"},
-                retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
-            )
-        web_source_failed = bool(web_source_problems)
-        if web_source_failed:
-            # John 2026-10-06 (like unconfirmed quotes, 2026-10-03): the answer
-            # stays; only links to unread pages lose their address and get a
-            # mark. The answer is reported as partial (degraded) below.
-            final_text = mark_unread_web_links(
-                final_text, web_source_problems,
-                failed_errors={source["url"]: str(source.get("error") or "")
-                               for source in run_evidence.sources if source.get("status") == "failed"})
-        # Numbers the model cited become links to the pages it actually read.
-        final_text = render_numbered_citations(final_text, run_evidence.numbered_read_pages())
         answer_verification = task_outcome.verify_answer(
             final_text, run_evidence, code_input_epoch, persistence_policy=persistence_policy,
             user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))
@@ -276,43 +206,14 @@ class AnswerAcceptance:
                 f"{quote_word_limit} слов или неверно указано число слов в цитате. "
                 "Ответ не прошёл проверку этого условия."
             )
-        cadence_violations = ()
-        presented_sources = run_evidence.presented_sources
-        source_request = raw_user_message or str(durable_task or "")
-        if presented_sources and run_evidence.requires_external_source(source_request, final_text):
-            cadence_violations = web_cadence_citation_violations(
-                final_text,
-                matched_source_ids={source["id"] for source in presented_sources},
-                read_source_urls={source["url"] for source in presented_sources},
-                read_sources=presented_sources,
-            )
-        if cadence_violations and not self.cadence_correction_sent:
-            return AcceptanceDecision(
-                "retry", final_text, reason="cadence",
-                correction=web_cadence_citation_correction(cadence_violations),
-                log_note="requested local source binding for update cadence",
-                event={"type": "answer_format_correction", "step": step,
-                       "contract": "web_cadence_citation",
-                       "quantities": [item.quantity for item in cadence_violations]},
-                retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
-            )
-        cadence_format_failed = bool(cadence_violations)
-        if cadence_format_failed:
-            final_text = (
-                "Не удалось подкрепить указанный период обновлений ссылкой "
-                "на прочитанный источник для того же объекта. "
-                "Ответ не прошёл проверку ссылок."
-            )
         answer_status = (
             "degraded" if (download_delivery_failed or bool(missing_requirements)
                            or unverified_document_qa_claim or quote_format_failed
-                           or cadence_format_failed or quote_source_failed or web_source_failed
-                           or runtime_echo or missing_web_check) else "complete"
+                           or quote_source_failed
+                           or runtime_echo) else "complete"
         )
         if runtime_echo:
             final_text = "Содержательный ответ не получен: модель повторила внутренние данные задачи."
-        if missing_web_check:
-            final_text = "Запрошенная проверка внешних источников не выполнена. Фактических результатов поиска или чтения нет; подтвердить ответ не удалось."
         if quote_source_failed:
             # Keep the verified answer; drop only the unconfirmed quotes.
             final_text = drop_unverified_quotes(

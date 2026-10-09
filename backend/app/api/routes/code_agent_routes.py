@@ -65,7 +65,7 @@ def _base_tools_for_mode(mode: CodeAgentMode) -> tuple[str, ...] | None:
     if mode == "search":
         # Start with retrieval; mixed tasks load project/resources through the
         # same capability registry when they need to create a result.
-        return ("capability_load", "web_search", "web_fetch")
+        return ("capability_load", "read_file", "run_bash")
     return None
 
 
@@ -289,7 +289,7 @@ def _proxy_remote_image(
     media_type_resolver: Callable[[str, bytes], str],
 ) -> Response:
     """Fetch one HTTP(S) raster image with bounded body/redirect handling."""
-    from app.application.web.ssrf_guard import check_ssrf
+    from app.core.http_urls import check_ssrf
 
     ssrf_reason = check_ssrf(url)
     if ssrf_reason:
@@ -1019,14 +1019,7 @@ def watcher_status_endpoint(project_root: Optional[str] = None) -> dict[str, Any
 
 @router.delete("/web-corpus/{run_id}")
 def web_corpus_cleanup(run_id: str) -> dict[str, Any]:
-    """Drop a run's web-evidence corpus (W1 lifecycle). Runs have no deletion flow
-    in the app today — TTL/LRU are the automatic lifecycle; this endpoint is the
-    explicit hook (used by smokes and any future run-deletion flow)."""
-    from app.infrastructure.web_corpus.store import StoreUnavailable, cleanup_run
-    try:
-        return {"ok": True, "removed": cleanup_run(run_id)}
-    except StoreUnavailable as exc:
-        return {"ok": False, "error": str(exc)}
+    raise HTTPException(status_code=410, detail="Web corpus moved to data/skills/web-research")
 
 
 class WebCorpusPromoteRequest(BaseModel):
@@ -1036,13 +1029,7 @@ class WebCorpusPromoteRequest(BaseModel):
 
 @router.post("/web-corpus/promote")
 def web_corpus_promote(payload: WebCorpusPromoteRequest) -> dict[str, Any]:
-    """Pin a corpus document into the Library (W1 lifecycle). Preserves
-    source=web / URL / content_hash / trust=untrusted — a pinned page stays DATA."""
-    from app.infrastructure.web_corpus.store import StoreUnavailable, promote_document
-    try:
-        return promote_document(payload.run_id, payload.doc_id)
-    except StoreUnavailable as exc:
-        return {"ok": False, "error": str(exc)}
+    raise HTTPException(status_code=410, detail="Web corpus moved to data/skills/web-research")
 
 
 @router.get("/servers")
@@ -1220,9 +1207,5 @@ def delete_code_session(session_id: str) -> dict[str, Any]:
     removed = session_store.delete_session(session_id)
     result: dict[str, Any] = {"ok": True, "removed": removed}
     if removed:
-        try:
-            from app.infrastructure.web_corpus.store import StoreUnavailable, cleanup_run
-            result["web_corpus_removed"] = cleanup_run(session_id)
-        except StoreUnavailable as exc:
-            result["web_corpus_error"] = str(exc)
+        pass  # Corpus belongs to the skill workspace.
     return result

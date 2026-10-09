@@ -46,7 +46,6 @@ from app.application.tool_providers import (
 )
 from app.application.code_agent.capabilities import (
     ALL_BUILTIN_TOOLS, normalize_capability_groups, file_delivery_requested,
-    should_escalate_web_after_failure,
 )
 from app.application.code_agent.runtime_activation import (
     RuntimeActivation, _load_runtime_activation_state,
@@ -62,7 +61,7 @@ from app.application.code_agent.tool_execution import (
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
 from app.application.code_agent.answer_media import merge_answer_media
 from app.application.code_agent.answer_contracts import (
-    WEB_SITE_CHECKPOINT, explicit_quote_request, explicit_web_site_limit, infer_quote_word_limit,
+    explicit_quote_request, infer_quote_word_limit,
 )
 from app.application.code_agent.planning import (
     PlanArtifact, build_planning_messages, parse_plan_from_text, plan_context_block,
@@ -70,9 +69,6 @@ from app.application.code_agent.planning import (
 )
 from app.application.code_agent.taskspec import taskspec_context, taskspec_report, task_spec_from_report
 from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence
-from app.application.code_agent.tools._web import (
-    WebArgumentFormatError, normalize_web_tool_arguments, project_search_without_snippets,
-)
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.application.context.usage import get_context_usage
 from app.application.projects.scope import project_scope_id
@@ -413,9 +409,6 @@ def _stream_code_agent_core(
         # Web research path (John, 2026-10-05): read 2 sites → enough? answer :
         # read more, up to the site limit → then the model always answers from
         # what it read. Non-empty = the next turn is an answer turn without tools.
-        web_answer_due = ""
-        web_language_hint_given = False
-        audience_rejections = 0
         _last_glob_matches: tuple[str, ...] = ()
         _read_file_failures: dict[str, int] = {}
         pending_redirected_jobs: set[int] = set()
@@ -593,10 +586,6 @@ def _stream_code_agent_core(
             # the system section as data), never a message in the owner's name.
             turn_context.messages.append({"role": "user", "content": plan_context_block(plan),
                                           RUNTIME_BLOCK_KEY: "plan"})
-        def _web_question() -> bool:
-            """John's site path applies only without edits, deliveries or jobs."""
-            return not (run_evidence.has_mutations or task_outcome.sources
-                        or task_outcome.artifact_contract_seen or pending_redirected_jobs)
 
         step = 0
         try:
@@ -622,7 +611,6 @@ def _stream_code_agent_core(
             yield {"type": "step_started", "step": step}
             pending_inputs = take_session_inputs(rid)
             if pending_inputs:
-                web_answer_due = ""
                 for row in pending_inputs:
                     observations.apply_user_clarification(row["text"], root=root)
                 task_spec = observations.task_spec
@@ -681,22 +669,9 @@ def _stream_code_agent_core(
                                          and not task_outcome.sources
                                          and not task_outcome.artifact_contract_seen
                                          and not turn_context.skill_reminder_pending else None),
-                    project_search_without_snippets=project_search_without_snippets,
+
                 )
                 run_evidence.mark_sources_presented(provider_messages)
-                web_site_limit = explicit_web_site_limit(turn_context.raw_user_message)
-                if not _web_question():
-                    web_answer_due = ""
-                elif not web_answer_due and len(run_evidence.read_site_urls) >= web_site_limit:
-                    web_answer_due = _web_answer_instruction(
-                        f"Прочитано сайтов: {len(run_evidence.read_site_urls)} — лимит {web_site_limit} на вопрос."
-                    )
-                if web_answer_due:
-                    # The ordinary model answers in its own words from what it
-                    # read; only this turn's input changes, history keeps no copy.
-                    provider_messages = [*provider_messages, {"role": "user", "content": web_answer_due,
-                                                              RUNTIME_BLOCK_KEY: "web_answer_due"}]
-                    step_schemas = []
                 # The owner's UI text alone stays in the user role; every runtime
                 # block moves into the single system message (decision 2026-10-06).
                 provider_messages = project_runtime_roles(provider_messages)
@@ -935,18 +910,13 @@ def _stream_code_agent_core(
             # Some local tool-calling models emit tool calls as JSON in
             # content instead of structured tool_calls. Recover them so the
             # loop still works.
-            if web_answer_due:
-                # No tools were offered: printed tool syntax is not a call.
-                tool_calls = []
-            else:
-                content, tool_calls = recover_tool_calls(content, tool_calls, _inline_tool_names)
+            content, tool_calls = recover_tool_calls(content, tool_calls, _inline_tool_names)
 
             # Reconsider a generated proposal before starting any of its tools.
             # Existing tool batches finish normally; no second executor or
             # concurrent model response is started for a user update.
             pending_inputs = take_session_inputs(rid)
             if pending_inputs:
-                web_answer_due = ""
                 for row in pending_inputs:
                     observations.apply_user_clarification(row["text"], root=root)
                 task_spec = observations.task_spec
@@ -960,7 +930,7 @@ def _stream_code_agent_core(
                        "request_ids": list(turn_context.awaiting_input_replies), "text": reply}
                 turn_context.awaiting_input_replies.clear()
 
-            if not web_answer_due and not tool_calls and _contains_tool_trace(content):
+            if not tool_calls and _contains_tool_trace(content):
                 turn_context.messages.append({
                     "role": "user",
                     RUNTIME_BLOCK_KEY: "tool_trace_correction",
@@ -1039,7 +1009,6 @@ def _stream_code_agent_core(
                 )
                 pending_inputs = take_session_inputs(rid, finishing=True)
                 if pending_inputs:
-                    web_answer_due = ""
                     for row in pending_inputs:
                         observations.apply_user_clarification(row["text"], root=root)
                     task_spec = observations.task_spec
@@ -1115,18 +1084,6 @@ def _stream_code_agent_core(
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
                 parsed_args = _without_runtime_arguments(ToolRegistry._coerce_args(raw_args))
-                try:
-                    parsed_args = normalize_web_tool_arguments(name, parsed_args)
-                except WebArgumentFormatError as exc:
-                    denial = {"ok": False, "error": "argument_format", "text": f"ERROR: {exc}"}
-                    turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
-                                                  "name": name, "content": json.dumps(denial, ensure_ascii=False)})
-                    tool_round_trips += 1
-                    yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": _public_arguments(parsed_args), "result": denial["text"],
-                           "ok": False, "error": "argument_format", "dispatched": False,
-                           "state_changed": False, "execution_status": "rejected"}
-                    continue
                 if read_only and not delegate_tool_allowed(name, parsed_args):
                     denial = "Delegated inspection is read-only; this tool or operation is outside its scope."
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
@@ -1136,42 +1093,6 @@ def _stream_code_agent_core(
                            "ok": False, "error": "delegate_read_only", "dispatched": False,
                            "state_changed": False, "execution_status": "rejected"}
                     continue
-                _site_trim_note = ""
-                if name in _WEB_SITE_TOOLS and _web_question():
-                    _site_limit = explicit_web_site_limit(turn_context.raw_user_message)
-                    _already = set(run_evidence.read_site_urls)
-                    _left = _site_limit - len(_already)
-                    _targets = ([str(url) for url in parsed_args.get("urls") or []]
-                                or [str(parsed_args.get("url") or "")])
-                    _new = [url for url in _targets if url and url.split("#", 1)[0] not in _already]
-                    if _left <= 0 and (name == "web_search" or _new):
-                        denial = (f"Лимит чтения на вопрос исчерпан: прочитано сайтов {len(_already)} "
-                                  f"из {_site_limit}. Новые сайты не читаются — ответь по прочитанному.")
-                        turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
-                                                      "name": name, "content": denial})
-                        yield {"type": "tool_call", "step": step, "tool": name,
-                               "arguments": _public_arguments(parsed_args), "result": denial,
-                               "ok": False, "error": "web_site_limit", "dispatched": False,
-                               "state_changed": False, "execution_status": "rejected"}
-                        continue
-                    if name == "web_fetch" and parsed_args.get("urls") and len(_new) > _left:
-                        _skipped = _new[_left:]
-                        parsed_args["urls"] = [url for url in _targets if url not in _skipped]
-                        _site_trim_note = (f"\n\n[Лимит {_site_limit} сайтов на вопрос: не прочитаны "
-                                           + ", ".join(_skipped) + "]")
-                if name == "web_search" and _web_question() and audience_rejections < _AUDIENCE_REJECTION_LIMIT:
-                    _audience_denial = _audience_language_denial(parsed_args, run_evidence.web_operations)
-                    if _audience_denial:
-                        # John 2026-10-06 (variant «в»): the model declares the environment,
-                        # the runtime keeps the consequence; bounded so it never loops.
-                        audience_rejections += 1
-                        turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
-                                                      "name": name, "content": _audience_denial})
-                        yield {"type": "tool_call", "step": step, "tool": name,
-                               "arguments": _public_arguments(parsed_args), "result": _audience_denial,
-                               "ok": False, "error": "audience_languages", "dispatched": False,
-                               "state_changed": False, "execution_status": "rejected"}
-                        continue
                 _read_requested_path = ""
                 _read_recovered_from = ""
                 if name == "read_file":
@@ -1267,41 +1188,8 @@ def _stream_code_agent_core(
                     _phase_event = _enter_verification_phase()
                     if _phase_event is not None:
                         yield _phase_event
-                restored_read = run_evidence.repeated_read_context(
-                    command_progress.cached_source_ids(name, parsed_args, epoch=observations.progress_epoch()),
-                    max_chars=WEB_TOOL_RESULT_LLM_LIMIT,
-                )
-                if restored_read:
-                    # Lost context is a cached read, not ignored recovery advice.
-                    # Deliver exact bytes before counting a refusal; current
-                    # presentation is recorded on the next normal model turn.
-                    turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
-                                                  "name": name, "content": restored_read})
-                    tool_round_trips += 1
-                    call_log.append(f"{name}(cached excerpts)")
-                    yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": _public_arguments(parsed_args), "result": restored_read,
-                           "ok": True, "cache_hit": True, "dispatched": False,
-                           "state_changed": False, "execution_status": "ok"}
-                    continue
                 recovery = observations.before_dispatch(name, parsed_args, root=root, model_turn=step)
                 if recovery is not None:
-                    if recovery["status"] == "blocked" and recovery["reason"] == "repeated_web_without_progress":
-                        for later in tool_calls[call_index + 1:]:
-                            later_fn = later.get("function") or {}
-                            try:
-                                later_args = normalize_web_tool_arguments(
-                                    later_fn.get("name") or "", ToolRegistry._coerce_args(later_fn.get("arguments")))
-                            except WebArgumentFormatError:
-                                later_args = None
-                            if later_fn.get("name") != name or later_args != parsed_args:
-                                # Do not drop independent actions in this same decision.
-                                recovery = {**recovery, "status": "strategy_required"}
-                                break
-                    if recovery["reason"] == "repeated_web_without_progress":
-                        cached_context = run_evidence.repeated_operation_hint(recovery.get("source_ids", []))
-                        if cached_context:
-                            recovery = {**recovery, "text": recovery["text"] + "\n" + cached_context}
                     # Successful exit/output repetition is not a failed business
                     # result. Enforce a different observation before executing the
                     # same command again, even if the model ignores the advice.
@@ -1314,22 +1202,6 @@ def _stream_code_agent_core(
                            "ok": False, "error": recovery["reason"], "dispatched": False,
                            "state_changed": False, "execution_status": "rejected",
                            "command_progress": command_progress.snapshot()}
-                    if (recovery["status"] == "blocked" and recovery["reason"] == "repeated_web_without_progress"
-                            and _web_question()):
-                        # Web question: the next turn answers from what was read.
-                        web_answer_due = _web_answer_instruction(
-                            "Повтор веб-операции не даст новых данных.")
-                        continue
-                    if recovery["status"] == "blocked" and recovery["reason"] == "repeated_web_without_progress":
-                        recovery = {**recovery, "text": (
-                            "Задача не завершена: модель продолжила повторять исчерпанную поисковую операцию. "
-                            "Состояние сохранено для продолжения.\n\n" + run_evidence.search_recovery_fallback()
-                        )}
-                        task_outcome.verify_answer(
-                            recovery["text"], run_evidence, observations.code_input_epoch,
-                            persistence_policy=run_persistence_policy(rid),
-                            user_request=turn_context.raw_user_message,
-                        )
                     if recovery["status"] == "blocked":
                         if _history_checkpoint:
                             _history_checkpoint(turn_context.messages, final_text=recovery["text"])
@@ -1449,27 +1321,12 @@ def _stream_code_agent_core(
                     tool_meta["recovered_from"] = _read_recovered_from
                     tool_meta["recovered_path"] = str(parsed_args.get("path") or "")
                 _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
-                _evidence_web_activated = False
                 if _failed_call:
                     _failure_counts[name] = _failure_counts.get(name, 0) + 1
                     _failure_counts["__all__"] = _failure_counts.get("__all__", 0) + 1
                     _failure_error = str(
                         tool_meta.get("error") or text_result.split("\n", 1)[0]
                     )[:500]
-                    if (
-                        "web" not in activation.capability_groups
-                        and should_escalate_web_after_failure(
-                            tool_name=name,
-                            error=_failure_error,
-                            failure_count=_failure_counts["__all__"],
-                            arguments=parsed_args,
-                        )
-                    ):
-                        activation.activate_groups(("web",))
-                        schema_update = activation.rebuild()
-                        registry, all_schemas = schema_update.registry, schema_update.schemas
-                        _runtime_activation_snapshot = activation.snapshot()
-                        _evidence_web_activated = True
                 _state_changed = tool_state_changed(
                     name,
                     tool_meta,
@@ -1554,15 +1411,6 @@ def _stream_code_agent_core(
                     yield {"type": "skills_changed", "step": step,
                            "active_skills": turn_context.skills.snapshots()}
                 yield event
-                if _evidence_web_activated:
-                    yield {
-                        "type": "runtime_activation_changed",
-                        "run_id": rid,
-                        "step": step,
-                        "source": "evidence_failure",
-                        "trigger_tool": name,
-                        "runtime_activation": activation.snapshot(),
-                    }
                 tool_round_trips += 1
                 _hint = _short_arg_hint(parsed_args)
                 call_log.append(
@@ -1581,47 +1429,10 @@ def _stream_code_agent_core(
                 # LLM. Without this, a single huge `run_bash` or `read_file`
                 # could blow out `num_ctx` and start eating the system
                 # prompt off the front of the context.
-                result_limit = (WEB_TOOL_RESULT_LLM_LIMIT
-                                if name in {"web_search", "web_fetch"} else TOOL_RESULT_LLM_LIMIT)
+                result_limit = TOOL_RESULT_LLM_LIMIT
                 _tool_content = _truncate_for_llm(text_result, limit=result_limit)
                 if recovery_context:
                     _tool_content += "\n\n" + recovery_context
-                _tool_content += _site_trim_note
-                _tool_content = _number_read_pages(_tool_content, run_evidence.read_site_urls, _sites_before)
-                _tool_content += _read_numbers_note(run_evidence.read_site_urls, _sites_before)
-                _sites_read = len(run_evidence.read_site_urls)
-                if _sites_read > _sites_before and _web_question():
-                    _site_limit = explicit_web_site_limit(turn_context.raw_user_message)
-                    if _sites_read >= _site_limit:
-                        _tool_content += (
-                            f"\n\n[Прочитано сайтов: {_sites_read} — лимит {_site_limit} на вопрос. "
-                            "Дальше — ответ по прочитанному.]"
-                        )
-                    elif _sites_read >= WEB_SITE_CHECKPOINT:
-                        _tool_content += (
-                            f"\n\n[Прочитано сайтов: {_sites_read} из {_site_limit}. "
-                            "Если прочитанного хватает для ответа — отвечай своими словами "
-                            "со ссылками на прочитанные источники. Если не хватает — прочитай "
-                            "следующий сайт.]"
-                        )
-                if (name == "web_search" and _web_question() and not web_language_hint_given
-                        and not _declared_audience(parsed_args)):
-                    # John's rule 2026-10-06: once per run, kept in this search
-                    # result so later searches still see it; the model decides
-                    # whether the topic is regional (one language is then right).
-                    _language_hint = _web_language_hint(run_evidence.web_operations)
-                    if _language_hint:
-                        web_language_hint_given = True
-                        _tool_content += "\n\n" + _language_hint
-                _script_hint = turn_context.script_skill_hint(name=name, args=parsed_args, ok=_tool_ok)
-                if _script_hint:
-                    _tool_content += "\n\n" + _script_hint
-                if _evidence_web_activated:
-                    _tool_content += (
-                        "\n\n[EVIDENCE ROUTER] Web tools are now available. Before retrying "
-                        "this failed external/unknown operation, search the official "
-                        "documentation or primary source for the exact error and version."
-                    )
                 # Grounding fact from this call — computed HERE (before the tool
                 # message is appended) so the progress controller can judge whether
                 # the call revealed anything NEW.
@@ -1664,99 +1475,6 @@ def _stream_code_agent_core(
             _unregister_run(rid)
         except Exception:
             pass
-
-
-_WEB_SITE_TOOLS = frozenset({"web_search", "web_fetch", "browser"})
-
-
-_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
-
-
-def _web_language_hint(operations: list[dict[str, Any]]) -> str:
-    """John's rule (2026-10-06): a general topic is searched in Russian and English.
-
-    One reminder when every successful query so far uses one script; a regional
-    topic (a country's media) legitimately stays in one language, so this never
-    blocks or repeats.
-    """
-    queries = [str(query) for operation in operations for query in operation.get("queries") or []]
-    if not queries:
-        return ""
-    cyrillic = [bool(_CYRILLIC.search(query)) for query in queries]
-    if all(cyrillic):
-        used, other = "русском", "английском"
-    elif not any(cyrillic):
-        used, other = "английском", "русском"
-    else:
-        return ""
-    return (
-        f"[Языки поиска] Все запросы пока только на {used}. Правило пользователя: общая тема "
-        f"(техника, игры, наука, софт, мировые события) — добавь в следующий пакет запросы на {other} "
-        "и бери самое актуальное из обеих сред; вопрос о конкретной стране или регионе — ищи на языке "
-        "её аудитории и в её СМИ, тогда так и оставь."
-    )
-
-
-_AUDIENCE_REJECTION_LIMIT = 2
-
-
-def _number_read_pages(content: str, read_urls: tuple[str, ...], before: int) -> str:
-    """John 2026-10-06: the citation number stands at the head of each newly read page,
-    next to its text, not only in the note after the whole batch."""
-    for number, url in enumerate(read_urls[before:], before + 1):
-        header = re.compile(r"(?m)^\[fetched: " + re.escape(url) + r"(?=[#\]\s])")
-        content = header.sub(lambda match, n=number: f"[{n}] " + match.group(0), content, count=1)
-    return content
-
-
-def _read_numbers_note(read_urls: tuple[str, ...], before: int) -> str:
-    """John 2026-10-06: each newly read page gets its citation number for the answer."""
-    new = read_urls[before:]
-    if not new:
-        return ""
-    pages = "; ".join(f"[{before + index}] {url}" for index, url in enumerate(new, 1))
-    return (f"\n\n[Номер для ссылок в ответе: {pages} — пиши [Название][n] или [n]; "
-            "адрес сам не пиши, Elira подставит ссылку]")
-
-
-def _declared_audience(arguments: dict[str, Any]) -> str:
-    """'global' | 'regional' | '' — the environment the model declared for web_search."""
-    value = str(arguments.get("audience") or "").strip().lower()
-    if value.startswith(("global", "общ")):
-        return "global"
-    if value.startswith(("regional", "регион")):
-        return "regional"
-    return ""
-
-
-def _audience_language_denial(arguments: dict[str, Any], operations: list[dict[str, Any]]) -> str:
-    """A declared general topic needs Russian and English among the run's queries."""
-    if _declared_audience(arguments) != "global":
-        return ""
-    batch = arguments.get("queries") or [arguments.get("query") or ""]
-    current = [str(query) for query in batch if str(query).strip()]
-    if not current:
-        return ""
-    previous = [str(query) for operation in operations for query in operation.get("queries") or []]
-    scripts = {bool(_CYRILLIC.search(query)) for query in previous + current}
-    if len(scripts) != 1:
-        return ""
-    used, other = ("русском", "английском") if True in scripts else ("английском", "русском")
-    return (
-        f"Поиск не выполнен: audience=\"global\" (общая тема) требует запросов и на русском, и на английском; "
-        f"сейчас все запросы на {used}. Повтори web_search, добавив в queries запросы на {other}. "
-        "Если вопрос о конкретной стране или регионе — укажи audience=\"regional:<страна>\" и ищи на языке "
-        "её аудитории."
-    )
-
-
-def _web_answer_instruction(reason: str) -> str:
-    """One answer turn without tools: John's rule, never a dead end."""
-    return (
-        f"[Ответ по прочитанному] {reason} Больше сайтов не читай. Ответь на вопрос "
-        "пользователя своими словами по уже прочитанному, со ссылками на прочитанные страницы "
-        "по их номерам: [Название][n] или [n]. Чего в прочитанном нет — скажи прямо."
-    )
 
 
 def stream_code_agent(

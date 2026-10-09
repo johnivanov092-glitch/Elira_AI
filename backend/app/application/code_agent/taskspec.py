@@ -442,17 +442,6 @@ def taskspec_context(spec: TaskSpec) -> str:
         parts.append("Чем проверять: " + "; ".join(spec.verifiers[:8]))
     if spec.constraints:
         parts.append("Ограничения: " + "; ".join(spec.constraints))
-    # Tool-economy route — only on a browser-observable (frontend/page) task, so it
-    # never nudges ssh/backend runs. browser proves page_open AND the visible text in
-    # one call; a bundle grep proves neither. Keeps a small frontend verify lean.
-    if {_criterion_intent(c) for c in spec.success_criteria} & {"dom_contains", "page_open"}:
-        parts.append(
-            "Экономный маршрут проверки (небольшой фронт): typecheck → build → run_server → "
-            "browser(actual_url) для DOM/интеракций → stop. browser доказывает И открытие "
-            "страницы, И видимый текст — http_api для тех же DOM-критериев не нужен; grep по "
-            "бандлу видимый текст НЕ доказывает. Получив actual_url, не повторяй run_server "
-            "list/logs на живом сервере — иди в browser."
-        )
     return "\n".join(parts)
 
 
@@ -1404,16 +1393,6 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
             return None
         port = str(m.get("actual_port") or m.get("port") or "")
         return {"intents": {"server_started"}, "port": port, "files": set()}
-    if tool_name == "http_api":
-        return {"intents": {"page_open"}, "files": set()}
-    if tool_name == "browser":
-        # A real render → the page loaded (page_open) AND its DOM text is genuine
-        # visible-text evidence (dom_contains) — unlike a bundle grep. `interacted` says a
-        # real fill/select/check/click actually ran, so an INTERACTION criterion can require
-        # the actions to have happened rather than confirm off a plain render.
-        return {"intents": {"page_open", "dom_contains", "viewport_layout"},
-                "text": (evidence or "").lower(),
-                "viewport": m.get("viewport"), "interacted": bool(m.get("interacted")), "files": set()}
     return None
 
 

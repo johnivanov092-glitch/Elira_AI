@@ -143,11 +143,11 @@ def _build_turn_context(
     resource_refs: list[dict[str, Any]] | None = None,
 ) -> str:
 
-    from datetime import datetime
+    from app.application.calculation.calendar_ops import runtime_date_context
 
     parts: list[str] = [
         "Рабочая папка: " + json.dumps(str(project_root), ensure_ascii=False),
-        "Дата runtime: " + datetime.now().astimezone().strftime("%Y-%m-%d %z"),
+        "Дата runtime: " + runtime_date_context(),
     ]
     from app.core.config import ROOT_DIR
 

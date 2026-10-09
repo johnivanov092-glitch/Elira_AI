@@ -7,6 +7,7 @@ from typing import Any
 
 from app.application.calculation import expression as calc_expression
 from app.application.calculation import units
+from app.application.calculation.calendar_ops import date_info
 
 
 def _ok(label: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -22,6 +23,8 @@ def tool_calc(*, expression: str = "", operation: str = "evaluate", variable: st
     if not str(expression or "").strip():
         return _error("missing_expression", "нужно выражение (expression)")
     try:
+        if operation == "date_info":
+            return _ok("Календарь", date_info(str(expression)))
         result = calc_expression.calculate(
             str(expression), operation, variable=str(variable or ""), lower=str(lower or ""),
             upper=str(upper or ""), order=int(order or 1),

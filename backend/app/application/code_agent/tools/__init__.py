@@ -40,12 +40,6 @@ from app.application.code_agent.tools._memory import (  # noqa: F401
     tool_library,
     tool_memory,
 )
-from app.application.code_agent.tools._web import (  # noqa: F401
-    tool_browser,
-    tool_web_fetch,
-    tool_web_query,
-    tool_web_search,
-)
 from app.application.code_agent.tools._run import (  # noqa: F401
     stop_all_servers,
     tool_run_bash,
@@ -57,7 +51,6 @@ from app.application.code_agent.tools._meta import (  # noqa: F401
 )
 from app.application.code_agent.tools._content import (  # noqa: F401
     tool_csv,
-    tool_http_api,
 )
 from app.application.code_agent.tools._vision import (  # noqa: F401
     tool_read_image,
@@ -100,11 +93,6 @@ __all__ = [
     "tool_itops_registry",
     "tool_run_bash",
     "tool_run_server",
-    "tool_web_search",
-    "tool_web_fetch",
-    "tool_web_query",
-    "tool_browser",
     "tool_csv",
-    "tool_http_api",
     "tool_read_image",
 ]

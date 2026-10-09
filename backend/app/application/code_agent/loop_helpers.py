@@ -508,59 +508,6 @@ def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
-def _pack_web_excerpts(text: str, limit: int) -> str:
-    """Keep complete source blocks fairly across pages in a smaller window.
-
-    Presentation is still verified against the ledger's full quote immediately
-    before inference. This parser selects text; it never creates source records.
-    """
-    if len(text) <= limit:
-        return text
-    from app.application.web_evidence.corpus import envelope
-
-    envelopes = list(re.finditer(r"<<<DATA\n([\s\S]*?)\nDATA>>>", text))
-    bodies = [match.group(1) for match in envelopes] or [text]
-    groups: dict[str, list[tuple[int, str]]] = {}
-    position = 0
-    for body in bodies:
-        starts = list(re.finditer(
-            r"(?m)^\[\[source:[a-zA-Z0-9_-]{1,80}\]\] [^\n]*\nURL: ([^\n]+)\n", body,
-        ))
-        for index, match in enumerate(starts):
-            end = starts[index + 1].start() if index + 1 < len(starts) else len(body)
-            groups.setdefault(match.group(1), []).append((position, body[match.start():end]))
-            position += 1
-    outside = re.sub(r"<<<DATA\n[\s\S]*?\nDATA>>>", "", text)
-    header = text.splitlines()[0][:400]
-    warnings = [line for line in outside.splitlines()
-                if line.strip().startswith(("WARNING", "ERROR", "Предупреждение"))]
-    prefix = "\n".join(dict.fromkeys([header, *warnings]))
-    if not groups:
-        # Legacy/plain search output has no quote receipts to preserve, but
-        # provider warnings must survive even when they occur in the middle.
-        return prefix + "\n" + _truncate_for_llm(text, limit=max(400, limit - len(prefix) - 1))
-
-    note = (
-        "[Веб-выдержки сокращены под текущее окно контекста: показаны только целые "
-        "фрагменты. Пропущенные разделы прочитай отдельным web_fetch по URL#якорю.]"
-    )
-    rows = list(groups.values())
-    # With room for only a few pages, cover the beginning, middle and end before
-    # giving any one page a second excerpt.
-    order = list(dict.fromkeys([0, len(rows) // 2, len(rows) - 1, *range(len(rows))]))
-    selected: list[tuple[int, str]] = []
-
-    def render(blocks: list[tuple[int, str]]) -> str:
-        payload = "\n\n".join(block for _, block in sorted(blocks))
-        return prefix + "\n" + note + ("\n\n" + envelope(payload, source="current web excerpts") if payload else "")
-
-    for depth in range(max(len(row) for row in rows)):
-        for index in order:
-            if depth < len(rows[index]):
-                candidate = [*selected, rows[index][depth]]
-                if len(render(candidate)) <= limit:
-                    selected = candidate
-    return render(selected)
 
 
 class ContextBudgetError(RuntimeError):
@@ -673,41 +620,6 @@ def _prepare_messages_for_llm(
             safe_input_budget <= 0 or int(value["current_tokens"]) <= safe_input_budget
         )
 
-    if not fits(usage) and any(message.get("role") == "tool"
-                               and message.get("name") in {"web_search", "web_fetch"}
-                               for message in messages):
-        # Compaction handles older history first. If the recent web batch still
-        # cannot fit, pack its complete receipts using the same request estimator
-        # and reserves. Protected instructions and schemas remain untouched.
-        original = messages
-
-        def packed_candidate(limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            candidate = [
-                {**message, "content": _pack_web_excerpts(str(message.get("content") or ""), limit)}
-                if message.get("role") == "tool" and message.get("name") in {"web_search", "web_fetch"}
-                else message for message in original
-            ]
-            if restore_messages is not None:
-                candidate = restore_messages(candidate, compacted=True)
-            candidate = [
-                {**message, "content": _pack_web_excerpts(str(message.get("content") or ""), limit)}
-                if message.get("_msg_id") == "web-source-context" else message
-                for message in candidate
-            ]
-            return candidate, get_context_usage(candidate, **usage_kwargs)
-
-        low, high = 400, WEB_TOOL_RESULT_LLM_LIMIT
-        best = None
-        while low <= high:
-            middle = (low + high) // 2
-            candidate, candidate_usage = packed_candidate(middle)
-            if fits(candidate_usage):
-                best = candidate, candidate_usage
-                low = middle + 1
-            else:
-                high = middle - 1
-        if best is not None:
-            messages, usage = best
     if float(usage["percent"]) >= critical_threshold or (
         safe_input_budget > 0 and int(usage["current_tokens"]) > safe_input_budget
     ):
@@ -901,12 +813,6 @@ def run_persistence_policy(run_id: str) -> dict[str, Any]:
         return task_persistence_policy(auto_remember=False)
 
 
-def web_cache_write_allowed(policy: dict[str, Any] | None) -> bool:
-    """A durable page cache follows the existing task memory permission."""
-    return isinstance(policy, dict) and (
-        policy.get("rag") is True or (policy.get("direct_memory") is True
-                                     and policy.get("direct_memory_scope") == "task")
-    )
 
 
 def _try_remember_turn(

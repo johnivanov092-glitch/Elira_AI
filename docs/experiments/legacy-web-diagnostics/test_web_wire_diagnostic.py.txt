@@ -1,0 +1,191 @@
+"""Offline delivery diagnosis, not a model-quality or historical-wire replay.
+
+Fixtures are verbatim slices of saved receipts audited in WEB_DATES_SOURCES.md.
+The coordinator, projection, source receipts and canonical provider stay real.
+Only page/search acquisition and the HTTP transport are substituted.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import socket
+
+import pytest
+import requests
+
+from app.application.code_agent.agent_loop import stream_code_agent
+from app.application.code_agent.run_evidence import RunEvidence
+from app.application.code_agent.tools import _web
+from app.application.web_evidence.receipts import format_source
+from app.infrastructure.llm import openai_compatible
+from app.infrastructure.search.web_runtime import PageFetchResult
+
+
+_ENDPOINT = "http://web-wire-diagnostic.invalid"
+_SNIPPET = "DIAGNOSTIC_DISCOVERY_SNIPPET_NOT_A_READ_EXCERPT"
+_WEATHER_URL = "https://www.kazhydromet.kz/ru/weather/in_city_7_days/6/0"
+_NEWS_URL = (
+    "https://24.kz/ru/news/incidents/"
+    "796681-pozhar-edva-ne-zakonchilsya-vzryvom-v-kostanajskoj-oblasti"
+)
+_RELATED_URL = (
+    "https://24.kz/ru/news/incidents/"
+    "797378-postradavshij-pri-pozhare-na-parkovke-v-astane-ostaetsya-v-tyazhelom-sostoyanii"
+)
+_RELATED_TITLE = "Пострадавший при пожаре на парковке в Астане остается в тяжелом состоянии"
+
+# Run 1446803c359c413a9179f73cf020116a; receipts
+# w_3547562bfe7381731201 + w_d521bdc16dac4c7dfdce, contiguous text from city label.
+_WEATHER_TEXT = 'Город: Алматы\n03.10.2026\nНочью:\n+9+11 °C\nПеременная облачность, без осадков.\nзападный\nСкорость ветра:\n3-8  м/с\nДень:\n+22+24 °C\nПеременная облачность, без осадков.\n04.10.2026\nНочью:\n+12+14 °C\nПеременная облачность, без осадков.\nзападный\nСкорость ветра:\n3-8  м/с\nДень:\n+25+27 °C\nПеременная облачность, без осадков.\n05.10.2026\nНочью:\n+8+10 °C\nПеременная облачность, дождь, временами сильный дождь.\nсеверо-западный\nСкорость ветра:\n3-8, временами порывы 15-18  м/с\nДень:\n+12+14 °C\nПеременная облачность, дождь, временами сильный дождь.\n06.10.2026\nНочью:\n+5+7 °C\nПеременная облачность, в первой половине ночи дождь.\nсеверный\nСкорость ветра:\n3-8, ночью порывы 13  м/с\nДень:\n+13+15 °C\nПеременная облачность, без осадков.\n07.10.2026\nНочью:\n+6+8 °C\nПеременная облачность, без осадков.\nсеверо-восточный\nСкорость ветра:\n3-8  м/с\nДень:\n+14+16 °C\nПеременная облачность, без осадков.\n08.10.2026\nНочью:\n+8+10 °C\nПеременная облачность, без осадков.\nсеверо-восточный\nСкорость ветра:\n3-8  м/с\nДень:\n+16+18 °C\nПеременная облачность, без осадков.\n09.10.2026\nНочью:\n+10+12 °C\nПеременная облачность, без осадков.\nсеверо-восточный\nСкорость ветра:\n3-8  м/с\nДень:\n+18+20 °C\nПеременная облачность, без осадков.\nОбласть: Алматинская область\n03.10.2026\nНочью:\n+9+'
+
+# Run d455e983263e49a9bdab6f19c2cd5193; receipt w_bb5bd750f340d5fd1ac8.
+_NEWS_TEXT = 'Пожар едва не закончился взрывом в Костанайской области\n05.10.2026, 09:09\n376\nКубашева Анджела\nИзображение сгенерировано ИИ\nСпасатели предотвратили возможный взрыв во время пожара в Костанайской области, передает\n«24KZ»\nсо ссылкой на МЧС.\nПожар произошел в селе Федоровка. На территории частного жилого дома загорелись баня и летняя кухня.\nНа место прибыли подразделения МЧС.\n«В ходе тушения спасатели вынесли из горящего помещения газовый баллон, предотвратив возможный взрыв», - говорится в сообщении.\nПожар ликвидировали. По данным ведомства, пострадавших нет.\nВ МЧС напомнили, что при возникновении экстренной ситуации необходимо незамедлительно звонить по номеру 112.\nПодписывайтесь на\nTelegram-канал «24KZ»\n.\nТеги:\n#24новости\n#24KZ\n#пожар\n#взрыв\n#газовый баллон\n#Костанайская область\n#МЧС РК\nЧитайте нас в Telegram!\nЧитайте нас в WhatsApp!\nПоделиться:\nЧитайте также:\nСамолет МЧС экстренно доставил мужчину в Атырау\nКазахстан накроет непогода: штормовое предупреждение объявили в 17 областях\nПострадавший при пожаре на парковке в Астане остается в тяжелом состоянии'
+
+
+def _response(request: requests.PreparedRequest, body: bytes, *, sse: bool = False):
+    response = requests.Response()
+    response.status_code = 200
+    response.request = request
+    response.url = request.url
+    response.headers["Content-Type"] = "text/event-stream" if sse else "application/json"
+    response._content = body
+    response._content_consumed = True
+    return response
+
+
+@pytest.mark.parametrize("case", ["weather", "related-news"])
+def test_saved_web_receipts_reach_canonical_provider_without_rebinding(tmp_path, monkeypatch, case):
+    monkeypatch.setenv("LLAMA_SERVER_ENABLED", "true")
+    monkeypatch.setenv("LLAMA_SERVER_BASE_URL", _ENDPOINT + "/v1")
+    monkeypatch.setenv("LLAMA_SERVER_MODEL", "local-model")
+    monkeypatch.setattr(openai_compatible, "_props_ctx_cache", {})
+
+    primary = _WEATHER_URL if case == "weather" else _NEWS_URL
+    body = _WEATHER_TEXT if case == "weather" else _NEWS_TEXT
+    links = () if case == "weather" else ((_RELATED_TITLE, _RELATED_URL),)
+    discovery = [{"title": "Primary saved page", "url": primary, "content": _SNIPPET}]
+    if links:
+        discovery.append({"title": _RELATED_TITLE, "url": _RELATED_URL, "content": _SNIPPET})
+    monkeypatch.setattr("app.infrastructure.search.web_search.search_web",
+                        lambda *args, **kwargs: {"ok": True, "sources": discovery})
+    fetched = []
+
+    def fetch(url, limit):
+        assert url == primary, "A related target was fetched without a scripted tool call"
+        fetched.append(url)
+        return PageFetchResult(text=body, final_url=url, status_code=200, links=links)
+
+    monkeypatch.setattr(_web, "_fetch_one", fetch)
+    requests_seen = []
+    payloads = []
+    blocked_connections = []
+    presented_evidence = []
+    mark_presented = RunEvidence.mark_sources_presented
+
+    def observe_presented(evidence, messages):
+        mark_presented(evidence, messages)
+        presented_evidence.append(evidence)
+
+    monkeypatch.setattr(RunEvidence, "mark_sources_presented", observe_presented)
+
+    def no_connection(*args, **kwargs):
+        blocked_connections.append((args, kwargs))
+        raise AssertionError("Offline diagnostic attempted a network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", no_connection)
+    monkeypatch.setattr(socket, "create_connection", no_connection)
+
+    def send(session, request, **kwargs):
+        requests_seen.append((request.method, request.url))
+        if request.method == "GET" and request.url == _ENDPOINT + "/props":
+            data = {"default_generation_settings": {"n_ctx": 65536}}
+            return _response(request, json.dumps(data).encode("utf-8"))
+        if request.method == "GET" and request.url == _ENDPOINT + "/v1/models":
+            return _response(request, b'{"data":[{"id":"local-model"}]}')
+        assert (request.method, request.url) == ("POST", _ENDPOINT + "/v1/chat/completions")
+        # Requests prepared these bytes from the canonical provider's normalized
+        # payload; no test implementation serializes/rebuilds model messages.
+        payload = json.loads(request.body)
+        payloads.append(payload)
+        assert payload["stream"] is True and kwargs["stream"] is True
+        assert payload["model"] == "local-model"
+        step = len(payloads)
+        assert step <= 3, "Unexpected coordinator-added model turn"
+        if step < 3:
+            name, arguments = (
+                ("web_search", {"query": "saved diagnostic primary page"})
+                if step == 1 else ("web_fetch", {"url": primary, "max_chars": 6000})
+            )
+            delta = {"tool_calls": [{"index": 0, "id": f"wire_{step}", "type": "function",
+                       "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+        else:
+            tool_text = next(message["content"] for message in payload["messages"]
+                             if message.get("tool_call_id") == "wire_2")
+            marker = re.search(r"\[\[source:[^\]]+\]\]", tool_text)
+            assert marker is not None
+            delta = {"content": "Источник доставлен для проверки контракта. " + marker.group()}
+        chunk = json.dumps({"choices": [{"delta": delta}]}, ensure_ascii=False)
+        response = _response(request, ("data: " + chunk + "\n\ndata: [DONE]\n\n").encode("utf-8"),
+                             sse=True)
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    prompt = "Прочитай найденную страницу; сохрани даты и привязку данных к источнику."
+    events = list(stream_code_agent(
+        user_message=prompt, project_root=tmp_path, model="local-model",
+        run_id="web-wire-" + case + "-" + tmp_path.name,
+        base_tools=["web_search", "web_fetch"], permission_mode="bypass", auto_remember=False,
+    ))
+    assert len(payloads) == 3, events[-1]
+    assert fetched == [primary]
+    assert not blocked_connections
+    assert ("GET", _ENDPOINT + "/props") in requests_seen
+    assert presented_evidence
+    evidence = presented_evidence[-1]
+    assert set(evidence.read_site_urls) == {primary}
+
+    messages = payloads[-1]["messages"]
+    search_text = next(message["content"] for message in messages
+                       if message.get("tool_call_id") == "wire_1")
+    read_text = next(message["content"] for message in messages
+                     if message.get("tool_call_id") == "wire_2")
+    raw_search = next(event for event in events
+                      if event["type"] == "tool_call" and event["tool"] == "web_search")
+    read = next(event for event in events
+                if event["type"] == "tool_call" and event["tool"] == "web_fetch")
+    assert _SNIPPET in raw_search["result"] and _SNIPPET not in search_text
+    assert primary in search_text and "source_id=w_" in search_text
+    assert body in read_text
+    assert read["sources"] and {source["url"] for source in read["sources"]} == {primary}
+    for source in read["sources"]:
+        assert source["status"] == "excerpt" and source["quote_verified"] is True
+        assert format_source(source) in read_text  # Exact ID + parent URL + excerpt, together.
+    assert [message["content"] for message in messages if message["role"] == "user"] == [prompt]
+
+    if case == "weather":
+        for date, night, day in (("03.10.2026", "+9+11 °C", "+22+24 °C"),
+                                 ("08.10.2026", "+8+10 °C", "+16+18 °C"),
+                                 ("09.10.2026", "+10+12 °C", "+18+20 °C")):
+            section = read_text.split(date, 1)[1].split(".10.2026", 1)[0]
+            assert section.index(night) < section.index(day)
+        assert "10.10.2026" not in read_text
+    else:
+        assert "05.10.2026, 09:09" in read_text and _RELATED_TITLE in read_text
+        assert "целевые страницы не прочитаны" in read_text and _RELATED_URL in read_text
+        related = [source for source in raw_search["sources"] if source["url"] == _RELATED_URL]
+        assert related and all(source["status"] == "discovered" for source in related)
+        assert all(source["url"] != _RELATED_URL for source in read["sources"])
+        assert all("[[source:" + source["id"] + "]]" not in read_text for source in related)
+        for source in related:
+            # Query the actual run's evidence owner, rather than rebuilding
+            # provenance from the test's expected URLs or a new evidence object.
+            binding = evidence.citations("[[source:" + source["id"] + "]]")
+            assert binding[0]["status"] == "unresolved"
+            assert "source" not in binding[0]
+
+    final = next(event for event in events if event["type"] == "final_response")
+    assert final["source_status"] == "matched"
+    assert final["citations"] and all(citation["status"] == "matched" for citation in final["citations"])
+    assert all(citation["claim_support"] == "not_assessed" for citation in final["citations"])
+    assert {citation["source"]["url"] for citation in final["citations"]} == {primary}

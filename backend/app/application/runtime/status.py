@@ -8,7 +8,6 @@ from typing import Any
 
 from app.application.persona.store import get_persona_status
 from app.core.data_files import DATA_DIR
-from app.core.web import get_web_engine_status
 from app.application.elira_memory.service import DB_PATH, count_chats, init_db
 
 
@@ -37,7 +36,7 @@ def _chat_count_for(path: Path) -> int:
 def get_runtime_status() -> dict[str, Any]:
     init_db()
     persona_status = get_persona_status()
-    web_status = get_web_engine_status()
+    web_status = {"primary_engine": "skill:web-research"}
     active_chat_count = _chat_count_for(ACTIVE_DB_PATH)
     warnings = list(web_status.get("warnings", []))
     warning_text = " | ".join(warnings) if warnings else None

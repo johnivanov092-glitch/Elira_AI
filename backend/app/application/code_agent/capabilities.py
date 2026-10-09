@@ -26,9 +26,6 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "ssh": frozenset(),
     "itops": frozenset({"itops_registry"}),
     "telegram": frozenset({"telegram"}),
-    "web": frozenset({
-        "web_search", "web_fetch", "web_query", "http_api", "browser",
-    }),
     "resources": frozenset({
         "resource_process", "resource_materialize", "resource_publish",
         "read_image",
@@ -44,7 +41,6 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "ssh": "SSH to saved or explicit hosts: run bash/PowerShell, read/write/replace remote files, port check",
     "itops": "IT Ops: saved assets, connection profiles, MikroTik routers and typed health/inventory checks",
     "telegram": "send a Telegram message or read the bot log",
-    "web": "extra web tools: web_query (search saved pages), http_api, a JS browser; web_search and web_fetch are always loaded",
     "resources": "attachments, vision, generated DOCX/XLSX/PDF and downloads",
     "memory": "long-term facts about the user (memory) and the user's document Library (library)",
     "math": "unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums; calc is always loaded",
@@ -75,25 +71,8 @@ _GENERATED_ARTIFACT_RE = re.compile(
     r"отч[её]т\w*|таблиц\w*|презентац\w*|архив\w*|file|document|report)\b",
     re.IGNORECASE,
 )
-_MODEL_EXTERNAL_ACCESS_DENIAL_RE = re.compile(
-    r"(?:у\s+меня\s+(?:нет|отсутствует)\s+(?:прям\w*\s+)?доступ\w*|"
-    r"я\s+не\s+(?:имею\s+доступ\w*|могу\s+(?:искать|проверить|получать))|"
-    r"\bi\s+(?:do\s+not|don't|cannot|can't)\s+(?:have\s+)?(?:access|browse|search))"
-    r"[^.!?\n]{0,160}(?:интернет\w*|веб\w*|актуальн\w*|новост\w*|"
-    r"реальн\w*\s+времен\w*|\b(?:internet|web|current|news|real.time)\b)",
-    re.IGNORECASE,
-)
-_EXTERNAL_FAILURE_TOOLS = frozenset({
-    "web_fetch", "http_api", "browser", "ssh_run",
-    "ssh_run_ps", "itops_mikrotik_inventory", "itops_network_inventory",
-})
 # Groups whose tools come from an integration provider, by tool-name prefix.
 PROVIDER_GROUPS: dict[str, str] = {"ssh": "ssh_", "itops": "itops_"}
-_EXTERNAL_FAILURE_RE = re.compile(
-    r"(?:mcp|ssh|http|api|routeros|mikrotik|protocol|version|unsupported|"
-    r"not\s+found|unknown|connection|timeout|certificate|tls|jinja|template)",
-    re.IGNORECASE,
-)
 
 
 def file_delivery_requested(user_message: str) -> bool:
@@ -110,40 +89,8 @@ def file_delivery_requested(user_message: str) -> bool:
     )
 
 
-def should_escalate_web_after_failure(
-    *,
-    tool_name: str,
-    error: str,
-    failure_count: int,
-    arguments: dict[str, object] | None = None,
-) -> bool:
-    """Reveal web evidence after an external or repeated failed attempt."""
-    name = str(tool_name or "").strip().lower()
-    message = str(error or "")
-    if name == "mcp":
-        # An MCP server failure may be fixed by its documentation on the web.
-        return True
-    if int(failure_count) >= 2:
-        return True
-    return name in _EXTERNAL_FAILURE_TOOLS or bool(_EXTERNAL_FAILURE_RE.search(message))
 
 
-def should_escalate_web_from_answer(answer: str, user_message: str = "") -> bool:
-    """Recover an explicit false denial of available web access, once per run.
-
-    General uncertainty is not evidence of a web task. Quoted/code examples
-    are data; task-specific evidence requirements remain owned by RunEvidence.
-    """
-    text = str(answer or "")
-    # A verbatim user-supplied quotation remains data even when the model
-    # omits its enclosing punctuation in the answer.
-    for supplied in re.findall(r'«([^»]+)»|“([^”]+)”|"([^"\n]+)"|`([^`\n]+)`', user_message or ""):
-        fragment = next((part for part in supplied if part), "")
-        if fragment:
-            text = text.replace(fragment, "")
-    text = re.sub(r'```[\s\S]*?(?:```|$)|`[^`\n]*`|«[^»]*»|“[^”]*”|"[^"\n]*"', "", text)
-    text = re.sub(r"(?m)^\s*>.*$", "", text)
-    return bool(_MODEL_EXTERNAL_ACCESS_DENIAL_RE.search(text))
 
 
 def normalize_capability_groups(groups: Collection[str] | None) -> frozenset[str]:

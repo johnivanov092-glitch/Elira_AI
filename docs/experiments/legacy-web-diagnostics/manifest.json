@@ -1,0 +1,12 @@
+[
+  {
+    "source": "D:\\AIWork\\Elira_AI\\.scratch\\worktrees\\agent-run-diagnosis\\backend\\tests\\test_empty_web_answer_diagnostic.py",
+    "snapshot": "docs\\experiments\\legacy-web-diagnostics\\test_empty_web_answer_diagnostic.py.txt",
+    "sha256": "e21664e61178b13e540f94bb6035b295cd8ef18a504f5c0042b0815d7661ac85"
+  },
+  {
+    "source": "D:\\AIWork\\Elira_AI\\.scratch\\worktrees\\agent-run-diagnosis\\backend\\tests\\test_web_wire_diagnostic.py",
+    "snapshot": "docs\\experiments\\legacy-web-diagnostics\\test_web_wire_diagnostic.py.txt",
+    "sha256": "9e70349da94f1b436063ef50e28943d21985e3facf381f923f8002677db4e7af"
+  }
+]

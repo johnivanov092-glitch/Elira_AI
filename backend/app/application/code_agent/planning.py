@@ -42,11 +42,11 @@ PLANNING_SYSTEM_PROMPT = (
     '  "ordered_steps": ["короткие конкретные шаги в порядке выполнения"],\n'
     '  "acceptance_checks": ["проверки, доказывающие готовность: typecheck/test/build/…"],\n'
     '  "risks": ["короткие риски/подводные камни"],\n'
-    '  "capability_groups": ["нужные группы из web, resources, data, memory, operations"],\n'
+    '  "capability_groups": ["нужные группы из resources, data, memory, operations"],\n'
     '  "current_step": 1\n'
     "}\n\n"
     "Если текущих данных недостаточно для выбора API, библиотеки, модели или способа "
-    "исправления, включи web в capability_groups и чтение первичной документации в ordered_steps. "
+    "исправления, включи чтение навыка web-research и первичной документации в ordered_steps. "
     "Сохрани неизвестное как неизвестное; после исследования предусмотрены уточнение подхода, "
     "выполнение и проверка результата. Поиск нужен по необходимости. "
     "ordered_steps и acceptance_checks непустые. current_step — 1-базовый индекс "
@@ -58,7 +58,7 @@ _PLAN_REQUIRED_FIELDS = frozenset({
 })
 _PLAN_OPTIONAL_FIELDS = frozenset({"capability_groups"})
 _PLAN_CAPABILITY_GROUPS = frozenset({
-    "web", "resources", "data", "memory", "operations",
+    "resources", "data", "memory", "operations",
 })
 
 

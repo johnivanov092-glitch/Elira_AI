@@ -982,12 +982,7 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
         pass
 
     if handle.port:
-        try:
-            from app.application.skills.runtime import screenshot_url
-            shot = screenshot_url(f"http://localhost:{handle.port}")
-        except Exception as exc:
-            shot = {"ok": False, "error": str(exc)}
-        kind = f"web (http://localhost:{handle.port})"
+        return "Web UI is ready for verification with the web-research skill.\n"
     else:
         bbox = _process_window_rect(handle.pid)
         if bbox is None:

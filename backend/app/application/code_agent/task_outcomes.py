@@ -163,71 +163,10 @@ class TaskOutcome:
     def verify_answer(self, answer: str, evidence: Any, epoch: int, *,
                       persistence_policy: dict[str, Any] | None = None,
                       user_request: str | None = None) -> dict[str, Any]:
-        """Check a read-only web answer against the conditions the user wrote in the message.
-
-        Only the user's own explicit conditions count: answer length and required
-        phrases, allowed tools and search/read budgets, no persistence. Nothing the
-        model declares is checked, and semantic correctness is never certified here.
-        """
-        from app.application.code_agent.answer_contracts import _FENCED_CODE, explicit_web_answer_constraints
-        from app.application.code_agent.loop_helpers import task_persistence_policy, web_cache_write_allowed
-
+        # Domain-specific source checks are performed by the mutable skill.
+        # Preserve the journal contract without inventing a core attestation.
         self.answer_verification = {}
-        operations = evidence.tool_operations
-        key = lambda item: (item["tool_name"] + ":" + item["operation"]
-                            if item["tool_name"] == "mcp" else item["tool_name"])
-        readonly = {"web_search", "web_fetch", "web_query", "capability_load"}
-        if (self.artifact_contract_seen or user_request is None
-                or self.sources
-                or epoch != 0 or evidence.has_mutations
-                or not evidence.operations_complete or not operations
-                or any(key(item) not in readonly or item["state_changed"]
-                       or (item.get("store") and (item["tool_name"] != "web_fetch"
-                                                  or not web_cache_write_allowed(persistence_policy)))
-                       for item in operations)):
-            return {}
-        constraints = explicit_web_answer_constraints(user_request)
-        channels = ("rag", "direct_memory", "learning")
-        requested = task_persistence_policy(user_request)
-        forbidden = [channel for channel in channels if requested.get(channel) is False]
-        if isinstance(persistence_policy, dict) and all(persistence_policy.get(channel) is False for channel in channels):
-            forbidden = list(channels)
-        prose = _FENCED_CODE.sub("", answer)
-        searches = sum(item["query_count"] for item in operations)
-        reads = sum(len(item["read_urls"]) for item in operations)
-
-        def passed(field: str, value: Any) -> bool:
-            if field == "max_chars":
-                return len(answer) <= value
-            if field == "contains":
-                return all(text in prose for text in value)
-            if field == "allowed":
-                return all(key(item) in set(value) | {"capability_load"} for item in operations)
-            if field == "max_search_queries":
-                return searches <= value
-            if field == "max_read_urls":
-                return reads <= value
-            return False
-
-        checks = [{"kind": kind, "field": field, "value": constraints[field],
-                   "passed": passed(field, constraints[field])}
-                  for kind, fields in (("answer_format", ("contains", "max_chars")),
-                                       ("tool_policy", ("allowed", "max_read_urls", "max_search_queries")))
-                  for field in fields if field in constraints]
-        if forbidden:
-            checks.append({"kind": "no_persistence", "field": "no_persistence", "value": forbidden,
-                           "passed": isinstance(persistence_policy, dict)
-                           and all(persistence_policy.get(channel) is False for channel in forbidden)})
-        self.answer_verification = {
-            "kind": "answer_evidence", "input_version": self.version(epoch), "input_epoch": epoch,
-            "contract_revision": self.contract.get("revision", 0),
-            "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
-            "persistence_policy": ({channel: persistence_policy.get(channel) for channel in channels}
-                                   if isinstance(persistence_policy, dict) else None),
-            "user_constraints": constraints, "user_constraint_checks": checks,
-            "status": "passed" if all(check["passed"] for check in checks) else "unconfirmed",
-        }
-        return dict(self.answer_verification)
+        return {}
 
 
     def missing_requirements(self, epoch: int, criteria_rows: list[dict] | None = None, *,

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.redaction import redact_text
-from app.application.web_evidence.receipts import merge_sources, source_ids
+from app.application.code_agent.legacy_sources import merge_sources, source_ids
 
 logger = logging.getLogger(__name__)
 # Потоковый текст модели уже лежит в events.jsonl, а снимок state.json от него не меняется
@@ -919,7 +919,6 @@ def discover_capabilities(*, model: str, tools: list[str]) -> dict[str, Any]:
             "provider": "server-ocr" if ocr_server else ("tesseract" if tesseract else None),
         },
         "vision": {"available": vision_ok, "model": vision.model if vision_ok else None},
-        "web": {"available": "web_search" in known_tools and "web_fetch" in known_tools},
         "tools": {"available": True, "names": sorted(known_tools)},
     }
     available["missing"] = [name for name, value in available.items() if isinstance(value, dict) and not value.get("available")]
@@ -974,9 +973,7 @@ _PAST_STOP = frozenset({
 
 
 def _past_terms(text: str) -> set[str]:
-    from app.application.web_evidence.analyzer import tokenize
-
-    return {word[:5] for word in tokenize(text, stem=False)
+    return {word[:5] for word in re.findall(r"[0-9a-zа-яё]+", (text or "").lower().replace("ё", "е"))
             if len(word) >= 4 and not word.isdigit() and word[:5] not in _PAST_STOP}
 
 

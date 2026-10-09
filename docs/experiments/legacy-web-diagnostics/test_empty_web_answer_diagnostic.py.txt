@@ -1,0 +1,56 @@
+"""Diagnostic replay for the empty accepted answer in Atlas run f6738539.
+
+This test is intentionally red until the completion protocol is corrected.
+It is isolated from the release candidate and uses no live model or network.
+"""
+from __future__ import annotations
+
+from app.application.code_agent import agent_loop
+from app.application.code_agent.tools import _web
+from app.infrastructure.search.web_runtime import PageFetchResult
+
+
+def test_forced_web_answer_must_not_accept_empty_tool_only_response(tmp_path, monkeypatch):
+    url = "https://example.org/diagnostic"
+    reads = []
+    turns = []
+
+    def fetch(requested_url, limit, **kwargs):
+        reads.append(requested_url)
+        return PageFetchResult(text="A verified observation from the source.", final_url=requested_url)
+
+    monkeypatch.setattr(_web, "_fetch_one", fetch)
+    monkeypatch.setattr(agent_loop, "explicit_web_site_limit", lambda message: 1)
+
+    def chat(**kwargs):
+        turns.append(kwargs)
+        assert len(turns) <= 2, "The controlled response sequence has only two turns"
+        if len(turns) == 2:
+            assert kwargs["tools"] == [], "The site limit must select the forced-answer path"
+        return {
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": f"diagnostic-{len(turns)}",
+                    "function": {"name": "web_fetch", "arguments": {"url": url}},
+                }],
+            },
+        }
+
+    events = list(agent_loop.stream_code_agent(
+        user_message=f"Read {url} and explain the observation.",
+        project_root=tmp_path,
+        chat_fn=chat,
+        base_tools=["web_fetch"],
+        auto_remember=False,
+        permission_mode="bypass",
+        num_ctx=65536,
+    ))
+    assert reads == [url] and len(turns) == 2
+    finals = [event for event in events if event["type"] == "final_response"]
+    assert not any(
+        not event["text"].strip()
+        and event.get("answer_state") == "accepted"
+        and event.get("answer_status") == "complete"
+        for event in finals
+    ), "A tool-only response was discarded and accepted as an empty complete answer"

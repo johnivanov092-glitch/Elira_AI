@@ -1,0 +1,193 @@
+"""Compatibility decoding for source records in existing journals; no new web execution."""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from datetime import date
+from typing import Any, Iterable
+from urllib.parse import urlsplit
+
+from app.core.redaction import redact_text
+TIERS = frozenset({"official", "primary", "secondary", "ugc", "unknown"})
+
+SOURCE_PATTERN = re.compile(r"\[\[source:([a-zA-Z0-9_-]{1,80})\]\]")
+MAX_SOURCES = 1024
+EXCERPT_CHARS = 1500
+_STATUSES = frozenset({"discovered", "fetched", "excerpt", "failed"})
+
+
+def _source_dates(value: Any) -> dict[str, str]:
+    dates = {}
+    if not isinstance(value, dict):
+        return dates
+    for key in ("published", "modified"):
+        item = value.get(key)
+        if not isinstance(item, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", item):
+            continue
+        try:
+            dates[key] = date.fromisoformat(item).isoformat()
+        except ValueError:
+            continue
+    return dates
+
+
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def source_ids(text: str) -> list[str]:
+    # Quoted examples/code are ordinary text, not citation requests.
+    prose = re.sub(r"```[\s\S]*?(?:```|$)|`[^`\n]*`", "", text or "")
+    return list(dict.fromkeys(SOURCE_PATTERN.findall(prose)))
+
+
+def _identity(record: dict[str, Any]) -> str:
+    fields = {key: record.get(key) for key in (
+        "origin_run_id", "tool", "url", "content_hash", "excerpt_hash",
+        "doc_id", "chunk_id", "offset", "status",
+    )}
+    if record.get("provenance"):
+        fields["provenance"] = record["provenance"]
+    return "w_" + digest(json.dumps(fields, sort_keys=True, ensure_ascii=False))[:20]
+
+
+def make_source(
+    *, run_id: str, tool: str, url: str, status: str,
+    quote: str = "", title: str = "", fetched_at: float | None = None,
+    content_hash: str = "", doc_id: str = "", chunk_id: int | None = None,
+    offset: int | None = None, quote_verified: bool = False, error: str = "",
+    dates: dict[str, str] | None = None, tier: str = "unknown",
+    provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_url = redact_text(str(url or "").strip())[:4096]
+    try:
+        parsed = urlsplit(clean_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+            return {}
+    except ValueError:
+        return {}
+    if status not in _STATUSES:
+        return {}
+    raw_quote = str(quote or "")[:EXCERPT_CHARS]
+    safe_quote = redact_text(raw_quote)
+    record = {
+        "origin_run_id": str(run_id), "tool": str(tool), "url": clean_url,
+        "status": status, "title": redact_text(str(title or ""))[:300],
+        "fetched_at": fetched_at, "content_hash": str(content_hash),
+        "doc_id": str(doc_id), "chunk_id": chunk_id, "offset": offset,
+        "quote": safe_quote, "excerpt_hash": digest(safe_quote) if safe_quote else "",
+        "quote_verified": bool(quote_verified and safe_quote == raw_quote),
+        "presented": False, "claim_support": "not_assessed",
+        "error": redact_text(str(error or ""))[:300],
+        "dates": _source_dates(dates), "tier": tier if tier in TIERS else "unknown",
+    }
+    if provenance:
+        record["provenance"] = dict(provenance)
+    record["id"] = _identity(record)
+    return record
+
+
+def valid_source(value: Any) -> bool:
+    """Reject malformed/modified persisted records instead of rebinding an ID."""
+    if not isinstance(value, dict) or not isinstance(value.get("status"), str) or value["status"] not in _STATUSES:
+        return False
+    provenance = value.get("provenance")
+    if provenance:
+        if not isinstance(provenance, dict) or set(provenance) != {
+                "requested_url", "final_url", "raw_sha256", "extraction_sha256", "complete"}:
+            return False
+        if type(provenance["complete"]) is not bool:
+            return False
+        for key in ("raw_sha256", "extraction_sha256"):
+            if not isinstance(provenance[key], str) or not re.fullmatch(r"[0-9a-f]{64}", provenance[key]):
+                return False
+        for key in ("requested_url", "final_url"):
+            if not isinstance(provenance[key], str) or len(provenance[key]) > 4096:
+                return False
+            try:
+                parsed_source = urlsplit(provenance[key])
+                if parsed_source.scheme not in {"http", "https"} or not parsed_source.hostname or parsed_source.username:
+                    return False
+            except ValueError:
+                return False
+    if not isinstance(value.get("quote"), str) or len(value["quote"]) > EXCERPT_CHARS:
+        return False
+    if value.get("excerpt_hash") != (digest(value["quote"]) if value["quote"] else ""):
+        return False
+    fetched_at = value.get("fetched_at")
+    if fetched_at is not None and (type(fetched_at) not in (int, float) or not math.isfinite(fetched_at)):
+        return False
+    if "dates" in value and (not isinstance(value["dates"], dict) or _source_dates(value["dates"]) != value["dates"]):
+        return False
+    if "tier" in value and value["tier"] not in TIERS:
+        return False
+    for key in ("chunk_id", "offset"):
+        item = value.get(key)
+        if item is not None and (type(item) is not int or item < 0):
+            return False
+    for key, limit in (("origin_run_id", 200), ("tool", 100), ("url", 4096),
+                       ("content_hash", 64), ("doc_id", 200), ("title", 300), ("error", 300)):
+        if not isinstance(value.get(key), str) or len(value[key]) > limit:
+            return False
+    if type(value.get("quote_verified")) is not bool or type(value.get("presented")) is not bool:
+        return False
+    try:
+        parsed = urlsplit(value["url"])
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+            return False
+    except ValueError:
+        return False
+    return value.get("id") == _identity(value)
+
+
+def merge_sources(*groups: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        if group is None or isinstance(group, (str, bytes, dict)):
+            continue
+        try:
+            group = iter(group)
+        except TypeError:
+            continue
+        for source in group:
+            if valid_source(source):
+                merged[source["id"]] = dict(source)
+    return list(merged.values())[-MAX_SOURCES:]
+
+
+def format_source(source: dict[str, Any]) -> str:
+    header = f"{source['title'] or source['url']}\nURL: {source['url']}"
+    provenance = source.get("provenance") or {}
+    if provenance:
+        header += (f"\nИсходный файл SHA-256: {provenance['raw_sha256']}. "
+                   "Цитата сверена с текстом навыка; качество извлечения отдельно не проверено.")
+        if not provenance.get("complete"):
+            header += " Документ прочитан частично: проверь пропуски и OCR в результате навыка."
+    dates = _source_dates(source.get("dates"))
+    if dates:
+        labels = {"published": "Опубликовано", "modified": "Изменено"}
+        header += "\nДаты страницы (метаданные): " + "; ".join(
+            f"{labels[key]}: {value}" for key, value in dates.items()
+        )
+    if source["status"] == "excerpt":
+        return f"[[source:{source['id']}]] {header}\n{source['quote']}"
+    if source["status"] == "failed":
+        return f"{header}\nERROR: {source['error'] or 'page unavailable'}"
+    if source["status"] == "fetched":
+        return f"{header}\ndoc_id={source['doc_id']}; страница сохранена, текст не предъявлен. Используй web_query."
+    return f"{header}\nНайдено поиском; страница ещё не прочитана."
+
+
+def excerpt_sources(*, run_id: str, tool: str, url: str, text: str, fetched_at: float,
+                    offset_base: int = 0, document: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    document = document or {}
+    body_hash = document.get("content_hash") or digest(text)
+    return [record for start in range(0, len(text), EXCERPT_CHARS) if (record := make_source(
+        run_id=run_id, tool=tool, url=url, status="excerpt", fetched_at=fetched_at,
+        content_hash=body_hash, quote=text[start:start + EXCERPT_CHARS],
+        offset=offset_base + start, quote_verified=True,
+        doc_id=document.get("doc_id") or "", provenance=document.get("provenance"),
+        tier=document.get("tier") or "unknown",
+    ))][:MAX_SOURCES]

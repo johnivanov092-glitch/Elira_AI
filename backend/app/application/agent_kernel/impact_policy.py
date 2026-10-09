@@ -175,7 +175,6 @@ _UNITY_READ_ONLY_TOOLS = frozenset({
 _UNITY_CAMERA_READ_ACTIONS = frozenset({
     "ping", "get_brain_status", "list_cameras", "screenshot", "screenshot_multiview",
 })
-BROWSER_CHANGE_ACTIONS = frozenset({"fill", "select", "check", "uncheck", "click"})
 
 
 def _creative_mcp_parts(tool_name: str) -> tuple[str, str] | None:
@@ -213,21 +212,6 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
     payload = args if isinstance(args, dict) else {}
     name = str(tool_name or "").strip()
     if name == "capability_load":
-        return False
-    if name == "browser":
-        actions = payload.get("actions")
-        if actions is None or actions == []:
-            return False
-        if not isinstance(actions, list):
-            return True
-        for action in actions:
-            if not isinstance(action, dict):
-                return True
-            keys = {str(key).strip().lower() for key in action}
-            if keys & BROWSER_CHANGE_ACTIONS:
-                return True
-            if "wait" not in keys:
-                return True
         return False
     if name == "run_server":
         return str(payload.get("action") or "start").strip().lower() not in {"list", "logs"}

@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from app.core.config import GENERATED_DIR
 from app.application.skills import (
     run_sql, list_databases, describe_db,
-    http_request, screenshot_url,
 )
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -87,7 +86,7 @@ class HttpRequest(BaseModel):
 
 @router.post("/http")
 def api_http(payload: HttpRequest):
-    return http_request(payload.url, payload.method, payload.headers, payload.body, payload.timeout)
+    raise HTTPException(status_code=410, detail="Use data/skills/web-research")
 
 
 # ── Скриншот ──
@@ -100,4 +99,4 @@ class ScreenshotRequest(BaseModel):
 
 @router.post("/screenshot")
 def api_screenshot(payload: ScreenshotRequest):
-    return screenshot_url(payload.url, payload.width, payload.height, payload.full_page)
+    raise HTTPException(status_code=410, detail="Use data/skills/web-research")

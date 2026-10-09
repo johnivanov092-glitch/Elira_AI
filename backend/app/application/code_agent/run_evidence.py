@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from app.application.code_agent.answer_contracts import _quote_spans, is_name_like_quote
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.core.redaction import redact_text
-from app.application.web_evidence.receipts import (
+from app.application.code_agent.legacy_sources import (
     SOURCE_PATTERN, format_source, merge_sources, source_ids, valid_source,
 )
 
@@ -680,67 +680,16 @@ class RunEvidence:
             "проверьте визуальное превью или повторите генерацию с document QA."
         )
 
-    def _record_operation(
-        self, tool: str, arguments: dict[str, Any], execution_status: str,
-        output: dict[str, Any], state_changed: bool,
-    ) -> None:
+    def _record_operation(self, tool, arguments, execution_status, output, state_changed):
         if len(self._tool_operations) >= _TOOL_OPERATION_LIMIT:
             self._operations_complete = False
             return
-        operation = str(arguments.get("action") or "").strip() if tool == "mcp" else ""
-        output_status = str(output.get("status") or "").strip()
-        if any(len(value) > 80 for value in (tool, operation, execution_status, output_status)):
-            self._operations_complete = False
-        queries = self._operation_inputs(arguments, "queries", "query") if tool == "web_search" else []
-        read_urls = self._operation_inputs(arguments, "urls", "url") if tool == "web_fetch" else []
-        if any(redact_text(url) != url for url in read_urls):
-            self._operations_complete = False
         self._tool_operations.append({
-            "tool_name": tool[:80], "operation": operation[:80],
-            "execution_status": execution_status[:80], "output_status": output_status[:80],
-            "provider_ok": output.get("ok") is not False,
-            "state_changed": bool(state_changed), "store": bool(arguments.get("store")),
-            "query_count": len(queries), "read_urls": [redact_text(url) for url in read_urls],
+            "tool_name": tool[:80], "operation": str(arguments.get("action") or "")[:80] if tool == "mcp" else "",
+            "execution_status": execution_status[:80], "output_status": str(output.get("status") or "")[:80],
+            "provider_ok": output.get("ok") is not False, "state_changed": bool(state_changed),
+            "store": False, "query_count": 0, "read_urls": [],
         })
-        if (tool != "web_search" or execution_status != "ok" or output.get("ok") is False
-                or output.get("partial") or output.get("query_errors")):
-            return
-        discovered = [source for source in merge_sources(output.get("sources") or [])
-                      if source["status"] == "discovered" and source["tool"] == "web_search"]
-        if not discovered:
-            return
-        if not queries:
-            return
-        observation = {
-            "tool_name": tool, "queries": queries,
-            "source_ids": [source["id"] for source in discovered],
-        }
-        if "query_sources" in output:
-            # Exact query order and same-call receipts are required. The flat
-            # source list cannot establish provenance for an ambiguous batch.
-            rows = output["query_sources"]
-            raw_sources = output.get("sources")
-            if (not isinstance(rows, list) or len(rows) != len(queries)
-                    or not isinstance(raw_sources, list) or len(raw_sources) > 900):
-                return
-            discovered_ids = {source["id"] for source in raw_sources if valid_source(source)
-                              and source["status"] == "discovered" and source["tool"] == tool}
-            bindings: dict[str, list[str]] = {}
-            for query, row in zip(queries, rows):
-                if (not isinstance(row, dict) or set(row) != {"query", "source_ids"}
-                        or row["query"] != query):
-                    return
-                ids = row["source_ids"]
-                if (not isinstance(ids, list) or len(ids) > 30
-                        or any(not isinstance(item, str) or item not in discovered_ids for item in ids)
-                        or len(ids) != len(set(ids))
-                        or (query in bindings and bindings[query] != ids)):
-                    return
-                bindings[query] = list(ids)
-            observation["query_source_ids"] = bindings
-        elif len(queries) != 1:
-            return
-        self._web_operations.append(observation)
 
     def _operation_inputs(self, arguments: dict[str, Any], batch_name: str, single_name: str) -> list[str]:
         batch = arguments.get(batch_name)
@@ -771,8 +720,6 @@ class RunEvidence:
     ) -> None:
         tool = str(tool_name or "").strip()
         self._record_operation(tool, arguments, execution_status, output, state_changed)
-        if tool in {"web_search", "web_fetch", "web_query", "browser"}:
-            self._sources = merge_sources(self._sources, output.get("sources") or [])
         document_qa = output.get("document_qa")
         if isinstance(document_qa, dict):
             qa_status = str(document_qa.get("status") or "unverified").strip().lower()
@@ -816,8 +763,6 @@ class RunEvidence:
         target = self._target(arguments, output)
         passed = self._passed(output)
 
-        if provider_ok and tool in _WEB_RESEARCH_TOOLS:
-            self._web_research_started = True
 
         if provider_ok and state_changed:
             self._project_epoch += 1
