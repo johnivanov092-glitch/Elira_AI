@@ -6,8 +6,8 @@ import pytest
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.delivery_session import build_continuation_kwargs
 from app.application.code_agent.run_journal import RunJournal
-from app.application.code_agent.tools import _web
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.code_agent.tools import _web
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 @pytest.mark.parametrize("corrects", [True, False])

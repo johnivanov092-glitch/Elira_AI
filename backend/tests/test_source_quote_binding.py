@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 
 from app.application.code_agent.run_evidence import RunEvidence
-from app.application.web_evidence.receipts import excerpt_sources, format_source, make_source
+from webskill.application.web_evidence.receipts import excerpt_sources, format_source, make_source
 
 
 QUOTE = "As an alternative, it is possible to specify the engines to keep."

@@ -11,8 +11,8 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.code_agent.tools._content import _format_runtime_result, tool_http_api  # noqa: E402
-from app.application.code_agent.tools import _web  # noqa: E402
+from app.application.code_agent.tools._content import _format_runtime_result  # noqa: E402
+from webskill.application.code_agent.tools import _web  # noqa: E402
 
 
 class FormatRuntimeResultTest(unittest.TestCase):
@@ -26,40 +26,38 @@ class FormatRuntimeResultTest(unittest.TestCase):
         self.assertNotIn("ERROR", out["text"])
 
 
-class HttpApiVerifierTest(unittest.TestCase):
-    def _run(self, fake_result):
-        with mock.patch("app.application.skills.runtime.http_request", return_value=fake_result), \
-             mock.patch("app.application.code_agent.tools._run.active_server_ports", return_value={3000}):
-            return tool_http_api(Path("."), url="http://localhost:3000")
+class HttpSkillHonestyTest(unittest.TestCase):
+    def _run(self, status=200, failure=None):
+        from types import SimpleNamespace
+        from webskill.http import http_request
+        response = SimpleNamespace(status_code=status, headers={}, text='response body',
+            url='http://localhost:3000', elapsed=SimpleNamespace(total_seconds=lambda: 0.01))
+        with mock.patch('webskill.http.http_lib.get', return_value=response, side_effect=failure):
+            return http_request('http://localhost:3000')
 
-    def test_blocked_is_ok_false_without_verifier(self):
-        out = self._run({"ok": False, "error": "Заблокирован: localhost"})
-        self.assertFalse(out["ok"])
-        self.assertIsNone(out.get("verifier"))     # couldn't run → NOT a verdict
-        self.assertIn("ERROR", out["text"])
+    def test_transport_failure_is_explicit_without_verifier(self):
+        out = self._run(failure=RuntimeError('offline'))
+        self.assertFalse(out['ok'])
+        self.assertIsNone(out.get('verifier'))
+        self.assertIn('offline', out['error'])
 
-    def test_2xx_is_a_passing_page_open_verdict(self):
-        out = self._run({"ok": True, "status": 200, "url": "http://localhost:3000", "body": "<html>"})
-        self.assertTrue(out["ok"])
-        self.assertTrue(out["verifier"])
-        self.assertIn("200", out["evidence"])
+    def test_2xx_status_is_preserved_without_claiming_browser_verdict(self):
+        out = self._run(200)
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['status'], 200)
+        self.assertIsNone(out.get('verifier'))
 
-    def test_5xx_is_a_failing_verdict(self):
-        out = self._run({"ok": True, "status": 500, "url": "http://localhost:3000", "body": "err"})
-        self.assertFalse(out["ok"])                # a 500 is NOT "page opens"
-        self.assertTrue(out["verifier"])           # but it IS a real verdict → can fail a criterion
+    def test_5xx_is_visible_and_not_a_passing_page_verdict(self):
+        out = self._run(500)
+        self.assertEqual(out['status'], 500)
+        self.assertEqual(out['body'], 'response body')
+        self.assertIsNone(out.get('verifier'))
 
-    def test_loopback_ports_threaded_from_run_server(self):
-        captured = {}
-
-        def _fake_http(url, **kw):
-            captured.update(kw)
-            return {"ok": True, "status": 200, "url": url, "body": ""}
-
-        with mock.patch("app.application.skills.runtime.http_request", side_effect=_fake_http), \
-             mock.patch("app.application.code_agent.tools._run.active_server_ports", return_value={5173}):
-            tool_http_api(Path("."), url="http://localhost:5173")
-        self.assertEqual(captured.get("allow_loopback_ports"), {5173})
+    def test_loopback_request_uses_skill_http_without_core_server_registry(self):
+        from webskill.http import http_request
+        with mock.patch('webskill.http.http_lib.get', side_effect=RuntimeError('fixture')) as get:
+            http_request('http://localhost:5173')
+        self.assertEqual(get.call_args.kwargs['url'], 'http://localhost:5173')
 
 
 class BrowserHonestyTest(unittest.TestCase):

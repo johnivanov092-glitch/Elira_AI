@@ -5,7 +5,7 @@ search budget cannot be undone and only marks the answer partial. The model's an
 text is never replaced.
 """
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
-from app.application.code_agent.answer_contracts import explicit_web_answer_constraints
+from webskill.application.code_agent.answer_contracts import explicit_web_answer_constraints
 from app.application.code_agent.task_outcomes import TaskOutcome
 import pytest
 from test_readonly_search_answer_replay import _saved_web_flow

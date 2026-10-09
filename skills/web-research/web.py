@@ -158,7 +158,7 @@ def main() -> int:
         path = context.data_file('operations') / (str(time.time_ns()) + '-' + uuid.uuid4().hex[:8] + '.json')
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(payload + '\n', encoding='utf-8', newline='\n')
-        result = {**result, 'record_path': str(path), 'record_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        result = {**result, 'elira_skill_result': 1, 'record_path': str(path), 'record_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get('ok') is True else 1
 

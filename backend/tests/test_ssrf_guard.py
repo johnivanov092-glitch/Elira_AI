@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.application.web.ssrf_guard import check_ssrf
+from webskill.application.web.ssrf_guard import check_ssrf
 
 
 @pytest.mark.parametrize(

@@ -4,9 +4,9 @@ from copy import deepcopy
 import pytest
 
 from app.application.code_agent import agent_loop
-from app.application.code_agent.answer_contracts import render_numbered_citations
-from app.application.code_agent.tools import _web
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.code_agent.answer_contracts import render_numbered_citations
+from webskill.application.code_agent.tools import _web
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 PAGES = [("https://tengrinews.kz/health/virus", "TengriNews"), ("https://www.lada.kz/news/1", "Lada")]
 

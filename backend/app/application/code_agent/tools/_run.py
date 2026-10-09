@@ -256,7 +256,16 @@ def tool_run_bash(
     # such as grep/findstr that use non-zero as a domain result should be handled
     # by their dedicated tools or explicitly normalized by the command itself.
     ok = proc.returncode == 0
+    from app.application.code_agent.skill_result import read_skill_sources
+    from app.application.code_agent.legacy_sources import format_source
+    sources, receipt_error = read_skill_sources(stdout, project_root) if ok else ([], '')
+    if receipt_error:
+        parts.append(receipt_error)
+    if sources:
+        parts.append("Источники навыка: проверена целостность квитанции; сетевое чтение и извлечение выполнены навыком.")
+        parts.extend(format_source(source) for source in sources)
     return {
+        **({'sources': sources} if sources else {}),
         "ok": ok,
         "error": None if ok else "nonzero_exit",
         "text": "\n".join(parts),

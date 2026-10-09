@@ -1,6 +1,6 @@
 import pytest
 
-from app.application.code_agent.tools._web import tool_web_search
+from webskill.application.code_agent.tools._web import tool_web_search
 from test_web_search_engine_warnings import _http
 
 

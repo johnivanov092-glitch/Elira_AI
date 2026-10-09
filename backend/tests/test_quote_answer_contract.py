@@ -34,7 +34,7 @@ CORRECTED_ANSWER = (
 def sqlite_source(monkeypatch):
     """Exercise quote correction after a real tool read of a controlled source."""
     requested = []
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
 
     def get(url, **kwargs):
         requested.append(url)

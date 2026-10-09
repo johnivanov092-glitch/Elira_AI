@@ -1,8 +1,10 @@
 from app.application.code_agent.run_evidence import RunEvidence
-from app.application.code_agent.tools import _web
-from app.application.tool_providers import BuiltinToolProvider
-from app.application.web_evidence import corpus, retrieval
-from app.infrastructure.web_corpus import store
+from webskill.application.code_agent.tools import _web
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+from webskill.application.web_evidence import corpus, retrieval
+from webskill.infrastructure.web_corpus import store
 
 
 def _provider(tmp_path, monkeypatch):
@@ -10,7 +12,17 @@ def _provider(tmp_path, monkeypatch):
     monkeypatch.setattr(_web, "_web_corpus_on", lambda: True)
     monkeypatch.setattr(_web, "_current_run_id", lambda: "query-contract")
     monkeypatch.setattr(retrieval, "_embed_rerank", lambda *args: None)
-    return BuiltinToolProvider(tmp_path, tool_names=["web_query"])
+    path = Path(__file__).resolve().parents[2] / "skills/web-research/web.py"
+    spec = importlib.util.spec_from_file_location("web_query_skill_cli", path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    def dispatch(name, arguments):
+        assert name == "web_query"
+        argv = ["query", "--query", arguments["query"]]
+        return cli.execute(cli.parser().parse_args(argv))
+
+    return SimpleNamespace(dispatch=dispatch)
 
 
 def _record(output):

@@ -13,9 +13,9 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.application.code_agent.agent_loop import stream_code_agent  # noqa: E402
-from app.application.code_agent.tools import _web  # noqa: E402
-from app.application.web_evidence.receipts import valid_source  # noqa: E402
-from app.core import web_engines  # noqa: E402
+from webskill.application.code_agent.tools import _web  # noqa: E402
+from webskill.application.web_evidence.receipts import valid_source  # noqa: E402
+from webskill.core import web_engines  # noqa: E402
 
 
 URL = "https://primary.example.org/report"
@@ -47,7 +47,7 @@ def native_web_transport(monkeypatch):
         url, json.dumps(payload), "application/json"))
     monkeypatch.setenv("SEARXNG_URL", "http://search.example.org")
     monkeypatch.setattr(web_engines, "session", lambda: Mock(get=search_get))
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     page_get = Mock(side_effect=lambda url, **kwargs: _response(url, HTML, "text/html; charset=utf-8"))
     monkeypatch.setattr(requests, "get", page_get)
     monkeypatch.setattr(_web, "_render_fallback", lambda *a: pytest.fail("Native HTML text is sufficient"))

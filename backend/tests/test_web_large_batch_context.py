@@ -9,11 +9,11 @@ from app.application.code_agent.loop_helpers import (
     ContextBudgetError, _prepare_messages_for_llm,
 )
 from app.application.code_agent.run_evidence import RunEvidence
-from app.application.code_agent.tools._web import tool_web_fetch, tool_web_search
+from webskill.application.code_agent.tools._web import tool_web_fetch, tool_web_search
 from app.application.context.profile import resolve_context_window
 from app.application.context.usage import get_context_usage
-from app.application.web_evidence.receipts import valid_source
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.web_evidence.receipts import valid_source
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 QUERIES = [f"documentation-query-{index}" for index in range(5)]
@@ -29,7 +29,7 @@ def test_native_thirty_by_thirty_retains_every_current_query_receipt():
             for rank in range(10)
         ]}
 
-    with patch("app.infrastructure.search.web_search.search_web", side_effect=search):
+    with patch("webskill.infrastructure.search.web_search.search_web", side_effect=search):
         result = tool_web_search(queries=QUERIES, top_k=10)
     evidence = RunEvidence()
     evidence.record_tool_result(
@@ -50,7 +50,7 @@ def test_native_thirty_by_thirty_retains_every_current_query_receipt():
         return PageFetchResult(text="Configuration documentation. " * 100,
                                final_url=url, status_code=200)
 
-    with patch("app.infrastructure.search.web_search.fetch_page", side_effect=fetch):
+    with patch("webskill.infrastructure.search.web_search.fetch_page", side_effect=fetch):
         read = tool_web_fetch(urls=URLS)
     evidence.record_tool_result(
         tool_name="web_fetch", arguments={"urls": URLS}, execution_status="ok", output=read,
@@ -93,7 +93,7 @@ def _native_fetch_run(tmp_path, num_ctx, *, base_tools=None, task_instructions="
         outputs.append(output)
         return output
 
-    with patch("app.infrastructure.search.web_search.fetch_page", side_effect=fetch), patch(
+    with patch("webskill.infrastructure.search.web_search.fetch_page", side_effect=fetch), patch(
         "app.application.code_agent.tools._dispatch.tool_web_fetch", side_effect=native_fetch,
     ):
         events = list(stream_code_agent(
@@ -189,14 +189,14 @@ def test_readonly_web_guidance_fits_eight_k_without_code_work_contract(tmp_path)
 
 
 def test_eight_k_window_packs_native_receipts_when_fixed_prefix_fits():
-    from app.application.code_agent.tools._web import tool_web_fetch
+    from webskill.application.code_agent.tools._web import tool_web_fetch
 
     def fetch(url, *, max_chars):
         index = URLS.index(url)
         return PageFetchResult(text=f"PAGE_{index:02d}_START\n" + "Configuration details. " * 4000,
                                final_url=url, status_code=200, truncated=True)
 
-    with patch("app.infrastructure.search.web_search.fetch_page", side_effect=fetch):
+    with patch("webskill.infrastructure.search.web_search.fetch_page", side_effect=fetch):
         output = tool_web_fetch(urls=URLS, max_chars=50000)
     evidence = RunEvidence()
     evidence.record_tool_result(

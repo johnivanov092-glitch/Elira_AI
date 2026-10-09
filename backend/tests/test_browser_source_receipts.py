@@ -12,8 +12,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.code_agent.run_evidence import RunEvidence
-from app.application.code_agent.tools import _web
-from app.application.web_evidence.receipts import valid_source
+from webskill.application.code_agent.tools import _web
+from webskill.application.web_evidence.receipts import valid_source
 
 
 def _rendered(result: tuple, **kwargs) -> dict:
@@ -21,7 +21,7 @@ def _rendered(result: tuple, **kwargs) -> dict:
         patch.object(_web, "_browser_render", return_value=result),
         patch.object(_web, "_current_run_id", return_value="browser-source-run"),
         patch("app.application.code_agent.tools._run.active_server_ports", return_value=set()),
-        patch("app.application.web.ssrf_guard.check_ssrf", return_value=None),
+        patch("webskill.application.web.ssrf_guard.check_ssrf", return_value=None),
     ):
         return _web.tool_browser(url="https://example.org/requested", **kwargs)
 

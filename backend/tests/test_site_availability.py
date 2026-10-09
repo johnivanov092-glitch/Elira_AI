@@ -5,10 +5,10 @@ import sqlite3
 
 import pytest
 
-from app.application.web_evidence import availability as health
-from app.infrastructure.web_corpus import store
-from app.application.code_agent.tools import _web
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.web_evidence import availability as health
+from webskill.infrastructure.web_corpus import store
+from webskill.application.code_agent.tools import _web
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 URL = "https://example.org/missing?token=private-value"
 
@@ -183,7 +183,7 @@ def test_fetch_cooldown_avoids_network_then_force_refresh_resets(now, monkeypatc
 
 
 def test_passive_browser_cooldown_does_not_block_interaction(now, monkeypatch):
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     calls = []
     def render(*args):
         calls.append(args)
@@ -198,7 +198,7 @@ def test_passive_browser_cooldown_does_not_block_interaction(now, monkeypatch):
 
 
 def test_browser_retry_after_and_fallback_share_channel(now, monkeypatch):
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     monkeypatch.setattr(_web, "_browser_render", lambda *a: ("", URL, "", 0, None, 429, "86400"))
     assert not _web.tool_browser(url=URL)["ok"]
     assert row(channel="browser", origin=True)["retry_at"] == now[0] + 86400
@@ -259,7 +259,7 @@ def test_reddit_is_neither_searched_nor_read(monkeypatch):
     result = _web._fetch_one("https://www.reddit.com/r/worldwarzthegame/comments/abc/levels/", 4000)
     assert not result.ok and "reddit.com не читается" in result.error and calls == []
 
-    monkeypatch.setattr("app.infrastructure.search.web_search.search_web", lambda *a, **kw: {"sources": [
+    monkeypatch.setattr("webskill.infrastructure.search.web_search.search_web", lambda *a, **kw: {"sources": [
         {"title": "thread", "href": "https://www.reddit.com/r/x/comments/1/"},
         {"title": "docs", "href": "https://docs.example.org/page"},
     ]})

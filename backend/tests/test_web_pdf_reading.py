@@ -3,15 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.application.code_agent.tools import _web
-from app.application.web_evidence import corpus
-from app.infrastructure.search.web_runtime import fetch_page
+from webskill.application.code_agent.tools import _web
+from webskill.application.web_evidence import corpus
+from webskill.infrastructure.search.web_runtime import fetch_page
 
 
 @pytest.fixture
 def pdf_http(monkeypatch):
     calls = []
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     def get(url, **kwargs):
         calls.append(url)
         return SimpleNamespace(content=b"%PDF-1.7 opaque binary", status_code=200, url=url,
@@ -43,7 +43,7 @@ def test_binary_ingestion_requires_skill_and_never_stores_error_as_corpus(monkey
         "ok": True, "final_url": url, "mime": mime,
         "content": b"opaque document bytes", "last_modified": None,
     })
-    monkeypatch.setattr("app.infrastructure.web_corpus.store.store_document",
+    monkeypatch.setattr("webskill.infrastructure.web_corpus.store.store_document",
                         lambda *a, **k: pytest.fail("Unparsed binary must not be stored as a source"))
     result = corpus.ingest("https://example.org/document", "binary-run")
     assert result["ok"] is False and result["error"] == "processing_required"
@@ -53,8 +53,8 @@ def test_binary_ingestion_requires_skill_and_never_stores_error_as_corpus(monkey
     monkeypatch.setattr(_web, "_current_run_id", lambda: "binary-run")
     monkeypatch.setattr("app.application.code_agent.loop_helpers.run_persistence_policy",
                         lambda _run: {"rag": True})
-    monkeypatch.setattr("app.application.web_evidence.availability.begin", lambda *a, **k: {})
-    monkeypatch.setattr("app.application.web_evidence.availability.finish", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web_evidence.availability.begin", lambda *a, **k: {})
+    monkeypatch.setattr("webskill.application.web_evidence.availability.finish", lambda *a, **k: None)
     shown = _web.tool_web_fetch(url="https://example.org/document", store=True)
     assert not shown["ok"] and "read_document.py --url" in shown["text"]
     assert not any(s.get("status") == "read" or s.get("quote") for s in shown.get("sources", []))

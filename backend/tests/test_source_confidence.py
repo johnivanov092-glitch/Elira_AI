@@ -14,7 +14,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.core.web_runtime import (  # noqa: E402
+from webskill.core.web_runtime import (  # noqa: E402
     CONFIDENCE_LABELS,
     classify_confidence,
     format_search_results,

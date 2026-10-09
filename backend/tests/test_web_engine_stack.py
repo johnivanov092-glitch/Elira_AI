@@ -15,7 +15,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, _rerank_results, get_web_engine_status, resolve_search_engines, search_web  # noqa: E402
+from webskill.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, _rerank_results, get_web_engine_status, resolve_search_engines, search_web  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -52,7 +52,7 @@ class WebEngineStackTest(unittest.TestCase):
         from unittest.mock import Mock
         retired = Mock(side_effect=AssertionError("retired adapter executed"))
         with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}), patch.dict(
-            "app.core.web.ENGINE_FUNCS",
+            "webskill.core.web.ENGINE_FUNCS",
             {"searxng": Mock(side_effect=RuntimeError("503 simulated")),
              "duckduckgo": retired, "wikipedia": retired}, clear=True,
         ):
@@ -61,9 +61,9 @@ class WebEngineStackTest(unittest.TestCase):
         retired.assert_not_called()
 
     def test_missing_url_fails_general_news_and_wrappers_without_egress(self) -> None:
-        from app.core.web import search_news
-        from app.core import web_engines
-        from app.infrastructure.search.multisearch import multi_search, news_search
+        from webskill.core.web import search_news
+        from webskill.core import web_engines
+        from webskill.infrastructure.search.multisearch import multi_search, news_search
         with patch.dict(os.environ, {"SEARXNG_URL": ""}), patch.object(web_engines, "session") as client:
             for operation in (search_web, search_news):
                 with self.subTest(operation=operation.__name__), self.assertRaisesRegex(RuntimeError, "SEARXNG_URL"):
@@ -76,8 +76,8 @@ class WebEngineStackTest(unittest.TestCase):
 
     def test_empty_searxng_response_is_distinct_from_known_upstream_failure(self) -> None:
         from unittest.mock import MagicMock
-        from app.core import web_engines
-        from app.infrastructure.search.web_search import search_web as facade
+        from webskill.core import web_engines
+        from webskill.infrastructure.search.web_search import search_web as facade
         client = MagicMock()
         response = client.get.return_value
         with patch.dict(os.environ, {"SEARXNG_URL": "http://search.local"}), patch.object(
@@ -97,7 +97,7 @@ class WebEngineStackTest(unittest.TestCase):
 
     def test_searxng_query_params_auto_language_and_filters(self) -> None:
         from unittest.mock import MagicMock
-        import app.core.web_engines as we
+        import webskill.core.web_engines as we
 
         captured: dict = {}
 
@@ -129,7 +129,7 @@ class WebEngineStackTest(unittest.TestCase):
 
     def test_searxng_preserves_image_result_urls(self) -> None:
         from unittest.mock import MagicMock
-        import app.core.web_engines as we
+        import webskill.core.web_engines as we
 
         response = MagicMock()
         response.json.return_value = {
@@ -153,15 +153,15 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(results[0]["thumbnail_src"], "https://cdn.example.com/pangu-thumb.jpg")
 
     def test_retired_adapters_are_not_executable(self) -> None:
-        from app.core import web_engines
+        from webskill.core import web_engines
         self.assertFalse(hasattr(web_engines, "search_duckduckgo"))
         self.assertFalse(hasattr(web_engines, "search_wikipedia"))
         self.assertFalse(hasattr(web_engines, "DDGS"))
 
     def test_sparse_news_uses_one_general_recovery_and_preserves_dates(self) -> None:
         from unittest.mock import MagicMock
-        from app.core import web_engines
-        from app.core.web import search_news
+        from webskill.core import web_engines
+        from webskill.core.web import search_news
         client = MagicMock()
         client.get.return_value.json.return_value = {"results": [{
             "title": "Current release", "url": "https://example.org/current", "content": "Release notes",
@@ -179,8 +179,8 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(results[0]["date"], "2026-10-01T08:00:00Z")
 
     def test_tool_web_search_threads_targeting_to_searxng(self) -> None:
-        import app.core.web as core_web
-        from app.application.code_agent.tools import tool_web_search
+        import webskill.core.web as core_web
+        from webskill.application.code_agent.tools._web import tool_web_search
 
         captured: dict = {}
 

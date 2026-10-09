@@ -301,3 +301,23 @@ describe("AgentTurn structured analysis status", () => {
     expect(html.indexOf("answer-media-gallery")).toBeLessThan(html.indexOf("Пояснение после"));
   });
 });
+
+describe("skill source receipts", () => {
+  it("shows presented skill sources for ordinary Markdown links, but not unseen sources", () => {
+    const source = {
+      id: "skill-source", origin_run_id: "r", tool: "web_fetch", url: "https://example.org/document.pdf",
+      title: "Document", status: "excerpt" as const, fetched_at: 1, content_hash: "a", excerpt_hash: "b",
+      doc_id: "d", chunk_id: null, offset: 0, quote: "Extracted page text.", quote_verified: true,
+      presented: true, claim_support: "not_assessed" as const, error: "", attestation: "skill" as const,
+    };
+    const turn: AgentTurnData = {kind: "agent", id: "r", toolCalls: [], running: false,
+      text: "[Document](https://example.org/document.pdf)", answerState: "accepted", stopReason: "answer",
+      sources: [source], citations: []};
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+    expect(html).toContain("Источники (1)");
+    expect(html).toContain("Получено и проверено навыком");
+    expect(html).toContain("Extracted page text.");
+    const unseen = {...turn, sources: [{...source, presented: false}]};
+    expect(renderToStaticMarkup(<AgentTurnView turn={unseen} />)).not.toContain("Источники (");
+  });
+});

@@ -293,9 +293,9 @@ def test_late_web_activation_promotes_only_runtime_contract_to_first_system(tmp_
     import re
 
     from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE
-    from app.application.code_agent.tools import _web
+    from webskill.application.code_agent.tools import _web
     from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
-    from app.infrastructure.search.web_runtime import PageFetchResult
+    from webskill.infrastructure.search.web_runtime import PageFetchResult
 
     url = "https://example.org/report"
     user_marker = "USER_REQUEST_NOT_SYSTEM"

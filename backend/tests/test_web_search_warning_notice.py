@@ -10,9 +10,9 @@ import pytest
 
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.run_journal import RunJournal
-from app.application.code_agent.tools._web import tool_web_search
-from app.infrastructure.search.web_search import search_web
-from app.core import web_engines
+from webskill.application.code_agent.tools._web import tool_web_search
+from webskill.infrastructure.search.web_search import search_web
+from webskill.core import web_engines
 from test_web_search_engine_warnings import URL, WARNINGS, _http, _payload
 
 

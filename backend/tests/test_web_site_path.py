@@ -7,9 +7,9 @@ import pytest
 
 from _runtime_roles import runtime_text
 from app.application.code_agent import agent_loop
-from app.application.code_agent.answer_contracts import explicit_web_site_limit
-from app.application.code_agent.tools import _web
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.code_agent.answer_contracts import explicit_web_site_limit
+from webskill.application.code_agent.tools import _web
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 URLS = [f"https://example.org/page{index}" for index in range(1, 24)]

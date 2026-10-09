@@ -8,10 +8,10 @@ import pytest
 
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.agent_loop import request_cancel, stream_code_agent
-from app.application.code_agent.tools import _web
+from webskill.application.code_agent.tools import _web
 from app.application.code_agent.turn_context import TurnContext
-from app.application.web_evidence.receipts import excerpt_sources, format_source
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.web_evidence.receipts import excerpt_sources, format_source
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 URL = "https://example.org/report"
@@ -143,7 +143,7 @@ def test_projection_disabled_by_caller_preserves_work_context(tmp_path):
 @pytest.mark.parametrize("work", [None, "mutation"])
 def test_coordinator_projects_only_readonly_web_and_keeps_raw_results_and_tools(tmp_path, monkeypatch, work):
     discovery = [{"title": "Primary report", "url": URL, "content": SNIPPET + "\nSecond snippet line."}]
-    monkeypatch.setattr("app.infrastructure.search.web_search.search_web",
+    monkeypatch.setattr("webskill.infrastructure.search.web_search.search_web",
                         lambda *args, **kwargs: {"ok": True, "sources": discovery})
     monkeypatch.setattr(_web, "_fetch_one", lambda url, limit: PageFetchResult(text=BODY, final_url=url))
     tools = {"web_search", "web_fetch", "write_file", "mcp"}

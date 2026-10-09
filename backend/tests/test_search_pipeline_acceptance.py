@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.code_agent.answer_contracts import explicit_web_check_requested
+from webskill.application.code_agent.answer_contracts import explicit_web_check_requested
 
 
 URL = "https://example.org/reference"
@@ -38,7 +38,7 @@ def test_only_explicit_source_check_requires_execution(user_text, expected):
 @pytest.mark.parametrize("recovers", [False, True])
 def test_fabricated_search_output_requires_real_execution_or_degraded_answer(tmp_path, monkeypatch, recovers):
     requests, turns = [], []
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     def get(url, **kwargs):
         requests.append(url)
         return SimpleNamespace(status_code=200, text=FACT, url=url, encoding="utf-8",
@@ -64,7 +64,7 @@ def test_fabricated_search_output_requires_real_execution_or_degraded_answer(tmp
 
 def test_failed_source_does_not_attest_to_a_factual_answer(tmp_path, monkeypatch):
     requests, turns = [], []
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     def get(url, **kwargs):
         requests.append(url)
         return SimpleNamespace(status_code=429, url=url, headers={}, close=lambda: None)
@@ -90,7 +90,7 @@ def call(name, **arguments):
 @pytest.mark.parametrize("retry", [False, True])
 def test_http_evidence_reaches_next_turn_and_final_after_transient_failure(tmp_path, monkeypatch, retry):
     requests, turns = [], []
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     def get(url, **kwargs):
         requests.append(url)
         status = 503 if retry and len(requests) == 1 else 200
@@ -114,7 +114,7 @@ def test_http_evidence_reaches_next_turn_and_final_after_transient_failure(tmp_p
 
 
 def test_search_mode_can_load_tools_create_check_and_finish_artifact(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     monkeypatch.setattr("requests.get", lambda url, **kwargs: SimpleNamespace(status_code=200, text=FACT,
         url=url, encoding="utf-8", headers={"Content-Type": "text/plain"}, close=lambda: None))
     checker = (

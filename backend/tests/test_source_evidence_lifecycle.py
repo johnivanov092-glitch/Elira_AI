@@ -9,9 +9,9 @@ from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
 from app.application.code_agent.delivery_session import build_continuation_kwargs
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.run_journal import RunJournal, related_sources
-from app.application.code_agent.tools import _web
-from app.application.web_evidence.receipts import format_source, make_source, source_ids, valid_source
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.code_agent.tools import _web
+from webskill.application.web_evidence.receipts import format_source, make_source, source_ids, valid_source
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 def _source(**kwargs):

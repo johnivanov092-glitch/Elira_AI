@@ -720,6 +720,8 @@ class RunEvidence:
     ) -> None:
         tool = str(tool_name or "").strip()
         self._record_operation(tool, arguments, execution_status, output, state_changed)
+        if execution_status == "ok" and output.get("ok") is True:
+            self._sources = merge_sources(self._sources, output.get("sources", []))
         document_qa = output.get("document_qa")
         if isinstance(document_qa, dict):
             qa_status = str(document_qa.get("status") or "unverified").strip().lower()

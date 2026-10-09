@@ -8,8 +8,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.code_agent.tools._web import tool_web_search
-from app.core.web_runtime import result_score
+from webskill.application.code_agent.tools._web import tool_web_search
+from webskill.core.web_runtime import result_score
 from test_web_search_engine_warnings import _http
 
 

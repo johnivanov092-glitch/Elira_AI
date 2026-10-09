@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.application.code_agent.tools import _web
+from webskill.application.code_agent.tools import _web
 
 
 def _response(html, url="https://example.org/guide/page"):
@@ -117,8 +117,8 @@ def test_browser_fallback_retains_links_from_rendered_main_dom(monkeypatch):
 
 
 def test_store_fetch_preserves_links_in_passport_without_verifying_targets(monkeypatch, tmp_path):
-    from app.application.web_evidence import corpus
-    from app.infrastructure.web_corpus import store
+    from webskill.application.web_evidence import corpus
+    from webskill.infrastructure.web_corpus import store
 
     monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "links.sqlite3"))
     monkeypatch.setattr(_web, "_current_run_id", lambda: "links-run")
@@ -145,7 +145,7 @@ def test_store_fetch_preserves_links_in_passport_without_verifying_targets(monke
 def test_batch_fetch_keeps_every_page_excerpt_and_links_through_llm_packing(monkeypatch):
     from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
     from app.application.code_agent.run_evidence import RunEvidence
-    from app.infrastructure.search.web_runtime import PageFetchResult
+    from webskill.infrastructure.search.web_runtime import PageFetchResult
 
     urls = [f"https://example.org/page-{number}" for number in range(4)]
     def fetch(url, limit):

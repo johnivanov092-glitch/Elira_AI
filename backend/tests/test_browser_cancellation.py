@@ -10,7 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.application.code_agent import agent_loop
-from app.application.code_agent.tools import _shell, _web
+from app.application.code_agent.tools import _shell
+from webskill.application.code_agent.tools import _web
 
 
 @pytest.mark.parametrize("entrypoint", ["browser", "fallback", "batch_fallback"])
@@ -29,7 +30,7 @@ def test_stop_owns_browser_worker_and_prevents_late_actions(monkeypatch, entrypo
         async def __aexit__(self, *args):
             driver_closed.set()
     monkeypatch.setattr("playwright.async_api.async_playwright", Playwright)
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     action = AsyncMock(return_value=True)
     monkeypatch.setattr(_web, "_apply_action", action)
     monkeypatch.setattr(_web, "_fetch_one", lambda url, limit: _web._render_fallback(url, limit))

@@ -5,10 +5,10 @@ from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.delivery_session import build_continuation_kwargs
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE, task_guidance_blocks
-from app.application.code_agent.tools import _web
+from webskill.application.code_agent.tools import _web
 from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
-from app.infrastructure.search import web_search
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.infrastructure.search import web_search
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 def test_retrieval_guidance_keeps_source_fidelity_and_operational_contracts():
@@ -43,7 +43,7 @@ def test_thinking_continues_through_web_tools_and_retains_citations_on_resume(tm
     monkeypatch.setattr(_web, "_fetch_one", lambda url, _limit: PageFetchResult(
         text=excerpt, final_url=url, status_code=200,
     ))
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_web, "_browser_render", lambda *_args: (
         "Fixture demo", browser_url, "The rendered fixture shows the input example.", 0, None, 200,
     ))

@@ -272,6 +272,25 @@ def _search_sources(items: list[dict], limit: int) -> list[dict[str, Any]]:
 
 
 def tool_web_search(
+    *, query: str = "", queries: Any = None, top_k: int = 5, categories: str = "",
+    time_range: str = "", page: int = 1, audience: str = "",
+) -> dict[str, Any]:
+    """Search with the task-scoped language policy owned by this mutable skill."""
+    arguments = dict(query=query, queries=queries, top_k=top_k, categories=categories,
+                     time_range=time_range, page=page, audience=audience)
+    try:
+        normalized = normalize_web_tool_arguments("web_search", {"query": query, "queries": queries})
+    except WebArgumentFormatError:
+        return _tool_web_search_impl(**arguments)
+    batch = ([query.strip()] if isinstance(query, str) and query.strip() else []) + normalized["queries"]
+    batch = list(dict.fromkeys(batch))[:_WEB_BATCH_MAX]
+    if not batch:
+        return _tool_web_search_impl(**arguments)
+    from webskill.search_language import search_with_language_policy
+    return search_with_language_policy(batch, audience, lambda: _tool_web_search_impl(**arguments))
+
+
+def _tool_web_search_impl(
     *,
     query: str = "",
     queries: Any = None,
@@ -279,7 +298,7 @@ def tool_web_search(
     categories: str = "",
     time_range: str = "",
     page: int = 1,
-    audience: str = "",  # noqa: ARG001 - declared environment; enforced per run in agent_loop
+    audience: str = "",  # language policy is applied by tool_web_search
 ) -> dict[str, Any]:
     """Search the web through SearXNG. Returns ranked results
     with title + URL + snippet. Use `web_fetch` after to read a result in full.

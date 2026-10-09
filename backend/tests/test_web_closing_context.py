@@ -9,9 +9,9 @@ from __future__ import annotations
 from app.application.code_agent.agent_loop import request_cancel, stream_code_agent
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.run_journal import RunJournal
-from app.application.code_agent.tools import _web
-from app.application.web_evidence.receipts import excerpt_sources, format_source
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.code_agent.tools import _web
+from webskill.application.web_evidence.receipts import excerpt_sources, format_source
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 URL = "https://example.org/first"

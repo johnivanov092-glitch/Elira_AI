@@ -5,9 +5,9 @@ import sqlite3
 
 import pytest
 
-from app.application.code_agent.tools import _web
-from app.application.web_evidence import corpus, receipts, retrieval
-from app.infrastructure.web_corpus import store
+from webskill.application.code_agent.tools import _web
+from webskill.application.web_evidence import corpus, receipts, retrieval
+from webskill.infrastructure.web_corpus import store
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def document(tmp_path, monkeypatch):
     raw = {"ok": True, "final_url": url, "mime": "application/pdf", "content": original.read_bytes()}
     monkeypatch.setattr(corpus, "_fetch_raw", lambda _: dict(raw))
     monkeypatch.setattr(_web, "_current_run_id", lambda: "skill-source")
-    monkeypatch.setattr("app.application.code_agent.loop_helpers.run_persistence_policy", lambda _: {"rag": True})
+    monkeypatch.setattr("webskill.context.run_persistence_policy", lambda _: {"rag": True})
     return url, original, extraction, payload, raw
 
 
@@ -93,7 +93,7 @@ def test_identical_text_different_originals_never_share_provenance(document):
 
 
 def test_no_storage_policy_prevents_import_and_network(document, monkeypatch):
-    monkeypatch.setattr("app.application.code_agent.loop_helpers.web_cache_write_allowed", lambda _: False)
+    monkeypatch.setattr("webskill.context.web_cache_write_allowed", lambda _: False)
     monkeypatch.setattr(corpus, "_fetch_raw", lambda _: pytest.fail("network must not run"))
     result = fetch(document)
     assert not result["ok"] and "disabled" in result["text"]

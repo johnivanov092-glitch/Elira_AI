@@ -22,7 +22,7 @@ import time  # noqa: E402
 from app.application.code_agent.tools import _background_jobs, _run  # noqa: E402
 from app.application.code_agent.tools import _shell  # noqa: E402
 from app.application.code_agent.tools._run import _parse_server_url, active_server_ports  # noqa: E402
-from app.application.web.ssrf_guard import check_ssrf  # noqa: E402
+from webskill.application.web.ssrf_guard import check_ssrf  # noqa: E402
 from app.core import data_files  # noqa: E402
 
 

@@ -61,7 +61,7 @@ export function SourceCitationLink({ citation }: { citation: SourceCitation }) {
   return <ExternalBrowserLink href={source.url} data-source-id={citation.source_id}
     className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 align-middle text-[11.5px] font-medium leading-4 text-t2 no-underline transition-colors hover:border-acl hover:bg-acs hover:text-ac focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ac"
     aria-label={`Источник: ${description}`}
-    title={`${description}\n${source.url}\nПолученный фрагмент: ${source.quote}`}>
+    title={`${description}\n${source.url}\n${source.attestation === "skill" ? "Источник навыка; целостность квитанции проверена.\n" : ""}Полученный фрагмент: ${source.quote}`}>
     <Globe size={12} className="shrink-0" aria-hidden="true" />
     <span className="min-w-0 max-w-[24ch] truncate">{hostname}</span>
   </ExternalBrowserLink>;

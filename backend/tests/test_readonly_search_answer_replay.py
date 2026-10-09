@@ -15,7 +15,7 @@ from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.run_observations import RunObservations
 from app.application.code_agent.task_outcomes import TaskOutcome
-from app.application.web_evidence.receipts import format_source, make_source
+from webskill.application.web_evidence.receipts import format_source, make_source
 
 
 RUN_ID = "web-qwen-cd55b8ced4a74129bcd66d8b70963f7c"

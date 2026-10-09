@@ -75,7 +75,7 @@ def make_source(
     if status not in _STATUSES:
         return {}
     raw_quote = str(quote or "")[:EXCERPT_CHARS]
-    safe_quote = redact_text(raw_quote)
+    safe_quote = redact_text(raw_quote)[:EXCERPT_CHARS]
     record = {
         "origin_run_id": str(run_id), "tool": str(tool), "url": clean_url,
         "status": status, "title": redact_text(str(title or ""))[:300],

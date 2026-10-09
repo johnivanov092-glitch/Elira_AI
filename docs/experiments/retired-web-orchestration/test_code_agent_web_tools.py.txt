@@ -16,9 +16,10 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.code_agent.tools import (  # noqa: E402
     build_tool_dispatch,
     build_tool_schemas,
+    tool_web_fetch,
+    tool_web_search,
 )
-from webskill.application.code_agent.tools._web import tool_web_fetch, tool_web_search
-from webskill.infrastructure.search.web_runtime import PageFetchResult, _extract_readable_text  # noqa: E402
+from app.infrastructure.search.web_runtime import PageFetchResult, _extract_readable_text  # noqa: E402
 
 
 class _ConcurrentBatchCall:
@@ -58,7 +59,7 @@ class WebSearchToolTest(unittest.TestCase):
 
     def test_no_results_returns_message(self) -> None:
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value={"sources": [], "engines_used": []},
         ):
             result = tool_web_search(query="abracadabra_no_hits")
@@ -67,7 +68,7 @@ class WebSearchToolTest(unittest.TestCase):
 
     def test_backend_failure_is_not_reported_as_success(self) -> None:
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             side_effect=RuntimeError("upstream unavailable"),
         ):
             result = tool_web_search(query="python")
@@ -83,7 +84,7 @@ class WebSearchToolTest(unittest.TestCase):
             "engines_used": ["DuckDuckGo"],
         }
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value=fake,
         ):
             result = tool_web_search(query="python tutorials", top_k=2)
@@ -105,7 +106,7 @@ class WebSearchToolTest(unittest.TestCase):
             "engines_used": ["SearXNG"],
         }
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value=fake,
         ):
             result = tool_web_search(query="asyncio gather")
@@ -116,7 +117,7 @@ class WebSearchToolTest(unittest.TestCase):
     def test_top_k_clamps_to_max(self) -> None:
         sources = [{"title": f"T{i}", "url": f"https://x/{i}", "snippet": "s"} for i in range(35)]
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value={"sources": sources, "engines_used": ["test"]},
         ) as search:
             result = tool_web_search(query="any", top_k=99)
@@ -128,7 +129,7 @@ class WebSearchToolTest(unittest.TestCase):
     def test_long_snippet_truncated(self) -> None:
         big_snippet = "X" * 1000
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value={
                 "sources": [{"title": "T", "url": "https://x/", "snippet": big_snippet}],
                 "engines_used": ["test"],
@@ -158,7 +159,7 @@ class WebSearchToolTest(unittest.TestCase):
             "engines_used": ["DuckDuckGo"],
         }
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value=fake,
         ):
             result = tool_web_search(query="Паньгу", categories="images", top_k=3)
@@ -190,7 +191,7 @@ class WebSearchToolTest(unittest.TestCase):
             "engines_used": ["test"],
         }
         with patch(
-            "webskill.infrastructure.search.web_search.search_web",
+            "app.infrastructure.search.web_search.search_web",
             return_value=fake,
         ):
             result = tool_web_search(query="article", categories="general")
@@ -216,10 +217,10 @@ class WebFetchToolTest(unittest.TestCase):
     def test_empty_body_returns_error(self) -> None:
         # Static extraction empty AND the JS-render fallback yields nothing → ERROR.
         with patch(
-            "webskill.infrastructure.search.web_search.fetch_page",
+            "app.infrastructure.search.web_search.fetch_page",
             return_value=PageFetchResult(),
         ), patch(
-            "webskill.application.code_agent.tools._web._render_fallback",
+            "app.application.code_agent.tools._web._render_fallback",
             return_value=PageFetchResult(),
         ):
             result = tool_web_fetch(url="https://example.com/empty")
@@ -231,10 +232,10 @@ class WebFetchToolTest(unittest.TestCase):
         # headless browser and return the richer rendered text (with a JS marker).
         rendered = "USD/RUB rate today: 1 USD = 78.50 RUB. " * 6
         with patch(
-            "webskill.infrastructure.search.web_search.fetch_page",
+            "app.infrastructure.search.web_search.fetch_page",
             return_value=PageFetchResult(),
         ), patch(
-            "webskill.application.code_agent.tools._web._render_fallback",
+            "app.application.code_agent.tools._web._render_fallback",
             return_value=PageFetchResult(text=rendered, rendered=True),
         ):
             result = tool_web_fetch(url="https://example.com/spa")
@@ -244,7 +245,7 @@ class WebFetchToolTest(unittest.TestCase):
 
     def test_successful_fetch_returns_body_with_source_header(self) -> None:
         with patch(
-            "webskill.infrastructure.search.web_search.fetch_page",
+            "app.infrastructure.search.web_search.fetch_page",
             return_value=PageFetchResult(text=(
                 "The capital of France is Paris. It is the country's largest city and "
                 "its political, economic and cultural centre, located on the river Seine "
@@ -265,7 +266,7 @@ class WebFetchToolTest(unittest.TestCase):
             return PageFetchResult(text="x" * 300)  # No JS fallback needed.
 
         with patch(
-            "webskill.infrastructure.search.web_search.fetch_page",
+            "app.infrastructure.search.web_search.fetch_page",
             side_effect=fake_fetch,
         ):
             tool_web_fetch(url="https://example.com/", max_chars=10)
@@ -280,17 +281,17 @@ class WebFetchToolTest(unittest.TestCase):
             return PageFetchResult(text="x" * 300)
 
         with patch(
-            "webskill.infrastructure.search.web_search.fetch_page",
+            "app.infrastructure.search.web_search.fetch_page",
             side_effect=fake_fetch,
         ):
             tool_web_fetch(url="https://example.com/", max_chars=1_000_000)
         self.assertEqual(captured["max_chars"], 50000)
 
     def test_single_max_page_is_fitted_to_web_budget_with_exact_presented_receipts(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
         from app.application.code_agent.run_evidence import RunEvidence
-        from webskill.application.web_evidence.receipts import valid_source
+        from app.application.web_evidence.receipts import valid_source
 
         url = "https://example.org/large-page"
         body = ("Observed page content. " * 4000)[:50000]
@@ -314,7 +315,7 @@ class WebFetchToolTest(unittest.TestCase):
 
     def test_fetch_exception_returns_error(self) -> None:
         with patch(
-            "webskill.infrastructure.search.web_search.fetch_page",
+            "app.infrastructure.search.web_search.fetch_page",
             side_effect=RuntimeError("network down"),
         ):
             result = tool_web_fetch(url="https://example.com/")
@@ -351,7 +352,7 @@ class BatchWebToolsTest(unittest.TestCase):
     """web_search(queries=[...]) / web_fetch(urls=[...]) run in parallel."""
 
     def test_web_search_batch_merges_and_dedupes(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
 
         def fake_run(query, limit, cat, tr):
             if query == "q1":
@@ -370,7 +371,7 @@ class BatchWebToolsTest(unittest.TestCase):
         self.assertEqual(text.count("https://shared.com"), 1)  # de-duped across queries
 
     def test_web_search_batch_all_failures_not_ok(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
 
         with patch.object(w, "_run_search", side_effect=RuntimeError("offline")):
             result = tool_web_search(queries=["q1", "q2"])
@@ -378,7 +379,7 @@ class BatchWebToolsTest(unittest.TestCase):
         self.assertIn("ERROR", result["text"])
 
     def test_web_fetch_batch_fetches_all(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
         urls = ["https://x/1", "https://x/2", "https://x/3"]
         with patch.object(w, "_fetch_one", side_effect=lambda u, limit: PageFetchResult(text=f"body {u}", final_url=u)):
             result = tool_web_fetch(urls=urls)
@@ -389,14 +390,14 @@ class BatchWebToolsTest(unittest.TestCase):
             self.assertIn(u, text)
 
     def test_web_fetch_batch_all_failures_not_ok(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
 
         with patch.object(w, "_fetch_one", return_value=PageFetchResult(error="unavailable")):
             result = tool_web_fetch(urls=["https://x/1", "https://x/2"])
         self.assertIs(result["ok"], False)
 
     def test_search_batch_accepts_5_caps_6_and_keeps_five_workers(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
         for count, kwargs, expected_limit in ((5, {}, 5), (6, {"top_k": 11}, 10)):
             with self.subTest(count=count):
                 queries = [f"q{number}" for number in range(count)]
@@ -414,9 +415,9 @@ class BatchWebToolsTest(unittest.TestCase):
                                  [f"https://example.org/{query}" for query in queries[:5]])
 
     def test_search_overflow_keeps_50_sources_and_fair_whole_results(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
-        from webskill.application.web_evidence.receipts import valid_source
+        from app.application.web_evidence.receipts import valid_source
 
         queries = [f"q{number}" for number in range(5)]
         def search(query, limit, cat, tr):
@@ -443,7 +444,7 @@ class BatchWebToolsTest(unittest.TestCase):
             self.assertEqual(text.count(f"\n[{number}] "), 1)
 
     def test_search_skips_oversized_result_without_losing_later_queries(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
         def search(query, limit, cat, tr):
             url = "https://example.org/" + "x" * WEB_TOOL_RESULT_LLM_LIMIT if query == "large" else "https://example.org/small"
@@ -457,10 +458,10 @@ class BatchWebToolsTest(unittest.TestCase):
         self.assertNotIn("x" * WEB_TOOL_RESULT_LLM_LIMIT, result["text"])
 
     def test_fetch_batch_accepts_5_caps_6_keeps_workers_and_current_receipts(self) -> None:
-        import webskill.application.code_agent.tools._web as w
+        import app.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
         from app.application.code_agent.run_evidence import RunEvidence
-        from webskill.application.web_evidence.receipts import valid_source
+        from app.application.web_evidence.receipts import valid_source
 
         for count, kwargs, expected_limit in ((5, {}, 8000), (6, {"max_chars": 90000}, 50000)):
             with self.subTest(count=count):
@@ -487,9 +488,9 @@ class BatchWebToolsTest(unittest.TestCase):
                 self.assertTrue(all(source["presented"] and source["quote_verified"] for source in evidence.sources))
 
     def test_store_batch_accepts_5_and_caps_6_without_parallel_ingestion(self) -> None:
-        import webskill.application.code_agent.tools._web as w
-        from webskill.application.web_evidence import corpus
-        from webskill.application.web_evidence.receipts import valid_source
+        import app.application.code_agent.tools._web as w
+        from app.application.web_evidence import corpus
+        from app.application.web_evidence.receipts import valid_source
         for count in (5, 6):
             with self.subTest(count=count):
                 urls = [f"https://example.org/page-{number}" for number in range(count)]
@@ -513,44 +514,50 @@ class BatchWebToolsTest(unittest.TestCase):
 
 
 class ToolRegistrationTest(unittest.TestCase):
-    """The callable public web entry point belongs to the skill CLI."""
+    """The new tools must be visible to the LLM (schemas) AND callable
+    via the dispatch table."""
 
-    def setUp(self):
-        import importlib.util
-        path = Path(__file__).resolve().parents[2] / 'skills/web-research/web.py'
-        spec = importlib.util.spec_from_file_location('web_registration_cli', path)
-        self.cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.cli)
+    def test_schemas_include_web_search_and_web_fetch(self) -> None:
+        names = [s["function"]["name"] for s in build_tool_schemas()]
+        self.assertIn("web_search", names)
+        self.assertIn("web_fetch", names)
 
-    def test_builtin_schemas_and_dispatch_do_not_duplicate_skill(self):
-        names = {s['function']['name'] for s in build_tool_schemas()}
-        dispatch = build_tool_dispatch(Path('.'))
-        for name in ('web_search', 'web_fetch', 'web_query', 'web_claim_add'):
-            self.assertNotIn(name, names)
-            self.assertNotIn(name, dispatch)
+    def test_claim_tool_is_never_exposed(self) -> None:
+        names = {
+            schema["function"]["name"]
+            for schema in build_tool_schemas()
+        }
+        self.assertNotIn("web_claim_add", names)
 
-    def test_search_cli_requires_queries_and_supports_batch_and_audience(self):
-        parser = self.cli.parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(['search'])
-        args = parser.parse_args(['search', '--query', 'one', '--query', 'два', '--audience', 'global'])
-        self.assertEqual(args.query, ['one', 'два'])
-        self.assertEqual(args.max_results, 5)
-        with patch.object(self.cli._web, 'tool_web_search', return_value={'ok': True}) as call:
-            self.assertTrue(self.cli.execute(args)['ok'])
-        call.assert_called_once_with(queries=['one', 'два'], top_k=5, categories='', time_range='', audience='global')
+    def test_dispatch_includes_web_search_and_web_fetch(self) -> None:
+        dispatch = build_tool_dispatch(Path("."))
+        self.assertIn("web_search", dispatch)
+        self.assertIn("web_fetch", dispatch)
+        self.assertTrue(callable(dispatch["web_search"]))
+        self.assertTrue(callable(dispatch["web_fetch"]))
 
-    def test_fetch_cli_requires_url_and_preserves_single_and_batch(self):
-        parser = self.cli.parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(['fetch'])
-        for urls in [['https://example.org/one'], ['https://example.org/one', 'https://example.org/two']]:
-            args = parser.parse_args(['fetch'] + [v for u in urls for v in ['--url', u]])
-            self.assertEqual(args.max_chars, 8000)
-            with patch.object(self.cli._web, 'tool_web_fetch', return_value={'ok': True}) as call:
-                self.assertTrue(self.cli.execute(args)['ok'])
-            self.assertEqual(call.call_args.kwargs['url'], urls[0] if len(urls) == 1 else '')
-            self.assertEqual(call.call_args.kwargs['urls'], urls if len(urls) > 1 else None)
+    def test_web_search_schema_offers_query_and_queries(self) -> None:
+        schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
+        params = schemas["web_search"]["function"]["parameters"]
+        # query OR queries — neither is hard-required (the handler validates);
+        # the search environment is (John 2026-10-06, variant «в»).
+        self.assertEqual(params["required"], ["audience"])
+        self.assertIn("global", params["properties"]["audience"]["description"])
+        self.assertIn("query", params["properties"])
+        self.assertEqual(params["properties"]["queries"]["type"], "array")
+        self.assertEqual(params["properties"]["queries"]["maxItems"], 5)
+        self.assertEqual(params["properties"]["top_k"]["default"], 5)
+        self.assertEqual(params["properties"]["top_k"]["maximum"], 10)
+
+    def test_web_fetch_schema_offers_url_and_urls(self) -> None:
+        schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
+        params = schemas["web_fetch"]["function"]["parameters"]
+        self.assertEqual(params["required"], [])
+        self.assertIn("url", params["properties"])
+        self.assertEqual(params["properties"]["urls"]["type"], "array")
+        self.assertEqual(params["properties"]["urls"]["maxItems"], 5)
+        self.assertEqual(params["properties"]["max_chars"]["default"], 8000)
+        self.assertEqual(params["properties"]["max_chars"]["maximum"], 50000)
 
 
 if __name__ == "__main__":

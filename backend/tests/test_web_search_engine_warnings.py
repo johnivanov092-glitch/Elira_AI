@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from app.core import web_engines
+from webskill.core import web_engines
 from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
 from app.application.code_agent.agent_loop import stream_code_agent
@@ -14,8 +14,8 @@ from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
 from app.application.code_agent.run_observations import RunObservations
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.tools import build_tool_dispatch
-from app.infrastructure.search.web_search import search_web as search_facade
-from app.application.code_agent.tools._web import tool_web_search
+from webskill.infrastructure.search.web_search import search_web as search_facade
+from webskill.application.code_agent.tools._web import tool_web_search
 
 
 URL = "https://security.example.org/advisory"

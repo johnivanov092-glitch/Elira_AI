@@ -14,7 +14,7 @@ from app.application.code_agent.capabilities import (
 )
 from app.application.code_agent.tool_schemas import build_tool_schemas
 from app.application.code_agent.tools._dispatch import build_tool_dispatch
-from app.application.code_agent.tools._web import tool_browser
+from webskill.application.code_agent.tools._web import tool_browser
 from app.application.tool_registry.builtins import _build_native_code_agent_tools
 from app.application.tool_providers.builtin import BuiltinToolProvider
 
@@ -126,9 +126,9 @@ def test_browser_reports_incomplete_multi_action_sequence() -> None:
         {"click": "Submit"},
     ]
     with (
-        patch("app.application.web.ssrf_guard.check_ssrf", return_value=None),
+        patch("webskill.application.web.ssrf_guard.check_ssrf", return_value=None),
         patch(
-            "app.application.code_agent.tools._web._browser_render",
+            "webskill.application.code_agent.tools._web._browser_render",
             return_value=("Form", "https://example.com", "body", 1, None, 200),
         ),
     ):

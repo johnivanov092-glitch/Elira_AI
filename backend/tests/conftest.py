@@ -28,3 +28,17 @@ def isolate_local_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("ELIRA_DATA_DIR", os.environ["ELIRA_DATA_DIR"])
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", os.environ["ELIRA_AGENT_RUNS_DIR"])
+
+
+# Integration tests exercise the independently shipped skill without adding it
+# to application imports or the sealed backend environment.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills/web-research"))
+
+@pytest.fixture(autouse=True)
+def isolated_web_skill_state(tmp_path, monkeypatch):
+    from webskill import context
+    from webskill.infrastructure.web_corpus import store
+    context.configure(tmp_path / "web-skill-state")
+    monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "web-skill.sqlite3"))

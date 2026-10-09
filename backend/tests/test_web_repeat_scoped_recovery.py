@@ -6,8 +6,8 @@ import pytest
 import requests as http_requests
 
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.code_agent.tools import _web
-from app.infrastructure.search.web_runtime import PageFetchResult
+from webskill.application.code_agent.tools import _web
+from webskill.infrastructure.search.web_runtime import PageFetchResult
 from test_web_search_engine_warnings import URL, _http
 
 
@@ -156,7 +156,7 @@ def test_first_actual_http403_advice_reaches_provider_and_keeps_fallback_availab
         return "Service reference", url, quote, 0, None, 200
 
     monkeypatch.setattr("requests.get", fetch)
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(_web, "_browser_render", render)
 
     def chat(**kwargs):

@@ -8,6 +8,8 @@ import pytest
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.capabilities import (
     file_delivery_requested,
+    should_escalate_web_after_failure,
+    should_escalate_web_from_answer,
 )
 
 
@@ -131,12 +133,40 @@ def test_library_text_cannot_require_unsolicited_download(tmp_path) -> None:
     assert started["runtime_activation"]["capability_groups"] == []
 
 
+def test_external_integration_failure_escalates_web_on_first_failure() -> None:
+    assert should_escalate_web_after_failure(
+        tool_name="mcp",
+        error="MCP server start failed: unsupported RouterOS version",
+        failure_count=1,
+        arguments={"action": "start"},
+    ) is True
 
 
+def test_local_runtime_failure_does_not_replace_local_truth_with_web() -> None:
+    assert should_escalate_web_after_failure(
+        tool_name="memory",
+        error="запись не удалена",
+        failure_count=1,
+        arguments={"action": "delete"},
+    ) is False
 
 
+def test_repeated_local_tool_failure_escalates_web() -> None:
+    assert should_escalate_web_after_failure(
+        tool_name="run_bash",
+        error="command failed",
+        failure_count=2,
+    ) is True
 
 
+def test_general_uncertainty_is_not_a_web_requirement() -> None:
+    assert should_escalate_web_from_answer("Не уверен, данных недостаточно.") is False
+    assert should_escalate_web_from_answer("Не знаю, что ты сейчас чувствуешь.") is False
+    assert should_escalate_web_from_answer('Перевод: «I do not have access to the internet».') is False
+    assert should_escalate_web_from_answer('I do not have access to the internet',
+        'Повтори: «I do not have access to the internet»') is False
+    assert should_escalate_web_from_answer("У меня нет доступа к актуальным новостям.") is True
+    assert should_escalate_web_from_answer("Локальный файл успешно обновлён.") is False
 
 
 def test_failed_resource_publish_cannot_be_reported_as_downloadable(tmp_path) -> None:

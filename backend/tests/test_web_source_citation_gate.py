@@ -5,10 +5,10 @@ import pytest
 
 from _runtime_roles import runtime_text, user_texts
 from app.application.code_agent.answer_acceptance import AcceptanceDecision, AnswerAcceptance
-from app.application.code_agent.answer_contracts import web_source_citation_violations
+from webskill.application.code_agent.answer_contracts import web_source_citation_violations
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.task_outcomes import TaskOutcome
-from app.application.web_evidence.receipts import format_source, make_source
+from webskill.application.web_evidence.receipts import format_source, make_source
 
 
 READ_URL = "https://example.org/read"
@@ -163,8 +163,8 @@ def test_ordinary_work_correction_retains_draft_by_default():
 def test_rejected_web_draft_does_not_reenter_model_context(tmp_path, monkeypatch):
     from copy import deepcopy
     from app.application.code_agent.agent_loop import stream_code_agent
-    from app.application.code_agent.tools import _web
-    from app.infrastructure.search.web_runtime import PageFetchResult
+    from webskill.application.code_agent.tools import _web
+    from webskill.infrastructure.search.web_runtime import PageFetchResult
 
     monkeypatch.setattr(_web, "_fetch_one", lambda *args: PageFetchResult(
         text=QUOTE, final_url=READ_URL, status_code=200,

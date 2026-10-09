@@ -13,8 +13,8 @@ from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.run_observations import RunObservations
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.tools import build_tool_dispatch
-from app.application.code_agent.tools._web import tool_web_search
-from app.application.web_evidence.receipts import MAX_SOURCES, make_source
+from webskill.application.code_agent.tools._web import tool_web_search
+from webskill.application.web_evidence.receipts import MAX_SOURCES, make_source
 
 
 QUERIES = [
@@ -25,7 +25,7 @@ QUERIES = [
 
 
 def test_primary_query_is_retained_when_model_also_supplies_parallel_queries():
-    with patch("app.application.code_agent.tools._web._run_search", return_value=[]) as search:
+    with patch("webskill.application.code_agent.tools._web._run_search", return_value=[]) as search:
         result = tool_web_search(query="primary source", queries=["secondary source", "primary source"])
     assert search.call_count == 2
     assert {call.args[0] for call in search.call_args_list} == {"primary source", "secondary source"}
@@ -45,7 +45,7 @@ def _native_batch(rows=None, *, queries=None, top_k=10):
         return {"ok": True, "sources": [{"href": url, "title": "Release source", "body": "Release details"}
                                         for url in value]}
 
-    with patch("app.infrastructure.search.web_search.search_web", side_effect=search):
+    with patch("webskill.infrastructure.search.web_search.search_web", side_effect=search):
         result = tool_web_search(queries=queries, categories="general", time_range="month", top_k=top_k)
     return result
 

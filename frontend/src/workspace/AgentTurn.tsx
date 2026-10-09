@@ -54,6 +54,15 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
   const idle = turn.running && !visibleText && !turn.reasoning && !turn.brainPhase && turn.toolCalls.length === 0 && !turn.activeTool;
   // John 2026-10-06: Elira lists pages that did not open; the model no longer has to write it.
   const unopened = isAcceptedAnswer(turn) && !/Не открылись/i.test(turn.text) ? unopenedSources(turn.sources) : [];
+  const sourceDetails: SourceCitation[] = [...(turn.citations ?? [])];
+  const listed = new Set(sourceDetails.map(item => item.source_id));
+  for (const source of turn.sources ?? []) {
+    if (source.attestation === "skill" && source.status === "excerpt" && source.presented
+        && source.quote_verified && !listed.has(source.id)) {
+      sourceDetails.push({ source_id: source.id, status: "matched", claim_support: "not_assessed", source });
+      listed.add(source.id);
+    }
+  }
   const downloads = deriveArtifacts([turn]).downloads;
   const [speaking, setSpeaking] = useState(false);
 
@@ -109,12 +118,14 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
       )}
 
       {turn.text && turn.answerState === "interrupted" && <div className="text-[11px] text-mut">Черновик · ответ прерван</div>}
-      {isAcceptedAnswer(turn) && Boolean(turn.citations?.length) && (
+      {isAcceptedAnswer(turn) && Boolean(sourceDetails.length) && (
         <details className="mt-2 text-[12px] text-mut">
-          <summary className="cursor-pointer">Источники ({turn.citations!.length})</summary>
+          <summary className="cursor-pointer">Источники ({sourceDetails.length})</summary>
           <p>Показаны полученные фрагменты. Соответствие вывода источнику автоматически не оценивалось.</p>
-          {turn.citations!.map(citation => <div key={citation.source_id} className="mt-2">
+          {sourceDetails.map(citation => <div key={citation.source_id} className="mt-2">
             <SourceCitationLink citation={citation} />
+            {citation.source?.attestation === "skill" &&
+              <p>Получено и проверено навыком. Приложение сверило целостность квитанции.</p>}
             {citation.status === "matched" && citation.source &&
               <blockquote className="whitespace-pre-wrap break-words">{citation.source.quote}</blockquote>}
           </div>)}

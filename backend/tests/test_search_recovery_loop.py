@@ -13,9 +13,9 @@ from test_web_search_engine_warnings import URL, _http
 
 
 def test_failed_browser_loop_stops_exact_passive_repetition_without_hiding_interaction(tmp_path, monkeypatch):
-    from app.application.code_agent.tools import _web
+    from webskill.application.code_agent.tools import _web
     reads, turns = [], []
-    monkeypatch.setattr("app.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
+    monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     def render(*args):
         reads.append(args)
         raise TimeoutError("navigation timeout")

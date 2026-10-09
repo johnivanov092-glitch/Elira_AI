@@ -6,8 +6,8 @@ import pytest
 
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.task_outcomes import TaskOutcome
-from app.application.code_agent.tools._web import tool_web_fetch
-from app.application.web_evidence.receipts import format_source, make_source
+from webskill.application.code_agent.tools._web import tool_web_fetch
+from webskill.application.web_evidence.receipts import format_source, make_source
 
 
 URL = "https://nginx.org/en/security_advisories.html"
@@ -21,10 +21,10 @@ POLICY = {"rag": True, "learning": False, "direct_memory": False, "direct_memory
     {},
 ])
 def test_forbidden_cache_stops_before_any_ingest_or_network(policy):
-    with patch("app.application.code_agent.tools._web._current_run_id", return_value="cache-policy"), \
+    with patch("webskill.application.code_agent.tools._web._current_run_id", return_value="cache-policy"), \
          patch("app.application.code_agent.loop_helpers.run_persistence_policy", return_value=policy), \
-         patch("app.application.web_evidence.corpus.ingest", return_value={"ok": False, "error": "offline-ingest"}) as ingest, \
-         patch("app.application.code_agent.tools._web._fetch_one", side_effect=AssertionError("unexpected plain fetch")):
+         patch("webskill.application.web_evidence.corpus.ingest", return_value={"ok": False, "error": "offline-ingest"}) as ingest, \
+         patch("webskill.application.code_agent.tools._web._fetch_one", side_effect=AssertionError("unexpected plain fetch")):
         result = tool_web_fetch(url=URL, store=True)
     assert result["ok"] is False
     assert "policy" in result["text"].lower()

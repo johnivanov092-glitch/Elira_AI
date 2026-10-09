@@ -216,6 +216,8 @@ export type WebSourceEvidence = {
   chunk_id: number | null;
   offset: number | null;
   quote: string;
+  attestation?: "skill";
+  receipt_sha256?: string;
   quote_verified: boolean;
   presented: boolean;
   claim_support: "not_assessed";

@@ -48,7 +48,7 @@ def _resolve_safe(root: Path, path: str) -> Path:
     root = root.resolve()
     target = (root / path).resolve()
     if not target.is_relative_to(root):
-        raise ValueError('file is outside the task workspace')
+        raise ValueError(f'file is outside the task workspace: {target}; workspace: {root}. Keep extraction JSON and its source.local_path original inside this workspace.')
     return target
 
 
