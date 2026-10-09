@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from app.application.projects.scope import project_scope_id
-from app.application.code_agent.history import summarize_history
+from app.application.code_agent.history import is_runtime_block, summarize_history
 from app.infrastructure.text import truncate_middle
 
 logger = logging.getLogger(__name__)
@@ -622,8 +622,11 @@ def _prepare_messages_for_llm(
     ):
         # A fresh slice may discard the recent tool output, but it cannot drop
         # the system prefix, loaded schemas or mandatory task instructions.
+        # Protected user input survives compaction; it is not a fixed runtime
+        # instruction and must retain the existing delivery-overflow handling.
         fixed_messages = [m for m in messages if m.get("role") == "system"
-                          or m.get("_msg_id") in (pinned_message_ids or set())]
+                          or (m.get("_msg_id") in (pinned_message_ids or set())
+                              and (m.get("role") != "user" or is_runtime_block(m)))]
         fixed_usage = get_context_usage(fixed_messages, **usage_kwargs)
         fixed_exceeds = float(fixed_usage["percent"]) >= critical_threshold or (
             safe_input_budget > 0 and int(fixed_usage["current_tokens"]) > safe_input_budget

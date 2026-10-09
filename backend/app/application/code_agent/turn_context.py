@@ -173,6 +173,7 @@ class TurnContext:
         self.raw_user_message = raw_user_message
         self.original_goal = raw_user_message
         self.clarifications: list[str] = []
+        self.task_input_message_ids: set[str] = set()
         self.root, self.working_dir, self.run_id = root, working_dir, run_id
         self.working_set = FileWorkingSet(root=root, working_dir=working_dir)
         self.script_hint_sent = False
@@ -320,6 +321,31 @@ class TurnContext:
             self.messages = insert_skill_context(self.messages, active_skill_text, CONTEXT_ID)
             self.guidance_message_ids.add(CONTEXT_ID)
 
+    def _task_input_ref(self, text: str) -> str | dict[str, str]:
+        """Keep large user text once, with a pinned reference in the contract.
+
+        Short goals and clarifications remain inline as before.
+        Resume restores the source messages and their IDs from the journal.
+        If a legacy slice has no source message, retain the full text here.
+        """
+        if len(text) > 160:
+            # Repeated requests must not pin an older, much larger archive that
+            # merely contains the same text. Prefer the newest exact source.
+            for exact_match in (True, False):
+                for index in range(len(self.messages) - 1, -1, -1):
+                    message = self.messages[index]
+                    if message.get("role") != "user" or is_runtime_block(message):
+                        continue
+                    content = str(message.get("content") or "")
+                    if not (text == content if exact_match else text in content):
+                        continue
+                    message_id = str(message.get("_msg_id") or f"{self.run_id}:task-input:{index}")
+                    message["_msg_id"] = message_id
+                    self.task_input_message_ids.add(message_id)
+                    return {"source": "protected_user_message", "message_id": message_id,
+                            "preview": text[:160]}
+        return text
+
     def update_task_state(self, *, task_spec, criteria_rows: list[dict],
                           checklist_items: list[dict], mutated_files: list[str],
                           verifications: list[str], failed_attempts: list[str]) -> None:
@@ -328,9 +354,14 @@ class TurnContext:
         requirements = [{key: row[key] for key in (
             "requirement_id", "text", "mandatory", "status", "lifecycle", "host", "target", "condition",
         ) if key in row} for row in criteria_rows]
-        contract = {"original_goal": self.original_goal,
-                    "goal": str(getattr(task_spec, "goal", "") or self.original_goal),
-                    "clarifications": self.clarifications, "requirements": requirements}
+        self.task_input_message_ids.clear()
+        goal = str(getattr(task_spec, "goal", "") or self.original_goal)
+        original_ref = self._task_input_ref(self.original_goal)
+        goal_ref = ({"field": "original_goal"} if goal == self.original_goal
+                    else self._task_input_ref(goal))
+        contract = {"original_goal": original_ref, "goal": goal_ref,
+                    "clarifications": [self._task_input_ref(text) for text in self.clarifications],
+                    "requirements": requirements}
         contract_message = {"role": "assistant", "content": TASK_CONTRACT_PREFIX + json.dumps(
             contract, ensure_ascii=False, separators=(",", ":")),
             TASK_STATE_MARKER_KEY: TASK_CONTRACT_MARKER_VALUE}
@@ -380,7 +411,8 @@ class TurnContext:
             self.messages, num_ctx=num_ctx, model=model, chat_fn=chat_fn,
             context_profile=context_profile, tool_schemas=tool_schemas,
             cancel_handle=cancel_handle, audit_sink=audit_sink,
-            pinned_message_ids=self.guidance_message_ids | {"web-source-context", WORKING_SET_ID},
+            pinned_message_ids=self.guidance_message_ids | self.task_input_message_ids
+                               | {"web-source-context", WORKING_SET_ID},
             restore_messages=restore,
         )
         return compacted, usage
