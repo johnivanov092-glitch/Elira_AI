@@ -221,12 +221,6 @@ def _record_for(path: Path, root: Path, repo: Path | None, commit_sha: str = "")
     )
 
 
-def _is_under(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 def _build_corpus_files(root: Path, patterns: list[str]) -> tuple[list[CorpusFile], list[str]]:

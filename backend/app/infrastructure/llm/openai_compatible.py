@@ -1,4 +1,5 @@
 from __future__ import annotations
+from elira_common.environment import _env_bool as _env_bool, _env_value as _env_value, _env_float as _env_float
 
 import json
 import logging
@@ -13,7 +14,6 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 LOCAL_EMBED_DIMENSION = 1024
 
 
@@ -116,11 +116,6 @@ def _close_cancelable_response(
         cancel_handle.release(response)
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in _TRUE_VALUES
 
 
 # Transient-error retry for non-stream chat completions (connection/timeout/5xx).
@@ -137,16 +132,8 @@ _sampling_backends: dict[str, str] = {}
 _sampling_omissions: set[tuple[str, str, tuple[str, ...]]] = set()
 
 
-def _env_value(name: str, default: str = "") -> str:
-    raw = os.getenv(name)
-    return default if raw is None else raw
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
 
 
 def _env_optional_int(name: str) -> int | None:

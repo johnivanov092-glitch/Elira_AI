@@ -1,5 +1,6 @@
 """Vision provider client and OCR configuration; OCR execution belongs to skills."""
 from __future__ import annotations
+from elira_common.environment import _env_bool as _env_bool, _env_value as _env_value, _env_float as _env_float, _env_int as _env_int
 
 import base64
 import logging
@@ -11,34 +12,14 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in _TRUE_VALUES
 
 
-def _env_value(name: str, default: str = "") -> str:
-    raw = os.getenv(name)
-    return default if raw is None else raw
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
 
 
 # ───────────────────────────── Vision (:8004) ─────────────────────────────

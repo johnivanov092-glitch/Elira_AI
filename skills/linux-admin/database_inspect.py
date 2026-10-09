@@ -15,6 +15,8 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+_within = Path.is_relative_to
 from typing import Any, Iterator
 
 from app.core.config import DATA_DIR
@@ -97,12 +99,6 @@ def resolve_database(database_id: str) -> DatabaseSpec:
     return spec
 
 
-def _within(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
 
 
 def _database_path(spec: DatabaseSpec) -> Path:

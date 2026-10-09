@@ -224,151 +224,8 @@ def tool_itops_ssh_healthcheck(
     return out_dict
 
 
-def tool_itops_linux_inventory(
-    target: str = "", profile_id: str = "", **_ignored: Any,
-) -> dict[str, Any]:
-    """Linux read-only inventory on any SSH target (adapter #1).
-
-    Runs a fixed set of read-only commands (≤10s each). The 12K TOTAL cap is a shared
-    budget across all commands, applied to BOTH the reply AND the persisted evidence.
-    Any command failure (non-zero that is NOT the exact systemd-absent signal)
-    makes the whole inventory ok=false; a failed evidence write does too.
-    """
-    from app.application.code_agent.tools import get_current_run_id
-    from app.infrastructure.it_ops import store
-
-    run_id = get_current_run_id()
-    try:
-        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
-    except Exception as exc:  # noqa: BLE001
-        error = str(exc) or "ssh_target_unavailable"
-        return {"ok": False, "text": f"ERROR: {error}", "error": error}
-
-    budget = _INVENTORY_TOTAL_CAP     # shared across commands: bounds reply AND evidence
-    results: list[dict[str, Any]] = []
-    lines: list[str] = [f"Linux inventory — {alias}:"]
-    cmds_ok = True
-    evidence_ok = True
-    for cmd_id, remote, required in _INVENTORY_COMMANDS:
-        try:
-            proc = run_registered_process(_ssh_argv(alias, remote))
-            code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
-        except OSError as exc:
-            code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
-        # Cap to the shared remaining budget (applies to BOTH evidence and reply).
-        out = _clean(raw_out, max(0, min(_INVENTORY_PER_CMD_CAP, budget)))
-        err = _clean(raw_err, max(0, min(_INVENTORY_PER_CMD_CAP, budget - len(out))))
-        budget -= (len(out) + len(err))
-        # status: unsupported ONLY for an optional command on the exact systemd-absent
-        # signal; any other non-zero is a failure that fails the whole inventory.
-        if code == 0:
-            status = "ok"
-        elif not required and _is_systemd_absent(code, err):
-            status = "unsupported"
-        else:
-            status = "failed"
-            cmds_ok = False
-        entry = {"command_id": cmd_id, "command": " ".join(remote), "exit": code, "status": status,
-                 "stdout": out}
-        if err:
-            entry["stderr"] = err
-        try:
-            store.record_evidence(
-                run_id=run_id, target_identity=target_identity, scanner_vantage=_SCANNER_VANTAGE,
-                operation=f"linux_inventory:{cmd_id}",
-                result={"alias": alias, "command": " ".join(remote), "status": status,
-                        "stdout": out, "stderr": err},
-                exit_status="" if code is None else str(code))
-            entry["evidence_persisted"] = True
-        except Exception:  # noqa: BLE001
-            entry["evidence_persisted"] = False
-            evidence_ok = False
-            logger.warning("itops linux_inventory: evidence write failed for %s/%s", pid, cmd_id)
-        results.append(entry)
-        _note = "" if entry["evidence_persisted"] else "  [evidence NOT persisted]"
-        head = out if status == "ok" else (err or status)
-        lines.append(f"  $ {' '.join(remote)}  →  {status}: {head.splitlines()[0] if head else ''}{_note}")
-
-    ok = cmds_ok and evidence_ok
-    text = "\n".join(lines)
-    if len(text) > _INVENTORY_TOTAL_CAP:      # total reply cap (marker counted, so ≤ cap)
-        text = text[:_INVENTORY_TOTAL_CAP - len(_TRUNC)] + _TRUNC
-    out_dict: dict[str, Any] = {"ok": ok, "text": text, "results": results, "profile_id": pid}
-    if not cmds_ok:
-        out_dict["error"] = "inventory_command_failed"
-    elif not evidence_ok:
-        out_dict["error"] = "evidence_persist_failed"
-    return out_dict
 
 
-def tool_itops_windows_inventory(
-    target: str = "", profile_id: str = "", **_ignored: Any,
-) -> dict[str, Any]:
-    """Windows read-only inventory on any SSH target (adapter #2).
-
-    Runs a fixed set of STATIC PowerShell scripts via -EncodedCommand (≤15s each).
-    The 12K TOTAL cap is a shared context budget across all commands, applied to
-    both the reply and persisted evidence. Any command failure or a failed evidence
-    write makes the whole inventory ok=false.
-    """
-    from app.application.code_agent.tools import get_current_run_id
-    from app.infrastructure.it_ops import store
-
-    run_id = get_current_run_id()
-    try:
-        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
-    except Exception as exc:  # noqa: BLE001
-        error = str(exc) or "ssh_target_unavailable"
-        return {"ok": False, "text": f"ERROR: {error}", "error": error}
-
-    budget = _INVENTORY_TOTAL_CAP     # shared across commands: bounds reply AND evidence
-    results: list[dict[str, Any]] = []
-    lines: list[str] = [f"Windows inventory — {alias}:"]
-    cmds_ok = True
-    evidence_ok = True
-    for cmd_id, script in _WINDOWS_COMMANDS:
-        try:
-            proc = run_registered_process(_ps_argv(alias, script))
-            code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
-        except OSError as exc:
-            code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
-        out = _clean(raw_out, max(0, min(_INVENTORY_PER_CMD_CAP, budget)))
-        err = _clean(raw_err, max(0, min(_INVENTORY_PER_CMD_CAP, budget - len(out))))
-        budget -= (len(out) + len(err))
-        status = "ok" if code == 0 else "failed"
-        if status == "failed":
-            cmds_ok = False
-        entry = {"command_id": cmd_id, "command": script, "exit": code, "status": status, "stdout": out}
-        if err:
-            entry["stderr"] = err
-        try:
-            store.record_evidence(
-                run_id=run_id, target_identity=target_identity, scanner_vantage=_SCANNER_VANTAGE,
-                operation=f"windows_inventory:{cmd_id}",
-                # `command` is the READABLE script, never the base64 payload.
-                result={"alias": alias, "command": script, "status": status,
-                        "stdout": out, "stderr": err},
-                exit_status="" if code is None else str(code))
-            entry["evidence_persisted"] = True
-        except Exception:  # noqa: BLE001
-            entry["evidence_persisted"] = False
-            evidence_ok = False
-            logger.warning("itops windows_inventory: evidence write failed for %s/%s", pid, cmd_id)
-        results.append(entry)
-        _note = "" if entry["evidence_persisted"] else "  [evidence NOT persisted]"
-        head = out if status == "ok" else (err or status)
-        lines.append(f"  [{cmd_id}]  →  {status}: {head.splitlines()[0] if head else ''}{_note}")
-
-    ok = cmds_ok and evidence_ok
-    text = "\n".join(lines)
-    if len(text) > _INVENTORY_TOTAL_CAP:
-        text = text[:_INVENTORY_TOTAL_CAP - len(_TRUNC)] + _TRUNC
-    out_dict: dict[str, Any] = {"ok": ok, "text": text, "results": results, "profile_id": pid}
-    if not cmds_ok:
-        out_dict["error"] = "inventory_command_failed"
-    elif not evidence_ok:
-        out_dict["error"] = "evidence_persist_failed"
-    return out_dict
 
 
 def tool_itops_network_inventory(
@@ -735,3 +592,87 @@ def _tool_itops_mikrotik_inventory(**kwargs: Any) -> dict[str, Any]:
     module never grows a transport dependency."""
     from app.application.skill_services.mikrotik import tool_itops_mikrotik_inventory
     return tool_itops_mikrotik_inventory(**kwargs)
+
+
+def _inventory(target: str, profile_id: str, *, windows: bool) -> dict[str, Any]:
+    from app.application.code_agent.tools import get_current_run_id
+    from app.infrastructure.it_ops import store
+
+    platform = "Windows" if windows else "Linux"
+    operation = platform.lower() + "_inventory"
+    run_id = get_current_run_id()
+    try:
+        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc) or "ssh_target_unavailable"
+        return {"ok": False, "text": f"ERROR: {error}", "error": error}
+
+    budget = _INVENTORY_TOTAL_CAP     # shared across commands: bounds reply AND evidence
+    results: list[dict[str, Any]] = []
+    lines: list[str] = [f"{platform} inventory — {alias}:"]
+    cmds_ok = True
+    evidence_ok = True
+    commands = [(key, script, True) for key, script in _WINDOWS_COMMANDS] if windows else _INVENTORY_COMMANDS
+    for cmd_id, remote, required in commands:
+        display = remote if windows else " ".join(remote)
+        argv = _ps_argv(alias, remote) if windows else _ssh_argv(alias, remote)
+        try:
+            proc = run_registered_process(argv)
+            code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
+        except OSError as exc:
+            code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
+        # Cap to the shared remaining budget (applies to BOTH evidence and reply).
+        out = _clean(raw_out, max(0, min(_INVENTORY_PER_CMD_CAP, budget)))
+        err = _clean(raw_err, max(0, min(_INVENTORY_PER_CMD_CAP, budget - len(out))))
+        budget -= (len(out) + len(err))
+        # status: unsupported ONLY for an optional command on the exact systemd-absent
+        # signal; any other non-zero is a failure that fails the whole inventory.
+        if code == 0:
+            status = "ok"
+        elif not required and _is_systemd_absent(code, err):
+            status = "unsupported"
+        else:
+            status = "failed"
+            cmds_ok = False
+        entry = {"command_id": cmd_id, "command": display, "exit": code, "status": status,
+                 "stdout": out}
+        if err:
+            entry["stderr"] = err
+        try:
+            store.record_evidence(
+                run_id=run_id, target_identity=target_identity, scanner_vantage=_SCANNER_VANTAGE,
+                operation=f"{operation}:{cmd_id}",
+                result={"alias": alias, "command": display, "status": status,
+                        "stdout": out, "stderr": err},
+                exit_status="" if code is None else str(code))
+            entry["evidence_persisted"] = True
+        except Exception:  # noqa: BLE001
+            entry["evidence_persisted"] = False
+            evidence_ok = False
+            logger.warning("itops %s: evidence write failed for %s/%s", operation, pid, cmd_id)
+        results.append(entry)
+        _note = "" if entry["evidence_persisted"] else "  [evidence NOT persisted]"
+        head = out if status == "ok" else (err or status)
+        label = f"[{cmd_id}]" if windows else f"$ {display}"
+        lines.append(f"  {label}  →  {status}: {head.splitlines()[0] if head else ''}{_note}")
+
+    ok = cmds_ok and evidence_ok
+    text = "\n".join(lines)
+    if len(text) > _INVENTORY_TOTAL_CAP:      # total reply cap (marker counted, so ≤ cap)
+        text = text[:_INVENTORY_TOTAL_CAP - len(_TRUNC)] + _TRUNC
+    out_dict: dict[str, Any] = {"ok": ok, "text": text, "results": results, "profile_id": pid}
+    if not cmds_ok:
+        out_dict["error"] = "inventory_command_failed"
+    elif not evidence_ok:
+        out_dict["error"] = "evidence_persist_failed"
+    return out_dict
+
+
+def tool_itops_linux_inventory(target: str = "", profile_id: str = "", **_ignored: Any) -> dict[str, Any]:
+    """Fixed Linux commands; only the precise optional systemd-absent signal is tolerated."""
+    return _inventory(target, profile_id, windows=False)
+
+
+def tool_itops_windows_inventory(target: str = "", profile_id: str = "", **_ignored: Any) -> dict[str, Any]:
+    """Fixed PowerShell commands, encoded once by the shared SSH transport."""
+    return _inventory(target, profile_id, windows=True)

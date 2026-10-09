@@ -66,3 +66,21 @@ hash mismatch, trusted runtime metadata and child-job ownership/Stop. Existing
 SSH/IT Ops, Telegram, document QA and source-receipt checks exercise moved code.
 Model choice, answer behavior and unchanged golden runs are explicitly deferred
 until the new candidate is installed, per the user's instruction.
+
+## Final map refresh
+
+The refreshed map exposed additional copies inside the moved modules. Environment
+parsing now shares one implementation; path containment uses Path.is_relative_to;
+Linux and Windows inventory share their execution/evidence loop while retaining
+distinct fixed commands and platform-specific SSH arguments.
+
+Six remaining similarity notices are intentionally distinct: the three above,
+file-operation error dictionaries versus document-QA issue dictionaries (different
+public keys), configuration versus database registry resolution (different stores,
+types and errors), and small domain exception constructors (different exception
+types). Merging these solely to change the detector count would obscure contracts.
+
+Skill adapters expose the installed module dynamically, including AttributeError
+for absent names. Their module identity is preserved for existing consumers and
+tests. Static analysis recognizes this dynamic boundary; installed-module and
+consumer integration tests verify the actual runtime exports.
