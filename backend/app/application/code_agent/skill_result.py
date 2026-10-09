@@ -54,3 +54,24 @@ def read_skill_sources(stdout: str, project_root: Path) -> tuple[list[dict[str, 
         return [{**source, 'attestation': 'skill', 'receipt_sha256': digest} for source in sources], ''
     except (OSError, ValueError, TypeError, RecursionError):
         return [], 'Skill source receipt rejected: invalid path, bytes or schema.'
+
+
+def read_skill_job(stdout: str, project_root: Path, run_id: str) -> dict[str, Any]:
+    """Adopt a CLI job result only if the durable runtime confirms its owner."""
+    try:
+        value = json.loads(stdout)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(value, dict) or value.get("kind") != "job" or (value.get("backgrounded") is not True and value.get("action") != "start"):
+        return {}
+    pid = value.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or not run_id:
+        return {}
+    from app.application.code_agent.tools._background_jobs import reconcile_job_records
+    records, _ = reconcile_job_records()
+    for record in records:
+        if (record.get("pid") == pid and record.get("run_id") == run_id
+                and Path(str(record.get("cwd") or "")).resolve() == project_root.resolve()):
+            return {"kind": "job", "pid": pid, "job_id": str(record.get("job_id") or ""),
+                    "status": str(record.get("status") or "failed"), "backgrounded": True}
+    return {}

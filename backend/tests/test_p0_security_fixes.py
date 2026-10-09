@@ -24,7 +24,13 @@ class AgentChildEnvTest(unittest.TestCase):
         with patch.dict(os.environ, fake, clear=True):
             env = _agent_child_env()
         # Nothing is stripped; only UTF-8 output defaults for Python children are added.
-        self.assertEqual(env, {**fake, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+        from app.core.config import ROOT_DIR, DATA_DIR
+        from app.application.code_agent.tools._shell import get_current_run_id
+        self.assertEqual(env, {**fake, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+            "ELIRA_BACKEND_ROOT": str(ROOT_DIR / "backend"),
+            "ELIRA_SHARED_ROOT": str(ROOT_DIR / "shared"),
+            "ELIRA_SKILLS_ROOT": str(DATA_DIR / "skills"),
+            "ELIRA_PARENT_RUN_ID": str(get_current_run_id() or "")})
         self.assertEqual(env.get("PATH"), "/usr/bin")   # toolchain preserved
         self.assertEqual(env.get("NORMAL_VAR"), "1")
 

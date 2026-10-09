@@ -13,7 +13,7 @@ from app.application.code_agent.run_observations import RunObservations
 from app.application.code_agent.taskspec import (
     TaskSpec, merge_task_spec, requirement_id, task_spec_from_report, taskspec_report,
 )
-from app.application.tool_providers import ssh_provider as ssh
+from app.application.skill_services import ssh as ssh
 
 
 def process(stdout: str = "", *, code: int = 0, stderr: str = ""):

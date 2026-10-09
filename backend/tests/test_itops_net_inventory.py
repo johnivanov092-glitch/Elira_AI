@@ -13,8 +13,8 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.it_ops import net_inventory as ni  # noqa: E402
-from app.application.tool_providers.itops_provider import (  # noqa: E402
+from app.application.skill_services import net_inventory as ni  # noqa: E402
+from app.application.skill_services.itops import (  # noqa: E402
     tool_itops_network_inventory,
 )
 

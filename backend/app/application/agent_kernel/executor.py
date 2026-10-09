@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.application.agent_kernel.tool_result import ensure_tool_result
@@ -73,6 +73,7 @@ class ToolExecutionRequest:
     step_id: str = ""
     permission_mode: str = "ask"
     workflow_approved: bool = False
+    runtime_context: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -132,6 +133,7 @@ def execute_tool(
     """Execute one tool call through the unified policy and audit layer."""
     from app.application.tool_registry.runtime import get_tool
     tool_name = request.tool_name
+    request.args = {k: v for k, v in request.args.items() if not k.startswith("_runtime_")}
 
     # ToolSpec is presentation/audit metadata, not an authorization boundary.
     # Unknown and legacy-disabled/classified tools still reach the single Workflow
@@ -201,7 +203,9 @@ def execute_tool(
         except Exception:
             _run_token = None
         try:
-            _result_box["raw"] = dispatch_fn(tool_name, request.args)
+            from app.application.agent_kernel.runtime_context import bind_runtime_context
+            with bind_runtime_context(request.runtime_context):
+                _result_box["raw"] = dispatch_fn(tool_name, request.args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model as tool error
             _result_box["raw"] = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
         finally:

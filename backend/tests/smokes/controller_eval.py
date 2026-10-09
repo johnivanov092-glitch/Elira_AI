@@ -45,7 +45,8 @@ def _api(client: Any, method: str, path: str, *, status: int = 200, **kwargs: An
 def _case_stores(data_dir: Path) -> Iterator[None]:
     """Restore every module override before the owner removes the temporary root."""
     from app.application.library import runtime as library
-    from app.application.telegram import runtime as telegram_runtime, store as telegram_store
+    from app.application.skill_services import telegram_runtime
+    from app.application.telegram import store as telegram_store
     from app.core import data_files
     from app.infrastructure.it_ops import store as it_ops_store
     from app.infrastructure.secrets import vault
@@ -171,8 +172,9 @@ def _library_roundtrip(client: Any, data_dir: Path) -> str:
 
 
 def _telegram_typed_roundtrip(client: Any, data_dir: Path) -> str:
-    from app.application.code_agent.tools._telegram import tool_telegram
-    from app.application.telegram import runtime as telegram_runtime, store as telegram_store
+    from app.application.skill_services.telegram_actions import tool_telegram
+    from app.application.skill_services import telegram_runtime
+    from app.application.telegram import store as telegram_store
     from app.infrastructure.secrets import vault
 
     _api(client, "POST", "/api/agent-os/vault/create", json={"passphrase": _PASSPHRASE})

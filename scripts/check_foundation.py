@@ -13,6 +13,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
+from elira_common.files import sha256_file as sha256
 import socket
 import sqlite3
 import sys
@@ -28,12 +31,6 @@ DANGEROUS_PRIVILEGES = {"SeDebugPrivilege", "SeTcbPrivilege", "SeImpersonatePriv
                         "SeTakeOwnershipPrivilege", "SeLoadDriverPrivilege", "SeCreateTokenPrivilege"}
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _require(condition: bool, message: str) -> None:

@@ -77,7 +77,7 @@ def _process_identity(pid: int) -> str | None:
         finally:
             api.CloseHandle(handle)
     try:
-        raw = Path(f"/proc/{pid}/stat").read_text()
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
         fields = raw[raw.rfind(")") + 2:].split()
         return None if fields[0] == "Z" else "proc:" + fields[19]
     except (OSError, IndexError):

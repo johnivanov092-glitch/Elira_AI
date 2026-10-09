@@ -6,6 +6,8 @@ they never select the next tool or model turn.
 """
 from __future__ import annotations
 
+from app.utils.json_values import object_dict
+
 import json
 import threading
 import time
@@ -139,6 +141,8 @@ def run_tool(
             result = heartbeat["__result__"]
         else:
             yield heartbeat
+    if result is None:
+        raise RuntimeError("Tool execution ended without a result")
     if result.status == "waiting_approval":
         raw_request = (result.output or {}).get("request")
         display_args = redact_secrets(parsed_args)
@@ -349,7 +353,7 @@ def run_runtime_workflow(
     request.update({
         "kind": kind,
         "message": str(request.get("message") or "Runtime требует данные для продолжения."),
-        "schema": dict(request.get("schema")) if isinstance(request.get("schema"), dict) else {},
+        "schema": object_dict(request.get("schema")),
         "sensitive": kind == "secret" or bool(request.get("sensitive", False)),
     })
     response_id = uuid.uuid4().hex

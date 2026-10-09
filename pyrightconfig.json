@@ -1,0 +1,14 @@
+{
+  "extraPaths": [
+    "backend",
+    "shared"
+  ],
+  "exclude": [
+    "**/.venv",
+    "**/node_modules",
+    "**/__pycache__",
+    ".scratch",
+    ".runtime",
+    "data"
+  ]
+}

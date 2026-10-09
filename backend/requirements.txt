@@ -16,9 +16,8 @@ python-multipart>=0.0.12
 # Numerics — RAG vector math (embeddings stored/compared as numpy buffers)
 numpy>=1.26,<3
 
-# Search + lightweight parsing
+# HTTP transport and document-preview integration dependencies
 requests>=2.32
-beautifulsoup4>=4.12
 pypdf>=5.0
 
 # Encoding detection — the code-agent reads/edits legacy-encoded source files

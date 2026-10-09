@@ -33,8 +33,6 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
         tmp_path,
         builtin_tool_names=builtin_tools_for_groups(()),
         mcp_server_ids=(),
-        include_ssh=False,
-        include_itops=False,
     )
 
     names = _tool_names(registry)
@@ -154,7 +152,8 @@ def test_planner_preloads_selected_group_before_first_execution_turn(
     ))
 
     assert seen_execution_tools
-    assert {"read_image"} <= seen_execution_tools[0]
+    assert {"resource_process"} <= seen_execution_tools[0]
+    assert "read_image" not in seen_execution_tools[0]
     activation = next(
         event for event in events
         if event.get("type") == "runtime_activation_changed"
@@ -172,12 +171,11 @@ def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
         tmp_path,
         builtin_tool_names=builtin_tools_for_groups(("resources",)),
         mcp_server_ids=(),
-        include_ssh=False,
-        include_itops=False,
     )
 
     names = _tool_names(registry)
-    assert {"resource_process", "read_image"} <= names
+    assert {"resource_process"} <= names
+    assert "read_image" not in names
     assert "file_gen" not in names
     assert {"web_search", "computer", "csv", "memory"}.isdisjoint(names)
 
@@ -227,11 +225,8 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
                 "content": "",
                 "tool_calls": [{
                     "function": {
-                        "name": "ssh_run_ps",
-                        "arguments": {
-                            "host": "media-server",
-                            "script": "Start-Process jellyfin_setup.exe -Wait",
-                        },
+                        "name": "run_bash",
+                        "arguments": {"command": "python admin.py ssh --input args.json"},
                     },
                 }],
             },
@@ -269,9 +264,14 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
         "remote_cleanup_ready": True,
         "text": "Job started in background.",
     }
-    with patch(
+    from app.application.skill_services.ssh import execute_ssh
+
+    def run_skill(root, **kwargs):
+        return execute_ssh(root, "ssh_run_ps", {"host": "media-server", "script": "Start-Process jellyfin_setup.exe -Wait"})
+
+    with patch("app.application.code_agent.tools._dispatch.tool_run_bash", side_effect=run_skill), patch(
         "app.application.code_agent.agent_loop._load_runtime_activation_state",
-        return_value=(set(), {}, {"project", "ssh"}),
+        return_value=(set(), {}, {"project"}),
     ), patch(
         "app.application.code_agent.tools._run.start_background_argv_job",
         return_value=started,
@@ -298,7 +298,7 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
 
     assert len(model_contexts) >= 4
     pid_messages = [message for message in model_contexts[1]
-                    if message.get("role") == "tool" and message.get("name") == "ssh_run_ps"]
+                    if message.get("role") == "tool" and message.get("name") == "run_bash"]
     assert len(pid_messages) == 1
     pid_content = pid_messages[0]["content"]
     assert (
@@ -317,7 +317,7 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
     ssh_event = next(
         event for event in events
         if event.get("type") == "tool_call"
-        and event.get("tool") == "ssh_run_ps"
+        and event.get("tool") == "run_bash"
     )
     assert ssh_event["ok"] is True
     assert ssh_event["status"] == "running"
@@ -473,7 +473,7 @@ def test_explicit_runtime_activation_survives_resume(tmp_path) -> None:
 
     replies = iter([
         {"message": {"content": "", "tool_calls": [{"function": {
-            "name": "capability_load", "arguments": {"group": "itops"},
+            "name": "capability_load", "arguments": {"group": "memory"},
         }}]}},
         {"message": {"content": "Готово.", "tool_calls": []}},
     ])
@@ -510,7 +510,7 @@ def test_explicit_runtime_activation_survives_resume(tmp_path) -> None:
         resume=True,
     ))
 
-    assert "itops_network_inventory" in resumed_tool_names[0]
+    assert "memory" in resumed_tool_names[0]
 
 
 def test_request_base_tools_reach_the_actual_first_turn_registry(tmp_path) -> None:

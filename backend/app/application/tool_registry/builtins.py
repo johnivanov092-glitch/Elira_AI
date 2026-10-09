@@ -23,10 +23,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
         ("recall",      "Recall",       "project", "Search, index or report the project index", 60, 20000, True),
         ("library",     "Library",      "memory",  "Search and read the user's Library documents", 15, 20000, True),
-        ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
         ("calc",        "Calculator",   "math",    "Exact arithmetic, percentages and algebra (no code execution)", 30, 20000, True),
         ("unit_convert", "Unit Convert", "math",   "Exact unit conversion (data, power, length, temperature...)", 15, 5000, True),
-        ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
         ("resource_process", "Resource Inspect", "media", "Inspect metadata of an attached resource by resource_id on local CPU. Content processing uses materialize and mutable skills; no path.", 15, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
@@ -38,8 +36,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Validate and publish an already-produced project file as a downloadable artifact (streaming, hash-bound, no overwrite) via the existing download route", 120, 10000, True),
         ("mcp", "MCP", "system", "List, start, stop and configure MCP servers", 900, 50000, False),
-        ("telegram", "Telegram", "system", "Send a Telegram message or read the bot log", 60, 20000, False),
-        ("itops_registry", "IT Ops Registry", "system", "List or change saved IT Ops assets, profiles and MikroTik routers", 60, 20000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
@@ -53,16 +49,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
         "project_map": ["fs.read"],
         "recall": ["fs.read"],
-        "csv": ["fs.read"],
         "calc": [], "unit_convert": [],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "mcp": ["shell.exec", "net.outbound", "fs.read", "fs.write"],
-        "telegram": ["net.outbound"], "itops_registry": ["fs.write"],
         "memory": ["task.write"], "library": ["fs.read"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
         "run_bash": ["shell.exec"], "run_server": ["shell.exec"],
-        "read_image": ["fs.read", "net.outbound"],
         # Reads authorized resource metadata; content is materialized explicitly.
         "resource_process": ["fs.read"],
         # Reads the run-bound resource blob (fs.read) and writes a new workspace file (fs.write).
@@ -136,227 +129,12 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     return result
 
 
-def _build_ssh_tools() -> list[dict[str, Any]]:
-    """Metadata-only ToolSpec records for the SSH provider's tools (P9.2-FIXUP).
-
-    These exist so the unified executor can describe SSH calls;
-    actual dispatch runs through SshToolProvider, not the registry handler (the
-    handler is a noop). Saved hosts are optional discovery shortcuts; explicit
-    SSH targets are accepted directly by the provider.
-    """
-    def _noop(a: dict) -> dict:
-        return {"ok": False, "error": "ssh tool — execute via code-agent SSH provider, not tool_registry"}
-
-    return [
-        {
-            "name": "ssh_list_hosts", "handler": _noop,
-            "display_name": "SSH List Hosts", "display_name_ru": "SSH хосты",
-            "category": "ssh", "description": "List saved SSH host shortcuts",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 15, "max_output_chars": 10000,
-        },
-        {
-            "name": "ssh_read", "handler": _noop,
-            "display_name": "SSH Read", "display_name_ru": "SSH чтение",
-            "category": "ssh", "description": "Read a file from a remote host via SSH",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound", "fs.read"],
-            "timeout_seconds": 30, "max_output_chars": 50000,
-        },
-        {
-            "name": "ssh_run", "handler": _noop,
-            "display_name": "SSH Run", "display_name_ru": "SSH команда",
-            "category": "ssh", "description": (
-                "Run a shell command on a remote host via SSH; blocking commands "
-                "use managed jobs, while raw PowerShell routes to ssh_run_ps"
-            ),
-            "source": "ssh",
-            "permission": "require_approval", "side_effect": True, "idempotent": False,
-            "scopes": ["net.outbound", "shell.exec"],
-            "timeout_seconds": 120, "max_output_chars": 20000,
-        },
-        {
-            "name": "ssh_write", "handler": _noop,
-            "display_name": "SSH Write", "display_name_ru": "SSH запись",
-            "category": "ssh", "description": "Write content to a remote file via SSH",
-            "source": "ssh",
-            "permission": "require_approval", "side_effect": True, "idempotent": False,
-            "scopes": ["net.outbound", "fs.write"],
-            "timeout_seconds": 60, "max_output_chars": 5000,
-        },
-        {
-            "name": "ssh_run_ps", "handler": _noop,
-            "display_name": "SSH PowerShell", "display_name_ru": "SSH PowerShell",
-            "category": "ssh",
-            "description": (
-                "Run a PowerShell script on a remote Windows host via SSH "
-                "(base64, no quoting); known blocking waits are moved to the "
-                "managed background job runtime with remote PID cleanup"
-            ),
-            "source": "ssh",
-            "permission": "require_approval", "side_effect": True, "idempotent": False,
-            "scopes": ["net.outbound", "shell.exec"],
-            "timeout_seconds": 120, "max_output_chars": 20000,
-        },
-        {
-            "name": "ssh_replace", "handler": _noop,
-            "display_name": "SSH Replace", "display_name_ru": "SSH замена",
-            "category": "ssh",
-            "description": "Replace a literal substring in a remote file via SSH",
-            "source": "ssh",
-            "permission": "require_approval", "side_effect": True, "idempotent": False,
-            "scopes": ["net.outbound", "fs.write"],
-            "timeout_seconds": 60, "max_output_chars": 5000,
-        },
-        {
-            "name": "ssh_assert_contains", "handler": _noop,
-            "display_name": "SSH Assert Contains", "display_name_ru": "SSH проверка (есть)",
-            "category": "ssh",
-            "description": "Assert a remote file contains a substring (verifier)",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound", "fs.read"],
-            "timeout_seconds": 30, "max_output_chars": 5000,
-        },
-        {
-            "name": "ssh_assert_not_contains", "handler": _noop,
-            "display_name": "SSH Assert Not Contains", "display_name_ru": "SSH проверка (нет)",
-            "category": "ssh",
-            "description": "Assert a remote file does NOT contain a substring (verifier)",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound", "fs.read"],
-            "timeout_seconds": 30, "max_output_chars": 5000,
-        },
-        {
-            "name": "ssh_port_check", "handler": _noop,
-            "display_name": "SSH Port Check", "display_name_ru": "SSH порт",
-            "category": "ssh",
-            "description": "Check whether a TCP port is LISTENING on a remote host (verifier)",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 30, "max_output_chars": 5000,
-        },
-        {
-            "name": "ssh_exists", "handler": _noop,
-            "display_name": "SSH Exists", "display_name_ru": "SSH существует",
-            "category": "ssh",
-            "description": "Check whether a file/directory EXISTS on a remote host (verifier)",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound", "fs.read"],
-            "timeout_seconds": 30, "max_output_chars": 5000,
-        },
-        {
-            "name": "ssh_not_exists", "handler": _noop,
-            "display_name": "SSH Not Exists", "display_name_ru": "SSH удалён",
-            "category": "ssh",
-            "description": "Assert a file/directory is GONE on a remote host — cleanup verifier",
-            "source": "ssh",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound", "fs.read"],
-            "timeout_seconds": 30, "max_output_chars": 5000,
-        },
-    ]
 
 
-def _build_itops_tools() -> list[dict[str, Any]]:
-    """Legacy metadata helper for the canonical IT Ops runtime provider."""
-    def _noop(a: dict) -> dict:
-        return {"ok": False, "error": "itops tool — execute via ItopsToolProvider"}
-
-    return [
-        {
-            "name": "itops_ssh_healthcheck", "handler": _noop,
-            "display_name": "IT-Ops SSH Health Check", "display_name_ru": "SSH диагностика",
-            "category": "itops",
-            "description": "Read-only SSH diagnostic (hostname, uname -a, uptime) on an explicit target or saved shortcut",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 60, "max_output_chars": 20000,
-        },
-        {
-            "name": "itops_linux_inventory", "handler": _noop,
-            "display_name": "IT-Ops Linux Inventory", "display_name_ru": "Инвентарь Linux",
-            "category": "itops",
-            "description": "Read-only Linux inventory (os/cpu/mem/disk/net/uptime/blockdev) on a saved verified linux profile",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 120, "max_output_chars": 14000,
-        },
-        {
-            "name": "itops_windows_inventory", "handler": _noop,
-            "display_name": "IT-Ops Windows Inventory", "display_name_ru": "Инвентарь Windows",
-            "category": "itops",
-            "description": "Read-only Windows inventory (os/version/hostname/uptime/disks/services/ip) on a saved verified windows profile",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 120, "max_output_chars": 14000,
-        },
-        {
-            "name": "itops_network_inventory", "handler": _noop,
-            "display_name": "IT-Ops Network Inventory", "display_name_ru": "Инвентарь сети",
-            "category": "itops",
-            "description": "Read-only TCP-connect inventory of an explicit IPv4 CIDR and port set",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 120, "max_output_chars": 14000,
-        },
-        {
-            "name": "itops_systemd_service_inspect", "handler": _noop,
-            "display_name": "IT-Ops systemd Inspect", "display_name_ru": "Инспекция systemd-службы",
-            "category": "itops",
-            "description": "Read-only systemd service inspect for an explicit target and unit",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 120, "max_output_chars": 14000,
-        },
-        {
-            "name": "itops_config_inspect", "handler": _noop,
-            "display_name": "IT-Ops Config Inspect", "display_name_ru": "Инспекция конфигурации",
-            "category": "itops",
-            "description": "Read-only typed inspection of a server-owned config target (no args, no raw content)",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 60, "max_output_chars": 6000,
-        },
-        {
-            "name": "itops_database_inspect", "handler": _noop,
-            "display_name": "IT-Ops Database Inspect", "display_name_ru": "Инспекция базы данных",
-            "category": "itops",
-            "description": "Read-only typed inspection of a server-owned SQLite target (no args, SQL, DSN or row data)",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["fs.read"],
-            "timeout_seconds": 30, "max_output_chars": 10000,
-        },
-        {
-            "name": "itops_mikrotik_inventory", "handler": _noop,
-            "display_name": "IT-Ops MikroTik Inventory", "display_name_ru": "Инвентарь MikroTik",
-            "category": "itops",
-            "description": "Read-only MikroTik RouterOS 6/7 inventory via the configured typed SSH target",
-            "source": "itops",
-            "permission": "auto", "side_effect": False, "idempotent": True,
-            "scopes": ["net.outbound"],
-            "timeout_seconds": 120, "max_output_chars": 14000,
-        },
-    ]
 
 
 def build_builtin_tools() -> list[dict[str, Any]]:
     """Seed metadata for tools owned by the canonical provider registry."""
     return [
         *_build_native_code_agent_tools(),
-        *_build_ssh_tools(),
-        *_build_itops_tools(),
     ]

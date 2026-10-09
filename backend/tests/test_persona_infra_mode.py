@@ -11,8 +11,8 @@ class InfraModeTest(unittest.TestCase):
         mode = PERSONA_MODES.get("Инфраструктура")
         self.assertIsNotNone(mode)
         self.assertIn("ПО ФАКТАМ", mode["overlay"])        # diagnose from facts, not memory
-        self.assertIn("itops_registry", mode["overlay"])
-        self.assertIn("typed", mode["overlay"])
+        self.assertIn("linux-admin", mode["overlay"])
+        self.assertIn("health/inventory", mode["overlay"])
         self.assertIn("режимом Workflow", mode["overlay"])
         self.assertNotIn("ask_user", mode["overlay"])
         self.assertNotIn("allowlist", mode["overlay"])
@@ -39,7 +39,7 @@ class InfraModeTest(unittest.TestCase):
         prompt = build_persona_prompt("Инфраструктура")
         self.assertEqual(prompt, build_persona_prompt("Баланс"))
         guidance = task_guidance_blocks({"itops_network_inventory"})
-        self.assertIn("typed health/inventory", guidance["itops"])
+        self.assertNotIn("itops", guidance)
         self.assertIn("разрешения определяет Workflow", guidance["work"])
 
 

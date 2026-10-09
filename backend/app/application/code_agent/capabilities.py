@@ -23,27 +23,20 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     }),
     "mcp": frozenset({"mcp"}),
     # ssh/itops also switch on their integration provider (PROVIDER_GROUPS).
-    "ssh": frozenset(),
-    "itops": frozenset({"itops_registry"}),
-    "telegram": frozenset({"telegram"}),
     "resources": frozenset({
         "resource_process", "resource_materialize", "resource_publish",
-        "read_image",
     }),
     "memory": frozenset({"memory", "library"}),
-    "math": frozenset({"calc", "unit_convert", "csv"}),
+    "math": frozenset({"calc", "unit_convert"}),
 }
 
 
 CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "project": "project overview (project_map), project index search (recall) and a sub-agent (delegate_task); files and shell are always loaded",
     "mcp": "MCP servers (each has an <id>-mcp skill): list, start/stop, their tools, add or change a server",
-    "ssh": "SSH to saved or explicit hosts: run bash/PowerShell, read/write/replace remote files, port check",
-    "itops": "IT Ops: saved assets, connection profiles, MikroTik routers and typed health/inventory checks",
-    "telegram": "send a Telegram message or read the bot log",
-    "resources": "attachments, vision, generated DOCX/XLSX/PDF and downloads",
+    "resources": "attachment metadata, workspace copies and verified downloads",
     "memory": "long-term facts about the user (memory) and the user's document Library (library)",
-    "math": "unit conversion, money formulas (invoices/VAT/markup/margin/discounts/loans) and CSV table sums; calc is always loaded",
+    "math": "exact arithmetic, calendar and unit conversion; domain calculations use skills",
 }
 
 
@@ -72,7 +65,7 @@ _GENERATED_ARTIFACT_RE = re.compile(
     re.IGNORECASE,
 )
 # Groups whose tools come from an integration provider, by tool-name prefix.
-PROVIDER_GROUPS: dict[str, str] = {"ssh": "ssh_", "itops": "itops_"}
+PROVIDER_GROUPS: dict[str, str] = {}
 
 
 def file_delivery_requested(user_message: str) -> bool:

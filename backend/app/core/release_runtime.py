@@ -93,7 +93,7 @@ def health_fields() -> dict:
 
 
 def _workflow_busy() -> bool:
-    from app.application.telegram.runtime import telegram_bot_status
+    from app.application.skill_services.telegram_runtime import telegram_bot_status
     telegram = telegram_bot_status()
     if telegram.get("running") or telegram.get("stopping"):
         return True

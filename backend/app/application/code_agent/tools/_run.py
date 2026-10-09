@@ -34,7 +34,6 @@ from app.application.code_agent.tools._shell import (
     _new_process_group_kwargs,
     _register_shell_proc,
     _unregister_shell_proc,
-    raw_ssh_redirect,
 )
 
 
@@ -68,6 +67,11 @@ def _agent_child_env(overrides: dict[str, str | None] | None = None) -> dict[str
     override interpreter search paths without mutating the backend environment.
     """
     environment = dict(os.environ)
+    from app.core.config import ROOT_DIR, DATA_DIR
+    environment["ELIRA_BACKEND_ROOT"] = str(ROOT_DIR / "backend")
+    environment["ELIRA_SHARED_ROOT"] = str(ROOT_DIR / "shared")
+    environment["ELIRA_PARENT_RUN_ID"] = str(_CURRENT_RUN_ID.get() or "")
+    environment.setdefault("ELIRA_SKILLS_ROOT", str(DATA_DIR / "skills"))
     # A Python child writing to a pipe or a log file uses the ANSI code page
     # (cp1251), which the console decoder then misreads as OEM cp866: the model
     # got "╟руЁєчър" instead of "Загрузка" in its own job logs. UTF-8 unless the
@@ -142,10 +146,6 @@ def tool_run_bash(
     cleaned_command = (command or "").strip()
     if not cleaned_command:
         return {"text": "ERROR: command is empty", "ok": False}
-    # Raw SSH is allowed under the same approval policy as every other run_bash
-    # command. Keep specialized-tool guidance only as a fallback after a real
-    # non-zero exit; blocking it here produced artificial failures and loops.
-    raw_ssh_hint = raw_ssh_redirect(cleaned_command)
     run_id = _CURRENT_RUN_ID.get()
     # Multi-line inline scripts (python -c "<…>", node -e …) are mangled by
     # cmd.exe /c, so run them via argv with no shell; everything else keeps the
@@ -250,14 +250,15 @@ def tool_run_bash(
         parts.append(f"STDOUT:\n{_truncate_middle(stdout.rstrip(), _SHELL_STDOUT_LIMIT)}")
     if stderr:
         parts.append(f"STDERR:\n{_truncate_middle(stderr.rstrip(), _SHELL_STDERR_LIMIT)}")
-    if proc.returncode not in (0, None) and raw_ssh_hint:
-        parts.append(raw_ssh_hint)
     # exit_code is the shell command's explicit completion contract. Commands
     # such as grep/findstr that use non-zero as a domain result should be handled
     # by their dedicated tools or explicitly normalized by the command itself.
     ok = proc.returncode == 0
-    from app.application.code_agent.skill_result import read_skill_sources
+    from app.application.code_agent.skill_result import read_skill_sources, read_skill_job
     from app.application.code_agent.legacy_sources import format_source
+    skill_job = read_skill_job(stdout, project_root, run_id) if ok else {}
+    if skill_job:
+        recover_background_jobs()
     sources, receipt_error = read_skill_sources(stdout, project_root) if ok else ([], '')
     if receipt_error:
         parts.append(receipt_error)
@@ -266,6 +267,7 @@ def tool_run_bash(
         parts.extend(format_source(source) for source in sources)
     return {
         **({'sources': sources} if sources else {}),
+        **skill_job,
         "ok": ok,
         "error": None if ok else "nonzero_exit",
         "text": "\n".join(parts),
@@ -802,7 +804,7 @@ def _stop_remote_job_process(handle: _ServerHandle) -> dict[str, Any]:
         _persist_remote_cleanup_result(handle, result)
         return result
     try:
-        from app.application.tool_providers.ssh_provider import (
+        from app.application.skill_services.ssh import (
             stop_remote_windows_process_tree,
         )
 
@@ -830,6 +832,7 @@ def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
     """Stop every live process owned by ``run_id``; retain cancelled job audit."""
     if not run_id:
         return []
+    recover_background_jobs()
     with _SERVERS_LOCK:
         owned = [(pid, h) for pid, h in _LIVE_SERVERS.items() if h.run_id == run_id]
     stopped: list[dict[str, Any]] = []
@@ -1020,10 +1023,10 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
         header += f"\n  page title: {title}"
 
     # Vision channel with graceful fallback. Read the PNG bytes and describe via
-    # the same :8004 path read_image uses; if unavailable, return the path +
-    # status so the agent can still retry later with read_image.
+    # the same :8004 path the vision skill uses; if unavailable, return the path +
+    # status so the agent can still retry later with the vision skill.
     try:
-        from app.infrastructure.llm.vision_ocr import describe_image
+        from app.application.skill_services.vision import describe_image
     except Exception:
         describe_image = None  # type: ignore[assignment]
 
@@ -1040,12 +1043,12 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
             )
         return (
             f"{header}\n  (vision returned no description — service "
-            f"unreachable or empty. Try read_image('{shot_path}') to retry.)"
+            f"unreachable or empty. Try the vision skill on {shot_path} to retry.)"
         )
 
     return (
         f"{header}\n  (vision support could not be loaded; call "
-        f"read_image('{shot_path}') to retry.)"
+        f"the vision skill on {shot_path} to retry.)"
     )
 
 

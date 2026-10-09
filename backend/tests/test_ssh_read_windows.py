@@ -4,7 +4,7 @@ import base64
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.application.tool_providers import ssh_provider
+from app.application.skill_services import ssh as ssh_provider
 
 
 def _proc(returncode: int, stdout: bytes = b"", stderr: bytes = b"") -> MagicMock:

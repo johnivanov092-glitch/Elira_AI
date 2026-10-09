@@ -8,11 +8,11 @@ The runtime resolves the id and returns a bounded local-CPU result.
 from __future__ import annotations
 
 from typing import Any
+from elira_common.files import sha256_file as document_sha256
 
-from app.application.code_agent.document_validation import (
+from app.application.skill_services.documents import (
     DOCUMENT_QA_ATTEMPT_LIMIT,
     clear_document_qa_failures,
-    document_sha256,
     document_qa_attempts,
     normalize_expected_page_count,
     record_document_qa_failure,
@@ -95,9 +95,9 @@ _MATERIALIZE_ERROR_TEXT = {
 }
 
 
-def _materialize_refusal(code: str) -> dict[str, Any]:
+def _resource_refusal(messages: dict[str, str], code: str) -> dict[str, Any]:
     """A stable refusal that never echoes the model input or any absolute path."""
-    return {"ok": False, "error": code, "text": f"ERROR: {_MATERIALIZE_ERROR_TEXT[code]}"}
+    return {"ok": False, "error": code, "text": f"ERROR: {messages[code]}"}
 
 
 def _safe_basename(name: str) -> str:
@@ -146,19 +146,19 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
 
     resource_id = str(resource_id or "").strip()
     if extra:
-        return _materialize_refusal("unsupported_arguments")
+        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "unsupported_arguments")
     record = resource_store.get_record(resource_id)
     if record is None:
-        return _materialize_refusal("resource_not_found")
+        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "resource_not_found")
 
     root = _Path(str(project_root)).resolve()
     raw_destination = str(destination_name or "")
     requested = raw_destination if raw_destination.strip() else _safe_basename(record.original_name)
     dest = _safe_dest(root, requested)
     if dest is None:
-        return _materialize_refusal("invalid_destination")
+        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "invalid_destination")
     if dest.exists():
-        return _materialize_refusal("destination_exists")
+        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "destination_exists")
     try:
         display_path = dest.relative_to(root).as_posix()
     except ValueError:
@@ -172,9 +172,9 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
         )
     except resource_store.ResourceError as exc:
         code = exc.reason if exc.reason in _MATERIALIZE_ERROR_TEXT else "materialize_failed"
-        return _materialize_refusal(code)
+        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, code)
     except Exception:  # noqa: BLE001 — never surface a raw path/exception
-        return _materialize_refusal("materialize_failed")
+        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "materialize_failed")
 
     return {
         "ok": True,
@@ -209,7 +209,7 @@ _PUBLISH_ERROR_TEXT = {
 }
 
 def _document_qa_refusal(code: str, qa: dict[str, Any]) -> dict[str, Any]:
-    refusal = _publish_refusal(code)
+    refusal = _resource_refusal(_PUBLISH_ERROR_TEXT, code)
     issues = qa.get("issues") if isinstance(qa.get("issues"), list) else []
     issue_text = "; ".join(
         f"{str(item.get('code') or 'issue')}: {str(item.get('message') or '').strip()}"
@@ -231,9 +231,6 @@ def _document_qa_refusal(code: str, qa: dict[str, Any]) -> dict[str, Any]:
     return refusal
 
 
-def _publish_refusal(code: str) -> dict[str, Any]:
-    """A stable refusal that never echoes the model input or any absolute path."""
-    return {"ok": False, "error": code, "text": f"ERROR: {_PUBLISH_ERROR_TEXT[code]}"}
 
 
 def _safe_download_name(name: str) -> str | None:
@@ -269,28 +266,28 @@ def tool_resource_publish(
     from app.core.config import DATA_DIR, GENERATED_DIR
 
     if extra:
-        return _publish_refusal("unsupported_arguments")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "unsupported_arguments")
     try:
         expected_page_count = normalize_expected_page_count(expected_page_count)
     except ValueError:
-        return _publish_refusal("invalid_expected_page_count")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "invalid_expected_page_count")
     root = _Path(str(project_root)).resolve()
     src = _safe_dest(root, str(project_path or ""))
     if src is None:
-        return _publish_refusal("invalid_source")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "invalid_source")
     if not src.is_file():                          # rejects dir / device / missing
-        return _publish_refusal("source_not_file")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "source_not_file")
 
     requested = str(download_name or "")
     chosen = requested if requested.strip() else _safe_basename(src.name)
     name = _safe_download_name(chosen)
     if name is None:
-        return _publish_refusal("invalid_download_name")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "invalid_download_name")
     # The download namespace is shared by all chats and never overwritten: find a
     # taken name BEFORE the expensive render/page-count/vision QA (publish_copy
     # still re-checks atomically).
     if (_Path(GENERATED_DIR) / name).exists():
-        return _publish_refusal("destination_exists")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "destination_exists")
 
     document_qa: dict[str, Any] | None = None
     if src.suffix.lower() in {".docx", ".pdf"}:
@@ -323,6 +320,9 @@ def tool_resource_publish(
             src,
             expected_page_count=expected_page_count,
         ))
+        if document_qa.get("sha256") != source_sha256:
+            document_qa.update(status="unverified", sha256=source_sha256,
+                               issues=[{"code": "qa_identity_mismatch", "message": "QA result does not match the input file"}])
         document_qa["target"] = name
         qa_status = str(document_qa.get("status") or "unverified")
         if qa_status != "passed":
@@ -355,9 +355,9 @@ def tool_resource_publish(
         )
     except resource_store.ResourceError as exc:
         code = exc.reason if exc.reason in _PUBLISH_ERROR_TEXT else "publish_failed"
-        return _publish_refusal(code)
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, code)
     except Exception:  # noqa: BLE001 — never surface a raw path/exception
-        return _publish_refusal("publish_failed")
+        return _resource_refusal(_PUBLISH_ERROR_TEXT, "publish_failed")
 
     try:
         display_path = src.relative_to(root).as_posix()

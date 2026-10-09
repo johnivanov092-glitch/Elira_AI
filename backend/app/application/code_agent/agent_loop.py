@@ -1076,6 +1076,7 @@ def _stream_code_agent_core(
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
                 parsed_args = _without_runtime_arguments(ToolRegistry._coerce_args(raw_args))
+                runtime_context: dict[str, str] = {}
                 if read_only and not delegate_tool_allowed(name, parsed_args):
                     denial = "Delegated inspection is read-only; this tool or operation is outside its scope."
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
@@ -1116,10 +1117,10 @@ def _stream_code_agent_core(
                         if len(_resource_matches) == 1:
                             _resource_ref = _resource_matches[0]
                             _read_resource_resolved = True
-                            parsed_args["_runtime_resource_id"] = str(
+                            runtime_context["resource_id"] = str(
                                 _resource_ref["resource_id"]
                             )
-                            parsed_args["_runtime_resource_name"] = str(
+                            runtime_context["resource_name"] = str(
                                 _resource_ref.get("name") or ""
                             )
                     if (
@@ -1127,7 +1128,7 @@ def _stream_code_agent_core(
                         and not _read_resource_resolved
                         and _read_file_failures.get(_read_requested_path, 0) >= 2
                     ):
-                        parsed_args["_runtime_refuse_reason"] = (
+                        runtime_context["refuse_reason"] = (
                             "Сначала используй glob, ResourceRef или другой подтверждённый путь."
                         )
                 if name in {"ask_user", "workflow_request"}:
@@ -1224,6 +1225,7 @@ def _stream_code_agent_core(
                     project_scope_id=scope_id,
                     tool_name=name,
                     args=parsed_args,
+                    runtime_context=runtime_context,
                     source="code_agent",
                     permission_mode=permission_mode,
                     workflow_approved=workflow_approval_matches(

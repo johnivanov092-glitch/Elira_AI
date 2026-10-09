@@ -268,7 +268,7 @@ def seed_builtin_tools() -> int:
 
     # Retire only app-owned inventory; a same-named plugin remains user-owned.
     with _conn() as con:
-        for name in ("file_gen", "finance_calc", "computer", "web_search", "web_fetch", "web_query", "browser", "http_api"):
+        for name in ("file_gen", "finance_calc", "computer", "web_search", "web_fetch", "web_query", "browser", "http_api", "csv", "read_image", "telegram", "itops_registry"):
             row = con.execute(
                 "SELECT name FROM tools WHERE name = ? AND source = 'code_agent'", (name,)
             ).fetchone()
@@ -276,6 +276,11 @@ def seed_builtin_tools() -> int:
                 con.execute("DELETE FROM tools WHERE name = ? AND source = 'code_agent'", (name,))
                 _handlers.pop(name, None)
 
+    with _conn() as con:
+        retired = con.execute("SELECT name FROM tools WHERE source IN ('ssh', 'itops')").fetchall()
+        con.execute("DELETE FROM tools WHERE source IN ('ssh', 'itops')")
+        for row in retired:
+            _handlers.pop(str(row[0]), None)
     created = 0
     for tool_def in build_builtin_tools():
         tool_copy = dict(tool_def)

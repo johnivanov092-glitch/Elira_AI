@@ -363,8 +363,8 @@ def _normalize_core_search_results(
     ]
 
 
-def _normalize_core_news_results(
-    raw_news: list[dict[str, Any]],
+def _normalize_news_results(
+    raw_news: list[dict[str, Any]], *, include_engine: bool = True,
 ) -> list[dict[str, Any]]:
     news_results: list[dict[str, Any]] = []
     for item in raw_news:
@@ -377,29 +377,12 @@ def _normalize_core_news_results(
                     "snippet": item.get("body", ""),
                     "date": item.get("date", ""),
                     "source": item.get("source", ""),
-                    "engine": item.get("engine", "searxng"),
+                    **({"engine": item.get("engine", "searxng")} if include_engine else {}),
                 }
             )
     return news_results
 
 
-def _normalize_legacy_news_results(
-    raw_news: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    news_results: list[dict[str, Any]] = []
-    for item in raw_news:
-        url = item.get("href") or item.get("url") or ""
-        if url and url.startswith("http"):
-            news_results.append(
-                {
-                    "title": item.get("title", ""),
-                    "url": url,
-                    "snippet": item.get("body", ""),
-                    "date": item.get("date", ""),
-                    "source": item.get("source", ""),
-                }
-            )
-    return news_results
 
 
 def _select_legacy_fetch_targets(
@@ -563,7 +546,7 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
             local_first=local_first,
             preferred_domains=preferred_domains,
         )
-        news_results = _normalize_core_news_results(raw_news)
+        news_results = _normalize_news_results(raw_news)
 
     fetch_candidates = _select_fetch_candidates(normalized_search)
     deep_content, fetched_urls = _fetch_deep_content(fetch_candidates, core_fetch)
@@ -675,7 +658,7 @@ def do_web_search_legacy(
     news_error: str | None = None
     try:
         news_raw = core_search_news(search_query, max_results=5)  # type: ignore[possibly-undefined]
-        news_results = _normalize_legacy_news_results(news_raw)
+        news_results = _normalize_news_results(news_raw, include_engine=False)
         if news_results and "searxng" not in engines_used:
             engines_used.append("searxng")
     except Exception as exc:

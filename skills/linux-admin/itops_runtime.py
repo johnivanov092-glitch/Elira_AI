@@ -27,7 +27,7 @@ import logging
 from typing import Any
 
 from app.infrastructure.encoding import decode_console
-from app.application.tool_providers.ssh_provider import _ssh_args, run_registered_process
+from app.application.skill_services.ssh import _ssh_args, run_registered_process
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +391,7 @@ def tool_itops_network_inventory(
     'unknown', never 'nothing found'.
     """
     from app.application.code_agent.tools import get_current_run_id, run_was_stopped
-    from app.application.it_ops import net_inventory as ni
+    from app.application.skill_services import net_inventory as ni
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
@@ -498,7 +498,7 @@ def tool_itops_systemd_service_inspect(
     NO systemctl status / journalctl / unit-file content, and NO start/stop/restart.
     """
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import systemd_inspect as si
+    from app.application.skill_services import systemd_inspect as si
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
@@ -562,7 +562,7 @@ def tool_itops_config_inspect(
 ) -> dict[str, Any]:
     """Read one named config target on any SSH target and persist its projection."""
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import config_inspect as ci
+    from app.application.skill_services import config_inspect as ci
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
@@ -641,7 +641,7 @@ def tool_itops_database_inspect(
     no path/DSN/SQL, schema details or row contents are persisted.
     """
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import database_inspect as di
+    from app.application.skill_services import database_inspect as di
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
@@ -731,230 +731,7 @@ def tool_itops_database_inspect(
 def _tool_itops_mikrotik_inventory(**kwargs: Any) -> dict[str, Any]:
     """Thin dispatch shim: the full adapter (format check, fixed MCP
     call plan, projection, evidence, bounded text) lives in
-    app.application.it_ops.mikrotik_runtime. Imported lazily so the provider
+    app.application.skill_services.mikrotik. Imported lazily so the provider
     module never grows a transport dependency."""
-    from app.application.it_ops.mikrotik_runtime import tool_itops_mikrotik_inventory
+    from app.application.skill_services.mikrotik import tool_itops_mikrotik_inventory
     return tool_itops_mikrotik_inventory(**kwargs)
-
-
-_DISPATCH = {
-    "itops_ssh_healthcheck": tool_itops_ssh_healthcheck,
-    "itops_linux_inventory": tool_itops_linux_inventory,
-    "itops_windows_inventory": tool_itops_windows_inventory,
-    "itops_network_inventory": tool_itops_network_inventory,
-    "itops_systemd_service_inspect": tool_itops_systemd_service_inspect,
-    "itops_config_inspect": tool_itops_config_inspect,
-    "itops_database_inspect": tool_itops_database_inspect,
-    "itops_mikrotik_inventory": _tool_itops_mikrotik_inventory,
-}
-
-
-class ItopsToolProvider:
-    """ToolProvider for Workflow-controlled IT Ops runtimes."""
-
-    name = "itops"
-
-    def is_enabled(self) -> bool:
-        return True
-
-    def get_schemas(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_ssh_healthcheck",
-                    "description": (
-                        "Read-only SSH diagnostic on any target: runs a "
-                        "fixed set of harmless commands (hostname, uname -a, uptime) and returns "
-                        "their output. Pass target directly; profile_id is an optional saved shortcut."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "profile_id": {
-                                "type": "string",
-                                "description": "Optional saved connection shortcut.",
-                            },
-                            "target": {
-                                "type": "string",
-                                "description": "SSH alias, hostname, IP address, or user@host.",
-                            },
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_linux_inventory",
-                    "description": (
-                        "Read-only Linux inventory on any SSH target: runs a fixed "
-                        "set of harmless commands (hostname, uname, /etc/os-release, lscpu, free, df, "
-                        "ip addr, uptime, lsblk, failed systemd units) and returns their output. "
-                        "Pass target directly; profile_id is an optional saved shortcut."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "profile_id": {
-                                "type": "string",
-                                "description": "Optional saved connection shortcut.",
-                            },
-                            "target": {
-                                "type": "string",
-                                "description": "SSH alias, hostname, IP address, or user@host.",
-                            },
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_windows_inventory",
-                    "description": (
-                        "Read-only Windows inventory on any SSH target: runs a "
-                        "fixed set of harmless PowerShell queries (OS/version, hostname, uptime, "
-                        "logical disks, running services, IP config) and returns their output. "
-                        "Pass target directly; profile_id is an optional saved shortcut."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "profile_id": {
-                                "type": "string",
-                                "description": "Optional saved connection shortcut.",
-                            },
-                            "target": {
-                                "type": "string",
-                                "description": "SSH alias, hostname, IP address, or user@host.",
-                            },
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_network_inventory",
-                    "description": (
-                        "Read-only TCP-connect inventory of any canonical IPv4 CIDR. "
-                        "Ports and concurrency are caller-controlled; there is no product host cap "
-                        "or whole-scan timeout. The scan runs until complete or Workflow Stop."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "cidr": {"type": "string", "description": "Canonical IPv4 CIDR."},
-                            "ports": {
-                                "type": "array",
-                                "items": {"type": "integer", "minimum": 1, "maximum": 65535},
-                                "description": "TCP ports; defaults to common services.",
-                            },
-                            "connect_timeout": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                                "description": "Per-connection transport timeout in seconds.",
-                            },
-                            "concurrency": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "description": "Concurrent connection attempts.",
-                            },
-                        },
-                        "required": ["cidr"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_systemd_service_inspect",
-                    "description": (
-                        "Read-only systemd service inspect: runs one fixed `systemctl show` for a "
-                        "unit on any SSH target, and returns its "
-                        "state (active/sub state, main pid, last exit status, restart count, unit-file "
-                        "state and path). No status text, journal, unit-file content, or changes."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "target": {"type": "string", "description": "SSH alias, hostname, IP, or user@host."},
-                            "profile_id": {"type": "string"},
-                            "unit": {"type": "string"},
-                        },
-                        "required": ["unit"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_config_inspect",
-                    "description": (
-                        "Read-only typed configuration inspect for a named config on any SSH target. "
-                        "The runtime resolves path, format and projected keys. Returns "
-                        "hash/size and typed settings; "
-                        "never raw config text or unknown values. One call per run."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "target": {"type": "string", "description": "SSH alias, hostname, IP, or user@host."},
-                            "profile_id": {"type": "string"},
-                            "config_id": {"type": "string"},
-                        },
-                        "required": ["config_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_database_inspect",
-                    "description": (
-                        "Read-only inspection of a registered local database target. The runtime "
-                        "resolves path, engine and query profile by database_id. Returns bounded "
-                        "schema metadata, migration and "
-                        "backup state, and aggregate counts; never row contents, SQL or a "
-                        "connection string. One call per run."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"database_id": {"type": "string"}},
-                        "required": ["database_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_mikrotik_inventory",
-                    "description": (
-                        "Read-only RouterOS 6/7 inventory via typed non-interactive SSH: system, "
-                        "identity, interfaces, IP addresses, routes, DNS and DHCP servers. Takes an "
-                        "explicit registered router_id; the fixed command plan cannot perform writes."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"router_id": {"type": "string"}},
-                        "required": ["router_id"],
-                    },
-                },
-            },
-        ]
-
-    def owns(self, tool_name: str) -> bool:
-        return tool_name in _DISPATCH
-
-    def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-        handler = _DISPATCH.get(tool_name)
-        if handler is None:
-            return {"ok": False, "text": f"ERROR: unknown itops tool '{tool_name}'"}
-        try:
-            return handler(**args)
-        except TypeError as exc:
-            return {"ok": False, "text": f"ERROR: bad arguments to {tool_name}: {exc}"}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("itops tool %s crashed", tool_name)
-            return {"ok": False, "text": f"ERROR: {exc}"}

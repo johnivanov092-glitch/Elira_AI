@@ -15,6 +15,7 @@ Contract:
     schema raises StoreUnavailable and does NOT bump the version.
 """
 from __future__ import annotations
+from app.utils.json_values import loads_json as _loads
 
 import json
 import os
@@ -491,13 +492,6 @@ def _dumps(v: Any) -> str:
     return json.dumps(v if v is not None else [], ensure_ascii=False)
 
 
-def _loads(raw: Any, default: Any) -> Any:
-    if raw in (None, ""):
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return default
 
 
 # ── assets ──────────────────────────────────────────────────────────────────

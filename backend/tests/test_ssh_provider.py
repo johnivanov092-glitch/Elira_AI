@@ -46,9 +46,8 @@ class SshProviderTestBase(unittest.TestCase):
         from app.application.tool_providers import ssh_acl
 
         importlib.reload(ssh_acl)
-        from app.application.tool_providers import ssh_provider
+        from app.application.skill_services import ssh as ssh_provider
 
-        importlib.reload(ssh_provider)
         self.ssh_acl = ssh_acl
         self.ssh = ssh_provider
 
@@ -355,7 +354,8 @@ class SshExecutionTest(SshProviderTestBase):
 
 class SshProviderIntegrationTest(SshProviderTestBase):
     def test_provider_auto_backgrounds_blocking_ssh_without_shell_quoting(self) -> None:
-        provider = self.ssh.SshToolProvider(Path(self._tmp.name))
+        from functools import partial
+        dispatch_skill = partial(self.ssh.execute_ssh, Path(self._tmp.name))
         started = {
             "ok": True,
             "status": "running",
@@ -372,7 +372,7 @@ class SshProviderIntegrationTest(SshProviderTestBase):
             "app.application.code_agent.tools._run.start_background_argv_job",
             return_value=started,
         ) as background:
-            result = provider.dispatch(
+            result = dispatch_skill(
                 "ssh_run_ps",
                 {
                     "host": "media-server",
@@ -420,7 +420,8 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         self.assertIn('"action": "stop"', result["text"])
 
     def test_provider_auto_backgrounds_blocking_posix_ssh_without_cleanup(self) -> None:
-        provider = self.ssh.SshToolProvider(Path(self._tmp.name))
+        from functools import partial
+        dispatch_skill = partial(self.ssh.execute_ssh, Path(self._tmp.name))
         with patch(
             "app.application.code_agent.tools._run.start_background_argv_job",
             return_value={
@@ -431,7 +432,7 @@ class SshProviderIntegrationTest(SshProviderTestBase):
                 "text": "Job started in background.",
             },
         ) as background:
-            result = provider.dispatch(
+            result = dispatch_skill(
                 "ssh_run",
                 {
                     "host": "linux-server",
@@ -448,11 +449,12 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         )
 
     def test_raw_powershell_wait_redirects_qwen_to_typed_ssh_tool(self) -> None:
-        provider = self.ssh.SshToolProvider(Path(self._tmp.name))
+        from functools import partial
+        dispatch_skill = partial(self.ssh.execute_ssh, Path(self._tmp.name))
         with patch(
             "app.application.code_agent.tools._run.start_background_argv_job",
         ) as background:
-            result = provider.dispatch(
+            result = dispatch_skill(
                 "ssh_run",
                 {
                     "host": "media-server",
@@ -470,44 +472,22 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         self.assertEqual(result["missing_required_arguments"], ["script"])
         self.assertIn('"recommended_tool": "ssh_run_ps"', result["text"])
 
-    def test_command_schemas_explain_background_redirect_contract(self) -> None:
-        schemas = {
-            item["function"]["name"]: item["function"]
-            for item in self.ssh.SshToolProvider().get_schemas()
-        }
+    def test_scenario_documents_background_redirect_contract(self) -> None:
+        text = (ROOT / "skills/linux-admin/scenarios.md").read_text(encoding="utf-8")
+        self.assertIn("run_server", text)
+        self.assertIn("ssh_run_ps", text)
 
-        for name in ("ssh_run", "ssh_run_ps"):
-            with self.subTest(tool=name):
-                description = schemas[name]["description"]
-                self.assertIn("needs_background", description)
-                self.assertIn("run_server", description)
+    def test_skill_keeps_ssh_scenarios_without_native_provider(self) -> None:
+        self.assertEqual(set(self.ssh._DISPATCH), {"ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace", "ssh_port_check", "ssh_list_hosts"})
 
-    def test_provider_is_always_enabled_and_exposes_tools(self) -> None:
-        provider = self.ssh.SshToolProvider()
-        self.assertTrue(provider.is_enabled())
-        names = {schema["function"]["name"] for schema in provider.get_schemas()}
-        self.assertEqual(
-            names,
-            {
-                "ssh_run",
-                "ssh_read",
-                "ssh_write",
-                "ssh_run_ps",
-                "ssh_replace",
-                "ssh_port_check",
-                "ssh_list_hosts",
-            },
-        )
-
-    def test_registry_includes_ssh_without_saved_hosts(self) -> None:
-        from app.application.tool_providers import ToolRegistry
-
-        registry = ToolRegistry([self.ssh.SshToolProvider()])
-        self.assertIn("ssh_run", registry.known_tools())
-        self.assertIn("ssh_list_hosts", registry.known_tools())
+    def test_registry_does_not_expose_retired_ssh_tools(self) -> None:
+        from app.application.tool_providers import build_runtime_tool_registry
+        registry = build_runtime_tool_registry(Path(self._tmp.name), mcp_server_ids=())
+        self.assertNotIn("ssh_run", registry.known_tools())
+        self.assertNotIn("ssh_list_hosts", registry.known_tools())
 
     def test_unknown_tool_returns_structured_error(self) -> None:
-        result = self.ssh.SshToolProvider().dispatch("ssh_telekinesis", {})
+        result = self.ssh.execute_ssh(Path(self._tmp.name), "ssh_telekinesis", {})
         self.assertIn("ERROR", result["text"])
 
 

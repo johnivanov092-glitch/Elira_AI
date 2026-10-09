@@ -82,8 +82,9 @@ def test_runtime_bound_resource_requires_materialization_without_content_lookup(
     import pytest
     from app.application.media import resource_store
     monkeypatch.setattr(resource_store, "read_bytes", lambda _: pytest.fail("resource contents read"))
-    result = tool_read_file(tmp_path, path="attachment.docx", _runtime_resource_id="a" * 32,
-                            _runtime_resource_name="attachment.docx")
+    from app.application.agent_kernel.runtime_context import bind_runtime_context
+    with bind_runtime_context({"resource_id": "a" * 32, "resource_name": "attachment.docx"}):
+        result = tool_read_file(tmp_path, path="attachment.docx")
     assert result["ok"] is False and result["error"] == "resource_requires_materialize"
     assert result["resolved_from_resource"] is True
     assert result["resource_id"] == "a" * 32

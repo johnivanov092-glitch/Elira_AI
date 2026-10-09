@@ -85,7 +85,7 @@ def tool_itops_mikrotik_inventory(
             "error": "mikrotik_ssh_target_not_registered",
         }
     if runner is None:
-        from app.application.tool_providers.ssh_provider import tool_ssh_run
+        from app.application.skill_services.ssh import tool_ssh_run
 
         runner = tool_ssh_run
     result = runner(

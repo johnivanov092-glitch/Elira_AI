@@ -895,7 +895,8 @@ def discover_capabilities(*, model: str, tools: list[str]) -> dict[str, Any]:
     """Report configured capabilities without probing or inventing endpoints."""
     from app.application.code_agent.tool_schemas import build_tool_schemas
     from app.infrastructure.llm.openai_compatible import local_embed_config, local_llm_config
-    from app.infrastructure.llm.vision_ocr import ocr_config, vision_config
+    from app.infrastructure.llm.vision_ocr import ocr_config
+    from app.application.skill_services.vision import vision_config
 
     known_tools = set(tools)
     known_tools.update(

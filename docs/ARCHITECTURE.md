@@ -657,3 +657,29 @@ npm --prefix frontend run typecheck
 npm --prefix frontend run build
 backend\.venv\Scripts\python.exe -m pytest -q
 ```
+
+
+### Additional data ownership records (skill extraction, 2026-10-09)
+
+- `run_history.db`: application run-history index; application-owned, same retention
+  as saved runs, no credentials. The existing service is its only writer.
+- `agent_registry.db`: legacy agent metadata included in explicit portable vault
+  backups; owner is the agent registry. Restore uses the fixed allowlist, not paths
+  supplied by backup contents. Retained until the user removes the corresponding data.
+- `snapshot.sqlite3`: temporary transaction-consistent copy used by portable vault
+  export; owned by that export's TemporaryDirectory and removed on scope exit.
+- `snapshot.db`: temporary read-only inspection snapshot in linux-admin's database
+  scenario, scoped to the invocation; not an additional persistent database.
+
+### Mutable skill integrations
+
+SSH/IT Ops scenarios live in linux-admin and network-dns-tls; shared stores, saved
+connection profiles, secrets and process bookkeeping remain platform services.
+CSV lives in data-analysis, image interpretation in vision, Telegram behavior in
+telegram, document rendering/QA in document-create. `skill_services` contains only
+module adapters so UI preview, bot lifecycle and cleanup reuse the installed skill
+implementation. There is no separate model tool registry or permission layer.
+Model requests run the skill CLI through the existing run_bash/run_server path.
+`ELIRA_BACKEND_ROOT` identifies shared platform services for child processes;
+`ELIRA_SKILLS_ROOT` identifies the mutable skill tree. Missing installed modules fail
+explicitly; factory fallback is only used when that skill has not been installed.

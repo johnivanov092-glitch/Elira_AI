@@ -5,6 +5,7 @@ passed. This module binds structural checks, rendered page count, and an
 independent vision inspection to the exact SHA-256 later published to the user.
 """
 from __future__ import annotations
+from elira_common.files import sha256_file as document_sha256
 
 import base64
 import hashlib
@@ -54,13 +55,6 @@ def _issue(code: str, message: str) -> dict[str, str]:
     return {"code": code, "message": message}
 
 
-def document_sha256(path: str | Path) -> str:
-    path = Path(path)
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def normalize_expected_page_count(value: Any) -> int | None:
@@ -332,6 +326,7 @@ _PREVIEW_LOCK = Lock()
 
 def document_preview(source: Path, cache_dir: Path) -> Path:
     """Render immutable source bytes once; the original remains downloadable."""
+    source, cache_dir = Path(source), Path(cache_dir)
     if not _PREVIEW_LOCK.acquire(timeout=90):
         raise RuntimeError("Document renderer is busy")
     try:
@@ -396,7 +391,7 @@ def _inspect_pages(pdf_path: Path, pages: int) -> tuple[str, list[dict[str, str]
     try:
         from pdf2image import convert_from_path
         from app.application.pdf.poppler import poppler_options
-        from app.infrastructure.llm.vision_ocr import describe_image
+        from app.application.skill_services.vision import describe_image
 
         images = convert_from_path(str(pdf_path), dpi=120, fmt="png", **poppler_options())
     except Exception:  # noqa: BLE001 - dependency/provider details stay in logs

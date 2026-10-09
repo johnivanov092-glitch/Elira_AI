@@ -9,6 +9,8 @@ Endpoints:
 """
 from __future__ import annotations
 
+from app.utils.json_values import object_dict
+
 import json
 import hashlib
 import logging
@@ -79,8 +81,6 @@ def _base_tools_for_request(
         return configured
     tools = list(configured if configured is not None else _CODE_AGENT_BASE_TOOLS)
     tools.append("resource_process")
-    if any(str(ref.get("kind") or "") == "image" for ref in resource_refs):
-        tools.append("read_image")
     return tuple(dict.fromkeys(tools))
 
 
@@ -197,8 +197,8 @@ def _inject_resource_context(
         if str(ref.get("kind") or "") == "image":
             lines.append(
                 "[ATTACHED IMAGE ROUTE: this attachment is not a project file path. "
-                f"Call read_image(resource_id=\"{ref['resource_id']}\") to describe it. "
-                "Do not call read_file or read_image(path=...) for its display name, "
+                f"Use the vision skill describe scenario with resource_id=\"{ref['resource_id']}\". "
+                "Do not use its display name as a filesystem path, "
                 "and never substitute another file.]"
             )
         lines.append(json.dumps({
@@ -563,9 +563,7 @@ def _stream_with_workflow_requests(
                     kind=str(request.get("kind") or "input"),
                     message=str(request.get("message") or ""),
                     schema=(
-                        dict(request.get("schema"))
-                        if isinstance(request.get("schema"), dict)
-                        else {}
+                        object_dict(request.get("schema"))
                     ),
                     sensitive=bool(request.get("sensitive")),
                     provider_ref=str(event.get("response_id") or ""),
@@ -1017,6 +1015,7 @@ def watcher_status_endpoint(project_root: Optional[str] = None) -> dict[str, Any
     return watcher_status(project_root)
 
 
+@router.post("/web-corpus/promote")
 @router.delete("/web-corpus/{run_id}")
 def web_corpus_cleanup(run_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=410, detail="Web corpus moved to data/skills/web-research")
@@ -1027,9 +1026,6 @@ class WebCorpusPromoteRequest(BaseModel):
     doc_id: str
 
 
-@router.post("/web-corpus/promote")
-def web_corpus_promote(payload: WebCorpusPromoteRequest) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="Web corpus moved to data/skills/web-research")
 
 
 @router.get("/servers")

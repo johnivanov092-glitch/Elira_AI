@@ -54,3 +54,9 @@ def tool_telegram(
             chat_id=int(chat_id) if chat_id is not None else None,
         ))
     return {"ok": False, "error": "unknown_action", "text": "ERROR: action должен быть send или messages."}
+
+def send(chat_id: int | None = None, text: str = "", parse_mode: str = "Markdown") -> dict[str, Any]:
+    return tool_telegram(action="send", chat_id=chat_id, text=text, parse_mode=parse_mode)
+
+def messages(chat_id: int | None = None, limit: int = 50) -> dict[str, Any]:
+    return tool_telegram(action="messages", chat_id=chat_id, limit=limit)

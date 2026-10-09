@@ -11,7 +11,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.code_agent.run_journal import discover_capabilities  # noqa: E402
-from app.infrastructure.llm.vision_ocr import ocr_config, vision_config  # noqa: E402
+from app.infrastructure.llm.vision_ocr import ocr_config
+from app.application.skill_services.vision import vision_config  # noqa: E402
 
 
 def test_vision_and_server_ocr_are_configured_without_feature_flags() -> None:

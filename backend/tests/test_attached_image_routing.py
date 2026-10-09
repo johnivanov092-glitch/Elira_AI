@@ -15,7 +15,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.api.routes import code_agent_routes as routes  # noqa: E402
 from app.application.code_agent.tool_schemas import build_tool_schemas  # noqa: E402
 from app.application.code_agent.tools._files import tool_read_file  # noqa: E402
-from app.application.code_agent.tools._vision import tool_read_image  # noqa: E402
+from app.application.skill_services.image import tool_read_image  # noqa: E402
 from app.application.media import resource_store  # noqa: E402
 
 
@@ -32,7 +32,7 @@ def test_image_resource_tools_are_available_without_tool_search() -> None:
 
     assert tools is not None
     assert "resource_process" in tools
-    assert "read_image" in tools
+    assert "read_image" not in tools
 
 
 def test_image_resource_context_points_to_bound_id_not_project_path() -> None:
@@ -47,7 +47,7 @@ def test_image_resource_context_points_to_bound_id_not_project_path() -> None:
 
     block = routes._inject_resource_context("describe it", refs)
 
-    assert f'read_image(resource_id="{rid}")' in block
+    assert "vision skill describe" in block and f'resource_id="{rid}"' in block
     assert "not a project file path" in block
     assert "never substitute another file" in block
 
@@ -62,7 +62,7 @@ def test_read_image_uses_bytes_from_durable_resource_id() -> None:
     )
     with tempfile.TemporaryDirectory() as tmp, \
             mock.patch(
-                "app.infrastructure.llm.vision_ocr.describe_image",
+                "app.application.skill_services.vision.describe_image",
                 return_value="the attached screenshot",
             ) as describe:
         # A stale project image must not be consulted when resource_id is used.
@@ -83,7 +83,7 @@ def test_read_image_accepts_durable_resource_without_run_binding() -> None:
         data=b"\x89PNG\r\n\x1a\nimage",
     )
     with mock.patch(
-        "app.infrastructure.llm.vision_ocr.describe_image",
+        "app.application.skill_services.vision.describe_image",
         return_value="durable image",
     ) as describe:
         out = tool_read_image(Path("."), resource_id=rec.resource_id)
@@ -93,17 +93,11 @@ def test_read_image_accepts_durable_resource_without_run_binding() -> None:
     describe.assert_called_once()
 
 
-def test_read_image_schema_accepts_path_or_bound_resource_id() -> None:
-    spec = next(
-        item["function"]
-        for item in build_tool_schemas()
-        if item["function"]["name"] == "read_image"
-    )
-    params = spec["parameters"]
-
-    assert set(params["properties"]) == {"path", "resource_id", "prompt"}
-    assert params["properties"]["resource_id"]["pattern"] == "^[0-9a-f]{32}$"
-    assert params.get("required", []) == []
+def test_vision_skill_accepts_exactly_one_image_locator(tmp_path):
+    assert not any(item["function"]["name"] == "read_image" for item in build_tool_schemas())
+    for arguments in ({}, {"path": "x.png", "resource_id": "a" * 32}):
+        result = tool_read_image(tmp_path, **arguments)
+        assert not result["ok"] and result["error"] == "path_or_resource_required"
 
 
 def test_missing_read_file_is_a_real_tool_failure() -> None:

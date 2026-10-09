@@ -13,7 +13,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import app.application.telegram.runtime as tg_rt  # noqa: E402
+import app.application.skill_services.telegram_runtime as tg_rt  # noqa: E402
 import app.application.telegram.store as tg_store  # noqa: E402
 
 

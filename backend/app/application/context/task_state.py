@@ -26,7 +26,8 @@ def _session_store():
 
 
 def _normalise_state(session: dict[str, Any]) -> dict[str, Any]:
-    raw = session.get("context_state") if isinstance(session.get("context_state"), dict) else {}
+    value = session.get("context_state")
+    raw = value if isinstance(value, dict) else {}
     if "rolling_summary" not in raw:
         state = new_task_context(task_id=str(session.get("id") or ""), chat_id=str(session.get("id") or ""))
         if raw.get("ctx_size"):

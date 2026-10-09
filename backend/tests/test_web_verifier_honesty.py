@@ -11,7 +11,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.code_agent.tools._content import _format_runtime_result  # noqa: E402
+from app.application.skill_services.tables import _format_runtime_result  # noqa: E402
 from webskill.application.code_agent.tools import _web  # noqa: E402
 
 

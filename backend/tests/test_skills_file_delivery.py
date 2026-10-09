@@ -13,7 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes import skills_routes
-from app.application.code_agent import document_validation
+from app.application.skill_services import documents as document_validation
 
 
 def _client() -> TestClient:

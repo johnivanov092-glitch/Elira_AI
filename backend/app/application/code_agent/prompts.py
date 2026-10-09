@@ -199,12 +199,6 @@ def _build_turn_context(
 
         logging.getLogger(__name__).debug("user-facts injection failed", exc_info=exc)
 
-    # Intent-injected niche rules: only added when the task matches (SSH setup,
-    # …). Keeps the base prompt at capacity — normal runs (and canaries) add zero.
-    from app.application.code_agent.niche_rules import select_niche_rules
-    for _rule in select_niche_rules(task_text):
-        parts.append("--- Ниша-правило (по теме запроса) ---\n" + _rule)
-
     return "\n\n".join(parts)
 
 

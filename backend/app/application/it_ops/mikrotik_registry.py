@@ -212,7 +212,7 @@ def discover_routeros_version(
 ) -> dict[str, Any]:
     """Best-effort version discovery through the canonical typed SSH provider."""
     if runner is None:
-        from app.application.tool_providers.ssh_provider import tool_ssh_run
+        from app.application.skill_services.ssh import tool_ssh_run
 
         runner = tool_ssh_run
     normalized_host, _ = _normalize_host(host)

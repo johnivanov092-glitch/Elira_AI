@@ -6,10 +6,8 @@ from pathlib import Path
 
 from app.application.tool_providers.base import ToolProvider
 from app.application.tool_providers.builtin import BuiltinToolProvider
-from app.application.tool_providers.itops_provider import ItopsToolProvider
 from app.application.tool_providers.mcp_provider import build_mcp_providers
 from app.application.tool_providers.registry import ToolRegistry
-from app.application.tool_providers.ssh_provider import SshToolProvider
 
 
 def build_runtime_tool_registry(
@@ -19,8 +17,6 @@ def build_runtime_tool_registry(
     builtin_tool_names: Collection[str] | None = None,
     mcp_server_ids: Collection[str] | None = None,
     mcp_schema_queries: Mapping[str, str] | None = None,
-    include_ssh: bool = True,
-    include_itops: bool = True,
 ) -> ToolRegistry:
     """Build the one registry over existing providers.
 
@@ -33,10 +29,6 @@ def build_runtime_tool_registry(
     providers: list[ToolProvider] = []
     if include_builtin:
         providers.append(BuiltinToolProvider(root, builtin_tool_names))
-    if include_ssh:
-        providers.append(SshToolProvider(root))
-    if include_itops:
-        providers.append(ItopsToolProvider())
     providers.extend(build_mcp_providers(
         mcp_server_ids,
         schema_queries=dict(mcp_schema_queries or {}),

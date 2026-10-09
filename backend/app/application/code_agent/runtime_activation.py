@@ -125,8 +125,6 @@ class RuntimeActivation:
             builtin_tool_names=builtin_names,
             mcp_server_ids=self.mcp_server_ids,
             mcp_schema_queries=self.mcp_schema_queries,
-            include_ssh="ssh" in self.capability_groups,
-            include_itops="itops" in self.capability_groups,
         )
         return RuntimeSchemaUpdate(registry, registry.collect_schemas(), self.snapshot())
 

@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 from app.application.pdf import poppler
-from app.application.code_agent import document_validation
+from app.application.skill_services import documents as document_validation
 
 
 @pytest.fixture
@@ -40,6 +40,6 @@ def test_document_qa_render_keeps_project_poppler(bundled_poppler, monkeypatch):
         seen.append(kwargs["poppler_path"])
         return [Image.new("RGB", (32, 32), "white")]
     monkeypatch.setattr("pdf2image.convert_from_path", convert)
-    monkeypatch.setattr("app.infrastructure.llm.vision_ocr.describe_image", lambda *a, **k: '{"layout_issue": false, "issues": []}')
+    monkeypatch.setattr("app.application.skill_services.vision.describe_image", lambda *a, **k: '{"layout_issue": false, "issues": []}')
     assert document_validation._inspect_pages(Path("fixture.pdf"), 1)[0] == "passed"
     assert seen == [str(bundled_poppler)]

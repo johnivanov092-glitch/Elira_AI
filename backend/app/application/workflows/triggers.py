@@ -6,6 +6,8 @@ permission modes. Persistence stays in ``workflow_engine.db``.
 """
 from __future__ import annotations
 
+from app.utils.json_values import object_dict
+
 import logging
 import threading
 from datetime import datetime, timezone
@@ -60,14 +62,10 @@ def _execute_trigger(trigger: dict[str, Any], db_path: str | Path) -> None:
         run = start_workflow_run(
             workflow_id=str(trigger.get("workflow_id") or ""),
             workflow_input=(
-                dict(trigger.get("input"))
-                if isinstance(trigger.get("input"), dict)
-                else {}
+                object_dict(trigger.get("input"))
             ),
             context=(
-                dict(trigger.get("context"))
-                if isinstance(trigger.get("context"), dict)
-                else {}
+                object_dict(trigger.get("context"))
             ),
             trigger_source=f"workflow_trigger:{trigger_id}",
             permission_mode=str(trigger.get("permission_mode") or "ask"),

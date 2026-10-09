@@ -246,10 +246,12 @@ def tool_read_file(
     path: str,
     offset: int = 0,
     limit: int = 2000,
-    _runtime_refuse_reason: str = "",
-    _runtime_resource_id: str = "",
-    _runtime_resource_name: str = "",
 ) -> dict[str, Any]:
+    from app.application.agent_kernel.runtime_context import current_runtime_context
+    context = current_runtime_context()
+    _runtime_resource_id = context.get("resource_id", "")
+    _runtime_resource_name = context.get("resource_name", "")
+    _runtime_refuse_reason = context.get("refuse_reason", "")
     if _runtime_resource_id:
         return {
             "ok": False, "error": "resource_requires_materialize",
@@ -282,7 +284,7 @@ def tool_read_file(
             "text": (
                 f"ERROR: {target.name} не является обычным текстовым файлом. "
                 f"Прочитай SKILL.md навыка {skill} и запусти его скрипт. "
-                "Для описания изображения используй read_image."
+                "Для описания изображения используй навык vision."
             ),
         }
     if extension in _BINARY_EXTS:

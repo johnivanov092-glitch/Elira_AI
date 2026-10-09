@@ -1,4 +1,5 @@
 from __future__ import annotations
+from elira_common.text import contains_any as _contains_any
 
 import re
 from datetime import datetime
@@ -105,8 +106,6 @@ HISTORICAL_PATTERNS = (
 )
 
 
-def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
 
 
 def _collect_years(text: str) -> list[int]:

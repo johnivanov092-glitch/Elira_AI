@@ -3,11 +3,9 @@
 #   cd backend && .venv\Scripts\pip install -r requirements-optional.txt
 # Or pick a profile by copy-pasting just the section you need.
 
-# === Shared tabular tools and document publication QA ===
-# PDF/Office reading and OCR dependencies live in data/skills/<skill>/requirements.txt.
-# openpyxl is still used by bom-check; pdf2image renders publication QA pages.
-pandas>=2.2
-openpyxl>=3.1
+# === Document preview integration ===
+# Preview calls the mutable document-create implementation in this process.
+# Tabular/BOM dependencies are declared in their skill requirements.
 pdf2image>=1.17
 
 # Web/browser dependencies live in skills/web-research/requirements.txt.

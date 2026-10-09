@@ -1,4 +1,5 @@
 from __future__ import annotations
+from elira_common.text import contains_any as _contains_any
 
 import re
 from typing import Any
@@ -125,8 +126,6 @@ INTENT_LABELS = {
 }
 
 
-def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
 
 
 def _strip_intro(query: str) -> str:

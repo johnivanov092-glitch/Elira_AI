@@ -378,7 +378,7 @@ class ProviderDispatchTest(McpProviderTestBase):
         payload = base64.b64encode(b"small-png-payload").decode("ascii")
         with (
             mock.patch(
-                "app.infrastructure.llm.vision_ocr.describe_image",
+                "app.application.skill_services.vision.describe_image",
                 return_value="A Unity scene with a clipped button.",
             ) as describe,
         ):
@@ -409,7 +409,7 @@ class ProviderDispatchTest(McpProviderTestBase):
     def test_inline_image_unavailable_is_explicit_and_bounded(self) -> None:
         payload = base64.b64encode(b"image").decode("ascii")
         with mock.patch(
-            "app.infrastructure.llm.vision_ocr.describe_image",
+            "app.application.skill_services.vision.describe_image",
             return_value=None,
         ):
             result = self.provider_mod._flatten_mcp_result({

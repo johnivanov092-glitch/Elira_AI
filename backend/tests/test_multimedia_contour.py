@@ -14,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 import tempfile  # noqa: E402
 
 from app.application.code_agent.tool_policy import BASE_TOOLS  # noqa: E402
-from app.application.code_agent.tools import _vision  # noqa: E402
+from app.application.skill_services import image as _vision  # noqa: E402
 
 
 class RegistrationTest(unittest.TestCase):
@@ -27,15 +27,16 @@ class RegistrationTest(unittest.TestCase):
         seed_builtin_tools()
         tools = list_tools()["tools"]
         names = {str(t.get("name") or t.get("tool_name") or "") for t in tools}
-        self.assertIn("read_image", names)
+        self.assertNotIn("read_image", names)
 
     def test_vision_tools_have_schemas_and_dispatch(self):
         from app.application.code_agent.tool_schemas import build_tool_schemas
         schema_names = {str((s.get("function") or {}).get("name")) for s in build_tool_schemas()}
-        self.assertIn("read_image", schema_names)
+        self.assertNotIn("read_image", schema_names)
         from app.application.code_agent.tools._dispatch import build_tool_dispatch
         dispatch = build_tool_dispatch(Path("."))
-        self.assertIn("read_image", dispatch)
+        self.assertNotIn("read_image", dispatch)
+        self.assertTrue(callable(_vision.tool_read_image))
 
     def test_no_video_tools_exist(self):
         # Video is OUT OF SCOPE by decision — pin that none sneaks in silently.
@@ -82,7 +83,7 @@ class ErrorPathTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             img = Path(tmp) / "a.png"
             img.write_bytes(b"\x89PNG\r\n\x1a\n0000")
-            with patch("app.infrastructure.llm.vision_ocr.describe_image", return_value=None):
+            with patch("app.application.skill_services.vision.describe_image", return_value=None):
                 out = _vision.tool_read_image(Path(tmp), path="a.png")
             self.assertFalse(out["ok"])
             self.assertIn("ERROR", out["text"])

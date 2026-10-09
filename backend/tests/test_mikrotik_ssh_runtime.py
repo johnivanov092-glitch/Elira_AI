@@ -4,7 +4,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from app.application.it_ops import mikrotik_registry, mikrotik_runtime
+from app.application.it_ops import mikrotik_registry
+from app.application.skill_services import mikrotik as mikrotik_runtime
 from app.application.tool_providers import mcp_runtime
 from app.infrastructure.it_ops import store
 

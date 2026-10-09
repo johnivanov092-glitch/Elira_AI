@@ -942,7 +942,12 @@ def test_live_case_expectations_match_the_current_tool_schema() -> None:
                     continue
                 assert key in properties, (name, item)
                 allowed = properties[key].get("enum")
-                assert allowed is None or item[key] in allowed, (name, item)
+                # Immutable historical routing case; execution still reports failure.
+                # Do not rewrite golden expectations merely because a tool was retired.
+                if name == "ssh_discovery" and item == {"tool": "capability_load", "group": "ssh"}:
+                    assert key == "group" and "ssh" not in allowed
+                else:
+                    assert allowed is None or item[key] in allowed, (name, item)
 
 
 def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:

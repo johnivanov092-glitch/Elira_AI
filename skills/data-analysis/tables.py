@@ -26,13 +26,13 @@ def tool_csv(
     group_by: list[Any] | None = None,
     aggregate: list[Any] | None = None,
 ) -> dict[str, Any]:
-    from app.application.skills_extra.runtime import analyze_csv
+    from app.application.skill_services.table_overview import analyze_csv
 
     target = _resolve_safe(project_root, file_path)
     if not target.is_file():
         return {"ok": False, "error": "file_not_found", "text": f"ERROR: not a file or does not exist: {file_path}"}
     if filters or group_by or aggregate:
-        from app.application.calculation.table import TableError, aggregate_csv
+        from app.application.skill_services.table_query import TableError, aggregate_csv
 
         try:
             result = aggregate_csv(target, filters=filters, group_by=group_by, aggregates=aggregate)

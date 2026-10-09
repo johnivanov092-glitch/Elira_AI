@@ -61,7 +61,7 @@ def tool_read_image(
         image_name = target.name
 
     try:
-        from app.infrastructure.llm.vision_ocr import describe_image
+        from app.application.skill_services.vision import describe_image
     except Exception:  # pragma: no cover - import guard
         return {"text": "ERROR: vision support unavailable",
                 "ok": False, "error": "vision_unavailable"}

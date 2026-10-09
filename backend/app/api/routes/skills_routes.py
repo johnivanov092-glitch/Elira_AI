@@ -34,7 +34,7 @@ def view_file(filename: str):
     if path.resolve().parent != OUTPUT_DIR.resolve() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Не найден: {filename}")
     if path.suffix.lower() == ".docx":
-        from app.application.code_agent.document_validation import document_preview
+        from app.application.skill_services.documents import document_preview
 
         try:
             preview = document_preview(path, OUTPUT_DIR / ".previews")

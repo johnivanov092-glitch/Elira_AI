@@ -5,6 +5,7 @@ The model declares nothing here (task_decide/result_verify were removed on
 John's decision 2026-10-07): facts come from tools and from the user's message.
 """
 from __future__ import annotations
+from elira_common.files import sha256_file as file_digest
 
 import hashlib
 import json
@@ -22,12 +23,6 @@ _CODE_SUFFIXES = {".py", ".ps1", ".sh", ".bash", ".bat", ".cmd", ".js", ".mjs", 
                   ".ts", ".tsx", ".jsx", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".sql"}
 
 
-def file_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _path(root: Path, value: Any, *, field: str) -> Path:

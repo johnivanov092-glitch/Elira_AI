@@ -12,11 +12,11 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.code_agent.tools._itops import tool_itops_registry  # noqa: E402
+from app.application.skill_services.registry import tool_itops_registry  # noqa: E402
 from app.application.code_agent.tools._memory import tool_library, tool_memory  # noqa: E402
 from app.application.code_agent.tools._mcp import tool_mcp  # noqa: E402
 from app.application.code_agent.tools._search import tool_recall  # noqa: E402
-from app.application.code_agent.tools._telegram import tool_telegram  # noqa: E402
+from app.application.skill_services.telegram_actions import tool_telegram  # noqa: E402
 
 
 class McpControlTest(unittest.TestCase):

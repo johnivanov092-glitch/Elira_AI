@@ -36,7 +36,7 @@ class TruncateTest(unittest.TestCase):
         self.assertIs(_truncate_middle, truncate_middle)
 
     def test_ssh_truncate_keeps_tail_now(self):
-        from app.application.tool_providers.ssh_provider import _truncate_for_llm
+        from app.application.skill_services.ssh import _truncate_for_llm
         text = "start" + "y" * 50000 + "exit=1"
         out = _truncate_for_llm(text, 800)
         self.assertTrue(out.endswith("exit=1"))  # the fix: tail no longer dropped

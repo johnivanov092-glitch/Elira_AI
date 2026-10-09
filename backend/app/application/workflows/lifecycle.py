@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 WorkflowRunUpdater = Callable[..., dict[str, Any]]
 WorkflowRunStateRecorder = Callable[..., None]
-WorkflowEventEmitter = Callable[[str, str, str, dict[str, Any] | None], None]
+class WorkflowEventEmitter(Protocol):
+    def __call__(self, event_type: str, workflow_id: str, run_id: str,
+                 payload: dict[str, Any] | None = None) -> None: ...
 NowFunc = Callable[[], str]
 
 

@@ -12,7 +12,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.it_ops import systemd_inspect as si  # noqa: E402
+from app.application.skill_services import systemd_inspect as si  # noqa: E402
 
 
 class UnitNameTest(unittest.TestCase):

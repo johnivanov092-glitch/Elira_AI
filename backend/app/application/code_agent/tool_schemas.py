@@ -72,54 +72,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "telegram",
-                "description": (
-                    "Send a message through the user's Telegram bot (action=send, chat_id, text) "
-                    "or read recent bot messages (action=messages). The bot is set up in Settings."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["send", "messages"]},
-                        "chat_id": {"type": "integer"},
-                        "text": {"type": "string"},
-                        "parse_mode": {"type": "string", "description": "Markdown (default) or HTML."},
-                        "limit": {"type": "integer", "description": "messages: how many (default 50)."},
-                    },
-                    "required": ["action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "itops_registry",
-                "description": (
-                    "Saved IT Ops targets: action=list (assets and connection profiles), "
-                    "asset_upsert/asset_remove, profile_upsert/profile_remove, mikrotik_list/"
-                    "mikrotik_upsert/mikrotik_remove/mikrotik_sync. Health and inventory checks are "
-                    "the itops_* tools. A password or key is never an argument: pass secret_ref."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": [
-                            "list", "asset_upsert", "asset_remove", "profile_upsert", "profile_remove",
-                            "mikrotik_list", "mikrotik_upsert", "mikrotik_remove", "mikrotik_sync",
-                        ]},
-                        "asset_id": {"type": "string"},
-                        "profile_id": {"type": "string"},
-                        "kind": {"type": "string", "description": "asset_upsert: asset type (linux, windows, router...)."},
-                        "secret_ref": {"type": "string", "description": "Opaque sref_ value; never plaintext."},
-                        "config": {"type": "object", "description": "Fields of the asset/profile/router (host, user, label, port...)."},
-                    },
-                    "required": ["action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "read_file",
                 "description": "Read a plain text file. Returns lines with line numbers. "
                                "For PDF/Office or OCR, read the matching skill and run its script; "
@@ -481,37 +433,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "csv",
-                "description": (
-                    "Read-only CSV tool. Without filters/aggregate: shape, columns, sample rows, stats. "
-                    "With them: exact decimal filter + count/sum/avg/min/max (+ group_by), e.g. paid "
-                    "orders count and amount sum."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
-                        "filters": {"type": "array", "description": "AND conditions.", "items": {
-                            "type": "object", "properties": {
-                                "column": {"type": "string"},
-                                "op": {"type": "string", "enum": ["==", "!=", ">", ">=", "<", "<=", "contains",
-                                                                  "not_contains", "in", "empty", "not_empty"]},
-                                "value": {}},
-                            "required": ["column", "op"]}},
-                        "group_by": {"type": "array", "items": {"type": "string"}},
-                        "aggregate": {"type": "array", "description": "Default [{fn: count}].", "items": {
-                            "type": "object", "properties": {
-                                "fn": {"type": "string", "enum": ["count", "sum", "avg", "min", "max", "count_distinct"]},
-                                "column": {"type": "string"}},
-                            "required": ["fn"]}},
-                    },
-                    "required": ["file_path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "unit_convert",
                 "description": (
                     "Exact unit conversion: length, mass, volume, area, time, data (KB=1000, KiB=1024, "
@@ -552,31 +473,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "places": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Round result half up."},
                     },
                     "required": ["expression"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_image",
-                "description": (
-                    "Describe an attached image by resource_id or an image file from "
-                    "the project by path using the vision model (screenshots, photos, "
-                    "diagrams, scanned pages). Returns a text "
-                    "description that also transcribes any visible text. Use this to "
-                    "'see' an image. For a chat attachment, use its resource_id and do "
-                    "not guess a project path. Provide exactly one of path/resource_id. "
-                    "Requires the vision service to be enabled; returns an error otherwise."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
-                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque durable image id. Use this instead of path for chat attachments."},
-                        "prompt": {"type": "string", "description": "Optional instruction for what to focus on. Defaults to a full description."},
-                    },
-                    "required": [],
                 },
             },
         },

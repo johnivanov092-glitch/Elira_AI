@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.document_validation import infer_expected_page_count
+from app.application.skill_services.documents import infer_expected_page_count
 from app.application.code_agent.history import _coerce_history, is_runtime_block
 from app.application.code_agent.loop_helpers import (
     _schema_tool_name, build_task_state_block, upsert_task_state_message,

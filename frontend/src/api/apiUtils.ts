@@ -94,7 +94,6 @@ export function withParams(path: string, params: Record<string, unknown> = {}): 
 export function isLocalApiAssetUrl(url = ""): boolean {
   return typeof url === "string" && (
     url.includes("/api/skills/download/") ||
-    url.includes("/api/skills/view/") ||
-    url.includes("/api/extra/")
+    url.includes("/api/skills/view/")
   );
 }

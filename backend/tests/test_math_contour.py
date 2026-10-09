@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from app.application.calculation import expression, units
-from app.application.calculation.table import TableError, aggregate_csv
+from app.application.skill_services.tables import tool_csv
+from app.application.skill_services.table_query import TableError, aggregate_csv
 from app.application.code_agent.tools._dispatch import build_tool_dispatch
 
 
@@ -104,7 +105,7 @@ def test_csv_question_is_never_executed_as_code(tmp_path):
     _orders(tmp_path, "status,amount\npaid,1\n")
     dispatch = build_tool_dispatch(tmp_path)
     query = f"df.pipe(lambda d: open(r'{marker}', 'w').write('x'))"
-    result = dispatch["csv"](file_path="orders.csv", query=query)
+    result = tool_csv(tmp_path, file_path="orders.csv", query=query)
     assert result["ok"] and not marker.exists()
     assert "filters" in result["text"]
 
@@ -114,7 +115,7 @@ def test_dispatch_and_tools_through_agent_entrypoints(tmp_path):
     dispatch = build_tool_dispatch(tmp_path)
     assert dispatch["calc"](expression="125000*16%")["result"]["result"]["decimal"] == "20000"
     assert dispatch["unit_convert"](value="2", from_unit="TB", to_unit="GB")["result"]["result"] == "2000"
-    queried = dispatch["csv"](file_path="orders.csv", filters=[{"column": "status", "op": "==", "value": "paid"}],
+    queried = tool_csv(tmp_path, file_path="orders.csv", filters=[{"column": "status", "op": "==", "value": "paid"}],
                               aggregate=[{"fn": "sum", "column": "amount"}])
     assert '"sum(amount)": "19300"' in queried["text"]
     assert dispatch["calc"](expression="__import__('os')")["ok"] is False
@@ -127,9 +128,10 @@ def test_math_tools_are_read_only_and_visible():
     from app.application.tool_registry.builtins import _build_native_code_agent_tools
 
     specs = {spec["name"]: spec for spec in _build_native_code_agent_tools()}
-    for name in ("calc", "unit_convert", "csv"):
+    for name in ("calc", "unit_convert"):
         assert specs[name]["side_effect"] is False
         # Read-only calls run in "ask" mode without an approval card.
         assert decide_approval("ask", "local", None, is_change=specs[name]["side_effect"]) == "auto"
+    assert "csv" not in specs
     assert "calc" in BASE_TOOLS
-    assert CAPABILITY_GROUPS["math"] == {"calc", "unit_convert", "csv"}
+    assert CAPABILITY_GROUPS["math"] == {"calc", "unit_convert"}

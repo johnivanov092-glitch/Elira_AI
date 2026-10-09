@@ -14,6 +14,7 @@ untouched. An LLM pre-pass can later replace/augment `derive_task_spec` without
 touching the rest of the layer.
 """
 from __future__ import annotations
+from elira_common.text import contains_any as _has
 
 import hashlib
 import re
@@ -841,8 +842,6 @@ def _dom_targets(text: str) -> set[str]:
     return set()
 
 
-def _has(low: str, cues: tuple[str, ...]) -> bool:
-    return any(c in low for c in cues)
 
 
 def _norm_dom(s: str) -> str:

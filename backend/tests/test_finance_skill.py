@@ -50,7 +50,12 @@ def test_skill_catalog_and_standard_library_boundary():
             modules.update(item.name.split(".")[0] for item in node.names)
         elif isinstance(node, ast.ImportFrom):
             modules.add((node.module or "").split(".")[0])
-    assert modules <= sys.stdlib_module_names
+    assert modules <= sys.stdlib_module_names | {"elira_common", "shared_path"}
+    # Both local helpers remain stdlib-only; the skill never imports the backend.
+    for dependency in (SKILL.parent / "_shared/shared_path.py", SKILL.parents[1] / "shared/elira_common/numbers.py"):
+        for node in ast.walk(ast.parse(dependency.read_text(encoding="utf-8"))):
+            imported = [item.name for item in node.names] if isinstance(node, ast.Import) else ([node.module] if isinstance(node, ast.ImportFrom) else [])
+            assert all(name.split(".")[0] in sys.stdlib_module_names for name in imported)
     assert (SKILL / "KZ_VAT.md").read_text(encoding="utf-8").find("## Подтверждённые правила") > 0
 
 

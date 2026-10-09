@@ -22,15 +22,14 @@ STAGE1_TOOLS = {
 
 def test_unify_core_stage1_schemas_are_native() -> None:
     names = {schema["function"]["name"] for schema in build_tool_schemas()}
-    assert set(STAGE1_TOOLS).issubset(names)
+    assert set(STAGE1_TOOLS).isdisjoint(names)
 
 
 def test_unify_core_stage1_toolspecs_are_registered() -> None:
     seed_builtin_tools()
     for name, (_permission, side_effect, _scopes) in STAGE1_TOOLS.items():
         hit = get_tool(name)
-        assert hit is not None
-        assert hit["side_effect"] is side_effect
+        assert hit is None
 
 
 def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> None:
@@ -43,9 +42,9 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
     (tmp_path / "fake.png").write_bytes(b"png")
     (tmp_path / "fake.docx").write_bytes(b"docx")
 
-    provider = BuiltinToolProvider(tmp_path)
+    from app.application.skill_services.tables import tool_csv
     checks: list[tuple[str, dict]] = [
-        ("csv", provider.dispatch("csv", {"file_path": "data.csv"})),
+        ("csv", tool_csv(tmp_path, file_path="data.csv")),
     ]
     for name, result in checks:
         text = str(result.get("text") or "")

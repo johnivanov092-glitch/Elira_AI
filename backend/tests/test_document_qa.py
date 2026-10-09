@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from unittest.mock import patch
+import hashlib
 
 import pytest
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from app.application.code_agent.document_validation import (
+from app.application.skill_services.documents import (
     _pdf_structure_issues,
     infer_expected_page_count,
     validate_document,
@@ -36,15 +37,15 @@ def test_glued_centered_docx_heading_fails_validation(tmp_path) -> None:
 
     with (
         patch(
-            "app.application.code_agent.document_validation._render_to_pdf",
+            "app.application.skill_services.documents._render_to_pdf",
             return_value=(path, "test"),
         ),
         patch(
-            "app.application.code_agent.document_validation._page_count",
+            "app.application.skill_services.documents._page_count",
             return_value=1,
         ),
         patch(
-            "app.application.code_agent.document_validation._inspect_pages",
+            "app.application.skill_services.documents._inspect_pages",
             return_value=("passed", []),
         ) as inspect_pages,
     ):
@@ -78,7 +79,7 @@ def test_resource_publish_rejects_document_that_failed_external_qa(tmp_path) -> 
     path.write_bytes(b"not-used-because-validation-is-mocked")
     qa = {
         "status": "failed",
-        "sha256": "a" * 64,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "format": "docx",
         "renderer": "microsoft_word",
         "page_count": 2,
@@ -105,7 +106,7 @@ def test_resource_publish_rejects_document_that_failed_external_qa(tmp_path) -> 
 def test_resource_publish_returns_hash_bound_document_qa(tmp_path) -> None:
     path = tmp_path / "proposal.docx"
     path.write_bytes(b"not-used-because-validation-is-mocked")
-    sha256 = "b" * 64
+    sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
     qa = {
         "status": "passed",
         "sha256": sha256,
@@ -193,7 +194,7 @@ def test_resource_publish_retry_cap_is_per_artifact_even_when_bytes_change(tmp_p
     path.write_bytes(b"revision-one")
     qa = {
         "status": "failed",
-        "sha256": "a" * 64,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "format": "docx",
         "renderer": "not_run",
         "page_count": None,

@@ -1062,161 +1062,6 @@ def _shell_quote(value: str) -> str:
 # ── Schemas ────────────────────────────────────────────────────
 
 
-def _schemas() -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_run",
-                "description": (
-                    "Run a shell command on a remote machine via SSH. "
-                    "The host may be any SSH alias, hostname or IP address. "
-                    "Returns stdout + stderr + exit code. A raw PowerShell command "
-                    "with a known blocking wait returns structured status "
-                    "needs_background and recommended_tool=ssh_run_ps; call that "
-                    "typed tool with the original PowerShell source. Other known "
-                    "blocking waits are moved to an argv-safe managed run_server "
-                    "job when runtime context is available; otherwise they return "
-                    "a structured run_server recommendation."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string", "description": "SSH alias, hostname or IP address."},
-                        "command": {"type": "string"},
-                        "timeout": {"type": "integer", "description": "Compatibility field; execution continues until exit or Workflow Stop."},
-                    },
-                    "required": ["host", "command"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_read",
-                "description": (
-                    "Read a file from a remote host via SSH. max_chars controls "
-                    "how much is fetched; it is not an authorization limit."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string", "description": "Absolute or remote-relative path."},
-                        "max_chars": {"type": "integer", "description": "Bytes to fetch; default 100000."},
-                    },
-                    "required": ["host", "path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_write",
-                "description": (
-                    "Write content to a remote file via SSH. Default is "
-                    "overwrite; set append=true to append. "
-                    "Content is sent via stdin so embedded quotes/newlines "
-                    "are safe."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "append": {"type": "boolean", "description": "Append (>>) instead of overwrite (>). Default false."},
-                    },
-                    "required": ["host", "path", "content"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_run_ps",
-                "description": (
-                    "Run a PowerShell script on a remote WINDOWS host via SSH. "
-                    "The script is sent base64-encoded (EncodedCommand) so quotes, "
-                    "pipes, $_ , and here-strings are NEVER mangled by ssh/cmd.exe — "
-                    "use this instead of hand-escaping `ssh host \"powershell …\"` "
-                    "through run_bash. To edit a remote file prefer ssh_write; for "
-                    "POSIX remotes use ssh_run. Known blocking wait constructs are "
-                    "automatically moved to the managed run_server(kind='job') "
-                    "runtime. The result exposes the local managed pid, remote_pid "
-                    "and remote_cleanup_supported. Poll with "
-                    "run_server(action='logs', kind='job', pid=...), or cancel the "
-                    "remote Windows process tree with run_server(action='stop', "
-                    "kind='job', pid=...). A low-level caller without job runtime "
-                    "context receives structured status needs_background."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "script": {
-                            "type": "string",
-                            "description": "Raw PowerShell source — no escaping needed.",
-                        },
-                        "timeout": {"type": "integer", "description": "Compatibility field; execution continues until exit or Workflow Stop."},
-                    },
-                    "required": ["host", "script"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_replace",
-                "description": (
-                    "Replace every literal occurrence of `old` with `new` in a "
-                    "remote file. High-level edit primitive — use this instead of "
-                    "hand-building Get-Content|Where-Object|Set-Content over ssh. "
-                    "No-op (pattern absent) is reported, not a silent success."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "path": {"type": "string"},
-                        "old": {"type": "string", "description": "Literal substring to remove/replace."},
-                        "new": {"type": "string", "description": "Replacement (use \"\" to delete `old`)."},
-                    },
-                    "required": ["host", "path", "old", "new"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_port_check",
-                "description": (
-                    "Verifier: is a TCP port LISTENING on the remote host? "
-                    "Returns ok=true with the owning pid as evidence. Windows and "
-                    "POSIX remotes both handled."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "host": {"type": "string"},
-                        "port": {"type": "integer"},
-                    },
-                    "required": ["host", "port"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ssh_list_hosts",
-                "description": (
-                    "Return saved SSH host shortcuts. Arbitrary explicit hosts "
-                    "remain valid; call this only when you need a known shortcut."
-                ),
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-    ]
 
 
 _DISPATCH = {
@@ -1233,56 +1078,35 @@ _DISPATCH = {
 # ── Provider class ─────────────────────────────────────────────
 
 
-class SshToolProvider:
-    """Implements the always-available local SSH ToolProvider."""
-
-    name = "ssh"
-
-    def __init__(self, project_root: Path | str | None = None) -> None:
-        self._project_root = (
-            Path(project_root).expanduser().resolve()
-            if project_root is not None
-            else None
+def execute_ssh(project_root: Path, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    handler = _DISPATCH.get(tool_name)
+    if handler is None:
+        return {"ok": False, "error": "unknown_tool", "text": f"ERROR: unknown SSH tool '{tool_name}'"}
+    try:
+        result = ensure_tool_result(
+            handler(**args),
+            source=f"SSH tool {tool_name!r}",
         )
-
-    def is_enabled(self) -> bool:
-        return is_ssh_enabled()
-
-    def get_schemas(self) -> list[dict[str, Any]]:
-        return _schemas()
-
-    def owns(self, tool_name: str) -> bool:
-        return tool_name in _DISPATCH
-
-    def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-        handler = _DISPATCH.get(tool_name)
-        if handler is None:
-            return {"ok": False, "error": "unknown_tool", "text": f"ERROR: unknown SSH tool '{tool_name}'"}
-        try:
-            result = ensure_tool_result(
-                handler(**args),
-                source=f"SSH tool {tool_name!r}",
+        if (
+            project_root is not None
+            and (
+                tool_name == "ssh_run_ps"
+                or (
+                    tool_name == "ssh_run"
+                    and result.get("recommended_tool") == "run_server"
+                )
             )
-            if (
-                self._project_root is not None
-                and (
-                    tool_name == "ssh_run_ps"
-                    or (
-                        tool_name == "ssh_run"
-                        and result.get("recommended_tool") == "run_server"
-                    )
-                )
-                and result.get("status") == "needs_background"
-            ):
-                return _start_background_ssh_job(
-                    self._project_root,
-                    tool_name=tool_name,
-                    args=args,
-                    reason=str(result.get("reason") or "long_running_foreground"),
-                )
-            return result
-        except TypeError as exc:
-            return {"ok": False, "error": "bad_arguments", "text": f"ERROR: bad arguments to {tool_name}: {exc}"}
-        except Exception as exc:
-            logger.exception("ssh tool %s crashed", tool_name)
-            return {"ok": False, "error": "tool_exception", "text": f"ERROR: {exc}"}
+            and result.get("status") == "needs_background"
+        ):
+            return _start_background_ssh_job(
+                project_root,
+                tool_name=tool_name,
+                args=args,
+                reason=str(result.get("reason") or "long_running_foreground"),
+            )
+        return result
+    except TypeError as exc:
+        return {"ok": False, "error": "bad_arguments", "text": f"ERROR: bad arguments to {tool_name}: {exc}"}
+    except Exception as exc:
+        logger.exception("ssh tool %s crashed", tool_name)
+        return {"ok": False, "error": "tool_exception", "text": f"ERROR: {exc}"}

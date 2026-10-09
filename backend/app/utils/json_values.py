@@ -16,3 +16,8 @@ def loads_json(raw: Any, default: Any) -> Any:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return default
+
+
+def object_dict(value: Any) -> dict[str, Any]:
+    """Copy an actual JSON object; reject scalar/list shapes as empty."""
+    return dict(value) if isinstance(value, dict) else {}

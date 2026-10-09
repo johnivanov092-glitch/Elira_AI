@@ -135,7 +135,7 @@ def test_run_server_stop_cleans_up_managed_remote_windows_process(
         )
         try:
             with mock.patch(
-                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                "app.application.skill_services.ssh.stop_remote_windows_process_tree",
                 return_value={
                     "ok": True,
                     "remote_pid": 7312,
@@ -193,7 +193,7 @@ def test_workflow_stop_attempts_managed_remote_windows_cleanup(tmp_path: Path) -
             _shell.reset_current_run_id(token)
         try:
             with mock.patch(
-                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                "app.application.skill_services.ssh.stop_remote_windows_process_tree",
                 return_value={
                     "ok": True,
                     "remote_pid": 7312,
@@ -259,7 +259,7 @@ def test_workflow_stop_local_teardown_survives_cleanup_journal_failure(
         finally:
             _shell.reset_current_run_id(token)
         with mock.patch(
-            "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+            "app.application.skill_services.ssh.stop_remote_windows_process_tree",
             return_value={
                 "ok": True,
                 "remote_pid": 7312,
@@ -353,7 +353,7 @@ def test_background_job_captures_and_persists_remote_pid(tmp_path: Path) -> None
             )
         finally:
             with mock.patch(
-                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                "app.application.skill_services.ssh.stop_remote_windows_process_tree",
                 return_value={
                     "ok": True,
                     "remote_pid": 7312,
@@ -400,7 +400,7 @@ def test_recovered_background_job_preserves_remote_cleanup_metadata(
             with _run._SERVERS_LOCK:
                 _run._LIVE_SERVERS[pid].proc = original.proc
             with mock.patch(
-                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                "app.application.skill_services.ssh.stop_remote_windows_process_tree",
                 return_value={
                     "ok": True,
                     "remote_pid": 7312,
@@ -459,7 +459,7 @@ def test_remote_cleanup_failure_keeps_background_job_running_and_tracked(
         pid = int(started["pid"])
         try:
             with mock.patch(
-                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                "app.application.skill_services.ssh.stop_remote_windows_process_tree",
                 return_value={
                     "ok": False,
                     "remote_pid": 7312,
@@ -481,7 +481,7 @@ def test_remote_cleanup_failure_keeps_background_job_running_and_tracked(
                 assert _run._LIVE_SERVERS[pid].proc.poll() is None
         finally:
             with mock.patch(
-                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                "app.application.skill_services.ssh.stop_remote_windows_process_tree",
                 return_value={
                     "ok": True,
                     "remote_pid": 7312,
@@ -536,7 +536,7 @@ def test_failed_local_ssh_job_can_still_clean_verified_remote_process(
         assert logs["status"] == "failed"
 
         with mock.patch(
-            "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+            "app.application.skill_services.ssh.stop_remote_windows_process_tree",
             return_value={
                 "ok": True,
                 "remote_pid": 7312,

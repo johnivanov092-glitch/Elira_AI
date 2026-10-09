@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.application.code_agent.tools._itops import tool_itops_registry
+from app.application.skill_services.registry import tool_itops_registry
 from app.application.it_ops import mikrotik_registry
 from app.application.tool_providers import mcp_runtime
 from app.infrastructure.it_ops import store

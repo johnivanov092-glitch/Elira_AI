@@ -36,8 +36,8 @@ class AnswerPurityPromptTest(unittest.TestCase):
     def test_provider_groups_get_guidance_by_tool_prefix(self):
         from app.application.code_agent.task_guidance import task_guidance_blocks
 
-        self.assertIn("ssh", task_guidance_blocks({"ssh_run"}))
-        self.assertIn("itops", task_guidance_blocks({"itops_network_inventory"}))
+        self.assertNotIn("ssh", task_guidance_blocks({"ssh_run"}))
+        self.assertNotIn("itops", task_guidance_blocks({"itops_network_inventory"}))
 
 
 if __name__ == "__main__":

@@ -42,12 +42,8 @@ def deep_search(
     )
 
 
-def news(query: str, *, max_results: int = 10) -> dict[str, Any]:
-    return news_search_impl(query, max_results=max_results)
 
 
-def fetch(url: str, *, max_chars: int = 10000) -> dict[str, Any]:
-    return fetch_page_impl(url, max_chars=max_chars)
 
 
 def list_engines() -> dict[str, Any]:
@@ -55,3 +51,6 @@ def list_engines() -> dict[str, Any]:
         "engines": list(ENGINE_ITEMS),
         "default": list(DEFAULT_ENGINES),
     }
+
+news = news_search_impl
+fetch = fetch_page_impl

@@ -463,7 +463,7 @@ class RunEvidence:
                 "source_id": source_id, "status": "matched" if matched else "unresolved",
                 "claim_support": "not_assessed",
                 **({"reason": quote_failures[source_id]} if source_id in quote_failures else {}),
-                **({"source": dict(source)} if matched else {}),
+                **({"source": dict(source)} if matched and isinstance(source, dict) else {}),
             })
         return result
 

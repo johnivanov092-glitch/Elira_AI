@@ -25,6 +25,7 @@ from app.utils.text_encoding import (  # noqa: E402
 _UTF8_BOM = b"\xef\xbb\xbf"
 _SOURCE_ROOTS = (
     (ROOT / "backend" / "app", {".py"}),
+    (ROOT / "shared", {".py"}),
     (ROOT / "frontend" / "src", {".css", ".js", ".jsx", ".ts", ".tsx"}),
     (ROOT / "src-tauri" / "src", {".py", ".rs"}),
 )
@@ -212,6 +213,7 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
         bad_files = []
         source_roots = (
             (ROOT / "backend" / "app", {".py"}),
+    (ROOT / "shared", {".py"}),
             (ROOT / "frontend" / "src", {".css", ".js", ".jsx", ".ts", ".tsx"}),
             (ROOT / "src-tauri" / "src", {".py", ".rs"}),
         )

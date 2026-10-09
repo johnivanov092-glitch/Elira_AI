@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,8 @@ _LOCAL_PROVIDER_DEFAULTS = {
     "LLAMA_SERVER_ENABLED": "false",
     "LOCAL_EMBED_ENABLED": "false",
 }
+
+os.environ["ELIRA_SKILLS_ROOT"] = str(Path(__file__).resolve().parents[2] / "skills")
 
 _TEST_DATA_DIR = tempfile.TemporaryDirectory(prefix="elira-pytest-data-")
 os.environ["ELIRA_DATA_DIR"] = _TEST_DATA_DIR.name

@@ -106,7 +106,8 @@ def test_failed_first_telegram_send_stops_receiver_without_success_log_or_false_
 from unittest.mock import patch
 real_telegram = module._telegram_typed_roundtrip
 def injected_telegram(client, data_dir):
-    from app.application.telegram import runtime, store
+    from app.application.skill_services import telegram_runtime as runtime
+    from app.application.telegram import store
     try:
         with patch.object(runtime, "send_message", return_value={"ok": False, "description": "injected transport refusal"}):
             real_telegram(client, data_dir)
