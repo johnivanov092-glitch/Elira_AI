@@ -7,4 +7,6 @@
 не записывай в SKILL.md и не выводи. Отправка только по поручению пользователя.
 Входящий бот и настройки UI используют runtime.py из этого же навыка.
 
-Telegram: telegram(action='send', chat_id, text); токен берёт runtime из хранилища. Настройка бота — в UI (Настройки → Telegram). Отправляй сообщения через этот инструмент.
+Штатный запуск: `python <папка-навыка>/telegram.py send --input args.json --output result.json`
+или сценарий messages с его JSON. Отдельного инструмента telegram нет; токен берёт
+runtime из хранилища. Настройка бота — в UI (Настройки → Telegram).

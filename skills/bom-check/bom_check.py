@@ -140,6 +140,21 @@ def load(path: Path, sheet: str, header_row: int, columns: set[str]) -> tuple[li
 
 
 def check(spec: dict[str, Any], base: Path) -> dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError("JSON спецификации должен быть объектом")
+    if not isinstance(spec.get("prices_include_vat", True), bool):
+        raise ValueError("prices_include_vat: нужен JSON boolean true или false")
+    header_row = spec.get("header_row", 1)
+    if isinstance(header_row, bool) or not isinstance(header_row, int) or header_row < 1:
+        raise ValueError("header_row: нужно положительное целое число")
+    items = spec.get("items")
+    if not isinstance(items, list) or not items or any(not isinstance(item, dict) for item in items):
+        raise ValueError("items: нужен непустой список объектов {code, quantity}")
+    services = spec.get("service_items", [])
+    if services is None:
+        services = []
+    if not isinstance(services, list) or any(not isinstance(item, dict) for item in services):
+        raise ValueError("service_items: нужен список объектов {code, name, quantity, unit_price}")
     path = Path(str(spec.get("catalog_path") or ""))
     if not path.is_absolute():
         path = base / path
@@ -148,14 +163,11 @@ def check(spec: dict[str, Any], base: Path) -> dict[str, Any]:
     cols = {k: str(spec.get(k) or "") for k in ("code_column", "name_column", "price_column", "stock_column")}
     if not all(cols.values()):
         raise ValueError("укажи code_column, name_column, price_column и stock_column")
-    rows, headers = load(path, str(spec.get("sheet_name") or ""), int(spec.get("header_row") or 1),
+    rows, headers = load(path, str(spec.get("sheet_name") or ""), header_row,
                          set(cols.values()))
     missing = sorted(set(cols.values()) - set(headers))
     if missing:
         raise ValueError(f"в прайсе нет колонок {missing}; есть: {headers}")
-    items = spec.get("items") or []
-    if not isinstance(items, list) or not items:
-        raise ValueError("items: нужен хотя бы один код")
     markup = number(spec.get("markup_percent") or 0)
     vat = number(spec.get("vat_rate") if spec.get("vat_rate") is not None else 16)
     if markup < 0 or not (0 <= vat <= 100):
@@ -198,7 +210,7 @@ def check(spec: dict[str, Any], base: Path) -> dict[str, Any]:
         lines.append({"code": code, "name": str(row.get(cols["name_column"]) or "").strip(),
                       "quantity": qty, "catalog_price": f"{price:.2f}",
                       "unit_price": f"{unit:.2f}", "line_total": f"{total:.2f}"})
-    for service in spec.get("service_items") or []:
+    for service in services:
         code = str((service or {}).get("code") or "").strip()
         name = str((service or {}).get("name") or "").strip()
         try:

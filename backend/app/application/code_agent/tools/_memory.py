@@ -139,11 +139,19 @@ def tool_library(
                     "text": f"[Библиотека: {res.get('name')}; символы {res.get('offset')}–"
                             f"{int(res.get('offset') or 0) + len(str(res.get('text') or ''))} из "
                             f"{res.get('content_chars')}]\n{res.get('text') or ''}{more}"}
-        res = library.search_files(str(query or ""), limit=20)
+        search_query = str(query or "").strip()
+        res = library.search_files(search_query, limit=20)
+        if not res.get("ok"):
+            error = str(res.get("error") or "search_failed")
+            return {"ok": False, "error": error,
+                    "text": f"ERROR: поиск в Библиотеке не выполнен: {error}"}
         items = res.get("items") or []
         if not items:
+            if not search_query:
+                return {"ok": True, "items": 0, "text": "Библиотека пуста. Документов для поиска нет."}
             return {"ok": True, "items": 0,
-                    "text": f"В Библиотеке ничего не найдено по «{query}». Попробуй отдельные слова."}
+                    "text": f"В документах Библиотеки нет совпадений по «{search_query}». "
+                            "Не повторяй тот же запрос. Общие внешние сведения ищи навыком web-research."}
         lines = [f"Найдено {len(items)} (читай library(action='read', id=…)):"]
         for item in items:
             excerpt = str(item.get("excerpt") or "").replace("\n", " ").strip()

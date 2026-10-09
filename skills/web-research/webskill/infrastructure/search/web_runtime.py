@@ -4,7 +4,7 @@ import re
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
@@ -46,6 +46,8 @@ class PageFetchResult:
     retry_after: str = ""
     mime: str = "text/html"
     text_offset: int = 0
+    title: str = ""
+    dates: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -291,6 +293,9 @@ def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
                                            mime="text/plain", truncated=len(text) > max_chars)
                 fragment = unquote(urlsplit(final).fragment)
                 soup = BeautifulSoup(resp.text, "html.parser")
+                title = soup.title.get_text(" ", strip=True) if soup.title else ""
+                from webskill.application.web_evidence.freshness import extract_dates
+                dates = extract_dates(resp.text, resp.headers.get("Last-Modified"))
                 try:
                     text = _extract_readable_text(soup, max_chars + 1, fragment=fragment)
                 except ValueError as exc:
@@ -299,6 +304,7 @@ def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
                                            available_fragments=_available_fragments(soup))
                 links, links_truncated = _extract_page_links(soup, final)
                 return PageFetchResult(text=text[:max_chars], final_url=final, status_code=status,
+                                       title=title, dates=dates,
                                        truncated=len(text) > max_chars,
                                        fragment_found=True if fragment else None,
                                        available_fragments=_available_fragments(soup),

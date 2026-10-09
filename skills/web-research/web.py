@@ -151,6 +151,12 @@ def main() -> int:
     except Exception as exc:
         from webskill.core.redaction import redact_text
         result = {'ok': False, 'error': type(exc).__name__, 'text': redact_text(str(exc))[:1000]}
+    # Shell output can truncate the body before the source receipts at its end.
+    sources = result.get('sources') or []
+    source_metadata = [{key: source.get(key) for key in ('url', 'status', 'title', 'dates', 'error')}
+                       for source in sources if isinstance(source, dict)]
+    if source_metadata:
+        result = {'source_metadata': source_metadata, **result}
     # Evidence belongs to this task's files; it is not written into Elira memory.
     if not args.no_cache:
         from webskill.core.redaction import redact_text

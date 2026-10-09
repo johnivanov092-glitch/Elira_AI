@@ -1,0 +1,131 @@
+{
+  "release": "skills-general-audit-20261010-r1",
+  "updates": [
+    {
+      "path": "data/skills/_shared/cli.py",
+      "source": "skills/_shared/cli.py",
+      "before_sha256": "d3332769a180bbdb75a9a2e526890c90204d2e91f8ebb7ecf7be08927e10b7bf",
+      "after_sha256": "e370431032dd1fdb0a61f14f76c04b817141484466d79f4be7fd5ad56143938f"
+    },
+    {
+      "path": "data/skills/bom-check/SKILL.md",
+      "source": "skills/bom-check/SKILL.md",
+      "before_sha256": "cc3cf2b60909d60cc165340c962742f90c6886c3b77df72cb4203e6563a605be",
+      "after_sha256": "2f3003874236dda8eb55f680254a3f39d841246ab911657fe9ebe5351f904578"
+    },
+    {
+      "path": "data/skills/bom-check/bom_check.py",
+      "source": "skills/bom-check/bom_check.py",
+      "before_sha256": "55789ee194ab5baf31e8087edbf42036f164ccd4a00377cfc9c9308f6822687d",
+      "after_sha256": "e2ae0a4e42a9d873e88da72fe23879ac9caa7d2fb85201a69e71686ed01b1de6"
+    },
+    {
+      "path": "data/skills/containers-deploy/SKILL.md",
+      "source": "skills/containers-deploy/SKILL.md",
+      "before_sha256": "784d68ffbfda7a9234b9b2a0d34525d5d582e91a89b3c75866628ddb1e9f26d9",
+      "after_sha256": "c19a878724503071ba329ff99c4726fa81709651e6beac896098be7c1648724e"
+    },
+    {
+      "path": "data/skills/data-analysis/SKILL.md",
+      "source": "skills/data-analysis/SKILL.md",
+      "before_sha256": "d0719f463251194c56d6fcc91732c348d703c9c2dcb39588c329bb5f9e9875a3",
+      "after_sha256": "b4d685f4703392814787d386010df311d9aea5e5542413f95cefa7e1d394cadc"
+    },
+    {
+      "path": "data/skills/data-analysis/scenarios.md",
+      "source": "skills/data-analysis/scenarios.md",
+      "before_sha256": "ed16b88886749f5a67940028221bad241ed23a8a00c3c9b93c7165ca2b251c65",
+      "after_sha256": "950b3fc5977f056099224d85af4e0b86a6c795c2f5c950b9f77fcd4eec4016b4"
+    },
+    {
+      "path": "data/skills/document-create/SKILL.md",
+      "source": "skills/document-create/SKILL.md",
+      "before_sha256": "f5b61df91456384d6d2b2e04971b4e88eb200363dd983cb0e0b404a50ba2edbb",
+      "after_sha256": "44fe750cfe4018b543dc1d1cd3a4b4446ef307e730aaea1b0d5bebd133e5be63"
+    },
+    {
+      "path": "data/skills/linux-admin/scenarios.md",
+      "source": "skills/linux-admin/scenarios.md",
+      "before_sha256": "b7919bd5c74898b49d1612dafd81ca61fe994881c493b7883ac994e5240d4d20",
+      "after_sha256": "8c42abd90c639614c22c27d100b1693cb1678b4859368f4f46aa7816a2c7ed4b"
+    },
+    {
+      "path": "data/skills/math/FINANCE.md",
+      "source": "skills/math/FINANCE.md",
+      "before_sha256": "5802a17f86ffc22eb044314a6f2f3f8e78e8ffcd472889567dda36a64462c54c",
+      "after_sha256": "39b74141036ded5cc881c30c547795f2bb35fcf6092ecd100bdbdf6a71d140ca"
+    },
+    {
+      "path": "data/skills/math/SKILL.md",
+      "source": "skills/math/SKILL.md",
+      "before_sha256": "2ef039d0b8e9ac46d128f182bd70cf456329511199b5390192aee1c7666ac2fb",
+      "after_sha256": "b28193d7958898d137656f111eb3c10d04530dc7a5fb4a470b3fd4c17579cf8c"
+    },
+    {
+      "path": "data/skills/ocr/SKILL.md",
+      "source": "skills/ocr/SKILL.md",
+      "before_sha256": "d9cbfc13c5cc25afaff45b77ed58c44128fd0106c8aeb786d4afc89e0a9a5a12",
+      "after_sha256": "f1eadf6fd1a854be97c79e63594893b50fa79590fcf353cc04b92f75a39d1319"
+    },
+    {
+      "path": "data/skills/telegram/scenarios.md",
+      "source": "skills/telegram/scenarios.md",
+      "before_sha256": "264c9299adce14bb9c53bda387cac522bc21994e75876cc1df0c05cedf136bb6",
+      "after_sha256": "bef60d288aca0b3d4ab2c0be76c236b5ff88702f9dca44c5ecc456a77614caa6"
+    },
+    {
+      "path": "data/skills/weather/SKILL.md",
+      "source": "skills/weather/SKILL.md",
+      "before_sha256": "d7f1d25aa675bbc94221e842a88376ab60b633dfd64a0770a29b66560ba7bd9b",
+      "after_sha256": "1388caf75b9d26e7e48a08daca5a9484186a83b9c269c48a47d2cc36b9a8a169"
+    },
+    {
+      "path": "data/skills/weather/weather.py",
+      "source": "skills/weather/weather.py",
+      "before_sha256": "ead4ab55c1a8682dfdaa9d0f44122402e36d11a046718a3842185a834b28369e",
+      "after_sha256": "bea66ed5e163848c4118a8a0eec3710418102d5c43c6ec5aec7d0d3433ec77cc"
+    },
+    {
+      "path": "data/skills/web-research/SKILL.md",
+      "source": "skills/web-research/SKILL.md",
+      "before_sha256": "e5c37397b0e39f29ffdbc8e01877825429889c1dbe80e11151a10c7461728947",
+      "after_sha256": "2e801d39f384479338c7df491472afb9651d8a84d78e5cce21e44d58298a80af"
+    },
+    {
+      "path": "data/skills/web-research/web.py",
+      "source": "skills/web-research/web.py",
+      "before_sha256": "de2bb8108168b01c964e330a54870e52b9ec2806325e33ce24be7d16b319caf5",
+      "after_sha256": "865f7a5d267ed13e859f23ef2c50fbe81b1e3637c986ee54586393173ed5fd05"
+    },
+    {
+      "path": "data/skills/web-research/webskill/application/code_agent/tools/_web.py",
+      "source": "skills/web-research/webskill/application/code_agent/tools/_web.py",
+      "before_sha256": "6f55cfc3830fe72adb3e0bd3b2b4ce985c6577438a57a4e3ada0ff8597ebfa98",
+      "after_sha256": "d76a8804a63bf5c66fec461e8975f5f104f6e60c68f29433073e9d5f3b444b02"
+    },
+    {
+      "path": "data/skills/web-research/webskill/infrastructure/search/web_runtime.py",
+      "source": "skills/web-research/webskill/infrastructure/search/web_runtime.py",
+      "before_sha256": "d5df4257c9497fcec07b69cbf1cb1a06f138417f872accb49b9e08693773157d",
+      "after_sha256": "c625bd6e1edac139fb788b94dcf4d9d975e5f8ed1e260ee0ab544a9d9c589378"
+    },
+    {
+      "path": "data/skills/home-ai-server-audit-docs/SKILL.md",
+      "patch": "scripts/home_ai_server_audit_docs_delivery.patch",
+      "before_sha256": "bb0ea3655df324ce0479de274bb0e07dad798c458a6198b9b6fa81810d0df693",
+      "after_sha256": "6a666f53d08aa56b73577821e179a7976c0e8b2a067a71685689f6d171ae8b2d"
+    },
+    {
+      "path": "data/skills/jellyfin-windows/SKILL.md",
+      "patch": "scripts/jellyfin_windows_delivery.patch",
+      "before_sha256": "f40f4ce84c80844538c3d24146ae47a1712d2168246ca9df5c4457ccf9a9c6c6",
+      "after_sha256": "075b53faa8f3a84e14ba4063ed1b891ff381cfb8cab3460679136ea5a5ed9bee"
+    },
+    {
+      "path": "data/skills/audio-transcribe/SKILL.md",
+      "patch": "scripts/audio_transcribe_delivery.patch",
+      "before_sha256": "b083c3f4c5b0b60b06254a247e7dc7b3484f1b736105345504a91f4274f4688c",
+      "after_sha256": "c1af5445ba1783aa3bfd2bc308e474eca33d06c117750e23bbb105b7dba9d864"
+    }
+  ]
+}

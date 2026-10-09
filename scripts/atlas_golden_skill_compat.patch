@@ -1,0 +1,286 @@
+diff --git a/atlas/golden.py b/atlas/golden.py
+--- a/atlas/golden.py
++++ b/atlas/golden.py
+@@ -11,6 +11,7 @@
+ import hashlib
+ import json
+ import re
++import shlex
+ import shutil
+ import threading
+ import time
+@@ -110,15 +111,107 @@
+ _LATIN = re.compile(r"[A-Za-z]")
+ 
+ 
+-def _search_queries(run_dir: str) -> list[str]:
+-    """Запросы web_search из журнала прогона (как их отправила модель)."""
++def _skill_cli_arguments(event: dict, skill: str, script: str) -> list[str]:
++    """Аргументы реально выполненного Python CLI указанного пакета навыка."""
++    if event.get("type") != "tool_call" or event.get("tool") != "run_bash" or event.get("ok") is not True:
++        return []
++    if event.get("exit_code") != 0:
++        return []
++    args = event.get("arguments") or {}
++    command = args.get("command") if isinstance(args, dict) else None
++    if not isinstance(command, str):
++        return []
++    try:
++        tokens = [token[1:-1] if len(token) > 1 and token[0] == token[-1] and token[0] in "\"'" else token
++                  for token in shlex.split(command, posix=False)]
++    except ValueError:
++        return []
++    if any(token in {"&", "|", "||", ";"} for token in tokens):
++        return []
++    clauses: list[list[str]] = [[]]
++    for token in tokens:
++        if token == "&&":
++            clauses.append([])
++        else:
++            clauses[-1].append(token)
++    if clauses[0] and clauses[0][0].lower() == "cd":
++        directory_args = clauses[0][1:]
++        if directory_args and directory_args[0].lower() == "/d":
++            directory_args = directory_args[1:]
++        if len(directory_args) != 1 or not directory_args[0]:
++            return []
++        clauses = clauses[1:]
++    # exit=0 proves every && clause succeeded. Mixed commands are not evidence.
++    # Web receipts are per event, so keep its operation unambiguous.
++    if not clauses or (len(clauses) > 1 and skill != "math"):
++        return []
++    arguments: list[str] = []
++    for clause in clauses:
++        if len(clause) < 3 or not re.fullmatch(r"(?:python(?:\d+(?:\.\d+)?)?|py)(?:\.exe)?",
++                                             clause[0].replace("\\", "/").rsplit("/", 1)[-1], re.I):
++            return []
++        index = 1
++        while index < len(clause) and clause[index] in {"-u", "-B"}:
++            index += 1
++        if index >= len(clause) or not re.search(r"(?:^|/)skills/" + re.escape(skill) + "/" + re.escape(script) + "$",
++                                                clause[index].replace("\\", "/"), re.I):
++            return []
++        arguments.extend(clause[index + 1:])
++    return arguments
++
++
++def _web_cli_operation(event: dict) -> tuple[set[str], list[str]]:
++    """Совместимость эталонов: успешный текущий CLI с квитанциями источников."""
++    tokens = _skill_cli_arguments(event, "web-research", "web.py")
++    index = 0
++    while index < len(tokens) and tokens[index].startswith("--"):
++        if tokens[index] == "--no-cache":
++            index += 1
++        elif tokens[index] == "--state-dir":
++            index += 2
++        else:
++            return set(), []
++    if index >= len(tokens):
++        return set(), []
++    action = tokens[index]
++    receipts = event.get("sources") or []
++    statuses = {s.get("status") for s in receipts if isinstance(s, dict) and s.get("id")
++                and isinstance(s.get("url"), str) and s["url"].startswith(("https://", "http://"))}
++    operations: set[str] = set()
++    if action in {"search", "query"} and "discovered" in statuses:
++        operations.add("web_search")
++    if action in {"fetch", "browser", "http", "query"} and statuses & {"fetched", "excerpt"}:
++        operations.add("web_fetch")
++    queries = []
++    if "web_search" in operations:
++        for pos, token in enumerate(tokens[index + 1:], index + 1):
++            if token == "--query" and pos + 1 < len(tokens):
++                queries.append(tokens[pos + 1])
++            elif token.startswith("--query="):
++                queries.append(token.split("=", 1)[1])
++            elif action == "query" and token == "--commands" and pos + 1 < len(tokens):
++                try:
++                    commands = json.loads(tokens[pos + 1])
++                except ValueError:
++                    continue
++                for sub in commands if isinstance(commands, list) else []:
++                    if not isinstance(sub, dict) or sub.get("type") != "search":
++                        continue
++                    values = sub.get("queries") or sub.get("query") or []
++                    queries.extend([values] if isinstance(values, str) else values if isinstance(values, list) else [])
++    return operations, [query for query in queries if isinstance(query, str) and query.strip()]
++
++
++def _search_queries(run_dir: str, events: list[dict] | None = None) -> list[str]:
++    """Фактические запросы старого API и успешного текущего Web-навыка."""
+     queries: list[str] = []
+-    for event in _journal(run_dir):
+-        if event.get("type") != "tool_call" or event.get("tool") != "web_search":
+-            continue
+-        args = event.get("arguments") or {}
+-        raw = args.get("queries") or args.get("query") or []
+-        queries += [str(q) for q in ([raw] if isinstance(raw, str) else raw) if str(q).strip()]
++    for event in _journal(run_dir) if events is None else events:
++        if event.get("type") == "tool_call" and event.get("tool") == "web_search":
++            args = event.get("arguments") or {}
++            raw = args.get("queries") or args.get("query") or []
++            queries += [str(q) for q in ([raw] if isinstance(raw, str) else raw) if str(q).strip()]
++        else:
++            queries.extend(_web_cli_operation(event)[1])
+     return queries
+ 
+ 
+@@ -295,7 +388,9 @@
+             return {"steps": {}, "final": {}, "done": {}, "head": {"run_dir": ""}, "sources": {}}
+         autopsy = RunReader(self.engine, runs_dir=runs_dir).autopsy(run_dir)
+         autopsy["head"]["run_dir"] = str(run_dir)
+-        autopsy["sources"] = _sources(_journal(str(run_dir)))
++        events = _journal(str(run_dir))
++        autopsy["journal_tools"] = [event for event in events if event.get("type") == "tool_call"]
++        autopsy["sources"] = _sources(events)
+         return autopsy
+ 
+     def _evaluate(self, task: dict, outcome: dict, autopsy: dict, workspace: Path) -> tuple[list[dict], bool]:
+@@ -377,7 +472,8 @@
+             ok, detail = len(read) >= int(check["value"]), f"прочитано страниц: {len(read)} (минимум {check['value']})"
+         elif kind == "queries_languages":
+             # Правило Джона 2026-10-06: общая тема — запросы и на русском, и на английском.
+-            langs = Counter(_query_language(q) for q in _search_queries(autopsy["head"].get("run_dir", "")))
++            langs = Counter(_query_language(q) for q in _search_queries(autopsy["head"].get("run_dir", ""),
++                                                                      autopsy.get("journal_tools")))
+             wanted = list(check.get("all") or [])
+             ok = all(langs.get(lang) for lang in wanted)
+             detail = "языки запросов: " + (", ".join(f"{k} {v}" for k, v in sorted(langs.items()) if k) or "запросов нет")
+@@ -396,12 +492,33 @@
+         elif kind == "min_answer_chars":
+             ok, detail = len(answer) >= int(check["value"]), f"ответ {len(answer)} симв."
+         elif kind == "no_repeat":
+-            worst = max(Counter(calls).values(), default=0)
++            journal = autopsy.get("journal_tools")
++            if journal is None:
++                journal = [event for event in _journal(autopsy["head"].get("run_dir", ""))
++                           if event.get("type") == "tool_call"]
++            exact = [(event.get("tool"), json.dumps({k: v for k, v in event["arguments"].items() if not k.startswith("_runtime_")}
++                                                    if isinstance(event.get("arguments"), dict) else event.get("arguments"),
++                                                    sort_keys=True, ensure_ascii=False))
++                     for event in journal]
++            worst = max(Counter(exact if journal else calls).values(), default=0)
+             ok, detail = worst <= int(check.get("max", 3)), f"максимум одинаковых вызовов: {worst}"
+         elif kind in ("tools_any", "tools_all", "tools_none"):
+             wanted = set(check.get("tools") or [])
+-            ok = bool(tools & wanted) if kind == "tools_any" else wanted <= tools if kind == "tools_all" else not (tools & wanted)
+-            detail = f"инструменты: {', '.join(sorted(tools)) or 'нет'}"
++            observed = set(tools)
++            if wanted & {"web_search", "web_fetch", "calc"}:
++                journal = autopsy.get("journal_tools")
++                if journal is None:
++                    journal = _journal(autopsy["head"].get("run_dir", ""))
++                for event in journal:
++                    observed.update(_web_cli_operation(event)[0])
++                    if "calc" in wanted:
++                        arguments = _skill_cli_arguments(event, "math", "calculate.py")
++                        if any((arg == "--input" and pos + 1 < len(arguments) and not arguments[pos + 1].startswith("--"))
++                               or (arg.startswith("--input=") and bool(arg.split("=", 1)[1]))
++                               for pos, arg in enumerate(arguments)):
++                            observed.add("calc")
++            ok = bool(observed & wanted) if kind == "tools_any" else wanted <= observed if kind == "tools_all" else not (observed & wanted)
++            detail = f"инструменты/операции: {', '.join(sorted(observed)) or 'нет'}"
+         elif kind in ("answer_contains", "answer_not_contains"):
+             needles = check.get("all") or check.get("any") or []
+             hits = [n for n in needles if _contains(answer, n)]
+diff --git a/tests/test_golden_web_cli.py b/tests/test_golden_web_cli.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_golden_web_cli.py
+@@ -0,0 +1,96 @@
++"""Golden must observe actual skill CLI operations, not removed tool spellings."""
++from __future__ import annotations
++
++import json
++
++from atlas.golden import _search_queries
++from test_lifecycle import _engine
++
++
++def _event(action="search", *, ok=True, script="C:/data/skills/web-research/web.py", launcher="python.exe"):
++    status = "discovered" if action == "search" else "fetched"
++    return {"type": "tool_call", "tool": "run_bash", "ok": ok, "exit_code": 0 if ok else 1,
++            "arguments": {"command": f'"{launcher}" "{script}" {action} --query "проверка" --query "test"'},
++            "sources": [{"id": "w_receipt", "url": "https://example.test/", "status": status}]}
++
++
++def _journal(tmp_path, events):
++    folder = tmp_path / "journal"
++    folder.mkdir(exist_ok=True)
++    (folder / "events.jsonl").write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events), encoding="utf-8")
++    return folder
++
++
++def _autopsy(folder, events):
++    return {"steps": {1: {"tools": [{"tool": e["tool"], "args": "command=first 70 chars", "ok": e["ok"], "result": "ok"}
++                                    for e in events]}}, "final": {"text": "ok"},
++            "done": {"stop_reason": "answer"}, "head": {"run_dir": str(folder)}}
++
++
++def test_modern_web_tools_and_query_languages(project, tmp_path):
++    events = [_event(), _event("fetch")]
++    folder = _journal(tmp_path, events)
++    engine = _engine(project, tmp_path)
++    autopsy = _autopsy(folder, events)
++    task = {"id": "web", "task": "test"}
++    golden = engine.golden
++    for check in ({"type": "tools_all", "tools": ["web_search", "web_fetch"]},
++                  {"type": "queries_languages", "all": ["ru", "en"]}):
++        assert golden._check(check, task, {}, autopsy, tmp_path)["passed"]
++    assert _search_queries(str(folder)) == ["проверка", "test"]
++
++
++def test_current_web_checks_require_successful_real_skill_execution(project, tmp_path):
++    chained = _event()
++    chained["arguments"]["command"] += ' && echo "fake success"'
++    events = [_event(ok=False), _event(script="C:/workspace/fake/web.py"), _event(launcher="echo"), chained]
++    folder = _journal(tmp_path, events)
++    engine = _engine(project, tmp_path)
++    autopsy = _autopsy(folder, events)
++    task = {"id": "web", "task": "test"}
++    assert not engine.golden._check({"type": "tools_any", "tools": ["web_search"]}, task, {}, autopsy, tmp_path)["passed"]
++    assert _search_queries(str(folder)) == []
++
++
++def test_no_repeat_uses_complete_arguments_and_still_catches_actual_repeats(project, tmp_path):
++    commands = ['python "C:/data/skills/web-research/web.py" fetch --url "https://example.test/' + str(i) + '"' for i in range(5)]
++    events = [{**_event("fetch"), "arguments": {"command": command}} for command in commands]
++    folder = _journal(tmp_path, events)
++    engine = _engine(project, tmp_path)
++    check = {"type": "no_repeat", "max": 3}
++    task = {"id": "web", "task": "test"}
++    assert engine.golden._check(check, task, {}, _autopsy(folder, events), tmp_path)["passed"]
++    repeated = [events[0]] * 5
++    _journal(tmp_path, repeated)
++    assert not engine.golden._check(check, task, {}, _autopsy(folder, repeated), tmp_path)["passed"]
++
++
++def test_math_cli_replaces_removed_calc_but_help_and_failed_commands_do_not(project, tmp_path):
++    good = {"type": "tool_call", "tool": "run_bash", "ok": True, "exit_code": 0,
++            "arguments": {"command": 'python "C:/data/skills/math/calculate.py" --input request.json'}}
++    folder = _journal(tmp_path, [good])
++    engine = _engine(project, tmp_path)
++    check = {"type": "tools_any", "tools": ["finance_calc", "calc"]}
++    task = {"id": "math", "task": "test"}
++    assert engine.golden._check(check, task, {}, _autopsy(folder, [good]), tmp_path)["passed"]
++    bad = [{**good, "ok": False, "exit_code": 1},
++           {**good, "arguments": {"command": 'python "C:/data/skills/math/calculate.py" --help'}}]
++    _journal(tmp_path, bad)
++    assert not engine.golden._check(check, task, {}, _autopsy(folder, bad), tmp_path)["passed"]
++
++
++def test_math_short_circuit_cli_chain_is_execution_not_echo(project, tmp_path):
++    cli = 'python "C:/data/skills/math/calculate.py" --input request.json'
++    good = {"type": "tool_call", "tool": "run_bash", "ok": True, "exit_code": 0,
++            "arguments": {"command": 'cd /d "C:/workspace" && ' + cli + ' && ' + cli}}
++    folder = _journal(tmp_path, [good])
++    engine = _engine(project, tmp_path)
++    check = {"type": "tools_any", "tools": ["calc"]}
++    task = {"id": "math", "task": "test"}
++    assert engine.golden._check(check, task, {}, _autopsy(folder, [good]), tmp_path)["passed"]
++    for command in (cli + ' && echo "fake success"', 'echo "fake" && ' + cli,
++                    cli + ' & ' + cli, cli + ' ; ' + cli,
++                    cli + ' && python "C:/other/calculate.py" --input request.json'):
++        bad = {**good, "arguments": {"command": command}}
++        _journal(tmp_path, [bad])
++        assert not engine.golden._check(check, task, {}, _autopsy(folder, [bad]), tmp_path)["passed"], command

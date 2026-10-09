@@ -24,6 +24,23 @@ def _names(call):
     return {tool["function"]["name"] for tool in call["tools"]}
 
 
+def test_math_route_is_visible_before_any_tool_or_work_guidance(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    calls = []
+
+    def chat(**kwargs):
+        calls.append(deepcopy(kwargs["messages"]))
+        assert WORK not in str(kwargs["messages"])
+        assert "Расчёты проверяй навыком math" in kwargs["messages"][0]["content"]
+        return _reply(text="Проверяется начальная инструкция.")
+
+    events = list(agent_loop.stream_code_agent(
+        user_message="Реши систему: 3x + y = 7, x − y = 1.", project_root=tmp_path,
+        chat_fn=chat, base_tools=_base_tools_for_mode("full-machine"),
+        auto_remember=False, permission_mode="bypass", num_ctx=65536))
+    assert len(calls) == 1 and events[-1]["stop_reason"] == "answer"
+
+
 @pytest.mark.parametrize("retrieval", ["read_file"])
 def test_full_machine_retrieval_keeps_tools_without_authoring_guidance(tmp_path, monkeypatch, retrieval):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))

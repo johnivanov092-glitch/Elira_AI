@@ -15,6 +15,8 @@ weather.py — единый погодный инструмент (Open-Meteo).
 import argparse
 import json
 import os
+from pathlib import Path
+import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,8 +61,12 @@ def cmd_forecast(a):
 
     os.makedirs(a.out_dir, exist_ok=True)
     jpath = os.path.join(a.out_dir, "forecast.json")
-    with open(jpath, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=1)
+    if getattr(a, "input_json", None):
+        if Path(a.input_json).resolve() != Path(jpath).resolve():
+            shutil.copyfile(a.input_json, jpath)
+    else:
+        with open(jpath, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
 
     from datetime import date
     weekdays = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")

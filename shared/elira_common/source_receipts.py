@@ -194,4 +194,5 @@ def excerpt_sources(*, run_id: str, tool: str, url: str, text: str, fetched_at: 
         offset=offset_base + start, quote_verified=True,
         doc_id=document.get("doc_id") or "", provenance=document.get("provenance"),
         tier=document.get("tier") or "unknown",
+        title=document.get("title") or "", dates=document.get("dates"),
     ))][:MAX_SOURCES]

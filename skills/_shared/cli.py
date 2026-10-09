@@ -39,9 +39,15 @@ def main(actions: dict[str, str]) -> int:
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, help="Save the same JSON result to a file")
     parsed = parser.parse_args()
+    output_ready = False
     try:
         bootstrap()
         os.chdir(parsed.workspace.resolve())
+        if parsed.output:
+            if parsed.output.exists() and not parsed.output.is_file():
+                raise ValueError("Output must be a file, not a directory")
+            parsed.output.parent.mkdir(parents=True, exist_ok=True)
+            output_ready = True
         arguments = json.loads(parsed.input.read_text(encoding="utf-8") if parsed.input else parsed.args)
         if not isinstance(arguments, dict) or any(str(k).startswith("_") for k in arguments):
             raise ValueError("Arguments must be an object without private runtime keys")
@@ -66,8 +72,20 @@ def main(actions: dict[str, str]) -> int:
         logging.getLogger(__name__).error("Skill scenario failed: %s: %s", type(exc).__name__, message)
         result = {"ok": False, "error": type(exc).__name__, "text": message}
         encoded = json.dumps(result, ensure_ascii=False)
-    if parsed.output:
-        parsed.output.parent.mkdir(parents=True, exist_ok=True)
-        parsed.output.write_text(encoded + "\n", encoding="utf-8")
+    if output_ready:
+        try:
+            parsed.output.write_text(encoded + "\n", encoding="utf-8", newline="\n")
+        except OSError as exc:
+            from app.core.redaction import redact_text
+            message = redact_text(str(exc))
+            logging.getLogger(__name__).error("Skill output was not saved: %s: %s", type(exc).__name__, message)
+            # The scenario may have an external effect. Preserve its outcome so
+            # a failed save cannot be mistaken for a failed action and repeated.
+            result = {**result, "output_saved": False,
+                      "output_error": f"{type(exc).__name__}: {message}",
+                      "text": str(result.get("text") or "") +
+                              "\nResult file was not saved. The scenario already ran; do not repeat it to save the result."}
+            encoded = json.dumps(result, ensure_ascii=False, default=str, allow_nan=False)
     print(encoded)
-    return 1 if result.get("ok") is False or result.get("status") in {"failed", "unverified"} else 0
+    return 1 if (result.get("ok") is False or result.get("output_saved") is False
+                 or result.get("status") in {"failed", "unverified"}) else 0

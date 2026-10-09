@@ -300,10 +300,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "library",
                 "description": (
-                    "The user's Library (documents curated in Settings): search by words "
-                    "(empty query lists everything), then read a document by id page by "
-                    "page with offset. Search with separate words (category, brand, model) "
-                    "before concluding something is absent."
+                    "Search/read the user's documents curated in Settings, when the task needs them. "
+                    "Use the web-research skill for public information. An empty query lists documents; "
+                    "an empty list ends Library search. Do not repeat an identical no-match query. "
+                    "For a document, try separate words before concluding something is absent; "
+                    "read by id page by page with offset."
                 ),
                 "parameters": {
                     "type": "object",

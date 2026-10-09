@@ -256,6 +256,35 @@ class MemoryAndLibraryToolTest(unittest.TestCase):
         self.assertEqual(result["error"], "id_required")
         read_file.assert_not_called()
 
+    def test_library_empty_inventory_ends_search(self) -> None:
+        with patch("app.application.library.runtime.search_files", return_value={"ok": True, "items": []}) as search:
+            result = tool_library(action="search")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["items"], 0)
+        self.assertIn("Библиотека пуста", result["text"])
+        self.assertNotIn("Попробуй", result["text"])
+        search.assert_called_once_with("", limit=20)
+
+    def test_library_no_match_does_not_claim_inventory_is_empty(self) -> None:
+        with patch("app.application.library.runtime.search_files", return_value={"ok": True, "items": []}) as search:
+            result = tool_library(action="search", query="world war z")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["items"], 0)
+        self.assertNotIn("Библиотека пуста", result["text"])
+        self.assertNotIn("Попробуй", result["text"])
+        self.assertIn("Не повторяй тот же запрос", result["text"])
+        search.assert_called_once_with("world war z", limit=20)
+
+    def test_library_search_error_is_not_a_successful_empty_result(self) -> None:
+        with patch("app.application.library.runtime.search_files",
+                   return_value={"ok": False, "error": "storage_unavailable"}):
+            result = tool_library(action="search", query="прайс")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "storage_unavailable")
+
 
 class RecallAndItopsToolTest(unittest.TestCase):
     def test_recall_index_uses_the_connected_project_by_default(self) -> None:

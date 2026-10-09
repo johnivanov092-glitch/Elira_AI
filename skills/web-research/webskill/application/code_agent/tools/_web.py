@@ -713,7 +713,8 @@ def _fetch_receipts(url: str, page: PageFetchResult, document: dict[str, Any] | 
     header = f"[fetched: {final_url}{note}]\n{_READ_EXCERPT_LABEL}"
     records = excerpt_sources(
         run_id=_current_run_id(), tool="web_fetch", url=final_url,
-        text=page.text, fetched_at=time.time(), offset_base=page.text_offset, document=document,
+        text=page.text, fetched_at=time.time(), offset_base=page.text_offset,
+        document={"title": page.title, "dates": page.dates, **(document or {})},
     )
     from webskill.application.web_evidence.corpus import envelope
     payload = "\n\n".join(format_source(source) for source in records)
@@ -738,6 +739,7 @@ def _page_metadata(requested_url: str, page: PageFetchResult) -> dict[str, Any]:
     return {"url": requested_url, "final_url": page.final_url or requested_url,
             "status_code": page.status_code, "ok": page.ok, "error": page.error,
             "mime": page.mime,
+            "title": page.title, "dates": page.dates,
             "text_offset": page.text_offset,
             "truncated": page.truncated, "fragment_found": page.fragment_found,
             "available_fragments": list(page.available_fragments),

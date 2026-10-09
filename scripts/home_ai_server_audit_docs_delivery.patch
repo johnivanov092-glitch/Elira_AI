@@ -1,0 +1,39 @@
+diff --git a/data/skills/home-ai-server-audit-docs/SKILL.md b/data/skills/home-ai-server-audit-docs/SKILL.md
+--- a/data/skills/home-ai-server-audit-docs/SKILL.md
++++ b/data/skills/home-ai-server-audit-docs/SKILL.md
+@@ -15,19 +15,21 @@
+ - Только read-only: systeminfo, CIM, nvidia-smi, ps/ss/df/lscpu, curl /v1/models, чтение конфигов. НИКАКИХ изменений на машинах, никаких stop/restart, никаких sudo-мутаций.
+ 
+ ## Порядок работы
+-1. **Определить машины.** `ssh_list_hosts` + `read_file C:\Users\<user>\.ssh\config`. Типичный набор:
++1. **Определить машины.** Прочитай ../linux-admin/SKILL.md и scenarios.md; выполни сценарий hosts через admin.py, затем `read_file C:\Users\<user>\.ssh\config`. Типичный набор:
+    - HOME-PC01 (192.168.88.20) — Windows, рабочая станция + Elira (D:\AIWork\Elira_AI).
+    - ai-server (192.168.88.15) — Ubuntu, AI-инференс (llama.cpp в Docker) + Home Assistant + SearXNG + Netdata.
+    - home-srv01 (192.168.88.10) — Windows Server, Jellyfin/Plex/TeamSpeak/SMB.
+ 2. **Собрать данные (локально):** `systeminfo`, `nvidia-smi`, PowerShell CIM (Win32_Processor/VideoController/PhysicalMemory, Get-PSDrive), Get-Service, Get-NetTCPConnection + Win32_Process (командные строки PID), `C:\Users\<user>\.ssh\config`.
+ 3. **Собрать данные (Elira-платформа):** `D:\AIWork\Elira_AI\README.md`, `docs/SERVER.md`, `.runtime/releases/state.json`, `backend/.venv` pip list, `frontend/package.json`, список `data/*.db`.
+ 4. **Собрать данные (ai-server по SSH):** hostname/os-release/uptime/lscpu/free/df/uname; `ps aux` (llama-server — модели и флаги); `ss -tlnp` (порты); `curl /v1/models` на 8000/8001/8004; `du -sh /models/*`; `/sys/class/drm/card0/device/{vendor,device,mem_info_vram_total,mem_info_vram_used}`; `systemctl` (silero-tts, elira-gpu-power-cap, netdata); `ls /home/`.
+-5. **Собрать данные (home-srv01 по SSH):** PowerShell через `ssh_run` (CIM, Get-Service, Get-NetTCPConnection, Win32_Process, Get-SmbShare).
+-6. **Идентификация GPU по PCI:** `lspci -nn | grep -i vga` → PCI ID → web_search/web_fetch devicehunt.com (напр. 1002:7551 = Navi 48 [Radeon AI PRO R9700]) + amd.com для спецификаций.
++5. **Собрать данные (home-srv01 по SSH):** PowerShell через сценарий ssh навыка linux-admin (tool_name=ssh_run_ps, args={host, script}); команды: (CIM, Get-Service, Get-NetTCPConnection, Win32_Process, Get-SmbShare).
++6. **Идентификация GPU по PCI:** `lspci -nn | grep -i vga` → PCI ID → команды search/fetch навыка web-research для devicehunt.com (напр. 1002:7551 = Navi 48 [Radeon AI PRO R9700]) + amd.com для спецификаций.
+ 7. **Заполнить `audit_data.json`** по шаблону из `gen_docs.py` (секции: overview, pc, elira, ai_server, models, services, media, network, security, risks, sources).
+-8. **Сгенерировать:** `python gen_docs.py audit_data.json <out_dir>` → DOCX + PPTX.
++8. **Сгенерировать:** `python "<папка навыка>/gen_docs.py" "<папка задачи>/audit_data.json" "<out_dir>"` → DOCX + PPTX.
+ 9. **Написать SOURCES.md** вручную: все команды, файлы, URL, ограничения (что не удалось прочитать).
+-10. **Проверить:** `python verify_docs.py <out_dir>` → JSON-отчёт; все checks passed.
++10. **Проверить:** `python "<папка навыка>/verify_docs.py" "<out_dir>"` → JSON-отчёт; все checks passed.
++
++После проверки публикуй DOCX, PPTX и SOURCES.md отдельно через resource_publish(project_path=...). Локальный путь не является выдачей для скачивания.
+ 
+ ## Проверка результата
+ - `verify_docs.py`: файлы существуют и >20 КБ; в DOCX есть ключевые факты (CPU, GPU, модели, IP, сервисы); ≥6 таблиц; в PPTX ≥10 слайдов с ключевыми фактами; SOURCES.md содержит URL и хосты; в документах нет токенов/секретов.
+@@ -36,7 +38,7 @@
+ ## Известные ограничения
+ - Docker-контейнеры ai-server без sudo не перечислить по именам — имена брать из `docs/SERVER.md` и подтверждать по docker-proxy PID/портам.
+ - Home Assistant API требует токена — версия не читается (пометить в ограничениях).
+-- Windows-хосты: `ssh_run` с Unix-командами падает — только PowerShell через `ssh_run`/`ssh_run_ps`.
++- Windows-хосты: Unix-команды через SSH не подходят — используй сценарий ssh из linux-admin с tool_name=ssh_run_ps и args={host, script}.
+ - Секреты (токены, ключи) в документы НЕ включать; проверять no_token_leak.
+ - Пустые каталоги моделей (заглушки) помечать как «запланированные», не как активные.
+ 

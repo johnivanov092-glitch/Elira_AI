@@ -1,0 +1,21 @@
+diff --git a/data/skills/jellyfin-windows/SKILL.md b/data/skills/jellyfin-windows/SKILL.md
+--- a/data/skills/jellyfin-windows/SKILL.md
++++ b/data/skills/jellyfin-windows/SKILL.md
+@@ -12,6 +12,8 @@
+ - Сервер падает и watchdog поднимает его на пустом профиле.
+ - Нужна проверка/настройка автозапуска Jellyfin «как у Plex» (персистентно, от SYSTEM).
+ 
++Перед SSH прочитай ../linux-admin/SKILL.md и scenarios.md. Все SSH-действия выполняй через admin.py ssh --input args.json: {"tool_name":"ssh_run_ps","args":{"host":"alias","script":"Get-Service"}}. Для записи используй tool_name=ssh_write с его аргументами; это сценарий, встроенного инструмента ssh_write нет.
++
+ ## Ключевые факты окружения (проверено на home-srv01, 2026-09-29)
+ - Реальный профиль: `C:\ProgramData\Jellyfin` (config/data/log/cache). Мастер: `config\system.xml` → `IsStartupWizardCompleted=true`.
+ - БД лежит в `data\data\jellyfin.db` (двойной `data` — норма: `--datadir` указывает на `data\`, Jellyfin создаёт внутри ещё `data\`).
+@@ -25,7 +27,7 @@
+    - Маркер «пустой профиль активен»: `/system/info` отдаёт 200 с `StartupWizardCompleted=false` и ProgramDataPath в systemprofile.
+    - Маркер «реальный профиль активен»: API требует авторизации (401 на `/system/info` без X-Emby-Token) — это НОРМА, а не сбой.
+ 2. **Бэкап** watchdog.ps1: `Copy-Item -LiteralPath <wd> -Destination <wd>.bak_<ts> -Force` (не `-LiteralPath` дважды!).
+-3. **Исправление watchdog** — заменить на `scripts\watchdog_fixed.ps1` (старт с аргументами реального профиля). Запись через ssh_write (UTF-8, без BOM — для .ps1 с кириллицей в комментариях безопаснее ASCII-комментарии).
++3. **Исправление watchdog** — заменить на `scripts\watchdog_fixed.ps1` (старт с аргументами реального профиля). Запись через сценарий ssh навыка linux-admin, tool_name=ssh_write (UTF-8, без BOM — для .ps1 с кириллицей в комментариях безопаснее ASCII-комментарии).
+ 4. **Перезапуск** — ТОЛЬКО через Task Scheduler: `Start-ScheduledTask -TaskName 'Jellyfin_Watchdog'`.
+    - ВАЖНО: `Start-Process jellyfin.exe` из SSH-сессии УМИРАЕТ при закрытии сессии (процесс-потомок сессии). Это не баг watchdog, а особенность Windows-SSH.
+ 5. **Проверка**:
