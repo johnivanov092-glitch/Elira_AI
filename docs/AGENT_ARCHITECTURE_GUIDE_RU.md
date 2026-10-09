@@ -226,7 +226,6 @@ Windows, сервера или сети.
 | `itops` | `itops_registry` и typed `itops_*` health/inventory |
 | `telegram` | `telegram` (send/messages) |
 | `web` | `web_query`, `http_api`, `browser` |
-| `desktop` | локальный Windows computer control |
 | `resources` | вложения, метаданные, materialize, vision, публикация файлов |
 | `memory` | `memory` (факты о пользователе), `library` (Библиотека) |
 | `math` | `calc`, `unit_convert`, `csv` |
