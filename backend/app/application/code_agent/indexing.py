@@ -245,7 +245,7 @@ def _build_corpus_files(root: Path, patterns: list[str]) -> tuple[list[CorpusFil
             continue
         commit_sha = _git_commit(repo)
         for path in sorted(visible, key=lambda item: str(item).casefold()):
-            if not _is_under(path, root) or _path_in_skip_dir(path, root):
+            if not path.is_relative_to(root) or _path_in_skip_dir(path, root):
                 continue
             rel = _posix_relative(path, root)
             if not _matches_patterns(rel, patterns):
@@ -262,7 +262,7 @@ def _build_corpus_files(root: Path, patterns: list[str]) -> tuple[list[CorpusFil
         dir_names[:] = [name for name in dir_names if name.casefold() not in skipped]
         for name in file_names:
             path = (current_path / name).resolve()
-            if any(_is_under(path, repo) for repo in repositories):
+            if any(path.is_relative_to(repo) for repo in repositories):
                 continue
             if _path_in_skip_dir(path, root):
                 continue
