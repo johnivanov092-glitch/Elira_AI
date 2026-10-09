@@ -252,7 +252,6 @@ class BuiltinToolProviderTest(unittest.TestCase):
         for required in (
             "read_file", "write_file", "edit_file",
             "glob", "grep", "run_bash", "recall",
-            "web_search", "web_fetch",
         ):
             self.assertIn(required, names)
 

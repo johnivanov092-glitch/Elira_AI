@@ -77,7 +77,8 @@ def verify(answer_file: Path) -> dict:
         for source in row.get('result', {}).get('sources', []):
             if valid_source(source):
                 sources.append(source)
-    read = {s['url'] for s in sources if s.get('quote_verified') is True}
+    read = {s['url'] for s in sources if s.get('status') == 'excerpt'
+            and s.get('quote_verified') is True and str(s.get('quote') or '').strip()}
     issues = web_source_citation_violations(answer, read_source_urls=read,
                                            known_source_urls={s['url'] for s in sources})
     return {'ok': bool(read) and not issues, 'read_urls': sorted(read),

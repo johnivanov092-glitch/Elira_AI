@@ -31,7 +31,7 @@ class ScienceMedicalModeTest(unittest.TestCase):
     def test_cite_or_refuse_is_in_the_line_the_model_sees(self):
         for name in ("Научный", "Медицина"):
             first = _first_sentence(PERSONA_MODES[name]["overlay"])
-            self.assertIn("web_search", first)
+            self.assertIn("web-research", first)
             self.assertIn("не подтверждено", first)
             self.assertIn("не выдумывай", first)
 

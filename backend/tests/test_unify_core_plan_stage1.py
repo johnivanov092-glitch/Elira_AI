@@ -17,7 +17,6 @@ from app.application.tool_registry.runtime import get_tool, seed_builtin_tools
 
 STAGE1_TOOLS = {
     "csv": ("auto", False, ["fs.read"]),
-    "http_api": ("require_approval", True, ["net.outbound"]),
 }
 
 
@@ -48,11 +47,6 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
     checks: list[tuple[str, dict]] = [
         ("csv", provider.dispatch("csv", {"file_path": "data.csv"})),
     ]
-    with patch(
-        "app.application.skills.runtime.http_request",
-        return_value={"ok": True, "status": 200, "body": "ok"},
-    ):
-        checks.append(("http_api", provider.dispatch("http_api", {"url": "https://example.com"})))
     for name, result in checks:
         text = str(result.get("text") or "")
         assert text, name

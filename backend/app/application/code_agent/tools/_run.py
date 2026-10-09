@@ -1707,7 +1707,7 @@ def _tool_run_server_impl(
 
     if actual_url:
         url_line = (
-            f"  URL: {actual_url}  ← verify against THIS url (browser/http_api). "
+            f"  URL: {actual_url}  ← verify against THIS url using the appropriate skill. "
             f"Do NOT guess other ports.\n"
         )
         if port and actual_port and int(actual_port) != int(port):

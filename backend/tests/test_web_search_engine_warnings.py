@@ -10,7 +10,7 @@ from webskill.core import web_engines
 from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
+from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
 from app.application.code_agent.run_observations import RunObservations
 from app.application.code_agent.run_journal import RunJournal
 from app.application.code_agent.tools import build_tool_dispatch
@@ -181,36 +181,6 @@ def test_full_structured_warnings_survive_bounded_redacted_text_summary():
     assert all("[REDACTED]" in warning["error"] for warning in result["engine_warnings"])
 
 
-def test_actual_native_query_bindings_and_warnings_reach_sse_and_durable_trace(tmp_path):
-    queries = ["service security advisory", "service maintenance documentation"]
-    responses = iter([
-        {"message": {"content": "", "tool_calls": [{"function": {
-            "name": "web_search", "arguments": {"queries": queries, "categories": "it"},
-        }}]}},
-        {"message": {"content": "Поиск выполнен; часть движков ответила HTTP 429.", "tool_calls": []}},
-    ])
-    messages = []
-
-    def chat(**kwargs):
-        messages.append(kwargs["messages"])
-        return next(responses)
-
-    with _http(reply=lambda params: _payload()) as calls:
-        events = list(stream_code_agent(user_message="Найди документацию сервиса.", project_root=tmp_path,
-                                        chat_fn=chat, permission_mode="bypass", auto_remember=False,
-                                        num_ctx=65536))
-    assert len(calls) == 2
-    event = next(event for event in events if event["type"] == "tool_call" and event["tool"] == "web_search")
-    source_id = event["sources"][0]["id"]
-    assert event["query_sources"] == [{"query": query, "source_ids": [source_id]} for query in queries]
-    assert event["engine_warnings"] == [{"query": query, **WARNINGS[0]} for query in queries]
-    assert any("WARNING:" in message["content"] for message in messages[1] if message.get("role") == "tool")
-    journal = RunJournal.load(events[-1]["run_id"])
-    persisted = [json.loads(line) for line in journal.events_path.read_text(encoding="utf-8").splitlines()]
-    saved = next(item for item in persisted if item["type"] == "tool_call" and item["tool"] == "web_search")
-    assert saved["query_sources"] == event["query_sources"]
-    assert saved["engine_warnings"] == event["engine_warnings"]
-    assert not list(tmp_path.iterdir())
 
 
 def test_new_web_metadata_passes_existing_sse_secret_redaction():

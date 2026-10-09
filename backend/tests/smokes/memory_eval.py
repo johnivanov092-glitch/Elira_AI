@@ -69,7 +69,8 @@ def run_memory_contracts(data_dir: Path) -> dict[str, Any]:
     from app.application.projects.scope import project_scope_id
     from app.application.rag_memory import service as rag
     from app.infrastructure.secrets import vault
-    from app.infrastructure.web_corpus import store as web_store
+    sys.path.insert(0, str(BACKEND_ROOT.parent / "skills/web-research"))
+    from webskill.infrastructure.web_corpus import store as web_store
 
     rag._get_embedding = lambda _text: None  # type: ignore[assignment]
     web_store._DB_PATH_OVERRIDE = str(data_dir / "web_corpus.sqlite3")

@@ -1,0 +1,84 @@
+{
+  "authorization": "User explicitly requested deletion of obsolete builtin Web contracts/tests after Foundation failure",
+  "removed": {
+    "test_numbered_citations": [
+      "test_number_stands_at_the_head_of_each_newly_read_page",
+      "test_read_page_gets_a_number_and_the_answer_gets_the_link"
+    ],
+    "test_search_answer_constraints": [
+      "test_spent_search_budget_marks_the_answer_partial_without_a_retry",
+      "test_user_format_condition_gets_one_rewrite_then_a_partial_answer"
+    ],
+    "test_search_pipeline_acceptance": [
+      "test_fabricated_search_output_requires_real_execution_or_degraded_answer",
+      "test_failed_source_does_not_attest_to_a_factual_answer",
+      "test_http_evidence_reaches_next_turn_and_final_after_transient_failure",
+      "test_search_mode_can_load_tools_create_check_and_finish_artifact"
+    ],
+    "test_search_recovery_loop": [
+      "test_failed_browser_loop_stops_exact_passive_repetition_without_hiding_interaction",
+      "test_repeated_search_gets_a_final_answer_without_global_step_limit",
+      "test_recovery_allows_a_changed_query_then_normal_answer",
+      "test_runtime_contract_echo_is_never_a_complete_user_answer",
+      "test_search_recovery_continues_artifact_work_before_or_after_declaration"
+    ],
+    "test_source_evidence_lifecycle": [
+      "test_source_snapshot_survives_journal_and_continuation",
+      "test_source_restoration_rejects_other_chat_and_client_forgery",
+      "test_web_tool_history_keeps_exact_wire_prefix_without_duplicate_excerpts",
+      "test_loop_restores_exact_excerpts_missing_from_truncated_tool_output",
+      "test_loop_restores_used_excerpt_after_real_compaction",
+      "test_repeated_read_restores_missing_excerpt_after_compaction_without_network",
+      "test_resume_delivers_cached_excerpts_without_consuming_recovery_attempts"
+    ],
+    "test_source_quote_binding": [
+      "test_unknown_paraphrase_source_gets_one_correction_then_degraded_answer",
+      "test_search_observation_needs_success_and_real_discovery_not_ok_alone",
+      "test_failed_repeated_attempts_store_and_runtime_operation_are_observed",
+      "test_malformed_or_oversized_attempt_history_fails_closed",
+      "test_imported_source_history_and_operation_overflow_fail_closed"
+    ],
+    "test_thinking_web_guidance": [
+      "test_thinking_continues_through_web_tools_and_retains_citations_on_resume"
+    ],
+    "test_unified_context": [
+      "test_search_starts_with_retrieval_and_loads_work_contract_only_when_needed",
+      "test_web_work_loads_project_instructions_outside_stable_prefix",
+      "test_late_web_activation_promotes_only_runtime_contract_to_first_system"
+    ],
+    "test_web_closing_context": [
+      "test_read_is_followed_by_the_model_turn_without_a_runtime_cue",
+      "test_another_source_stays_available_after_a_read",
+      "test_code_goal_continues_to_real_file_action_after_web_read"
+    ],
+    "test_web_evidence_presentation": [
+      "test_native_search_then_fetch_provider_sees_discovery_and_read_separately"
+    ],
+    "test_web_large_batch_context": [
+      "test_native_thirty_by_thirty_retains_every_current_query_receipt",
+      "test_native_thirty_pages_reach_next_canonical_model_turn",
+      "test_native_large_batch_is_packed_for_small_window_before_model_call",
+      "test_full_canonical_eight_k_window_rejects_oversized_fixed_prefix_before_model",
+      "test_readonly_web_guidance_fits_eight_k_without_code_work_contract",
+      "test_eight_k_window_packs_native_receipts_when_fixed_prefix_fits"
+    ],
+    "test_web_provider_context_projection": [
+      "test_coordinator_projects_only_readonly_web_and_keeps_raw_results_and_tools"
+    ],
+    "test_web_source_citation_gate": [
+      "test_unread_factual_citation_gets_one_correction_then_keeps_answer_without_unread_address",
+      "test_corrected_read_citation_can_complete",
+      "test_rejected_web_draft_does_not_reenter_model_context"
+    ],
+    "test_browser_cancellation": [
+      "entire obsolete builtin orchestration module"
+    ],
+    "test_web_cadence_loop": [
+      "entire obsolete builtin orchestration module"
+    ],
+    "test_web_repeat_scoped_recovery": [
+      "entire obsolete builtin orchestration module"
+    ]
+  },
+  "retained": "Standalone skill tests, generic source binding/presentation, quote limits, permission and process ownership tests"
+}

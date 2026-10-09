@@ -170,34 +170,3 @@ def test_sync_api_preserves_only_current_partial_text(tmp_path, monkeypatch, str
     assert result["response"] == text and preamble not in result["response"]
     assert result["ok"] is False and result["partial"] is True
     assert result["answer_status"] == "degraded" and result["completion_status"] == "partial"
-
-
-@pytest.mark.parametrize("case", ["empty", "tool"])
-def test_repeat_guard_empty_terminal_is_not_complete(tmp_path, monkeypatch, case):
-    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
-    turns = []
-
-    def chat(**kwargs):
-        tools = kwargs["tools"]
-        turns.append(len(tools))
-        assert len(turns) <= 6, "Empty terminal triggered another model request"
-        if not tools and case == "empty":
-            return {"message": {"content": ""}, "finish_reason": "stop"}
-        return {"message": {"content": "", "tool_calls": [
-            _tool("web_search", {"query": "service documentation"}, identifier=f"call-{len(turns)}")
-        ]}, "finish_reason": "tool_calls"}
-
-    with _http({"results": [{"url": "https://example.org/docs", "title": "Documentation"}],
-                "unresponsive_engines": []}) as searches:
-        events = list(stream_code_agent(user_message="Найди документацию сервиса.", project_root=tmp_path,
-                                       chat_fn=chat, permission_mode="ask", auto_remember=False,
-                                       base_tools=["web_search"], num_ctx=65536,
-                                       run_id="terminal-guard-" + case + "-" + tmp_path.name))
-    assert turns == [4, 4, 4, 4, 4, 0] and len(searches) == 1
-    calls = [event for event in events if event["type"] == "tool_call"]
-    assert len(calls) == 5 and sum(event.get("ok") is False for event in calls) == 4
-    assert not any(event["type"] == "final_response" for event in events)
-    done = events[-1]
-    assert done["ok"] is False and done["answer_status"] == "degraded"
-    assert done["partial"] is True and done["resumable"] is True
-    assert done["stop_reason"] == "error" and done["completion_status"] == "partial"

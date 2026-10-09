@@ -176,7 +176,7 @@ def format_source(source: dict[str, Any]) -> str:
     if source["status"] == "failed":
         return f"{header}\nERROR: {source['error'] or 'page unavailable'}"
     if source["status"] == "fetched":
-        return f"{header}\ndoc_id={source['doc_id']}; страница сохранена, текст не предъявлен. Используй web_query."
+        return f"{header}\ndoc_id={source['doc_id']}; страница сохранена, текст не предъявлен. Прочитай сохранённый текст инструментами навыка."
     return f"{header}\nНайдено поиском; страница ещё не прочитана."
 
 

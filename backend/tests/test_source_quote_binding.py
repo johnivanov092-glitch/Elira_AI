@@ -65,24 +65,6 @@ def test_plain_paraphrase_remains_provenance_only():
     assert citation["claim_support"] == "not_assessed"
 
 
-def test_unknown_paraphrase_source_gets_one_correction_then_degraded_answer():
-    from app.application.code_agent.answer_acceptance import AnswerAcceptance
-    from app.application.code_agent.task_outcomes import TaskOutcome
-    evidence, sources = _presented_excerpts()
-    acceptance = AnswerAcceptance()
-    args = dict(final_text="Факт из документации. [[source:invented]]", raw_user_message="Кратко объясни по источнику.",
-        pending_redirected_jobs=[], active_capability_groups=["web"], task_outcome=TaskOutcome(),
-        run_evidence=evidence, code_input_epoch=0, quote_word_limit=None, step=1, run_id="unknown-citation")
-    first = acceptance.evaluate(**args)
-    assert first.action == "retry" and first.reason == "quote_source"
-    assert "invented" in first.correction
-    acceptance.commit(first)
-    second = acceptance.evaluate(**args)
-    assert second.action == "accept" and second.answer_status == "degraded"
-    assert "Часть ссылок" in second.text
-    args["final_text"] = f'Факт из документации. [[source:{sources[0]["id"]}]]'
-    corrected = acceptance.evaluate(**args)
-    assert corrected.action == "accept" and corrected.answer_status == "complete"
 
 
 @pytest.mark.parametrize("template", [
@@ -223,60 +205,12 @@ def _record(evidence, tool, arguments, *, status="ok", output=None, state_change
     )
 
 
-def test_search_observation_needs_success_and_real_discovery_not_ok_alone():
-    evidence = RunEvidence()
-    discovered = make_source(
-        run_id="quote-binding", tool="web_search", url="https://example.org/settings", status="discovered",
-    )
-    _record(evidence, "web_search", {"query": "settings"}, output={"ok": True})
-    _record(evidence, "web_search", {"query": "settings"}, status="error",
-            output={"ok": True, "sources": [discovered]})
-    _record(evidence, "web_search", {"query": "settings"},
-            output={"ok": True, "sources": [discovered], "partial": True})
-    assert evidence.web_operations == []
-    _record(evidence, "web_search", {"query": " settings "}, output={"ok": True, "sources": [discovered]})
-    assert evidence.web_operations == [{"tool_name": "web_search", "queries": ["settings"],
-                                        "source_ids": [discovered["id"]]}]
-    assert sum(row["query_count"] for row in evidence.tool_operations) == 4
 
 
-def test_failed_repeated_attempts_store_and_runtime_operation_are_observed():
-    evidence = RunEvidence()
-    _record(evidence, "web_search", {"queries": ["first", "first"]}, status="error")
-    _record(evidence, "web_fetch", {"urls": ["https://example.org/a", "https://example.org/a"], "store": True},
-            status="error")
-    _record(evidence, "mcp", {"action": "start", "server_id": "atlas"})
-    assert evidence.operations_complete
-    assert evidence.tool_operations[0]["query_count"] == 2
-    assert evidence.tool_operations[1]["read_urls"] == ["https://example.org/a"] * 2
-    assert evidence.tool_operations[1]["store"] is True
-    assert evidence.tool_operations[1]["execution_status"] == "error"
-    assert evidence.tool_operations[2]["operation"] == "start"
-    snapshot = evidence.tool_operations
-    snapshot[1]["read_urls"].clear()
-    assert len(evidence.tool_operations[1]["read_urls"]) == 2
 
 
-@pytest.mark.parametrize("tool,args", [
-    ("web_search", {"queries": "not-a-list"}),
-    ("web_search", {"query": "x" * 4097}),
-    ("web_fetch", {"urls": [None]}),
-    ("web_fetch", {"urls": ["https://example.org/a"] * 31}),
-])
-def test_malformed_or_oversized_attempt_history_fails_closed(tool, args):
-    evidence = RunEvidence()
-    _record(evidence, tool, args, status="error")
-    assert evidence.operations_complete is False
 
 
-def test_imported_source_history_and_operation_overflow_fail_closed():
-    _, sources = _presented_excerpts()
-    assert RunEvidence(sources=sources).operations_complete is False
-    evidence = RunEvidence()
-    for _ in range(257):
-        _record(evidence, "mcp", {"action": "list"})
-    assert len(evidence.tool_operations) == 256
-    assert evidence.operations_complete is False
 
 
 def _presented_news_excerpt():

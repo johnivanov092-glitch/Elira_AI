@@ -153,6 +153,6 @@ def test_capability_snapshot_marks_unconfigured_services_missing(monkeypatch) ->
     assert capabilities["llm"]["available"] is False
     assert capabilities["embedding"]["available"] is False
     assert capabilities["vision"]["available"] is True
-    assert capabilities["web"]["available"] is True
+    assert "web" not in capabilities
     assert {"llm", "embedding"}.issubset(capabilities["missing"])
     assert "vision" not in capabilities["missing"]

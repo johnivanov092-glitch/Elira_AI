@@ -157,9 +157,9 @@ def test_store_outage_does_not_disable_reading(monkeypatch):
 
 
 def test_no_memory_policy_does_not_write_history(monkeypatch):
-    from app.application.code_agent import loop_helpers
-    from app.application.code_agent.tools._shell import _CURRENT_RUN_ID
-    monkeypatch.setattr(loop_helpers, "run_persistence_policy", lambda _: loop_helpers.task_persistence_policy(auto_remember=False))
+    from webskill import context
+    from webskill.context import _CURRENT_RUN_ID
+    monkeypatch.setattr(context, "run_persistence_policy", lambda _: {"rag": False})
     token = _CURRENT_RUN_ID.set("no-memory")
     try:
         assert health.begin(URL) == {}

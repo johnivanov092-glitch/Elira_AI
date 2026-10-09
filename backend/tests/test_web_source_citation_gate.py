@@ -36,46 +36,26 @@ def _evidence(*, tool="web_fetch", status="excerpt", presented=True, verified=Tr
 
 
 def _evaluate(answer, evidence, *, owner=None, outcome=None):
-    return (owner or AnswerAcceptance()).evaluate(
-        final_text=answer, raw_user_message="Что по новостям ЧП?",
-        pending_redirected_jobs=[], active_capability_groups=["web"],
-        task_outcome=outcome or TaskOutcome(), run_evidence=evidence,
-        code_input_epoch=0, quote_word_limit=None, persistence_policy={},
-        step=4, run_id="source-gate", criteria_rows=[],
-    )
-
-
-def test_unread_factual_citation_gets_one_correction_then_keeps_answer_without_unread_address():
-    evidence, owner, outcome = _evidence(), AnswerAcceptance(), TaskOutcome()
-    unsafe = f"Погибли 14 человек. [Источник]({UNREAD_URL})."
-    first = _evaluate(unsafe, evidence, owner=owner, outcome=outcome)
-    assert first.action == "retry"
-    assert first.reason == "web_source"
-    assert first.event["contract"] == "web_source_citation"
-    assert first.messages == ({"role": "user", "content": first.correction, "_runtime_block": "answer_correction"},)
-    assert not first.retain_rejected_answer
-    assert unsafe not in str(first.messages)
-    assert not outcome.answer_verification
-    owner.commit(first)
-    second = _evaluate(unsafe, evidence, owner=owner, outcome=outcome)
-    assert second.action == "accept"
-    assert second.answer_status == "degraded"
-    # John 2026-10-06: the model's answer is kept; the unread page loses its address.
-    assert second.text == "Погибли 14 человек. Источник (ссылка убрана: страница не прочитана)."
-    assert UNREAD_URL not in second.text
-    assert outcome.answer_verification["answer_sha256"] == hashlib.sha256(
-        second.text.encode("utf-8")).hexdigest()
-
-
-def test_corrected_read_citation_can_complete():
-    evidence, owner, outcome = _evidence(), AnswerAcceptance(), TaskOutcome()
-    first = _evaluate(f"В регионе ожидается ветер. [Источник]({UNREAD_URL}).",
-                      evidence, owner=owner, outcome=outcome)
-    owner.commit(first)
-    corrected = f"{QUOTE} [Источник]({READ_URL})."
-    result = _evaluate(corrected, evidence, owner=owner, outcome=outcome)
-    assert result.action == "accept" and result.answer_status == "complete"
-    assert result.text == corrected
+    # Exercise the actual skill entry point over its persisted operation records.
+    import importlib.util
+    import json
+    from pathlib import Path
+    from webskill import context
+    path = Path(__file__).resolve().parents[2] / "skills/web-research/web.py"
+    spec = importlib.util.spec_from_file_location("citation_gate_cli", path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    presented = {s["id"] for s in evidence.presented_sources}
+    sources = [s for s in evidence.sources if s["status"] != "excerpt" or s["id"] in presented]
+    operations = context.data_file("operations")
+    operations.mkdir(exist_ok=True)
+    (operations / "fixture.json").write_text(json.dumps({"result": {"sources": sources}}), encoding="utf-8")
+    draft = context.data_file("answer.md")
+    draft.write_text(answer, encoding="utf-8")
+    result = cli.verify(draft)
+    return AcceptanceDecision("accept" if result["ok"] else "retry", answer,
+        reason=None if result["ok"] else "web_source",
+        correction=",".join(i["reason"] for i in result["issues"]))
 
 
 def test_presented_browser_excerpt_is_read_evidence():
@@ -160,47 +140,10 @@ def test_ordinary_work_correction_retains_draft_by_default():
     )
 
 
-def test_rejected_web_draft_does_not_reenter_model_context(tmp_path, monkeypatch):
-    from copy import deepcopy
-    from app.application.code_agent.agent_loop import stream_code_agent
-    from webskill.application.code_agent.tools import _web
-    from webskill.infrastructure.search.web_runtime import PageFetchResult
-
-    monkeypatch.setattr(_web, "_fetch_one", lambda *args: PageFetchResult(
-        text=QUOTE, final_url=READ_URL, status_code=200,
-    ))
-    unsafe = f"Погибли 14 человек. [Источник]({UNREAD_URL})."
-    turns = []
-
-    def chat(**kwargs):
-        turns.append(deepcopy(kwargs["messages"]))
-        assert len(turns) <= 3
-        if len(turns) == 1:
-            return {"message": {"tool_calls": [{"id": "read", "function": {
-                "name": "web_fetch", "arguments": {"url": READ_URL},
-            }}]}}
-        if len(turns) == 2:
-            return {"message": {"content": unsafe}}
-        assert not any(row.get("role") == "assistant" and row.get("content") == unsafe
-                       for row in kwargs["messages"])
-        assert "Проверка прочитанных источников" in runtime_text(kwargs["messages"])
-        assert not any("Проверка прочитанных источников" in text for text in user_texts(kwargs["messages"]))
-        assert unsafe not in runtime_text(kwargs["messages"])
-        assert any(row.get("role") == "tool" and QUOTE in row.get("content", "")
-                   for row in kwargs["messages"])
-        return {"message": {"content": f"{QUOTE} [Источник]({READ_URL})."}}
-
-    events = list(stream_code_agent(user_message="Прочитай источник и сообщи предупреждение.",
-        project_root=tmp_path, chat_fn=chat, permission_mode="bypass", auto_remember=False,
-        num_ctx=65536, base_tools=["web_search", "web_fetch"]))
-    final = next(row for row in events if row["type"] == "final_response")
-    assert len(turns) == 3 and final["answer_status"] == "complete"
-    assert "Погибли" not in final["text"] and "14" not in final["text"]
-    assert len([row for row in events if row["type"] == "tool_call"]) == 1
 
 
 def test_unread_links_keep_text_and_name_the_failed_read():
-    from app.application.code_agent.answer_contracts import (
+    from webskill.application.code_agent.answer_contracts import (
         WebSourceCitationViolation, mark_unread_web_links)
 
     answer = ("Таблица CVE с [nginx.org](https://nginx.org/en/security_advisories.html). "

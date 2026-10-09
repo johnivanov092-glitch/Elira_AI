@@ -40,9 +40,6 @@ def _truncate(text: str, limit: int = 4000) -> str:
 # call, leaving room for several tool calls per turn plus the model's
 # own reasoning.
 TOOL_RESULT_LLM_LIMIT = 12000
-# Web results share the general per-call budget again (owner decision 2026-10-03,
-# pre-2026-10-01 value); the fair per-query summary still applies within it.
-WEB_TOOL_RESULT_LLM_LIMIT = 12000
 
 
 def _truncate_for_llm(text: str, limit: int = TOOL_RESULT_LLM_LIMIT) -> str:
@@ -106,7 +103,7 @@ def _strip_think_blocks(text: str) -> str:
 # guessing. Read/inspect tools only — pure actions add no facts worth carrying.
 _GROUNDING_FACT_TOOLS = frozenset({
     "project_map", "glob", "grep", "read_file", "run_bash", "run_server",
-    "http_api", "browser", "recall", "write_file", "edit_file",
+    "recall", "write_file", "edit_file",
     # Raw search snippets and fetched page text are untrusted source material and
     # are intentionally not persisted as authoritative cross-turn facts.
     # Remote work grounds facts too — a remote read/check/write must survive into
@@ -128,7 +125,7 @@ _ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
 # and progress toward the next fix (rule 9). An ERROR-branch return (verifier
 # absent, e.g. bad host) is NOT a verdict and still grounds nothing.
 _VERIFIER_GROUNDING_TOOLS = frozenset({
-    "ssh_port_check", "http_api", "browser",
+    "ssh_port_check",
 })
 # Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
 # 3000→6000) now that the real window is 64k, not a tight small-model budget:

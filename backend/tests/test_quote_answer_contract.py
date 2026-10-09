@@ -44,12 +44,15 @@ def sqlite_source(monkeypatch):
         )
 
     monkeypatch.setattr("requests.get", get)
+    from webskill.application.code_agent.tools import _web
+    monkeypatch.setattr("app.application.code_agent.tools._dispatch.tool_run_bash",
+                        lambda root, **kwargs: _web.tool_web_fetch(url="https://sqlite.org/foreignkeys.html"))
     return requested
 
 
 def _read_sqlite():
     return {"message": {"tool_calls": [{"function": {
-        "name": "web_fetch", "arguments": {"url": "https://sqlite.org/foreignkeys.html"},
+        "name": "run_bash", "arguments": {"command": "fixture skill fetch"},
     }}]}}
 
 
@@ -132,7 +135,7 @@ def test_overlong_audit_quote_is_corrected_before_answer_acceptance(tmp_path, mo
 
     events = list(stream_code_agent(
         user_message=SQLITE_REQUEST, project_root=tmp_path,
-        model="test-model", chat_fn=chat, auto_remember=False,
+        model="test-model", chat_fn=chat, auto_remember=False, permission_mode="bypass",
     ))
     finals = [event for event in events if event["type"] == "final_response"]
     assert sqlite_source == ["https://sqlite.org/foreignkeys.html"]
@@ -160,7 +163,7 @@ def test_persistent_quote_failure_stays_degraded_after_resume_without_retry(
     events = list(stream_code_agent(
         user_message=SQLITE_REQUEST, memory_query=memory_query,
         project_root=tmp_path, run_id="quote-limit-persistent",
-        model="test-model", chat_fn=chat, auto_remember=False,
+        model="test-model", chat_fn=chat, auto_remember=False, permission_mode="bypass",
     ))
     assert sqlite_source == ["https://sqlite.org/foreignkeys.html"]
     assert calls == 3

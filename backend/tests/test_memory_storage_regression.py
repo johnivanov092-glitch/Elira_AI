@@ -183,10 +183,10 @@ class MemoryStorageRegressionTest(unittest.TestCase):
             self.assertEqual(payload["runtime"]["active_chat_count"], 1)
             self.assertEqual(payload["runtime"]["storage_mode"], "rooted_sqlite")
             self.assertEqual(payload["runtime"]["active_db_path"], str((data_path / "elira_state.db").resolve()))
-            self.assertEqual(payload["runtime"]["primary_engine"], "searxng")
-            self.assertTrue(payload["runtime"]["degraded_mode"])
+            self.assertEqual(payload["runtime"]["primary_engine"], "skill:web-research")
+            self.assertFalse(payload["runtime"]["degraded_mode"])
             self.assertEqual(payload["runtime"]["available_engines"], [])
-            self.assertIsInstance(payload["runtime"]["warning"], str)
+            self.assertIsNone(payload["runtime"]["warning"])  # Core no longer probes Web engines.
 
 if __name__ == "__main__":
     unittest.main()

@@ -290,14 +290,11 @@ class TurnContext:
         guidance = task_guidance_blocks({_schema_tool_name(schema) for schema in schemas})
         if not work_started:
             guidance.pop("work", None)
-        # The web guidance block (which opens with WEB_SOURCE_FIDELITY_GUIDANCE)
-        # is a pinned runtime block projected into the system section, so the
-        # source-fidelity contract is not appended to the system prompt twice.
         if download_requested or "resources" in guidance:
             guidance["file_delivery"] = DELIVERY_GUIDANCE
         if task_instructions:
             guidance["delivery"] = task_instructions
-        if ("work" in guidance or "web" in guidance) and "project_context" not in self.sent_guidance:
+        if "work" in guidance and "project_context" not in self.sent_guidance:
             guidance["project_context"] = _build_project_context(self.root, self.working_dir)
         if "project" in guidance and "project" not in self.sent_guidance:
             guidance["project"] += "\n" + _shell_guidance()
@@ -367,56 +364,6 @@ class TurnContext:
         self.messages = insert_skill_context(self.messages, text, context_id)
         self.guidance_message_ids.add(context_id)
 
-    def provider_messages(self, *,
-                          read_source_handles: Callable[[list[dict[str, Any]]], tuple[str, ...]] | None = None,
-                          project_search_without_snippets: Callable[[str], str] | None = None,
-                          ) -> list[dict[str, Any]]:
-        """Project older discovery text without changing retained tool history."""
-        if read_source_handles is None or project_search_without_snippets is None:
-            return self.messages
-        expected: list[dict[str, Any]] = []
-        group_start = -1
-        group_has_read = False
-        read_boundary = -1
-        for index, message in enumerate(self.messages):
-            role = message.get("role")
-            if role == "assistant" and message.get("tool_calls"):
-                if expected or not isinstance(message["tool_calls"], list):
-                    return self.messages
-                expected = list(message["tool_calls"])
-                group_start, group_has_read = index, False
-            elif role == "tool":
-                if not expected:
-                    return self.messages
-                call = expected.pop(0)
-                function = call.get("function") if isinstance(call, dict) else None
-                if not isinstance(function, dict) or message.get("name") != function.get("name"):
-                    return self.messages
-                # Ordinary retained results may omit IDs; the executor writes
-                # them in declared order. Existing IDs must still match exactly.
-                if "tool_call_id" in message and message["tool_call_id"] != call.get("id"):
-                    return self.messages
-                if message.get("name") != "web_search" and read_source_handles([message]):
-                    group_has_read = True
-                if not expected and group_has_read:
-                    read_boundary = group_start
-            elif expected:
-                return self.messages
-        if expected or read_boundary < 0:
-            return self.messages
-        # Restoration is not another read. If compaction removed the original
-        # read group, retain discovery text rather than hide a newer search.
-        provider = self.messages
-        for index, message in enumerate(self.messages[:read_boundary]):
-            if message.get("role") != "tool" or message.get("name") != "web_search":
-                continue
-            content = str(message.get("content") or "")
-            projected = project_search_without_snippets(content)
-            if projected != content:
-                if provider is self.messages:
-                    provider = list(self.messages)
-                provider[index] = {**message, "content": projected}
-        return provider
 
     def prepare(self, *, prepare_fn, num_ctx: int, model: str, chat_fn,
                 context_profile: dict, tool_schemas: list[dict], cancel_handle,

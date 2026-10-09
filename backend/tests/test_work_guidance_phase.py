@@ -8,7 +8,6 @@ import pytest
 from app.api.routes.code_agent_routes import _base_tools_for_mode
 from app.application.code_agent import agent_loop, turn_context
 from app.application.code_agent.task_guidance import task_guidance_blocks
-from app.application.skills import runtime as skill_runtime
 
 
 WORK = task_guidance_blocks({"read_file"})["work"]
@@ -25,22 +24,17 @@ def _names(call):
     return {tool["function"]["name"] for tool in call["tools"]}
 
 
-@pytest.mark.parametrize("retrieval", ["read_file", "http_api"])
+@pytest.mark.parametrize("retrieval", ["read_file"])
 def test_full_machine_retrieval_keeps_tools_without_authoring_guidance(tmp_path, monkeypatch, retrieval):
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     (tmp_path / "data.txt").write_text("Проверено: 12", encoding="utf-8")
-    monkeypatch.setattr(skill_runtime, "http_request", lambda url, **kwargs: {
-        "ok": True, "status": 200, "url": url, "body": {"value": 12}})
     calls = []
 
     def chat(**kwargs):
         calls.append(deepcopy({key: kwargs[key] for key in ("messages", "tools")}))
         assert WORK not in str(kwargs["messages"]) and REMINDER not in str(kwargs["messages"])
-        if retrieval == "http_api" and len(calls) == 1:
-            return _reply("capability_load", {"group": "web"})
-        if len(calls) == (2 if retrieval == "http_api" else 1):
-            return _reply(retrieval, {"path": "data.txt"} if retrieval == "read_file" else {
-                "url": "https://example.org/data", "method": "GET"})
+        if len(calls) == 1:
+            return _reply(retrieval, {"path": "data.txt"})
         assert "12" in str(kwargs["messages"])
         return _reply(text="Значение: 12.")
 
@@ -49,9 +43,9 @@ def test_full_machine_retrieval_keeps_tools_without_authoring_guidance(tmp_path,
         chat_fn=chat, base_tools=_base_tools_for_mode("full-machine"),
         auto_remember=False, permission_mode="bypass", num_ctx=65536))
     assert events[-1]["stop_reason"] == "answer"
-    assert len(calls) == (3 if retrieval == "http_api" else 2)
+    assert len(calls) == 2
     initial = _names(calls[0])
-    assert {"read_file", "write_file", "web_search", "web_fetch"} <= initial
+    assert {"read_file", "write_file", "run_bash"} <= initial
     assert all(initial <= _names(call) for call in calls)
     assert any("Не вызывай confirm за пользователя" in message.get("content", "")
                for message in calls[0]["messages"])
@@ -108,5 +102,3 @@ def test_real_mutation_gets_work_guidance_on_next_turn_without_hiding_tools(tmp_
     assert len(calls) == 2 and events[-1]["stop_reason"] == "answer"
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "Проверено: 12"
     assert next(event for event in events if event["type"] == "tool_call")["state_changed"]
-
-

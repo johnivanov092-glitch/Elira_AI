@@ -288,7 +288,8 @@ class WebFetchToolTest(unittest.TestCase):
 
     def test_single_max_page_is_fitted_to_web_budget_with_exact_presented_receipts(self) -> None:
         import webskill.application.code_agent.tools._web as w
-        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+        from app.application.code_agent.loop_helpers import _truncate_for_llm
+        from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
         from app.application.code_agent.run_evidence import RunEvidence
         from webskill.application.web_evidence.receipts import valid_source
 
@@ -415,7 +416,8 @@ class BatchWebToolsTest(unittest.TestCase):
 
     def test_search_overflow_keeps_50_sources_and_fair_whole_results(self) -> None:
         import webskill.application.code_agent.tools._web as w
-        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+        from app.application.code_agent.loop_helpers import _truncate_for_llm
+        from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
         from webskill.application.web_evidence.receipts import valid_source
 
         queries = [f"q{number}" for number in range(5)]
@@ -444,7 +446,7 @@ class BatchWebToolsTest(unittest.TestCase):
 
     def test_search_skips_oversized_result_without_losing_later_queries(self) -> None:
         import webskill.application.code_agent.tools._web as w
-        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT
+        from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
         def search(query, limit, cat, tr):
             url = "https://example.org/" + "x" * WEB_TOOL_RESULT_LLM_LIMIT if query == "large" else "https://example.org/small"
             return [{"title": query, "href": url, "body": "Complete excerpt."}]
@@ -458,7 +460,8 @@ class BatchWebToolsTest(unittest.TestCase):
 
     def test_fetch_batch_accepts_5_caps_6_keeps_workers_and_current_receipts(self) -> None:
         import webskill.application.code_agent.tools._web as w
-        from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+        from app.application.code_agent.loop_helpers import _truncate_for_llm
+        from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
         from app.application.code_agent.run_evidence import RunEvidence
         from webskill.application.web_evidence.receipts import valid_source
 
@@ -525,7 +528,7 @@ class ToolRegistrationTest(unittest.TestCase):
     def test_builtin_schemas_and_dispatch_do_not_duplicate_skill(self):
         names = {s['function']['name'] for s in build_tool_schemas()}
         dispatch = build_tool_dispatch(Path('.'))
-        for name in ('web_search', 'web_fetch', 'web_query', 'web_claim_add'):
+        for name in ('web_search', 'web_fetch', 'web_query', 'web_claim_add', 'browser', 'http_api'):
             self.assertNotIn(name, names)
             self.assertNotIn(name, dispatch)
 

@@ -517,7 +517,7 @@ def test_first_visible_mutation_receipt_has_updated_durable_observations(tmp_pat
     assert RunJournal.load(run_id).state["status"] == "interrupted"
 
 
-def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_count(tmp_path):
+def test_quote_correction_without_retired_web_escalation(tmp_path):
     from app.application.code_agent.answer_acceptance import AnswerAcceptance
     from app.application.code_agent.run_evidence import RunEvidence
     from app.application.code_agent.task_outcomes import TaskOutcome
@@ -528,7 +528,7 @@ def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_coun
     def chat(**kwargs):
         calls.append(deepcopy(kwargs["messages"]))
         assert len(calls) <= 3, "correction chain added another model call"
-        return response(rejected if len(calls) < 3 else "> one two")
+        return response(rejected if len(calls) < 2 else "> one two")
 
     events = list(agent_loop.stream_code_agent(
         user_message="Поясни принцип и дай цитату до 2 слов.",
@@ -538,12 +538,11 @@ def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_coun
     corrections = [event for event in events if event["type"] in {
         "runtime_activation_changed", "answer_format_correction",
     }]
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert [(event["type"], event.get("source"), event.get("contract")) for event in corrections] == [
-        ("runtime_activation_changed", "evidence_uncertain_answer", None),
         ("answer_format_correction", None, "quote_word_limit"),
     ]
-    assert any("[internal evidence correction]" in message["content"] for message in calls[1])
+    assert not any("[internal evidence correction]" in message["content"] for message in calls[1])
     final = next(event for event in events if event["type"] == "final_response")
     assert final["text"] == "> one two" and final["answer_status"] == "complete"
     assert events[-1]["ok"]
@@ -553,7 +552,7 @@ def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_coun
     outcome = TaskOutcome()
     evidence = RunEvidence()
     decisions = []
-    for step, text in enumerate((rejected, rejected, "> one two"), 1):
+    for step, text in enumerate((rejected, "> one two"), 1):
         decision = owner.evaluate(
             final_text=text, raw_user_message="Поясни принцип и дай цитату до 2 слов.",
             pending_redirected_jobs=(), active_capability_groups=active,
@@ -563,13 +562,12 @@ def test_simultaneous_evidence_and_quote_corrections_keep_priority_and_call_coun
         decisions.append(decision)
         active.update(decision.activate_groups)
         owner.commit(decision)
-    assert [decision.reason for decision in decisions] == ["evidence", "quote", None]
+    assert [decision.reason for decision in decisions] == ["quote", None]
     assert decisions[0].messages[1]["content"] in runtime_text(calls[1])
-    assert decisions[1].messages[1]["content"] in runtime_text(calls[2])
     assert not any(decisions[0].correction in text for text in user_texts(calls[1]))
-    assert decisions[2].text == final["text"]
-    assert decisions[2].answer_status == final["answer_status"]
-    assert owner.evidence_answer_correction_sent and owner.quote_correction_sent
+    assert decisions[1].text == final["text"]
+    assert decisions[1].answer_status == final["answer_status"]
+    assert not owner.evidence_answer_correction_sent and owner.quote_correction_sent
 
 
 def verification_fixture(target, criterion="private input checked"):

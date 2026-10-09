@@ -124,21 +124,6 @@ def _local_ask_request(tool_name: str, args: dict) -> ToolExecutionRequest:
     )
 
 
-def test_browser_permission_is_classified_from_actions() -> None:
-    passive = _local_ask_request("browser", {"url": "https://example.com"})
-    interactive = _local_ask_request(
-        "browser",
-        {
-            "url": "https://example.com",
-            "actions": [{"fill": "Email", "value": "user@example.com"}],
-        },
-    )
-    with patch(
-        "app.application.tool_registry.runtime.get_tool",
-        return_value={"side_effect": False},
-    ):
-        assert permission_mode_auto_approves(passive) is True
-        assert permission_mode_auto_approves(interactive) is False
 
 
 def test_desktop_skill_uses_normal_shell_approval() -> None:

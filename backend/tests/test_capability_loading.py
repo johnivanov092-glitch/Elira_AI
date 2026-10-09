@@ -48,7 +48,7 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
     assert "unknown tool" not in str(hidden_result.get("text") or "").lower()
 
 
-def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
+def test_model_loads_math_group_for_next_turn(tmp_path) -> None:
     seen_tool_names: list[set[str]] = []
     responses = iter([
         {
@@ -57,7 +57,7 @@ def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
                 "tool_calls": [{
                     "function": {
                         "name": "capability_load",
-                        "arguments": {"group": "web"},
+                        "arguments": {"group": "math"},
                     },
                 }],
             },
@@ -81,15 +81,15 @@ def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
 
     assert len(seen_tool_names) >= 2
     assert "capability_load" in seen_tool_names[0]
-    assert "web_search" not in seen_tool_names[0]
-    assert {"web_search", "web_fetch", "browser"} <= seen_tool_names[1]
+    assert "unit_convert" not in seen_tool_names[0]
+    assert {"unit_convert"} <= seen_tool_names[1]
     assert "computer" not in seen_tool_names[1]
     load_events = [
         event for event in events
         if event.get("type") == "tool_call"
         and event.get("tool") == "capability_load"
     ]
-    assert load_events[-1]["runtime_activation"]["capability_groups"] == ["web"]
+    assert load_events[-1]["runtime_activation"]["capability_groups"] == ["math"]
 
     resumed_tool_names: list[set[str]] = []
 
@@ -109,7 +109,7 @@ def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
         resume=True,
     ))
 
-    assert {"web_search", "web_fetch", "browser"} <= resumed_tool_names[0]
+    assert {"unit_convert"} <= resumed_tool_names[0]
     assert "computer" not in resumed_tool_names[0]
 
 
@@ -124,7 +124,7 @@ def test_planner_preloads_selected_group_before_first_execution_turn(
         "ordered_steps": ["Изменить страницу", "Проверить её в browser"],
         "acceptance_checks": ["browser(actual_url) показывает страницу"],
         "risks": [],
-        "capability_groups": ["web"],
+        "capability_groups": ["resources"],
         "current_step": 1,
     }
     responses = iter([
@@ -154,13 +154,13 @@ def test_planner_preloads_selected_group_before_first_execution_turn(
     ))
 
     assert seen_execution_tools
-    assert {"browser", "web_search"} <= seen_execution_tools[0]
+    assert {"read_image"} <= seen_execution_tools[0]
     activation = next(
         event for event in events
         if event.get("type") == "runtime_activation_changed"
     )
     assert activation["source"] == "planner"
-    assert activation["runtime_activation"]["capability_groups"] == ["web"]
+    assert activation["runtime_activation"]["capability_groups"] == ["resources"]
     assert not any(
         event.get("type") == "tool_call" and event.get("tool") == "capability_load"
         for event in events
@@ -401,7 +401,7 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
             permission_mode="ask",
         ))
 
-        assert {"capability_load", "read_file", "web_search", "web_fetch"} <= seen_tool_names[0]
+        assert {"capability_load", "read_file", "run_bash"} <= seen_tool_names[0]
         assert "mcp" not in seen_tool_names[0]
         assert "Режим работы:" not in seen_system_prompts[0]
         run_started = next(event for event in events if event["type"] == "run_started")
@@ -526,12 +526,12 @@ def test_request_base_tools_reach_the_actual_first_turn_registry(tmp_path) -> No
         run_id="request-base-tools-registry",
         chat_fn=fake_chat,
         auto_remember=False,
-        base_tools=(*CORE_BUILTIN_TOOLS, "web_search", "web_fetch"),
+        base_tools=(*CORE_BUILTIN_TOOLS, "read_file", "calc"),
         profile_name="Баланс",
         permission_mode="ask",
     ))
 
-    assert {"web_search", "web_fetch"} <= seen_tool_names[0]
+    assert {"read_file", "calc"} <= seen_tool_names[0]
     assert "browser" not in seen_tool_names[0]
 
 

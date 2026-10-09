@@ -75,9 +75,3 @@ def test_resource_schema_is_metadata_only_and_points_to_mutable_skills():
     assert parameters["properties"]["execution_target"]["enum"] == ["auto", "local_cpu"]
     assert parameters["required"] == ["resource_id", "operation"]
     assert parameters["additionalProperties"] is False
-
-
-def test_web_guidance_routes_pdf_to_skill_without_advertising_builtin_find():
-    guidance = task_guidance_blocks({"web_fetch"})["web"]
-    assert "PDF читай навыком document-read" in guidance
-    assert "find работает для HTML, текста и PDF" not in guidance

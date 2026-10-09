@@ -101,17 +101,17 @@ def _run_full_frontend(product: str, tokens: list[str], *, dom_text: str,
 class TwoFixtureGenericTest(unittest.TestCase):
     """Same verifier logic, two different products — proves no hardcoding."""
 
-    def test_vaultdesk_reaches_confirmed(self):
+    def test_retired_browser_cannot_confirm_vaultdesk(self):
         toks = ["VaultDesk", "Inventory", "Backups", "Alerts", "Home Lab", "Pro", "Team", "Start local audit"]
         dom = "TITLE: VaultDesk — Admin. VaultDesk Inventory Backups Alerts Home Lab Pro Team Start local audit"
         t = _run_full_frontend("VaultDesk", toks, dom_text=dom)
-        self.assertEqual(t.completion_status(), "confirmed")
+        self.assertEqual(t.completion_status(), "partial")
 
-    def test_novapanel_reaches_confirmed_same_logic(self):
+    def test_retired_browser_cannot_confirm_novapanel(self):
         toks = ["NovaPanel", "Users", "Jobs", "Settings"]
         dom = "TITLE: NovaPanel. NovaPanel dashboard — Users Jobs Settings overview"
         t = _run_full_frontend("NovaPanel", toks, dom_text=dom)
-        self.assertEqual(t.completion_status(), "confirmed")
+        self.assertEqual(t.completion_status(), "partial")
 
     def test_novapanel_missing_token_stays_partial(self):
         toks = ["NovaPanel", "Users", "Jobs", "Settings"]
@@ -174,7 +174,7 @@ class NegativeEvidenceTest(unittest.TestCase):
             "rendered DOM содержит текст `VaultDesk`",           # dom_contains
         ]))
         t.record(tool_name="http_api", args={"url": "http://localhost:3000"}, ok=True, evidence="HTTP 200")
-        self.assertEqual(t.items[0]["status"], "confirmed")     # page opened
+        self.assertEqual(t.items[0]["status"], "unconfirmed")   # retired tool cannot attest
         self.assertEqual(t.items[1]["status"], "unconfirmed")   # no DOM text evidence
 
 

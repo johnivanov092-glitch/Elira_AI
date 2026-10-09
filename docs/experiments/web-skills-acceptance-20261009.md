@@ -1,6 +1,6 @@
 # Web skills: acceptance, 2026-10-09
 
-Worktree: C:/Users/Root/.codex/worktrees/ui-artifacts-skills-acceptance/Elira_AI, branch codex/web-skill-experiment, base 405ae64. Acceptance changes are uncommitted. Installed Elira was not updated by this work.
+Worktree: C:/Users/Root/.codex/worktrees/ui-artifacts-skills-acceptance/Elira_AI, branch codex/web-skill-experiment, base 405ae64. The following sections retain historical acceptance evidence. Current release closure is appended below.
 
 ## Original golden
 
@@ -60,3 +60,27 @@ Final fresh-workspace WWZ e47d1a7bdb16414687b50a78865de253 used both languages b
 Deferred: incomplete legacy runtime test migration; WWZ source-count/honesty; occasional bypass of skills for saved weather and direct URL reads; unnecessary resources loading; invented CLI arguments. Original golden remains 19/29, with permission-blocked cases documented separately. These are release notes, not a passing acceptance claim.
 
 User explicitly asked to stop further investigation, release the candidate with remaining issues, merge all agreed changes, and install it. Rejected prompt-english and skill-action-scope experiments remain excluded. Release/installation outcome must be reported from Foundation evidence separately.
+
+## Release closure: full Web boundary
+
+The user explicitly authorized retirement of obsolete native Web contracts and installation.
+Removed dead core Web guidance, history projection, retry flags, query-history state and
+Web-specific budget ownership. Research/source fidelity rules and their assertions now live
+with the mutable web-research package. Generic command execution, source receipt transport,
+context restoration and UI remain application services. Source instruction coverage is
+preserved in test_thinking_web_guidance; citation checks invoke the real skill verify entry point.
+
+That migration exposed a real skill defect: a fetched-only receipt with quote_verified=true
+could be counted as read. verify now requires a nonempty verified excerpt. The regression test
+failed before the fix and passed afterward. The common script-to-skill reminder was also restored.
+
+The complete audit run had 2575 passed, 2 skipped, 73 subtests passed and five failures in
+remaining native-tool expectations. Those expectations were corrected; 135 focused tests and
+six subtests now pass. Fresh Atlas targeted run: 23 passed; Atlas check: zero new/red issues.
+The final full-suite gate will run inside Foundation on the exact candidate. No green full-suite
+result or installed acceptance is claimed by this pre-publication record.
+
+Original native tests are archived under retired-web-orchestration; no golden criteria were changed.
+Selection/WWZ/model semantic debts listed above remain deferred by the user. Release installation
+must additionally update the changed mutable skills with backups; seeding alone does not overwrite
+existing data/skills packages.

@@ -71,7 +71,6 @@ def test_browser_sources_use_existing_evidence_and_restore_with_links() -> None:
     evidence = RunEvidence()
     evidence.record_tool_result(tool_name="browser", arguments={"url": "https://example.org/requested"},
                                 execution_status="ok", output=out, text_result=out["text"], state_changed=False)
-    assert evidence.has_web_research
     assert not evidence.has_external_source  # Collection is not presentation.
     evidence.mark_sources_presented([{"role": "tool", "content": out["text"]}])
     assert evidence.has_external_source

@@ -58,53 +58,6 @@ def _call(name: str, **arguments):
     return {"id": name, "function": {"name": name, "arguments": arguments}}
 
 
-def test_native_search_then_fetch_provider_sees_discovery_and_read_separately(native_web_transport, tmp_path):
-    search_get, page_get = native_web_transport
-    turns = []
-
-    def chat(**kwargs):
-        turns.append(kwargs)
-        assert len(turns) <= 3
-        if len(turns) == 1:
-            return {"message": {"tool_calls": [_call("web_search", query="primary report",
-                top_k=2, categories="science", time_range="week")]}}
-        text = next(row["content"] for row in reversed(kwargs["messages"]) if row["role"] == "tool")
-        if len(turns) == 2:
-            assert text.count("[discovered;") == 2
-            assert text.count("страница не прочитана") == 2
-            assert text.count("Сниппет:") == 2
-            assert SNIPPET in text and URL in text and OTHER_URL in text
-            assert "дата из поиска: 2026-10-03" in text
-            assert "период: week" in text and "категория: science" in text
-            assert "source_id=w_" in text and "[[source:" not in text
-            assert {tool["function"]["name"] for tool in kwargs["tools"]} >= {"web_search", "web_fetch"}
-            return {"message": {"tool_calls": [_call("web_fetch", url=URL)]}}
-        assert "[excerpt; прочитанные фрагменты" in text
-        assert BODY in text and SNIPPET not in text
-        citation = re.search(r"\[\[source:[^\]]+\]\]", text).group()
-        return {"message": {"content": "В исследованной выборке зарегистрировали 17 событий. " + citation}}
-
-    events = list(stream_code_agent(user_message="Найди первичный отчёт, прочитай его и кратко объясни результат.",
-        project_root=tmp_path, chat_fn=chat, permission_mode="bypass", auto_remember=False,
-        num_ctx=65536, base_tools=["web_search", "web_fetch"]))
-    calls = [event for event in events if event["type"] == "tool_call"]
-    assert [event["tool"] for event in calls] == ["web_search", "web_fetch"]
-    discoveries = calls[0]["sources"]
-    assert len(discoveries) == 2 and all(valid_source(source) for source in discoveries)
-    assert all(source["status"] == "discovered" and source["quote"] == ""
-               and source["quote_verified"] is False and source["presented"] is False
-               and source["claim_support"] == "not_assessed" for source in discoveries)
-    shown = next(row["content"] for row in turns[1]["messages"] if row["role"] == "tool")
-    assert all("source_id=" + source["id"] in shown for source in discoveries)
-    read_sources = calls[1]["sources"]
-    assert read_sources and all(valid_source(source) and source["status"] == "excerpt"
-                                and source["quote_verified"] for source in read_sources)
-    final = next(event for event in events if event["type"] == "final_response")
-    assert final["answer_status"] == "complete" and "17" in final["text"]
-    assert len(turns) == 3 and events[-1]["ok"] is True
-    search_get.assert_called_once()
-    page_get.assert_called_once()
-    assert page_get.call_args.args[0] == URL
 
 
 def test_batch_search_keeps_discovery_ids_and_query_bindings(native_web_transport):

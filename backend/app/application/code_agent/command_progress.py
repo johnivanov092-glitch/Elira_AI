@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
-from urllib.parse import urldefrag
 
 
 def command_digest(command: str, *, argv: list[str] | None = None) -> str:

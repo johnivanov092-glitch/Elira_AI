@@ -9,12 +9,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.code_agent.loop_helpers import TOOL_RESULT_LLM_LIMIT, WEB_TOOL_RESULT_LLM_LIMIT
+from app.application.code_agent.loop_helpers import TOOL_RESULT_LLM_LIMIT
+from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
 
 
 @pytest.mark.parametrize("tool,arguments,budget", [
-    ("web_search", {"query": "documentation"}, WEB_TOOL_RESULT_LLM_LIMIT),
-    ("web_fetch", {"url": "https://example.org/documentation"}, WEB_TOOL_RESULT_LLM_LIMIT),
+    ("run_bash", {"command": "skill output"}, TOOL_RESULT_LLM_LIMIT),
     ("read_file", {"path": "documentation.txt"}, TOOL_RESULT_LLM_LIMIT),
 ])
 @pytest.mark.parametrize("size", [24000, 40000])
@@ -44,7 +44,10 @@ def test_tool_text_reaches_next_model_turn_with_its_budget(tmp_path, tool, argum
     content = next(message["content"] for message in calls[1]
                    if message.get("role") == "tool" and message.get("name") == tool)
     assert len(content) <= budget + 200
-    assert "DOCUMENT_START" in content and "DOCUMENT_END" in content
+    assert "DOCUMENT_START" in content
+    if tool == "read_file":
+        assert "DOCUMENT_END" in content
+    # Shell output first passes the executor prefix cap; file reads retain both ends.
     if len(body) <= budget:
         assert content == body
     else:

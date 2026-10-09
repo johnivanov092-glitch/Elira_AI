@@ -66,12 +66,12 @@ def test_process_success_is_not_semantic_verification(tool: str, args: dict) -> 
     assert not evidence.has_current_verification
 
 
-def test_typed_browser_verdict_survives_and_failed_verdict_revokes_it() -> None:
+def test_typed_ssh_verdict_survives_and_failed_verdict_revokes_it() -> None:
     evidence = RunEvidence()
-    _record(evidence, "browser", args={"url": "http://localhost:8080"},
+    _record(evidence, "ssh_read", args={"path": "result.txt"},
             output={"ok": True, "verifier": True, "evidence": "Observed page title"})
     assert evidence.has_current_passing_verification
-    _record(evidence, "browser", args={"url": "http://localhost:8080"}, status="error",
+    _record(evidence, "ssh_read", args={"path": "result.txt"}, status="error",
             output={"ok": False, "verifier": True, "evidence": "Interaction did not complete"})
     assert evidence.has_current_verification
     assert not evidence.has_current_passing_verification
@@ -282,18 +282,17 @@ def test_web_search_is_discovery_not_external_source_evidence() -> None:
 
     _record(evidence, "web_search", text="search snippets")
     assert not evidence.has_external_source
-    assert evidence.has_web_research
 
     _record(
         evidence,
-        "web_fetch",
+        "playwright__browser_snapshot",
         status="error",
         output={"ok": False},
         text="fetch failed",
     )
     assert not evidence.has_external_source
 
-    _record(evidence, "web_fetch", text="full source contents")
+    _record(evidence, "playwright__browser_snapshot", text="full source contents")
     assert evidence.has_external_source
     assert evidence.requires_external_source(
         "Проверь в интернете, кто основал компанию",

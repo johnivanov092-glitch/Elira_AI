@@ -161,7 +161,6 @@ def _run_owned_servers(run_id: str) -> list[dict]:
 from app.application.code_agent.loop_helpers import (  # noqa: F401
     ContextBudgetError,
     TOOL_RESULT_LLM_LIMIT,
-    WEB_TOOL_RESULT_LLM_LIMIT,
     _ASK_USER_SCHEMA,
     _WORKFLOW_REQUEST_SCHEMA,
     _fact_from_tool,
@@ -663,14 +662,7 @@ def _stream_code_agent_core(
                     cancel_handle=upstream_cancel_handle, audit_sink=compaction_audit_sink,
                     restore_source_context=run_evidence.restore_source_context,
                 )
-                provider_messages = turn_context.provider_messages(
-                    read_source_handles=(run_evidence.read_source_handles
-                                         if not run_evidence.has_mutations
-                                         and not task_outcome.sources
-                                         and not task_outcome.artifact_contract_seen
-                                         and not turn_context.skill_reminder_pending else None),
-
-                )
+                provider_messages = turn_context.messages
                 run_evidence.mark_sources_presented(provider_messages)
                 # The owner's UI text alone stays in the user role; every runtime
                 # block moves into the single system message (decision 2026-10-06).
@@ -1295,6 +1287,10 @@ def _stream_code_agent_core(
                         pending_redirected_jobs.discard(_job_pid)
                 text_result = str(tool_meta.get("text", ""))
                 _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
+                script_hint = turn_context.script_skill_hint(name=name, args=parsed_args, ok=_tool_ok)
+                if script_hint:
+                    text_result += "\n\n" + script_hint
+                    tool_meta["text"] = text_result
                 if _tool_ok and name == "glob":
                     _last_glob_matches = tuple(
                         line.strip()
@@ -1400,7 +1396,6 @@ def _stream_code_agent_core(
                             event[opt] = val[:40000] + "\n[... truncated]"
                         else:
                             event[opt] = val
-                _sites_before = len(run_evidence.read_site_urls)
                 observed_fields = observations.observe_result(
                     name=name, args=parsed_args, output=tool_meta, status=_exec_result.status,
                     text=text_result, state_changed=_state_changed, root=root,

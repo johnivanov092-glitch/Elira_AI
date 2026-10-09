@@ -20,7 +20,6 @@ from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 RetryReason = Literal[
     "background", "evidence", "user_constraint", "delivery", "quote", "quote_source",
-    "cadence", "web_source",
 ]
 
 
@@ -57,8 +56,6 @@ class AnswerAcceptance:
     evidence_answer_correction_sent: bool = False
     quote_correction_sent: bool = False
     quote_source_correction_sent: bool = False
-    cadence_correction_sent: bool = False
-    web_source_correction_sent: bool = False
     user_constraint_correction_sent: bool = False
 
     def commit(self, decision: AcceptanceDecision) -> None:
@@ -71,10 +68,6 @@ class AnswerAcceptance:
             self.quote_correction_sent = True
         elif decision.reason == "quote_source":
             self.quote_source_correction_sent = True
-        elif decision.reason == "cadence":
-            self.cadence_correction_sent = True
-        elif decision.reason == "web_source":
-            self.web_source_correction_sent = True
         elif decision.reason == "user_constraint":
             self.user_constraint_correction_sent = True
 

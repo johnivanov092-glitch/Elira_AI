@@ -1,0 +1,33 @@
+"""Thinking uses the normal web executor and preserves source evidence."""
+from copy import deepcopy
+
+from app.application.code_agent.agent_loop import stream_code_agent
+from app.application.code_agent.delivery_session import build_continuation_kwargs
+from app.application.code_agent.run_journal import RunJournal
+from app.application.code_agent.task_guidance import WEB_SOURCE_FIDELITY_GUIDANCE, task_guidance_blocks
+from webskill.application.code_agent.tools import _web
+from app.infrastructure.llm.openai_compatible import _normalize_messages_for_request
+from webskill.infrastructure.search import web_search
+from webskill.infrastructure.search.web_runtime import PageFetchResult
+
+
+def test_retrieval_guidance_keeps_source_fidelity_and_operational_contracts():
+    blocks = task_guidance_blocks({"web_search", "web_fetch", "web_query", "browser", "http_api"})
+    assert set(blocks) == {"web"}
+    guidance = blocks["web"]
+    assert guidance.count(WEB_SOURCE_FIDELITY_GUIDANCE) == 1
+    assert "API либо локального файла" in guidance
+    assert "предмет, группу, условия применимости" in guidance
+    assert "Сохраняй отрицания и силу вывода" in guidance
+    assert "Дата публикации, индексации или чтения не доказывает дату события" in guidance
+    assert "обнаружение, а не содержание" in guidance and "[[source:id]]" in guidance
+    assert "первичные источники" in guidance and "текущим официальным индексом нужного канала" in guidance
+    assert "в той же ветке и компоненте" in guidance and "учитывай backport" in guidance
+    assert "предупреждения поисковых движков" in guidance
+    assert "web_fetch(store=true)" in guidance and "web_query" in guidance and "store=false" in guidance
+    assert "force_refresh — только по прямому запросу" in guidance
+    assert "find работает для HTML и текста" in guidance and "используй browser" in guidance
+    assert "PDF читай навыком document-read" in guidance
+    assert "find работает для HTML, текста и PDF" not in guidance
+
+

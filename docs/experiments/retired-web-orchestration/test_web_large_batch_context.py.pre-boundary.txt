@@ -1,0 +1,135 @@
+"""Large native web batches retain receipts without bypassing context guards."""
+from copy import deepcopy
+from unittest.mock import patch
+
+import pytest
+
+from app.application.code_agent.agent_loop import stream_code_agent
+from app.application.code_agent.loop_helpers import (
+    ContextBudgetError, _prepare_messages_for_llm,
+)
+from app.application.code_agent.run_evidence import RunEvidence
+from webskill.application.code_agent.tools._web import tool_web_fetch, tool_web_search
+from app.application.context.profile import resolve_context_window
+from app.application.context.usage import get_context_usage
+from webskill.application.web_evidence.receipts import valid_source
+from webskill.infrastructure.search.web_runtime import PageFetchResult
+
+
+QUERIES = [f"documentation-query-{index}" for index in range(5)]
+URLS = [f"https://example.org/documentation/{index}" for index in range(5)]
+
+
+
+
+def _native_fetch_run(tmp_path, num_ctx, *, base_tools=None, task_instructions=""):
+    calls, pages, outputs = [], {}, []
+    responses = iter([
+        {"message": {"content": "", "tool_calls": [{"function": {
+            "name": "web_fetch", "arguments": {"urls": URLS, "max_chars": 50000},
+        }}]}},
+        {"message": {"content": "Прочитаны доступные выдержки документации.", "tool_calls": []}},
+    ])
+
+    def fetch(url, *, max_chars):
+        assert max_chars == 50000
+        index = URLS.index(url)
+        body = f"PAGE_{index:02d}_START\n" + "Documentation details. " * 4000
+        pages[url] = body
+        return PageFetchResult(text=body[:max_chars], final_url=url, status_code=200,
+                               truncated=len(body) > max_chars,
+                               available_fragments=("configuration", "security"))
+
+    def chat(**kwargs):
+        if "tools" not in kwargs:
+            return {"message": {"content": "Earlier documents summarized."}}
+        calls.append({"messages": deepcopy(kwargs["messages"])})
+        return next(responses)
+
+    def native_fetch(**kwargs):
+        output = tool_web_fetch(**kwargs)
+        outputs.append(output)
+        return output
+
+    with patch("webskill.infrastructure.search.web_search.fetch_page", side_effect=fetch), patch(
+        "app.application.code_agent.tools._dispatch.tool_web_fetch", side_effect=native_fetch,
+    ):
+        events = list(stream_code_agent(
+            user_message="Прочитай доступные выдержки документации.", project_root=tmp_path,
+            chat_fn=chat, permission_mode="bypass", auto_remember=False, num_ctx=num_ctx,
+            base_tools=base_tools, task_instructions=task_instructions,
+        ))
+    return calls, events, pages, outputs
+
+
+
+
+@pytest.mark.parametrize("num_ctx", [32768, 8192])
+def test_small_windows_compact_history_without_oversized_model_request(num_ctx):
+    profile = resolve_context_window(num_ctx, live=False)
+    calls, audit = [], []
+    history = [{"role": "system", "content": "Keep the user request."},
+               {"role": "user", "content": "Read the documentation.", "_msg_id": "request"}]
+    history.extend({"role": "user" if index % 2 == 0 else "assistant",
+                    "content": "old documentation " * 1000} for index in range(40))
+    history.extend([{"role": "assistant", "content": "Recent read."},
+                    {"role": "tool", "name": "web_fetch", "content": "Current excerpt. " * 30}])
+
+    def chat(**kwargs):
+        calls.append(deepcopy(kwargs))
+        return {"message": {"content": "Earlier documents summarized."}}
+
+    packed, compacted, usage = _prepare_messages_for_llm(
+        history, num_ctx=num_ctx, model="offline-model", chat_fn=chat, context_profile=profile,
+        pinned_message_ids={"request"}, audit_sink=audit.append,
+    )
+    assert compacted and audit
+    assert any(message.get("_msg_id") == "request" for message in packed)
+    assert any("Current excerpt." in str(message.get("content")) for message in packed)
+    assert usage["current_tokens"] <= profile["safe_input_budget"]
+    assert usage["percent"] < profile["compaction_thresholds"]["critical"]["percent"]
+    for call in calls:
+        assert get_context_usage(call["messages"], ctx_size=num_ctx)["current_tokens"] < num_ctx
+
+
+
+
+
+
+
+
+
+
+def test_small_window_search_packing_preserves_middle_provider_warning():
+    profile = resolve_context_window(8192, live=False)
+    warning = "WARNING: upstream engine unavailable; partial search results."
+    original = "Search results:\n" + "related result\n" * 3000 + warning + "\n" + "related result\n" * 3000
+    messages = [{"role": "system", "content": "Read results and disclose provider errors."},
+                {"role": "user", "content": "Current request.", "_msg_id": "request"},
+                {"role": "assistant", "content": "Searching."},
+                {"role": "tool", "name": "web_search", "content": original}]
+    packed, _, usage = _prepare_messages_for_llm(
+        messages, num_ctx=8192, model="offline-model", context_profile=profile,
+        chat_fn=lambda **kwargs: {"message": {"content": "Earlier results summarized."}},
+        pinned_message_ids={"request"},
+    )
+    content = next(message["content"] for message in packed if message.get("role") == "tool")
+    assert warning in content and "truncated" in content
+    assert usage["current_tokens"] <= profile["safe_input_budget"]
+    assert messages[-1]["content"] == original
+
+
+@pytest.mark.parametrize("num_ctx", [32768, 8192])
+def test_oversized_protected_request_cannot_reach_a_small_window_model(num_ctx):
+    profile = resolve_context_window(num_ctx, live=False)
+    model_calls = []
+    messages = [{"role": "system", "content": "Mandatory instructions. " * num_ctx},
+                {"role": "user", "content": "Current request.", "_msg_id": "request"},
+                {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "web_fetch"}}]},
+                {"role": "tool", "name": "web_fetch", "content": "page data " * 12000}]
+    with pytest.raises(ContextBudgetError):
+        _prepare_messages_for_llm(
+            messages, num_ctx=num_ctx, model="offline-model", context_profile=profile,
+            chat_fn=lambda **kwargs: model_calls.append(kwargs), pinned_message_ids={"request"},
+        )
+    assert model_calls == []

@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 import re
 from typing import Any
-from urllib.parse import urldefrag, urlsplit
 
 
 _FENCED_CODE = re.compile(r"```[^\n]*\n.*?(?:```|\Z)|~~~[^\n]*\n.*?(?:~~~|\Z)", re.DOTALL)

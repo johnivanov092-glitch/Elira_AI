@@ -143,7 +143,8 @@ def test_store_fetch_preserves_links_in_passport_without_verifying_targets(monke
 
 
 def test_batch_fetch_keeps_every_page_excerpt_and_links_through_llm_packing(monkeypatch):
-    from app.application.code_agent.loop_helpers import WEB_TOOL_RESULT_LLM_LIMIT, _truncate_for_llm
+    from app.application.code_agent.loop_helpers import _truncate_for_llm
+    from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
     from app.application.code_agent.run_evidence import RunEvidence
     from webskill.infrastructure.search.web_runtime import PageFetchResult
 
