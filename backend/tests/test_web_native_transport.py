@@ -14,7 +14,15 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.application.agent_kernel.runtime_context import bind_runtime_context
 from app.application.code_agent.tools import _web
+
+
+@pytest.fixture(autouse=True)
+def example_is_a_user_address():
+    """These tests cover transport; the address policy (real addresses only) has its own tests."""
+    with bind_runtime_context({"user_urls": json.dumps(["https://example.org"])}):
+        yield
 
 
 @pytest.fixture
@@ -34,7 +42,8 @@ def transport(tmp_path, monkeypatch):
     monkeypatch.setattr(_web, "_new_process_group_kwargs", lambda: {})
     monkeypatch.setattr(_web.subprocess, "Popen", popen)
     monkeypatch.setattr(_web, "get_current_run_id", lambda: "transport-run")
-    monkeypatch.setattr(_web, "current_runtime_context", lambda: {"step": "7"})
+    monkeypatch.setattr(_web, "current_runtime_context",
+                        lambda: {"step": "7", "user_urls": json.dumps(["https://example.org"])})
     monkeypatch.setattr(_web, "register_run_process", Mock(return_value="transport-run"))
     monkeypatch.setattr(_web, "unregister_run_process", unregister)
     monkeypatch.setattr(_web, "run_was_stopped", lambda rid: False)
@@ -117,7 +126,8 @@ def test_cancelled_child_with_only_a_deadline_frame_returns_cancelled(transport,
 def test_single_result_json_without_deadline_frame_remains_compatible(transport):
     transport.process.stdout.readline.return_value = b'{"ok":true,"text":"read"}\n'
     transport.process.communicate.return_value = (b"", b"")
-    assert _web.tool_web_fetch(transport.root, urls=["https://example.org"]) == {"ok": True, "text": "read"}
+    result = _web.tool_web_fetch(transport.root, urls=["https://example.org"])
+    assert result["ok"] is True and result["text"] == "read"
     transport.kill.assert_not_called()
 
 

@@ -342,6 +342,12 @@ def _stream_code_agent_core(
         document_page_count_contract = initial_turn.document_page_count_contract
         turn_context = TurnContext(messages=initial_turn.messages, raw_user_message=raw_user_message,
                                    root=root, working_dir=working_dir, run_id=rid)
+        # Addresses the user wrote are real by definition; web_fetch opens them
+        # without a prior search. Trusted runtime input, never model arguments.
+        from app.application.code_agent.tools._web import user_message_urls
+        _web_user_urls = json.dumps(user_message_urls([raw_user_message, *(
+            str(message.get("content") or "") for message in initial_turn.messages
+            if message.get("role") == "user" and RUNTIME_BLOCK_KEY not in message)]), ensure_ascii=False)
         # Bind the completion contract to THIS run's spec/source so every terminal
         # done event carries uniform task-state (FIX-1/8).
         def _completion_fields(crit, *, terminated_incomplete: bool = False) -> dict:
@@ -1088,6 +1094,8 @@ def _stream_code_agent_core(
                 if isinstance(call_arguments, dict):
                     call_arguments = dict(call_arguments)
                 runtime_context: dict[str, str] = {"step": str(step)}
+                if name == "web_fetch":
+                    runtime_context["user_urls"] = _web_user_urls
                 recovery = observations.before_dispatch(name, call_arguments, root=root, model_turn=step)
                 if recovery is not None:
                     # Count attempted calls even when a later policy denies dispatch.

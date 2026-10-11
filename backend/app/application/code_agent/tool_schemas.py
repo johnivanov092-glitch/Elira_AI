@@ -75,7 +75,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "Example: web_fetch(urls=[\"https://example.com\",\"https://example.org\"]). "
                     "Use one call for 2–3 quick pages or 5–8 deep pages. Repeat URLs use this run's cache. "
                     "find selects the same verbatim phrase from each URL; metadata includes title and publication dates. "
-                    "Answer with links to pages actually read, list unavailable pages separately. "
+                    "Open only addresses from web_search results, links on read pages or the user's message. "
+                    "Cite read pages by their number [n] from the result; Elira inserts the address. "
+                    "A home/section page is headlines: open the article before stating its facts. "
+                    "List unavailable pages separately. "
                     "JS interactions use Playwright MCP; PDF/DOCX uses document-read via run_bash."
                 ),
                 "parameters": {

@@ -301,6 +301,9 @@ class RunEvidence:
         # kept whatever the call's ok and beyond the excerpt cap: links in the
         # answer are checked against what was actually read (John 2026-10-06).
         self._web_pages: dict[str, dict[str, str]] = {}
+        # Citation numbers shown with each read page ([n]) and home/section pages.
+        self._web_numbers: dict[int, tuple[str, str]] = {}
+        self._web_index_pages: set[str] = set()
 
 
     @property
@@ -628,6 +631,29 @@ class RunEvidence:
             if known is None or rank[status] > rank[known["status"]]:
                 self._web_pages[url] = {"status": status, "error": str(source.get("error") or "")}
 
+    def _record_web_numbers(self, output: dict[str, Any]) -> None:
+        numbers = output.get("page_numbers")
+        titles = {str(page.get("final_url") or page.get("url") or ""): str(page.get("title") or "")
+                  for page in output.get("pages") or [] if isinstance(page, dict)}
+        if isinstance(numbers, dict):
+            for url, number in numbers.items():
+                if isinstance(url, str) and type(number) is int and number > 0:
+                    self._web_numbers[number] = (url, titles.get(url, ""))
+                    self._web_pages[url] = {"status": "read", "error": ""}
+        for url in output.get("index_pages") or []:
+            if isinstance(url, str):
+                self._web_index_pages.add(url)
+
+    def numbered_read_pages(self) -> list[tuple[str, str]]:
+        """(url, title) of page n at position n-1; unknown numbers stay empty."""
+        if not self._web_numbers:
+            return []
+        return [self._web_numbers.get(number, ("", "")) for number in range(1, max(self._web_numbers) + 1)]
+
+    @property
+    def web_index_pages(self) -> set[str]:
+        return set(self._web_index_pages)
+
     def unread_web_links(self, answer_text: str) -> tuple[Any, ...]:
         """Markdown links in the answer to web pages this run did not read."""
         read = {url for url, page in self._web_pages.items() if page["status"] == "read"}
@@ -661,6 +687,8 @@ class RunEvidence:
             self._sources = merge_sources(self._sources, output.get("sources", []))
         if tool in {"web_search", "web_fetch"}:
             self._record_web_pages(output.get("sources"))
+        if tool == "web_fetch":
+            self._record_web_numbers(output)
         document_qa = output.get("document_qa")
         if isinstance(document_qa, dict):
             qa_status = str(document_qa.get("status") or "unverified").strip().lower()

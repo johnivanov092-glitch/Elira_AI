@@ -9,6 +9,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 import json
 import logging
+import re
 from typing import Any, Literal
 
 from app.application.code_agent.answer_contracts import (
@@ -20,6 +21,22 @@ from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 logger = logging.getLogger(__name__)
+
+_MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+_INDEX_MARK = " (главная/рубрика: статья не открыта)"
+
+
+def mark_index_page_links(answer_text: str, index_pages: Collection[str]) -> str:
+    """A fact cited to a home/section page rests on a headline, not on a read article."""
+    if not index_pages:
+        return answer_text
+    keys = {url.rstrip("/") for url in index_pages}
+
+    def mark(match: re.Match[str]) -> str:
+        if match.group(2).rstrip("/") not in keys or answer_text[match.end():].startswith(_INDEX_MARK):
+            return match.group(0)
+        return match.group(0) + _INDEX_MARK
+    return _MARKDOWN_LINK.sub(mark, answer_text)
 
 RetryReason = Literal[
     "background", "evidence", "user_constraint", "delivery", "quote", "quote_source",
@@ -206,10 +223,18 @@ class AnswerAcceptance:
         # read loses its address and gets a mark (lost with the 09.10 web move).
         unread_links_marked = False
         try:
+            # Read pages are cited by number; the address comes from the run, never the model.
+            numbered = run_evidence.numbered_read_pages()
+            if numbered:
+                from app.application.skill_services.web_answers import render_numbered_links
+                final_text = render_numbered_links(final_text, numbered)
             unread_links = run_evidence.unread_web_links(final_text)
             if unread_links:
                 final_text = run_evidence.mark_unread_web_links(final_text, unread_links)
                 unread_links_marked = True
+            index_marked = mark_index_page_links(final_text, run_evidence.web_index_pages)
+            if index_marked != final_text:
+                final_text, unread_links_marked = index_marked, True
         except Exception:  # a missing/broken web skill must not lose the answer
             logger.warning("unread web link check unavailable", exc_info=True)
         answer_status = (

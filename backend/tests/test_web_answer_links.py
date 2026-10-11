@@ -1,9 +1,14 @@
-"""Links to unread pages lose their address (John 2026-10-06), and web_fetch says
-when the server served a different page than requested (KZ run 319d7f05, 11.10)."""
+"""Strict web contour (John 2026-10-06 and 2026-10-11): only real addresses open,
+read pages are cited by number, links to unread pages lose their address, and a
+home/section page is marked as headlines (KZ run 319d7f05, 11.10)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
+from app.application.agent_kernel.runtime_context import bind_runtime_context
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.task_outcomes import TaskOutcome
@@ -14,6 +19,16 @@ FAILED = "https://informburo.kz/novosti/pozar-v-astane"
 DISCOVERED = "https://www.zakon.kz/sport/6534596-skonchalsya-vratar.html"
 INVENTED = "https://www.zakon.kz/politics/6534578-korol-belgii-posetit-kazahstan.html"
 SERVED = "https://www.zakon.kz/sovety/6534578-nevidimye-sosedi-v-kvartire.html"
+HOME = "https://www.zakon.kz/"
+ARTICLES = [{"label": f"Новость {n}", "url": f"https://www.zakon.kz/sobytiia/65346{n:02d}-novost.html"}
+            for n in range(1, 7)]
+
+
+def _acceptance(text: str, evidence: RunEvidence):
+    return AnswerAcceptance().evaluate(
+        final_text=text, raw_user_message="Новости Казахстана за неделю.",
+        pending_redirected_jobs=(), active_capability_groups=set(), task_outcome=TaskOutcome(),
+        run_evidence=evidence, code_input_epoch=0, quote_word_limit=None, step=3, run_id="kz-links")
 
 
 def _evidence() -> RunEvidence:
@@ -25,7 +40,7 @@ def _evidence() -> RunEvidence:
         text_result="", state_changed=False)
     # One page failed in the same call: the read page must still count as read.
     evidence.record_tool_result(
-        tool_name="web_fetch", arguments={"urls": [READ, FAILED, INVENTED]}, execution_status="ok",
+        tool_name="web_fetch", arguments={"urls": [READ, FAILED]}, execution_status="ok",
         output={"ok": False, "sources": [{"url": READ, "status": "excerpt"},
                                           {"url": FAILED, "status": "failed", "error": "HTTP 404"},
                                           {"url": SERVED, "status": "excerpt"}]},
@@ -43,8 +58,7 @@ ANSWER = (
 
 def test_answer_keeps_read_links_and_marks_the_rest():
     evidence = _evidence()
-    violations = evidence.unread_web_links(ANSWER)
-    marked = evidence.mark_unread_web_links(ANSWER, violations)
+    marked = evidence.mark_unread_web_links(ANSWER, evidence.unread_web_links(ANSWER))
     assert f"]({READ})" in marked
     for url in (FAILED, DISCOVERED, INVENTED):
         assert url not in marked
@@ -54,10 +68,7 @@ def test_answer_keeps_read_links_and_marks_the_rest():
 
 
 def test_acceptance_marks_unread_links_and_reports_partial():
-    decision = AnswerAcceptance().evaluate(
-        final_text=ANSWER, raw_user_message="Новости Казахстана за неделю.",
-        pending_redirected_jobs=(), active_capability_groups=set(), task_outcome=TaskOutcome(),
-        run_evidence=_evidence(), code_input_epoch=0, quote_word_limit=None, step=3, run_id="kz-links")
+    decision = _acceptance(ANSWER, _evidence())
     assert decision.action == "accept" and decision.answer_status == "degraded"
     assert INVENTED not in decision.text and f"]({READ})" in decision.text
 
@@ -71,18 +82,82 @@ def test_answer_without_web_research_is_untouched():
     assert decision.text == text and decision.answer_status == "complete"
 
 
-def test_web_fetch_names_a_redirect_to_another_page(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(_web, "_call", lambda *args, **kwargs: {
-        "ok": True, "text": f"[fetched: {SERVED}]\nНевидимые соседи в квартире…",
-        "sources": [{"url": SERVED, "status": "excerpt"}, {"url": "https://www.nur.kz/", "status": "excerpt"}]})
-    result = _web.tool_web_fetch(tmp_path, urls=[INVENTED, "http://nur.kz"])
-    assert result["redirected"] == [INVENTED]
-    assert f"Адрес {INVENTED} не открылся как запрошено" in result["text"]
-    assert "http://nur.kz" not in result["text"].split("[fetched")[-1].split("Невидимые")[0]
+def test_numbers_become_links_and_a_home_page_fact_is_marked():
+    evidence = RunEvidence()
+    evidence.record_tool_result(
+        tool_name="web_fetch", arguments={"urls": [READ, HOME]}, execution_status="ok",
+        output={"ok": True, "page_numbers": {READ: 1, HOME: 2}, "index_pages": [HOME],
+                "pages": [{"url": READ, "final_url": READ, "title": "Давка на концерте", "ok": True},
+                          {"url": HOME, "final_url": HOME, "title": "Zakon.kz", "ok": True}],
+                "sources": [{"url": READ, "status": "excerpt"}, {"url": HOME, "status": "excerpt"}]},
+        text_result="", state_changed=False)
+    decision = _acceptance("Давка в Шымкенте [1]. Скончался вратарь «Кайрата» [2].", evidence)
+    assert f"[nur.kz]({READ})" in decision.text
+    assert f"[zakon.kz]({HOME}) (главная/рубрика: статья не открыта)" in decision.text
+    assert decision.answer_status == "degraded"
 
 
-def test_web_fetch_without_pages_adds_no_redirect_note(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(_web, "_call", lambda *args, **kwargs: {
-        "ok": False, "error": "web_time_budget", "text": "Лимит времени исследования исчерпан"})
+@pytest.fixture
+def fake_skill(monkeypatch):
+    calls: list[tuple[str, list[str]]] = []
+    responses: dict[str, dict] = {}
+
+    def call(project_root, action, options):
+        urls = [options[i + 1] for i, part in enumerate(options) if part == "--url"]
+        calls.append((action, urls))
+        return responses[action](urls) if callable(responses.get(action)) else responses[action]
+    monkeypatch.setattr(_web, "_call", call)
+    return calls, responses
+
+
+def _page(url, final=None, title="Страница", links=()):
+    return {"url": url, "final_url": final or url, "title": title, "ok": True, "links": list(links)}
+
+
+def test_invented_address_is_refused_without_a_request(tmp_path: Path, fake_skill):
+    calls, _ = fake_skill
     result = _web.tool_web_fetch(tmp_path, urls=[INVENTED])
-    assert "redirected" not in result and "не открылся как запрошено" not in result["text"]
+    assert result["ok"] is False and result["error"] == "url_not_from_sources"
+    assert "Не составляй адреса сам" in result["text"] and calls == []
+
+
+def test_search_results_page_links_and_user_urls_open(tmp_path: Path, fake_skill):
+    calls, responses = fake_skill
+    responses["search"] = {"ok": True, "text": "Found", "sources": [{"url": READ, "status": "discovered"}]}
+    responses["fetch"] = lambda urls: {"ok": True, "text": "".join(f"[fetched: {u}]\nтекст\n" for u in urls),
+                                       "pages": [_page(u, links=[{"label": "Связанная", "url": SERVED}]) for u in urls],
+                                       "sources": [{"url": u, "status": "excerpt"} for u in urls]}
+    _web.tool_web_search(tmp_path, queries=["давка Шымкент"])
+    first = _web.tool_web_fetch(tmp_path, urls=[READ])
+    assert first["page_numbers"] == {READ: 1} and f"[1] [fetched: {READ}]" in first["text"]
+    second = _web.tool_web_fetch(tmp_path, urls=[SERVED])  # a link on the read page
+    assert second["page_numbers"] == {SERVED: 2}
+    with bind_runtime_context({"user_urls": json.dumps([DISCOVERED])}):
+        third = _web.tool_web_fetch(tmp_path, urls=[DISCOVERED])  # the user's own address
+    assert third["page_numbers"] == {DISCOVERED: 3}
+    assert [urls for action, urls in calls if action == "fetch"] == [[READ], [SERVED], [DISCOVERED]]
+
+
+def test_redirect_and_home_page_are_named_with_numbers(tmp_path: Path, fake_skill):
+    _, responses = fake_skill
+    responses["search"] = {"ok": True, "text": "Found", "sources": [{"url": u, "status": "discovered"}
+                                                                    for u in (INVENTED, HOME)]}
+    responses["fetch"] = {"ok": True, "text": f"[fetched: {SERVED}]\nнасморк\n[fetched: {HOME}]\nзаголовки",
+                          "pages": [_page(INVENTED, SERVED, "Невидимые соседи в квартире"),
+                                    _page(HOME, title="Новости Казахстана", links=ARTICLES)],
+                          "sources": [{"url": SERVED, "status": "excerpt"}, {"url": HOME, "status": "excerpt"}]}
+    _web.tool_web_search(tmp_path, queries=["визит короля Бельгии"])
+    result = _web.tool_web_fetch(tmp_path, urls=[INVENTED, HOME])
+    assert result["redirected"] == [INVENTED] and result["index_pages"] == [HOME]
+    assert f"Запрошен {INVENTED}, но сервер отдал другую страницу [1] «Невидимые соседи в квартире»" in result["text"]
+    assert "[2] «Новости Казахстана» — главная или рубрика" in result["text"]
+    assert ARTICLES[0]["url"] in result["text"] and f"[2] [fetched: {HOME}]" in result["text"]
+
+
+def test_budget_refusal_adds_no_page_notes(tmp_path: Path, fake_skill):
+    _, responses = fake_skill
+    responses["search"] = {"ok": True, "text": "Found", "sources": [{"url": READ, "status": "discovered"}]}
+    responses["fetch"] = {"ok": False, "error": "web_time_budget", "text": "Лимит времени исследования исчерпан"}
+    _web.tool_web_search(tmp_path, queries=["давка"])
+    result = _web.tool_web_fetch(tmp_path, urls=[READ])
+    assert result["text"] == "Лимит времени исследования исчерпан" and result["page_numbers"] == {}

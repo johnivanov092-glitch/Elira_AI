@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -28,9 +29,8 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
     if not script.is_file():
         return {"ok": False, "error": "skill_missing", "text": f"ERROR: web-research unavailable: {script}"}
     run_id = get_current_run_id()
-    scope = hashlib.sha256((run_id or str(project_root.resolve())).encode()).hexdigest()[:32]
     command = [_skill_python(root), str(script), "--state-dir",
-               str(project_root / ".web-research" / scope), "--research", "--native",
+               str(_state_dir(project_root)), "--research", "--native",
                "--step", str(current_runtime_context().get("step") or "0"), action, *options]
     process = None
     try:
@@ -107,11 +107,10 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
         return {"ok": False, "error": "web_skill_failed", "text": "ERROR: " + redact_text(str(exc))[:1000]}
 
 
-def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "global",
-                    time_range: str = "", categories: str = "", mode: str = "quick") -> dict[str, Any]:
-    return _call(project_root, "search", ["--mode", mode, "--audience", audience,
-        "--time-range", time_range, "--categories", categories,
-        *[part for query in queries for part in ("--query", query)]])
+def _state_dir(project_root: Path) -> Path:
+    run_id = get_current_run_id()
+    scope = hashlib.sha256((run_id or str(project_root.resolve())).encode()).hexdigest()[:32]
+    return project_root / ".web-research" / scope
 
 
 def _page_key(url: str) -> str:
@@ -125,29 +124,176 @@ def _page_key(url: str) -> str:
     return f"{host}{path}?{parts.query}" if parts.query else f"{host}{path}"
 
 
-def _redirected_requests(urls: list[str], result: dict[str, Any]) -> list[str]:
-    """Requested addresses whose read page is a different one (a redirect)."""
-    sources = [source for source in result.get("sources") or []
-               if isinstance(source, dict) and isinstance(source.get("url"), str)]
-    if not sources:
+# Run ledger of real addresses (search results, links on read pages, the user's
+# messages) and of read pages with their citation numbers. John 2026-10-11:
+# the web contour must make a wrong action impossible, not merely discouraged.
+_LEDGER_FILE = "elira_pages.json"
+
+
+def _load_ledger(project_root: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((_state_dir(project_root) / _LEDGER_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        value = {}
+    if not isinstance(value, dict):
+        value = {}
+    allowed = value.get("allowed")
+    pages = value.get("pages")
+    return {"allowed": dict(allowed) if isinstance(allowed, dict) else {},
+            "pages": [page for page in pages if isinstance(page, dict) and isinstance(page.get("url"), str)]
+            if isinstance(pages, list) else []}
+
+
+def _save_ledger(project_root: Path, ledger: dict[str, Any]) -> None:
+    path = _state_dir(project_root) / _LEDGER_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        pass
+
+
+def _allow(ledger: dict[str, Any], url: Any) -> None:
+    if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+        ledger["allowed"].setdefault(_page_key(url), url)
+
+
+_USER_URL = re.compile(r"https?://[^\s<>\"'«»()\[\]]+")
+
+
+def _user_urls() -> list[str]:
+    try:
+        urls = json.loads(current_runtime_context().get("user_urls") or "[]")
+    except ValueError:
         return []
-    opened = {_page_key(source["url"]) for source in sources}
-    return [url for url in urls if isinstance(url, str) and _page_key(url) not in opened]
+    return [url for url in urls if isinstance(url, str)] if isinstance(urls, list) else []
+
+
+def user_message_urls(texts: list[str]) -> list[str]:
+    """Addresses the user wrote; trusted input from the runtime, never from the model."""
+    found: dict[str, None] = {}
+    for text in texts:
+        for match in _USER_URL.finditer(str(text or "")):
+            found.setdefault(match.group(0).rstrip(".,;:!?"), None)
+    return list(found)[:50]
+
+
+def _is_index_page(url: str, links: list[dict[str, Any]]) -> bool:
+    """A home or section page: a list of headlines, not the articles themselves."""
+    segments = [part for part in urlsplit(url).path.split("/") if part]
+    shallow = not segments or (len(segments) == 1 and not re.search(r"\d|\.s?html?$", segments[0]))
+    return shallow and len(links) >= 5
+
+
+def _article_links(url: str, links: list[dict[str, Any]], limit: int = 12) -> list[tuple[str, str]]:
+    host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+    articles: list[tuple[str, str]] = []
+    for link in links:
+        target = str(link.get("url") or "")
+        label = " ".join(str(link.get("label") or "").split())
+        parts = urlsplit(target)
+        if (parts.scheme not in {"http", "https"} or not label
+                or (parts.hostname or "").lower().removeprefix("www.") != host):
+            continue
+        segments = [part for part in parts.path.split("/") if part]
+        if len(segments) >= 2 or re.search(r"\d", parts.path):
+            articles.append((label[:120], target))
+        if len(articles) >= limit:
+            break
+    return articles
+
+
+def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "global",
+                    time_range: str = "", categories: str = "", mode: str = "quick") -> dict[str, Any]:
+    result = _call(project_root, "search", ["--mode", mode, "--audience", audience,
+        "--time-range", time_range, "--categories", categories,
+        *[part for query in queries for part in ("--query", query)]])
+    ledger = _load_ledger(project_root)
+    for source in result.get("sources") or []:
+        if isinstance(source, dict):
+            _allow(ledger, source.get("url"))
+    _save_ledger(project_root, ledger)
+    return result
 
 
 def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
                    mode: str | None = None) -> dict[str, Any]:
+    ledger = _load_ledger(project_root)
+    for url in _user_urls():
+        _allow(ledger, url)
+    for page in ledger["pages"]:
+        _allow(ledger, page["url"])
+    requested = [url for url in urls if isinstance(url, str)]
+    refused = [url for url in requested if _page_key(url) not in ledger["allowed"]]
+    permitted = [url for url in requested if url not in refused]
+    refusal = ""
+    if refused:
+        hosts = {(urlsplit(url).hostname or "").lower().removeprefix("www.") for url in refused}
+        nearby = [url for url in ledger["allowed"].values()
+                  if (urlsplit(url).hostname or "").lower().removeprefix("www.") in hosts][:5]
+        refusal = (
+            "Не открыто: " + ", ".join(refused) + " — этого адреса нет в выдаче поиска, на прочитанных страницах "
+            "и в сообщениях пользователя. Не составляй адреса сам: возьми ссылку из результата web_search или из "
+            "списка ссылок прочитанной страницы; нужной нет — сделай web_search."
+            + (" Известные адреса этого сайта: " + ", ".join(nearby) + "." if nearby else ""))
+    if not permitted:
+        _save_ledger(project_root, ledger)
+        return {"ok": False, "error": "url_not_from_sources", "text": refusal, "refused_urls": refused}
     result = _call(project_root, "fetch", ["--find", find,
         *(["--mode", mode] if mode is not None else []),
-        *[part for url in urls for part in ("--url", url)]])
-    redirected = _redirected_requests(urls, result)
-    if redirected:
-        # The reader returns the page the server actually served; say so plainly,
-        # or the model cites the requested (possibly invented) address as read.
-        notes = "\n".join(
-            f"Адрес {url} не открылся как запрошено: сервер вернул другую страницу (её адрес и заголовок "
-            "указаны в «fetched» выше). Это не та страница — не ссылайся на этот адрес и не считай его прочитанным."
-            for url in redirected)
-        result = {**result, "redirected": redirected,
-                  "text": (str(result.get("text") or "").rstrip() + "\n\n" + notes).lstrip()}
-    return result
+        *[part for url in permitted for part in ("--url", url)]])
+    numbers = {_page_key(page["url"]): index for index, page in enumerate(ledger["pages"], 1)}
+    page_numbers: dict[str, int] = {}
+    index_pages: list[str] = []
+    redirected: list[str] = []
+    notes: list[str] = []
+    for page in result.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        asked = str(page.get("url") or "")
+        final = str(page.get("final_url") or asked)
+        links = [link for link in page.get("links") or [] if isinstance(link, dict)]
+        _allow(ledger, asked)
+        _allow(ledger, final)
+        if page.get("ok") is not True:
+            continue
+        for link in links:
+            _allow(ledger, link.get("url"))
+        key = _page_key(final)
+        index = _is_index_page(final, links)
+        if key not in numbers:
+            ledger["pages"].append({"url": final, "title": str(page.get("title") or "")[:200], "index": index})
+            numbers[key] = len(ledger["pages"])
+        number = numbers[key]
+        page_numbers[final] = number
+        title = str(page.get("title") or final)
+        if _page_key(asked) != key:
+            # The server answered with another page; name it, or the model cites
+            # the requested (possibly invented) address as if it had been read.
+            redirected.append(asked)
+            notes.append(f"Запрошен {asked}, но сервер отдал другую страницу [{number}] «{title}» ({final}). "
+                         "Это не запрошенный материал — не ссылайся на запрошенный адрес и не считай его прочитанным.")
+        if index:
+            index_pages.append(final)
+            articles = _article_links(final, links)
+            notes.append(f"[{number}] «{title}» — главная или рубрика: это заголовки, а не содержание статей. "
+                         "Факты по заголовкам не утверждай; открой нужные статьи"
+                         + (": " + "; ".join(f"{label} — {target}" for label, target in articles) if articles else ".")
+                         )
+    _save_ledger(project_root, ledger)
+    text = str(result.get("text") or "")
+    if page_numbers:
+        by_key = {_page_key(url): number for url, number in page_numbers.items()}
+        text = re.sub(r"\[fetched: (\S+?)\]",
+                      lambda match: (f"[{by_key[_page_key(match.group(1))]}] " if _page_key(match.group(1)) in by_key
+                                     else "") + match.group(0), text)
+        notes.insert(0, "Ссылайся на прочитанные страницы номером [n] из этого результата — адрес подставит Elira.")
+    if refusal:
+        notes.append(refusal)
+    if notes:
+        text = (text.rstrip() + "\n\n" + "\n".join(notes)).lstrip()
+    return {**result, "text": text, "page_numbers": page_numbers, "index_pages": index_pages,
+            **({"redirected": redirected} if redirected else {}),
+            **({"refused_urls": refused} if refused else {})}

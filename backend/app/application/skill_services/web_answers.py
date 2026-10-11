@@ -19,3 +19,8 @@ def unread_link_violations(answer_text: str, *, read_source_urls: Collection[str
 def mark_unread_links(answer_text: str, violations: Collection[Any], *, failed_errors: dict[str, str]) -> str:
     module = load_skill_module("web-research", _MODULE)
     return module.mark_unread_web_links(answer_text, violations, failed_errors=failed_errors)
+
+
+def render_numbered_links(answer_text: str, pages: list[tuple[str, str]]) -> str:
+    module = load_skill_module("web-research", _MODULE)
+    return module.render_numbered_citations(answer_text, pages)
