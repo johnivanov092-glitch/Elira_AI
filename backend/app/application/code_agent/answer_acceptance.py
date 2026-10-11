@@ -26,6 +26,13 @@ _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 _INDEX_MARK = " (главная/рубрика: статья не открыта)"
 
 
+def index_page_links(answer_text: str, index_pages: Collection[str]) -> list[str]:
+    """Home/section pages the answer cites as a source (unique, in order)."""
+    keys = {url.rstrip("/") for url in index_pages}
+    return list(dict.fromkeys(match.group(2) for match in _MARKDOWN_LINK.finditer(answer_text)
+                              if match.group(2).rstrip("/") in keys))
+
+
 def mark_index_page_links(answer_text: str, index_pages: Collection[str]) -> str:
     """A fact cited to a home/section page rests on a headline, not on a read article."""
     if not index_pages:
@@ -39,7 +46,7 @@ def mark_index_page_links(answer_text: str, index_pages: Collection[str]) -> str
     return _MARKDOWN_LINK.sub(mark, answer_text)
 
 RetryReason = Literal[
-    "background", "evidence", "user_constraint", "delivery", "quote", "quote_source",
+    "background", "evidence", "user_constraint", "delivery", "quote", "quote_source", "web_source",
 ]
 
 
@@ -77,10 +84,13 @@ class AnswerAcceptance:
     quote_correction_sent: bool = False
     quote_source_correction_sent: bool = False
     user_constraint_correction_sent: bool = False
+    web_source_correction_sent: bool = False
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
-        if decision.reason == "evidence":
+        if decision.reason == "web_source":
+            self.web_source_correction_sent = True
+        elif decision.reason == "evidence":
             self.evidence_answer_correction_sent = True
         elif decision.reason == "delivery":
             self.download_delivery_correction_sent = True
@@ -147,6 +157,20 @@ class AnswerAcceptance:
                 retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
             )
         quote_source_failed = bool(quote_source_problems)
+        # A home/section page holds headlines, not the facts: one chance to open
+        # the articles (labels L…) or drop those points; then the marks stay.
+        index_cited = index_page_links(final_text, run_evidence.web_index_pages)
+        if index_cited and not self.web_source_correction_sent:
+            return AcceptanceDecision(
+                "retry", final_text, reason="web_source", correction=(
+                    "[Проверка веб-источников] Пункты со ссылкой на главную или рубрику опираются на заголовок, "
+                    "а не на прочитанную статью: " + ", ".join(index_cited) + ". Открой нужные статьи одним "
+                    "web_fetch по меткам L… из результата и ссылайся номером [n] прочитанной статьи, "
+                    "либо убери эти пункты. Остальной ответ не меняй."
+                ),
+                log_note="answer cites home/section pages as sources",
+                event={"type": "answer_format_correction", "step": step, "contract": "web_source_citation"},
+            )
         answer_verification = task_outcome.verify_answer(
             final_text, run_evidence, code_input_epoch, persistence_policy=persistence_policy,
             user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))

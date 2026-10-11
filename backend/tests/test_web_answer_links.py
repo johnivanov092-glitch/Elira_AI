@@ -82,19 +82,30 @@ def test_answer_without_web_research_is_untouched():
     assert decision.text == text and decision.answer_status == "complete"
 
 
-def test_numbers_become_links_and_a_home_page_fact_is_marked():
+def test_numbers_become_links_and_a_home_page_source_gets_one_correction():
     evidence = RunEvidence()
     evidence.record_tool_result(
         tool_name="web_fetch", arguments={"urls": [READ, HOME]}, execution_status="ok",
-        output={"ok": True, "page_numbers": {READ: 1, HOME: 2}, "index_pages": [HOME],
+        output={"ok": True, "page_numbers": {READ: 1}, "index_pages": [HOME],
                 "pages": [{"url": READ, "final_url": READ, "title": "Давка на концерте", "ok": True},
                           {"url": HOME, "final_url": HOME, "title": "Zakon.kz", "ok": True}],
                 "sources": [{"url": READ, "status": "excerpt"}, {"url": HOME, "status": "excerpt"}]},
         text_result="", state_changed=False)
-    decision = _acceptance("Давка в Шымкенте [1]. Скончался вратарь «Кайрата» [2].", evidence)
-    assert f"[nur.kz]({READ})" in decision.text
-    assert f"[zakon.kz]({HOME}) (главная/рубрика: статья не открыта)" in decision.text
-    assert decision.answer_status == "degraded"
+    owner = AnswerAcceptance()
+    answer = f"Давка в Шымкенте [1]. Скончался вратарь «Кайрата». [Zakon]({HOME})"
+    first = owner.evaluate(
+        final_text=answer, raw_user_message="Новости Казахстана за неделю.", pending_redirected_jobs=(),
+        active_capability_groups=set(), task_outcome=TaskOutcome(), run_evidence=evidence,
+        code_input_epoch=0, quote_word_limit=None, step=4, run_id="kz-home")
+    assert first.action == "retry" and first.reason == "web_source" and HOME in first.correction
+    owner.commit(first)
+    second = owner.evaluate(
+        final_text=answer, raw_user_message="Новости Казахстана за неделю.", pending_redirected_jobs=(),
+        active_capability_groups=set(), task_outcome=TaskOutcome(), run_evidence=evidence,
+        code_input_epoch=0, quote_word_limit=None, step=5, run_id="kz-home")
+    assert second.action == "accept" and second.answer_status == "degraded"
+    assert f"[nur.kz]({READ})" in second.text
+    assert f"[Zakon]({HOME}) (главная/рубрика: статья не открыта)" in second.text
 
 
 @pytest.fixture
@@ -142,16 +153,19 @@ def test_redirect_and_home_page_are_named_with_numbers(tmp_path: Path, fake_skil
     _, responses = fake_skill
     responses["search"] = {"ok": True, "text": "Found", "sources": [{"url": u, "status": "discovered"}
                                                                     for u in (INVENTED, HOME)]}
-    responses["fetch"] = {"ok": True, "text": f"[fetched: {SERVED}]\nнасморк\n[fetched: {HOME}]\nзаголовки",
+    responses["fetch"] = {"ok": True, "text": (f"Fetched 2 pages in parallel:\n\n[fetched: {SERVED}]\nнасморк"
+                                               f"\n\n———\n\n[fetched: {HOME}]\nЗаголовок: король прилетел"),
                           "pages": [_page(INVENTED, SERVED, "Невидимые соседи в квартире"),
                                     _page(HOME, title="Новости Казахстана", links=ARTICLES)],
                           "sources": [{"url": SERVED, "status": "excerpt"}, {"url": HOME, "status": "excerpt"}]}
     _web.tool_web_search(tmp_path, queries=["визит короля Бельгии"])
     result = _web.tool_web_fetch(tmp_path, urls=[INVENTED, HOME])
     assert result["redirected"] == [INVENTED] and result["index_pages"] == [HOME]
+    assert result["page_numbers"] == {SERVED: 1}  # a home page is not a citable source
     assert f"Запрошен {INVENTED}, но сервер отдал другую страницу [1] «Невидимые соседи в квартире»" in result["text"]
-    assert "[2] «Новости Казахстана» — главная или рубрика" in result["text"]
-    assert "L1 Новость 1" in result["text"] and f"[2] [fetched: {HOME}]" in result["text"]
+    assert "«Новости Казахстана» — главная или рубрика: заголовки скрыты" in result["text"]
+    assert "L1 Новость 1" in result["text"] and "король прилетел" not in result["text"]
+    assert "[1] [fetched: " in result["text"] and "насморк" in result["text"]
 
 
 def test_budget_refusal_adds_no_page_notes(tmp_path: Path, fake_skill):
@@ -174,9 +188,9 @@ def test_pages_open_by_label_and_unknown_labels_are_refused(tmp_path: Path, fake
     search = _web.tool_web_search(tmp_path, queries=["новости"])
     assert f"[S1] Zakon.kz\n    {HOME}" in search["text"]
     home = _web.tool_web_fetch(tmp_path, urls=["S1"])
-    assert home["page_numbers"] == {HOME: 1} and "L3 Новость 3" in home["text"]
+    assert home["page_numbers"] == {} and home["index_pages"] == [HOME] and "L3 Новость 3" in home["text"]
     article = _web.tool_web_fetch(tmp_path, urls=["[L3]"])
-    assert article["page_numbers"] == {ARTICLES[2]["url"]: 2}
+    assert article["page_numbers"] == {ARTICLES[2]["url"]: 1}
     refused = _web.tool_web_fetch(tmp_path, urls=["L99"])
     assert refused["error"] == "url_not_from_sources" and "L99" in refused["text"]
     assert [urls for action, urls in calls if action == "fetch"] == [[HOME], [ARTICLES[2]["url"]]]

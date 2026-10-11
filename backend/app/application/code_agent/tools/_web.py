@@ -285,6 +285,7 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
     numbers = {_page_key(page["url"]): index for index, page in enumerate(ledger["pages"], 1)}
     page_numbers: dict[str, int] = {}
     index_pages: list[str] = []
+    index_blocks: dict[str, str] = {}
     redirected: list[str] = []
     notes: list[str] = []
     for page in result.get("pages") or []:
@@ -300,29 +301,39 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
         for link in links:
             _allow(ledger, link.get("url"))
         key = _page_key(final)
-        index = _is_index_page(final, links)
+        title = str(page.get("title") or final)
+        if _is_index_page(final, links):
+            # Headlines are not articles: the model sees only the labelled list,
+            # so it has nothing to build facts from but the opened articles.
+            index_pages.append(final)
+            articles = [(_ref(ledger, "L", target), label) for label, target in _article_links(final, links)]
+            index_blocks[key] = (
+                f"[fetched: {final}]\n«{title}» — главная или рубрика: заголовки скрыты, это не содержание статей "
+                "и не источник для ответа. Открой нужные статьи одним вызовом по меткам, например "
+                "web_fetch(urls=[\"L1\", \"L2\"])" + (":\n" + "\n".join(f"{name} {label}" for name, label in articles)
+                                                      if articles else "; ссылок на статьи нет — сделай web_search."))
+            continue
         if key not in numbers:
-            ledger["pages"].append({"url": final, "title": str(page.get("title") or "")[:200], "index": index})
+            ledger["pages"].append({"url": final, "title": str(page.get("title") or "")[:200]})
             numbers[key] = len(ledger["pages"])
         number = numbers[key]
         page_numbers[final] = number
-        title = str(page.get("title") or final)
         if _page_key(asked) != key:
             # The server answered with another page; name it, or the model cites
             # the requested (possibly invented) address as if it had been read.
             redirected.append(asked)
             notes.append(f"Запрошен {asked}, но сервер отдал другую страницу [{number}] «{title}» ({final}). "
                          "Это не запрошенный материал — не ссылайся на запрошенный адрес и не считай его прочитанным.")
-        if index:
-            index_pages.append(final)
-            articles = [(_ref(ledger, "L", target), label) for label, target in _article_links(final, links)]
-            notes.append(f"[{number}] «{title}» — главная или рубрика: это заголовки, а не содержание статей. "
-                         "Факты по заголовкам не утверждай; открой нужные статьи по метке, "
-                         "например web_fetch(urls=[\"L1\", \"L2\"])"
-                         + (":\n" + "\n".join(f"{name} {label}" for name, label in articles) if articles else ".")
-                         )
     _save_ledger(project_root, ledger)
     text = str(result.get("text") or "")
+    if index_blocks:
+        separator = "\n\n———\n\n"
+        head, body = (text.split("\n\n", 1) if text.startswith("Fetched ") and "\n\n" in text else ("", text))
+        blocks = []
+        for block in body.split(separator):
+            fetched = re.search(r"\[fetched: (\S+?)\]", block)
+            blocks.append(index_blocks.get(_page_key(fetched.group(1)), block) if fetched else block)
+        text = (head + "\n\n" if head else "") + separator.join(blocks)
     if page_numbers:
         by_key = {_page_key(url): number for url, number in page_numbers.items()}
         text = re.sub(r"\[fetched: (\S+?)\]",
