@@ -19,7 +19,8 @@ from app.application.code_agent.answer_contracts import (
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.web_points import (
-    blocking_problems, describe_point_problems, point_problems, remove_unverified_points, resolve_web_labels,
+    blocking_problems, date_read_links, describe_point_problems, point_problems, reattribute_points,
+    remove_unverified_points, resolve_web_labels,
 )
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
@@ -164,6 +165,9 @@ class AnswerAcceptance:
         except Exception:
             logger.warning("numbered web citations unavailable", exc_info=True)
             checked_text = final_text
+        # A point another read page carries is re-cited at acceptance, not retried.
+        checked_text, _ = reattribute_points(checked_text, run_evidence.web_page_texts,
+                                             run_evidence.web_page_dates, request_text)
         index_cited = index_page_links(checked_text, run_evidence.web_index_pages)
         unsupported_points = blocking_problems(point_problems(
             checked_text, run_evidence.web_page_texts, run_evidence.web_page_dates, request_text))
@@ -172,7 +176,7 @@ class AnswerAcceptance:
             if index_cited:
                 reasons.append("ссылка на главную или рубрику (это заголовок, а не статья): " + ", ".join(index_cited))
             if unsupported_points:
-                reasons.append("пункт не взят из страницы, на которую ссылается: "
+                reasons.append("пункта нет ни в одной прочитанной статье или статья вне периода: "
                                + describe_point_problems(unsupported_points))
             return AcceptanceDecision(
                 "retry", final_text, reason="web_source", correction=(
@@ -261,13 +265,16 @@ class AnswerAcceptance:
         try:
             # Read pages are cited by number; the address comes from the run, never the model.
             final_text = self._with_rendered_numbers(final_text, run_evidence)
+            final_text, _ = reattribute_points(final_text, run_evidence.web_page_texts,
+                                               run_evidence.web_page_dates, request_text)
             points = point_problems(final_text, run_evidence.web_page_texts, run_evidence.web_page_dates,
-                                    raw_user_message or str(durable_task or ""))
+                                    request_text)
             unread_urls = {str(item.url) for item in run_evidence.unread_web_links(final_text)}
             # John 2026-10-11: only verified points reach the chat; the rest is removed.
             final_text, removed_points = remove_unverified_points(
                 final_text, points, unread_urls | run_evidence.web_index_pages)
             unread_links_marked = removed_points > 0
+            final_text = date_read_links(final_text, run_evidence.web_page_dates)
         except Exception:  # a missing/broken web skill must not lose the answer
             logger.warning("unread web link check unavailable", exc_info=True)
         answer_status = (

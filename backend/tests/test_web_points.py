@@ -74,7 +74,7 @@ def test_acceptance_asks_once_then_marks_the_point():
     owner.commit(first)
     second = evaluate(5)
     assert second.action == "accept" and second.answer_status == "degraded"
-    assert second.text.split("\n")[0].endswith(f"[zakon.kz]({ROYAL}).")
+    assert second.text.split("\n")[0].endswith(f"[zakon.kz, 11.10.2026]({ROYAL}).")  # the page's date
     assert "хуситов" not in second.text and "Убрано пунктов: 1" in second.text
 
 
@@ -110,6 +110,42 @@ def test_a_heading_left_empty_before_a_rule_goes_too():
     cleaned, removed = remove_unverified_points(answer, problems, set())
     assert removed == 1 and "## Прочее за неделю" not in cleaned and "хуситов" not in cleaned
     assert "## Политика" in cleaned and "---" in cleaned
+    # KZ replay d5904cc4: a title over subsections stays; over emptied ones it goes.
+    nested = (f"## Новости за неделю\n\n### Политика\n- Король прилетел в Астану [zakon]({ROYAL}).\n\n"
+              f"## Прочее\n### Мир\n- Казахстан осудил атаки хуситов на объекты Саудовской Аравии [zakon]({STORM}).")
+    cleaned, _ = remove_unverified_points(nested, point_problems(nested, TEXTS, DATES, "Новости", TODAY), set())
+    assert cleaned.startswith("## Новости за неделю\n\n### Политика") and "## Прочее" not in cleaned
+    assert "### Мир" not in cleaned
+
+
+def test_a_point_on_another_read_page_is_recited_there():
+    # KZ run d5904cc4: the king's visit was read as [6], the answer kept [2][4].
+    from app.application.code_agent.web_points import reattribute_points
+    answer = (f"- Король Филипп и королева Матильда прилетели в Астану, Токаев встретил их в аэропорту "
+              f"[zakon]({STORM}), [regtv]({CASPIAN}).\n"
+              f"- Казахстан осудил атаки хуситов на объекты Саудовской Аравии [zakon]({STORM}).")
+    request = "Новости Казахстана за неделю"
+    moved_text, moved = reattribute_points(answer, TEXTS, DATES, request, TODAY)
+    assert moved == 1
+    assert moved_text.split("\n")[0].endswith(f"аэропорту [zakon.kz]({ROYAL}).")
+    assert [problem["line"] for problem in point_problems(moved_text, TEXTS, DATES, request, TODAY)] == [1]
+    # An out-of-period page is never the new source.
+    caspian = f"- На Каспии погибли 12 военнослужащих, возбуждено уголовное дело [zakon]({STORM})."
+    assert reattribute_points(caspian, TEXTS, DATES, request, TODAY) == (caspian, 0)
+    assert reattribute_points(caspian, TEXTS, DATES, "Что случилось на Каспии?", TODAY)[1] == 1
+
+
+def test_read_links_show_the_publication_date_and_a_false_verified_line_goes():
+    from app.application.code_agent.web_points import date_read_links
+    text = f"- Визит [zakon.kz]({ROYAL}), буря [Буря, 2026-10-11]({STORM}), прочее [x](https://x.kz/a)."
+    assert date_read_links(text, DATES) == (
+        f"- Визит [zakon.kz, 11.10.2026]({ROYAL}), буря [Буря, 2026-10-11]({STORM}), прочее [x](https://x.kz/a).")
+    answer = (f"Проверено: визит и атаки хуситов подтверждены.\n\n## Политика\n"
+              f"- Король Филипп прилетел в Астану, Токаев встретил его в аэропорту [zakon]({ROYAL}).\n"
+              f"- Казахстан осудил атаки хуситов на объекты Саудовской Аравии [zakon]({STORM}).")
+    cleaned, removed = remove_unverified_points(
+        answer, point_problems(answer, TEXTS, DATES, "Новости Казахстана", TODAY), set())
+    assert removed == 1 and "Проверено" not in cleaned and cleaned.startswith("## Политика")
 
 
 def test_search_labels_become_numbers_or_unread_links():

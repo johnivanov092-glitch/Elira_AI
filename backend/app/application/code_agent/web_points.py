@@ -108,6 +108,69 @@ def blocking_problems(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [problem for problem in problems if problem["missing"] or problem["old"]]
 
 
+def _host(url: str) -> str:
+    host = re.sub(r"^https?://", "", url).split("/", 1)[0].lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates: dict[str, str],
+                       user_request: str, today: date | None = None) -> tuple[str, int]:
+    """A point its cited page does not carry, but another read page does, cites that page.
+
+    KZ run d5904cc4: the model read the article later and kept the old numbers.
+    The same check decides: the point must be on the new page and in the asked
+    period, else the line stays as it was (and is removed later).
+    """
+    problems = blocking_problems(point_problems(answer_text, page_texts, page_dates, user_request, today))
+    if not problems:
+        return answer_text, 0
+    texts = {url.rstrip("/"): (url, text.lower().replace("ё", "е")) for url, text in page_texts.items()}
+    days = _period_days(user_request)
+    start = (today or date.today()) - timedelta(days=days) if days else None
+
+    def in_period(url: str) -> bool:
+        try:
+            return start is None or not page_dates.get(url) or date.fromisoformat(page_dates[url]) >= start
+        except ValueError:
+            return True
+    lines = str(answer_text).split("\n")
+    moved = 0
+    for problem in problems:
+        line = lines[problem["line"]]
+        cited = {match.group(2).rstrip("/") for match in _LINK.finditer(line)}
+        prose = re.sub(r"[*_`#>|]", " ", _LINK.sub(" ", line))
+        best: tuple[int, str] | None = None
+        for key, (url, text) in texts.items():
+            if key in cited or not in_period(url):
+                continue
+            unsupported, missing = _support(prose, text)
+            if not unsupported and (best is None or len(missing) < best[0]):
+                best = (len(missing), url)
+        if best is None:
+            continue
+        read = [match for match in _LINK.finditer(line) if match.group(2).rstrip("/") in texts]
+        line = line.replace(read[0].group(0), f"[{_host(best[1])}]({best[1]})", 1)
+        for match in read[1:]:
+            line = re.sub(r"(?:,\s*)?" + re.escape(match.group(0)), "", line, count=1)
+        lines[problem["line"]] = line
+        moved += 1
+    return "\n".join(lines), moved
+
+
+def date_read_links(answer_text: str, page_dates: dict[str, str]) -> str:
+    """Each link to a read page shows the page's publication date (the date of the event it reports)."""
+    dates = {_link_key(url): value for url, value in page_dates.items()}
+
+    def add(match: re.Match[str]) -> str:
+        value = dates.get(_link_key(match.group(2)), "")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) or re.search(r"\d{4}-\d{2}-\d{2}|\d\.\d{2}\.\d{4}",
+                                                                       match.group(1)):
+            return match.group(0)
+        year, month, day = value.split("-")
+        return f"[{match.group(1)}, {day}.{month}.{year}]({match.group(2)})"
+    return _LINK.sub(add, str(answer_text or ""))
+
+
 def describe_point_problems(problems: list[dict[str, Any]], limit: int = 6) -> str:
     parts = []
     for problem in problems[:limit]:
@@ -144,6 +207,11 @@ def _link_key(url: str) -> str:
     return url.split("#", 1)[0].rstrip("/")
 
 
+def _heading_level(line: str) -> int:
+    match = re.match(r"\s*(#{1,6})\s", line)
+    return len(match.group(1)) if match else 0
+
+
 def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
                              bad_urls: set[str]) -> tuple[str, int]:
     """John 2026-10-11: only verified points reach the chat.
@@ -172,13 +240,19 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
         kept.append(line)
     if not removed:
         return ("\n".join(kept), stripped) if stripped else (answer_text, 0)
+    # Built from the end, so a heading sees what is left under it ("## A / ### B / ## C":
+    # A goes only when B went too).
     result: list[str] = []
-    for index, line in enumerate(kept):
-        if line.lstrip().startswith("#"):
-            rest = [item for item in kept[index + 1:] if item.strip()]
-            if not rest or rest[0].lstrip().startswith("#") or re.fullmatch(r"\s*([-*_])\1{2,}\s*", rest[0]):
-                continue  # a heading with nothing left under it (next heading, a rule or the end)
+    following = ""
+    for line in reversed(kept):
+        if re.match(r"\s*\**Проверено\**\s*:", line):
+            continue  # the model's "verified …" no longer holds; the closing line says what was removed
+        level = _heading_level(line)
+        if level and (not following or 0 < _heading_level(following) <= level
+                      or re.fullmatch(r"\s*([-*_])\1{2,}\s*", following)):
+            continue  # a heading with nothing left under it (same-level heading, a rule or the end)
         result.append(line)
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(result)).strip()
+        following = line if line.strip() else following
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(reversed(result))).strip()
     text += f"\n\n_Убрано пунктов: {removed} — не нашлось в прочитанных статьях или вне запрошенного периода._"
     return text, removed + stripped
