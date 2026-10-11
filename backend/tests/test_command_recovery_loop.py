@@ -26,11 +26,13 @@ def test_ignored_recovery_blocks_execution_and_survives_resume(tmp_path, monkeyp
         model="test-model", chat_fn=chat, run_id=run_id,
         auto_remember=False, permission_mode="bypass", thinking=False,
     ))
-    assert len([e for e in events if e["type"] == "tool_started" and e["tool"] == "run_bash"]) == 3
+    assert len([e for e in events if e["type"] == "tool_started" and e["tool"] == "run_bash"]) == 4
     assert events[-1]["stop_reason"] == "blocked"
     assert events[-1]["resumable"] is True
     assert events[-1]["ok"] is False
-    assert any(e["type"] == "command_recovery" and e["status"] == "recovery_required" for e in events)
+    receipts = [e for e in events if e["type"] == "tool_call" and e["tool"] == "run_bash"]
+    assert "3 раза" in receipts[2]["result"]
+    assert receipts[4]["dispatched"] is False and receipts[4]["error"] == "repeated_tool_call"
     state = RunJournal.load(run_id).state
     assert state["status"] == "blocked" and state["resumable"]
     assert state["command_progress"]["results"]
@@ -53,7 +55,8 @@ def test_recovery_accepts_observed_diagnosis_and_changed_external_result(tmp_pat
         if calls == 7:
             return {"message": {"content": "Наблюдаемое состояние изменилось на ready.", "tool_calls": []}}
         if calls == 5:
-            assert any("recovery_required" in str(m.get("content")) for m in kwargs["messages"])
+            assert any(m.get("role") == "tool" and "3 раза" in str(m.get("content"))
+                       for m in kwargs["messages"])
             # External writer changes state; the agent must observe it before retry.
             observed.write_text("ready", encoding="utf-8")
             name, arguments = "read_file", {"path": "observed.txt"}
@@ -70,7 +73,7 @@ def test_recovery_accepts_observed_diagnosis_and_changed_external_result(tmp_pat
         auto_remember=False, permission_mode="bypass", thinking=False,
     ))
     command_results = [e for e in events if e["type"] == "tool_call" and e["tool"] == "run_bash" and e["ok"]]
-    assert len(command_results) == 4
+    assert len(command_results) == 5
     assert "ready" in command_results[-1]["result"]
     assert events[-1]["stop_reason"] == "answer"
     assert not any(e.get("status") == "blocked" for e in events)

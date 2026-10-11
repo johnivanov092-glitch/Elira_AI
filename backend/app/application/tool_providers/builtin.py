@@ -7,6 +7,7 @@ through the ToolProvider protocol.
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from app.application.code_agent.tools import (
     build_tool_schemas,
 )
 from app.application.agent_kernel.tool_result import ensure_tool_result
+from app.application.agent_kernel.runtime_context import bind_runtime_context, current_runtime_context
 
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,22 @@ class BuiltinToolProvider:
             return {"ok": False, "error": "unknown_tool",
                     "text": f"ERROR: unknown built-in tool '{tool_name}'"}
         try:
-            result = handler(**args)
+            # Provider-owned context never becomes a model-supplied argument.
+            context = {
+                **current_runtime_context(),
+                "project_root": str(self._project_root),
+                "visible_builtin_tools": json.dumps([
+                    str((schema.get("function") or {}).get("name") or "")
+                    for schema in self._schemas
+                ]),
+            }
+            handler_args = dict(args)
+            if tool_name in {"todo_update", "delegate_task", "resource_publish"}:
+                handler_args["run_id"] = str(context.get("run_id") or "")
+            if tool_name == "delegate_task":
+                handler_args["permission_mode"] = str(context.get("permission_mode") or "ask")
+            with bind_runtime_context(context):
+                result = handler(**handler_args)
         except SandboxError as exc:
             return {"ok": False, "error": "sandbox_violation",
                     "text": f"ERROR: sandbox violation: {exc}"}

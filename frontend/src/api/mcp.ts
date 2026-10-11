@@ -5,7 +5,8 @@ export type McpServer = {
   description: string;
   transport: "stdio" | "http";
   enabled: boolean;
-  status: "running" | "stopped" | "crashed" | "error";
+  autostart: boolean;
+  status: "running" | "starting" | "stopped" | "crashed" | "error";
   last_error: string | null;
 };
 

@@ -912,6 +912,7 @@ _ASK_USER_SCHEMA = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "question": {"type": "string", "description": "The question to ask the user."},
                 "options": {
@@ -939,6 +940,7 @@ _WORKFLOW_REQUEST_SCHEMA = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "kind": {
                     "type": "string",

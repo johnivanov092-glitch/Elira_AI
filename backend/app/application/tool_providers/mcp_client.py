@@ -129,6 +129,7 @@ class McpClient:
         self._stdout_lock = threading.Lock()  # serializes writes to stdin
         self._next_id = 1
         self._id_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._stopped = False
         self._run_id = ""
         # Cached after initialize so callers can introspect.
@@ -142,9 +143,6 @@ class McpClient:
         """Spawn the subprocess + reader thread + run the initialize
         handshake. Raises McpError on any failure (process didn't start,
         handshake timed out, server returned an error)."""
-        if self._proc is not None:
-            return  # idempotent
-
         # Build env: by default inherit current; merge user-provided.
         import os
         full_env = dict(os.environ)
@@ -154,28 +152,33 @@ class McpClient:
         # Robust Windows launch (npx/uvx, .cmd shims) — see _resolve_launch_argv.
         argv = _resolve_launch_argv(self._command, list(self._args))
 
-        try:
-            self._proc = subprocess.Popen(
-                argv,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                # MCP framing is UTF-8 JSON — force it, else text=True decodes with
-                # the Windows ANSI default (cp1251) and mangles non-ASCII payloads.
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,  # line-buffered
-                env=full_env,
-                cwd=self._cwd,
-                **_new_process_group_kwargs(),
-            )
-        except FileNotFoundError:
-            raise McpError(f"command not found: {self._command!r}")
-        except OSError as exc:
-            raise McpError(f"failed to spawn {self._command!r}: {exc}")
+        with self._lifecycle_lock:
+            if self._stopped:
+                raise McpError("server stopped before start")
+            if self._proc is not None:
+                return
+            try:
+                self._proc = subprocess.Popen(
+                    argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    # MCP framing is UTF-8 JSON — force it, else text=True decodes with
+                    # the Windows ANSI default (cp1251) and mangles non-ASCII payloads.
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,  # line-buffered
+                    env=full_env,
+                    cwd=self._cwd,
+                    **_new_process_group_kwargs(),
+                )
+            except FileNotFoundError:
+                raise McpError(f"command not found: {self._command!r}")
+            except OSError as exc:
+                raise McpError(f"failed to spawn {self._command!r}: {exc}")
 
-        self._run_id = register_run_process(self._proc)
+            self._run_id = register_run_process(self._proc)
 
         self._reader = threading.Thread(
             target=self._read_loop,
@@ -265,10 +268,12 @@ class McpClient:
     def stop(self) -> None:
         """Tear the subprocess down. Idempotent and safe to call from
         any thread."""
-        if self._stopped:
-            return
-        self._stopped = True
-        proc = self._proc
+        with self._lifecycle_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            proc = self._proc
+            run_id, self._run_id = self._run_id, ""
         if proc is None:
             return
         # Closing stdin signals shutdown to most MCP servers.
@@ -286,8 +291,7 @@ class McpClient:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
-        unregister_run_process(self._run_id, proc)
-        self._run_id = ""
+        unregister_run_process(run_id, proc)
         # Reader thread should exit on EOF; daemon=True so we don't
         # care if it takes a beat extra.
         # Wake up any pending requesters with an error.

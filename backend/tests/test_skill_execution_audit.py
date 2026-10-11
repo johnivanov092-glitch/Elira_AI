@@ -178,7 +178,8 @@ def test_plain_web_fetch_keeps_original_html_metadata_in_receipts(monkeypatch):
         calls.append(args[0])
         return Response()
 
-    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", get)
+    monkeypatch.setattr(web_runtime, "_read_response_body", lambda response: response.content)
     monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda _: None)
     page = web_runtime.fetch_page(Response.url, max_chars=100)
     assert page.ok and page.truncated

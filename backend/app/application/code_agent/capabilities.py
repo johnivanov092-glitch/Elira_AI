@@ -11,6 +11,7 @@ import re
 
 CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
     "capability_load",
+    "web_search", "web_fetch",
 )
 
 CORE_BUILTIN_TOOLS = frozenset(CORE_BUILTIN_TOOL_ORDER)
@@ -34,7 +35,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
 CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "project": "project overview (project_map), project index search (recall) and a sub-agent (delegate_task); files and shell are always loaded",
     "mcp": "MCP servers (each has an <id>-mcp skill): list, start/stop, their tools, add or change a server",
-    "resources": "attachment metadata, workspace copies and verified downloads",
+    "resources": "только вложения этого чата: их метаданные и копии; resource_publish выдаёт готовые файлы из папки задачи",
     "memory": "long-term facts about the user (memory) and the user's document Library (library)",
 }
 

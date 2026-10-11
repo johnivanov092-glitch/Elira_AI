@@ -43,7 +43,9 @@ def sqlite_source(monkeypatch):
             encoding="utf-8", headers={"Content-Type": "text/plain"}, close=lambda: None,
         )
 
-    monkeypatch.setattr("requests.get", get)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", get)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._read_response_body",
+                        lambda response: response.text.encode("utf-8"))
     from webskill.application.code_agent.tools import _web
     monkeypatch.setattr("app.application.code_agent.tools._dispatch.tool_run_bash",
                         lambda root, **kwargs: _web.tool_web_fetch(url="https://sqlite.org/foreignkeys.html"))

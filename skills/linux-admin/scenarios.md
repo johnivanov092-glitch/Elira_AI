@@ -10,19 +10,25 @@
 | hosts | {} |
 | ssh | {"tool_name":"ssh_run","args":{"host":"alias","command":"uname -a"}} |
 | ssh | {"tool_name":"ssh_run_ps","args":{"host":"alias","script":"Get-Service"}} |
-| ssh | tool_name также ssh_read, ssh_write, ssh_replace, ssh_port_check; параметры в ssh_runtime.py |
+| ssh | ssh_read: {"tool_name":"ssh_read","args":{"host":"alias","path":"/path/file","max_chars":4000}} |
+| ssh | ssh_write: {"tool_name":"ssh_write","args":{"host":"alias","path":"/path/file","content":"new text","append":false}} |
+| ssh | ssh_replace: {"tool_name":"ssh_replace","args":{"host":"alias","path":"/path/file","old":"before","new":"after"}} |
+| ssh | ssh_port_check: {"tool_name":"ssh_port_check","args":{"host":"alias","port":443}} — проверяет удалённый listener/PID; доступность из клиента проверяй отдельно |
 | ssh_healthcheck / linux_inventory / windows_inventory | {"target":"alias"} |
-| network_inventory | смотри сигнатуру tool_itops_network_inventory в itops_runtime.py |
-| systemd_service_inspect / config_inspect / database_inspect | именованные цели и параметры в itops_runtime.py |
+| network_inventory | {"cidr":"192.0.2.1/32","ports":[443],"connect_timeout":1.0,"concurrency":4} — замени адрес заданной целью |
+| systemd_service_inspect | {"target":"alias","unit":"nginx.service"} — настоящая .service, только чтение |
+| config_inspect | {"target":"alias","config_id":"netdata-main"} — поддерживаемый именованный конфиг |
+| database_inspect | {"database_id":"id"} — фактический зарегистрированный id |
 | mikrotik_inventory | {"router_id":"id"} |
-| registry | сохранённые активы и подключения; параметры в registry.py |
+| registry | {"action":"list"} — сохранённые активы; другие действия по фактическому registry.py |
 
 Проверяй ok, exit_code и свидетельства. Длительные SSH-команды должны возвращать
 управляемое фоновое задание; наблюдение/остановка — существующий run_server.
 Не выдавай обрыв SSH за доказанную остановку удалённого процесса.
 
-Начни с сценария registry или hosts. Для известного типа цели используй сценарий
-healthcheck/inventory; произвольную команду передавай сценарию ssh через --input.
+Если цель неизвестна, начни с registry или hosts. Указанный alias/hostname/IP
+передавай прямо в целевой сценарий. healthcheck/inventory — для общего состояния;
+произвольную диагностическую команду передавай сценарию ssh через --input.
 Перед разрушительным изменением подготовь резервную копию, затем проверь результат.
 
 Список сохранённых целей без подключения: `python "<skills>/linux-admin/admin.py" hosts --workspace "<папка задачи>"`.
@@ -31,6 +37,8 @@ healthcheck/inventory; произвольную команду передава�
 целей, а не ошибка запуска. Не читай исходники/конфиги для повторного доказательства
 пустого списка; отдельная инвентаризация ~/.ssh нужна, когда её просит пользователь.
 
-## Настройка SSH
+## Подробности по задаче
 
-НАСТРОЙКА SSH-ДОСТУПА. Сценарий ssh принимает любой непустой host или алиас OpenSSH; `data/ssh_acl.json` хранит только подсказки/избранное и ничего не разрешает. Когда просят создать/найти/напомнить SSH-доступ, отдай пользователю СВЯЗНУЮ пару: (1) блок `Host <алиас>` для `~/.ssh/config` (HostName/User/IdentityFile) и (2) тот же `<алиас>` как удобное имя для сценария ssh. Публичный ключ (`.pub`) — пользователю для установки на таргет; приватный ключ в чат НИКОГДА (в конфиге он по пути). Инвентарь бери из `~/.ssh` (ключи, `config`, `known_hosts`) + сохранённые SSH favorites. PowerShell ЧЕРЕЗ ssh шли как `powershell -EncodedCommand <base64>` — иначе cmd.exe клиента рвёт `|`/кавычки до отправки.
+- Служба, диск, inode, неизвестный исход: diagnostics.md.
+- Создание/поиск/напоминание SSH-доступа и ключи: ssh-access.md.
+- Не читай все ветки: выбери заданную задачу. Исполнение остаётся через этот admin.py.

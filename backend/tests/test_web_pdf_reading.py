@@ -1,5 +1,6 @@
 """PDFs require an explicit document-read skill; failed fetches are never read sources."""
 from types import SimpleNamespace
+import io
 
 import pytest
 
@@ -14,9 +15,12 @@ def pdf_http(monkeypatch):
     monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     def get(url, **kwargs):
         calls.append(url)
+        stream = io.BytesIO(b"%PDF-1.7 opaque binary")
+        raw = SimpleNamespace(read1=lambda amt, **kw: stream.read1(amt),
+                              connection=SimpleNamespace(sock=SimpleNamespace(shutdown=lambda how: None)))
         return SimpleNamespace(content=b"%PDF-1.7 opaque binary", status_code=200, url=url,
-                               headers={"Content-Type": "application/pdf"}, close=lambda: None)
-    monkeypatch.setattr("requests.get", get)
+                               headers={"Content-Type": "application/pdf"}, close=lambda: None, raw=raw)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", get)
     monkeypatch.setattr(_web, "_render_fallback",
                         lambda *a: pytest.fail("Binary document must not enter browser fallback"))
     return calls

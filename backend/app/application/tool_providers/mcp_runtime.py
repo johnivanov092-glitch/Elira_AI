@@ -26,10 +26,9 @@ seen at once, and ``start_server`` restarts a live process whose entry changed.
 A server with ``enabled: false`` is switched off by the user and does not start.
 
 Concurrency:
-    All mutations and lookups are serialized by a module-level lock.
-    Start/stop calls themselves can be slow (npm fetch on first run,
-    subprocess teardown) — they run with the lock held to keep the
-    `id → client` mapping consistent.
+    Client publication and lookups use a module-level lock. Slow handshakes
+    run outside it; starts are serialized separately. A cancelled start or
+    changed config cannot publish its client after stop/shutdown.
 """
 from __future__ import annotations
 
@@ -49,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH: Path = data_file("mcp_servers.json")
 _LOCK = threading.Lock()
+_START_LOCK = threading.Lock()
+_STARTING: dict[str, dict[str, Any]] = {}
+_WARM_LOCK = threading.Lock()
+_WARM_THREAD: threading.Thread | None = None
+_WARM_READY = threading.Event()
+_WARM_READY.set()
+_WARM_CANCEL = threading.Event()
+AUTOSTART_WAIT_SECONDS = 15.0
 # id → McpClient (only entries for servers we've actually started)
 _LIVE_CLIENTS: dict[str, McpClient] = {}
 # id → the config entry the live client was started with
@@ -125,6 +132,9 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
     if not isinstance(sid, str) or not sid.strip():
         return None
     enabled = bool(spec.get("enabled", True))
+    autostart = spec.get("autostart", False)
+    if not isinstance(autostart, bool):
+        return None
     transport = spec.get("transport", "stdio")
     if transport not in ("stdio", "http"):
         return None
@@ -150,6 +160,7 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
             "allow_insecure_http": bool(spec.get("allow_insecure_http", False)),
             "allow_private_address": bool(spec.get("allow_private_address", False)),
             "enabled": enabled,
+            "autostart": autostart,
         }
 
     # transport == "stdio"
@@ -174,6 +185,7 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
         "env": env,
         "env_secret_refs": env_secret_refs,
         "enabled": enabled,
+        "autostart": autostart,
     }
 
 
@@ -196,7 +208,9 @@ def list_servers() -> list[dict[str, Any]]:
                 continue
             sid = normalized["id"]
             client = _LIVE_CLIENTS.get(sid)
-            if client is None:
+            if sid in _STARTING:
+                status = "starting"
+            elif client is None:
                 status = "error" if _LAST_ERROR.get(sid) else "stopped"
             elif client.is_alive():
                 status = "running"
@@ -293,7 +307,7 @@ def save_servers(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prev_specs: dict[str, dict[str, Any]] = {
             s.get("id"): s for s in _read_config().get("servers", []) if isinstance(s, dict)
         }
-        for sid in list(_LIVE_CLIENTS.keys()):
+        for sid in set(_LIVE_CLIENTS) | set(_STARTING):
             new_spec = next((n for n in normalized if n["id"] == sid), None)
             old_spec = prev_specs.get(sid)
             if new_spec is None or _spec_changed(old_spec, new_spec):
@@ -406,10 +420,22 @@ def _resolve_cwd(value: str | None) -> str | None:
     return str(path if path.is_absolute() else (CONFIG_PATH.parent / path).resolve())
 
 
-def start_server(server_id: str) -> dict[str, Any]:
-    """Bring up the configured server with this id. Idempotent while the
-    server runs with its current entry; a changed entry restarts it."""
+def start_server(
+    server_id: str, *, _cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Serialize starts while keeping the inventory responsive during handshake."""
+    with _START_LOCK:
+        if _cancel_event is not None and _cancel_event.is_set():
+            return {"ok": False, "server_id": server_id, "error": "MCP warmup cancelled"}
+        return _start_server(server_id, _cancel_event=_cancel_event)
+
+
+def _start_server(
+    server_id: str, *, _cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
     with _LOCK:
+        if _cancel_event is not None and _cancel_event.is_set():
+            return {"ok": False, "server_id": server_id, "error": "MCP warmup cancelled"}
         spec = _find_spec_locked(server_id)
         if spec is None:
             return {"ok": False, "error": f"server '{server_id}' not configured"}
@@ -419,37 +445,39 @@ def start_server(server_id: str) -> dict[str, Any]:
         restarted = False
         if (existing is not None and existing.is_alive() and server_id in _LIVE_SPECS
                 and _spec_changed(_LIVE_SPECS[server_id], spec)):
-            # data/mcp_servers.json changed past save_servers (edited by hand or
-            # by the model): the live process must pick up the new entry.
             _stop_locked(server_id)
             existing, restarted = None, True
-        if existing is not None and existing.is_alive():
+        if existing is not None and not existing.is_alive():
+            _stop_locked(server_id)
+            existing = None
+        token: dict[str, Any] = {}
+        _STARTING[server_id] = token
+
+    try:
+        if existing is not None:
             try:
                 tool_summary = _discover_tool_names(existing, server_id)
             except Exception as exc:
-                return _tool_discovery_failure(
-                    server_id,
-                    exc,
-                    already_running=True,
-                )
-            _LAST_ERROR[server_id] = None
-            return {
-                "ok": True,
-                "already_running": True,
-                "server_id": server_id,
-                **tool_summary,
-            }
-        # Stale entry (crashed process) — clear it.
-        if existing is not None:
-            _stop_locked(server_id)
-
+                with _LOCK:
+                    return _tool_discovery_failure(server_id, exc, already_running=True)
+            with _LOCK:
+                current_spec = _find_spec_locked(server_id)
+                if (_STARTING.get(server_id) is not token
+                        or _LIVE_CLIENTS.get(server_id) is not existing
+                        or current_spec is None or _spec_changed(spec, current_spec)):
+                    return {"ok": False, "server_id": server_id,
+                            "error": "MCP start cancelled or config changed"}
+                _LAST_ERROR[server_id] = None
+            return {"ok": True, "already_running": True, "server_id": server_id, **tool_summary}
         transport = spec.get("transport", "stdio")
         if transport == "http":
             try:
                 resolved_headers = _resolve_secret_refs(spec.get("secret_header_refs") or {})
             except Exception as exc:
                 msg = f"MCP secret resolution failed: {exc}"
-                _LAST_ERROR[server_id] = msg
+                with _LOCK:
+                    if _STARTING.get(server_id) is token:
+                        _LAST_ERROR[server_id] = msg
                 return {"ok": False, "error": msg}
             # Lazy import so the httpx-backed transport (and httpx itself) is
             # only loaded when a remote server is actually started.
@@ -470,12 +498,16 @@ def start_server(server_id: str) -> dict[str, Any]:
                 resolved_env = _resolve_secret_refs(spec.get("env_secret_refs") or {})
             except Exception as exc:
                 msg = f"MCP secret resolution failed: {exc}"
-                _LAST_ERROR[server_id] = msg
+                with _LOCK:
+                    if _STARTING.get(server_id) is token:
+                        _LAST_ERROR[server_id] = msg
                 return {"ok": False, "error": msg}
             cwd = _resolve_cwd(spec.get("cwd"))
             if cwd and not Path(cwd).is_dir():
                 msg = f"MCP cwd does not exist: {cwd}"
-                _LAST_ERROR[server_id] = msg
+                with _LOCK:
+                    if _STARTING.get(server_id) is token:
+                        _LAST_ERROR[server_id] = msg
                 return {"ok": False, "error": msg}
             client = McpClient(
                 command=spec["command"],
@@ -485,10 +517,17 @@ def start_server(server_id: str) -> dict[str, Any]:
             )
             start_error = McpError
 
+        with _LOCK:
+            if _STARTING.get(server_id) is not token:
+                client.stop()
+                return {"ok": False, "server_id": server_id, "error": "MCP start cancelled"}
+            token["client"] = client
         try:
             client.start()
         except start_error as exc:
-            _LAST_ERROR[server_id] = str(exc)
+            with _LOCK:
+                if _STARTING.get(server_id) is token:
+                    _LAST_ERROR[server_id] = str(exc)
             return {"ok": False, "error": str(exc)}
 
         try:
@@ -502,23 +541,34 @@ def start_server(server_id: str) -> dict[str, Any]:
                     server_id,
                     exc_info=True,
                 )
-            return _tool_discovery_failure(
-                server_id,
-                exc,
-                already_running=False,
-            )
+            with _LOCK:
+                return _tool_discovery_failure(
+                    server_id, exc, already_running=False,
+                )
 
-        _LIVE_CLIENTS[server_id] = client
-        _LIVE_SPECS[server_id] = spec
-        _LAST_ERROR[server_id] = None
+        with _LOCK:
+            current_spec = _find_spec_locked(server_id)
+            if ((_cancel_event is not None and _cancel_event.is_set())
+                    or _STARTING.get(server_id) is not token or current_spec is None
+                    or _spec_changed(spec, current_spec)):
+                cancelled = True
+            else:
+                cancelled = False
+                _LIVE_CLIENTS[server_id] = client
+                _LIVE_SPECS[server_id] = spec
+                _LAST_ERROR[server_id] = None
+        if cancelled:
+            client.stop()
+            return {"ok": False, "server_id": server_id, "error": "MCP start cancelled or config changed"}
         return {
-            "ok": True,
-            "already_running": False,
+            "ok": True, "already_running": False,
             **({"restarted_for_changed_config": True} if restarted else {}),
-            "server_id": server_id,
-            "server_info": client.server_info,
-            **tool_summary,
+            "server_id": server_id, "server_info": client.server_info, **tool_summary,
         }
+    finally:
+        with _LOCK:
+            if _STARTING.get(server_id) is token:
+                _STARTING.pop(server_id, None)
 
 
 def stop_server(server_id: str) -> dict[str, Any]:
@@ -533,9 +583,13 @@ def stop_server(server_id: str) -> dict[str, Any]:
 
 def _stop_locked(server_id: str) -> None:
     """Internal helper. Caller must hold _LOCK."""
+    starting = _STARTING.pop(server_id, None)
+    pending_client = starting.get("client") if starting is not None else None
     client = _LIVE_CLIENTS.pop(server_id, None)
     _LIVE_SPECS.pop(server_id, None)
-    if client is not None:
+    for client in (client, pending_client):
+        if client is None:
+            continue
         try:
             client.stop()
         except Exception as exc:
@@ -577,7 +631,8 @@ def get_live_client(server_id: str) -> McpClient | None:
 def stop_all_servers() -> None:
     """Used by tests + graceful shutdown."""
     with _LOCK:
-        for sid in list(_LIVE_CLIENTS.keys()):
+        _WARM_CANCEL.set()
+        for sid in set(_LIVE_CLIENTS) | set(_STARTING):
             _stop_locked(sid)
 
 
@@ -587,3 +642,54 @@ def _find_spec_locked(server_id: str) -> dict[str, Any] | None:
         if normalized and normalized["id"] == server_id:
             return normalized
     return None
+
+
+def autostart_server_ids() -> set[str]:
+    """Configured warm integrations; no network or lifecycle lock required."""
+    return {
+        spec["id"] for raw in _read_config().get("servers", [])
+        if (spec := _validate_server(raw)) is not None
+        and spec.get("enabled", True) and spec.get("autostart", False)
+    }
+
+
+def start_autostart_servers() -> dict[str, Any]:
+    """Begin background warmup without delaying ASGI startup/activation."""
+    global _WARM_THREAD
+    with _WARM_LOCK:
+        if _WARM_THREAD is not None and _WARM_THREAD.is_alive():
+            return {"ok": True, "already_started": True}
+        server_ids = sorted(autostart_server_ids())
+        _WARM_CANCEL.clear()
+        _WARM_READY.clear()
+
+        def warm() -> None:
+            try:
+                for server_id in server_ids:
+                    if _WARM_CANCEL.is_set():
+                        break
+                    try:
+                        result = start_server(server_id, _cancel_event=_WARM_CANCEL)
+                    except Exception as exc:
+                        with _LOCK:
+                            _LAST_ERROR[server_id] = str(exc)
+                        logger.warning("MCP autostart %s failed", server_id, exc_info=True)
+                        continue
+                    if not result.get("ok"):
+                        logger.warning("MCP autostart %s failed: %s", server_id, result.get("error"))
+            finally:
+                _WARM_READY.set()
+
+        _WARM_THREAD = threading.Thread(target=warm, name="elira-mcp-warmup", daemon=True)
+        _WARM_THREAD.start()
+        return {"ok": True, "server_ids": server_ids}
+
+
+def wait_for_autostart(timeout: float = AUTOSTART_WAIT_SECONDS) -> bool:
+    """Bound the first agent's readiness wait; other tools remain usable."""
+    if _WARM_THREAD is None:
+        start_autostart_servers()
+    ready = _WARM_READY.wait(max(0.0, timeout))
+    if not ready:
+        logger.warning("MCP warmup still running after %.1fs; continuing with available tools", timeout)
+    return ready

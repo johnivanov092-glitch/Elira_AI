@@ -56,6 +56,13 @@ logger = logging.getLogger(__name__)
 _NAMESPACE_DELIM = "__"
 _SCHEMA_ROUTING_CHAR_THRESHOLD = 18_000
 _SCHEMA_ROUTING_MAX_TOOLS = 8
+BASE_MCP_TOOLS: dict[str, frozenset[str]] = {
+    "playwright": frozenset({
+        "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
+        "browser_fill_form", "browser_wait_for", "browser_take_screenshot",
+    }),
+    "paper_search": frozenset({"search_papers", "search_arxiv"}),
+}
 _INTENT_TOKEN_RE = re.compile(r"[0-9a-zа-яё_]+", re.IGNORECASE)
 _GENERIC_INTENT_TOKENS = {
     "mcp", "server", "tool", "tools", "unity", "blender", "github",
@@ -338,6 +345,7 @@ class McpToolProvider:
         self._server_id = server_id
         self._schema_query = str(schema_query or "").strip()
         self._schemas: list[dict[str, Any]] = []
+        self._inventory_schemas: list[dict[str, Any]] = []
         self._owned: set[str] = set()
         self._qualified_to_original: dict[str, str] = {}
         self._populated = False
@@ -352,6 +360,12 @@ class McpToolProvider:
         if not self._populated:
             self._refresh_schemas()
         return self._schemas
+
+    def get_inventory_schemas(self) -> list[dict[str, Any]]:
+        """Full advertised inventory, independent of the prompt-sized view."""
+        if not self._populated:
+            self._refresh_schemas()
+        return self._inventory_schemas
 
     def owns(self, tool_name: str) -> bool:
         if not self._populated:
@@ -443,6 +457,7 @@ class McpToolProvider:
         client = get_live_client(self._server_id)
         if client is None:
             self._schemas = []
+            self._inventory_schemas = []
             self._owned = set()
             self._qualified_to_original = {}
             self._populated = True
@@ -452,6 +467,7 @@ class McpToolProvider:
         except McpError as exc:
             logger.warning("mcp tools/list on %r failed: %s", self._server_id, exc)
             self._schemas = []
+            self._inventory_schemas = []
             self._owned = set()
             self._qualified_to_original = {}
             self._populated = True
@@ -484,11 +500,20 @@ class McpToolProvider:
             })
             mapping[qualified] = original_name
 
-        self._schemas = select_mcp_schemas(
-            schemas,
-            server_id=self._server_id,
-            query=self._schema_query,
-        )
+        base_names = BASE_MCP_TOOLS.get(self._server_id)
+        if base_names is None:
+            self._schemas = select_mcp_schemas(
+                schemas, server_id=self._server_id, query=self._schema_query,
+            )
+        else:
+            base = {_qualify(self._server_id, name) for name in base_names}
+            if self._schema_query:
+                selected = select_mcp_schemas(
+                    schemas, server_id=self._server_id, query=self._schema_query,
+                )
+                base.update(item["function"]["name"] for item in selected)
+            self._schemas = [item for item in schemas if item["function"]["name"] in base]
+        self._inventory_schemas = schemas
         self._owned = set(mapping.keys())
         self._qualified_to_original = mapping
         self._populated = True
@@ -525,7 +550,7 @@ def sync_mcp_tool_specs(
     live: set[str] = set()
     for provider in providers:
         try:
-            schemas = provider.get_schemas()
+            schemas = getattr(provider, "get_inventory_schemas", provider.get_schemas)()
         except Exception:
             continue
         for schema in schemas:

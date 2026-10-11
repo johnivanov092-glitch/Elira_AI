@@ -163,6 +163,7 @@ class McpHttpClient:
         self._session_id: Optional[str] = None
         self._next_id = 1
         self._id_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._stopped = False
         self._started = False
         # Cached after initialize so callers can introspect — same attrs as
@@ -196,18 +197,21 @@ class McpHttpClient:
     def start(self) -> None:
         """Open the HTTP client and run the MCP initialize handshake.
         Raises McpError (or McpSecurityError) on any failure. Idempotent."""
-        if self._started:
-            return
-        # Guard once up front so a bad URL fails fast before we build state.
-        _guard_url(self._url, allow_insecure_http=self._allow_insecure_http, allow_private_address=self._allow_private_address)
+        with self._lifecycle_lock:
+            if self._stopped:
+                raise McpError("server stopped before start")
+            if self._started:
+                return
+            # Guard once up front so a bad URL fails fast before we build state.
+            _guard_url(self._url, allow_insecure_http=self._allow_insecure_http, allow_private_address=self._allow_private_address)
 
-        self._client = httpx.Client(
-            timeout=httpx.Timeout(DEFAULT_REQUEST_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT),
-            # We chase redirects manually so we can re-run the SSRF guard on
-            # every hop — httpx's own follow_redirects would skip that.
-            follow_redirects=False,
-        )
-        self._started = True
+            self._client = httpx.Client(
+                timeout=httpx.Timeout(DEFAULT_REQUEST_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT),
+                # We chase redirects manually so we can re-run the SSRF guard on
+                # every hop — httpx's own follow_redirects would skip that.
+                follow_redirects=False,
+            )
+            self._started = True
 
         try:
             init_response = self._request(
@@ -248,11 +252,12 @@ class McpHttpClient:
     def stop(self) -> None:
         """Close the HTTP client. Idempotent and safe to call from any
         thread."""
-        if self._stopped:
-            return
-        self._stopped = True
-        client = self._client
-        self._client = None
+        with self._lifecycle_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            client = self._client
+            self._client = None
         if client is not None:
             try:
                 client.close()

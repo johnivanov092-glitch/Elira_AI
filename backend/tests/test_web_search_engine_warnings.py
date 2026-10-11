@@ -62,7 +62,8 @@ def test_real_http_to_native_retains_engine_failure_with_useful_results(boundary
             assert "WARNING:" in result["context"]
         else:
             result = tool_web_search(query="service security advisory")
-            assert result["ok"] is True and result["sources"][0]["url"] == URL
+            assert result["ok"] is True and not result.get("partial")
+            assert "error" not in result and result["sources"][0]["url"] == URL
             warnings = result["engine_warnings"]
             assert "WARNING:" in result["text"]
             assert "swisscows" in result["text"] and "HTTP 429" in result["text"]
@@ -82,7 +83,8 @@ def test_warning_survives_categories_language_time_and_site_constraints(category
     ])
     with _http(payload) as calls:
         result = tool_web_search(query=query, categories=category, time_range=time_range, top_k=30)
-    assert result["ok"] is True
+    assert result["ok"] is True and not result.get("partial")
+    assert "error" not in result
     assert [source["url"] for source in result["sources"]] == [URL]
     assert result["engine_warnings"] == WARNINGS
     assert "WARNING:" in result["text"]
@@ -95,7 +97,8 @@ def test_page_two_keeps_warning_after_site_filter_and_exact_pagination_params():
     query = "обновление site:security.example.org"
     with _http(_payload()) as calls:
         result = tool_web_search(query=query, page=2, categories="news", time_range="month", top_k=30)
-    assert result["ok"] is True and result["sources"][0]["url"] == URL
+    assert result["ok"] is True and not result.get("partial")
+    assert "error" not in result and result["sources"][0]["url"] == URL
     assert result["engine_warnings"] == WARNINGS
     assert "WARNING:" in result["text"]
     assert calls[0]["params"] == {"q": query, "format": "json", "language": "ru",
@@ -113,7 +116,8 @@ def test_five_queries_ten_results_each_keep_receipts_warnings_and_text_budget():
 
     with _http(reply=reply) as calls:
         result = tool_web_search(queries=queries, top_k=10, categories="it", time_range="year")
-    assert result["ok"] is True and not result.get("partial") and not result.get("query_errors")
+    assert result["ok"] is True and not result.get("partial")
+    assert "error" not in result and not result.get("query_errors")
     assert len(calls) == 5 and {call["params"]["q"] for call in calls} == set(queries)
     assert all(call["params"]["categories"] == "it" and call["params"]["time_range"] == "year"
                and call["timeout"] == 20 for call in calls)
@@ -134,19 +138,22 @@ def test_known_engine_failure_is_not_healthy_empty(args, known_failure):
         result = tool_web_search(**args)
     assert result["ok"] is (not known_failure)
     if known_failure:
+        assert not result.get("sources")
         assert "HTTP 429" in result["text"] and "ERROR:" in result["text"]
         assert "No web results" not in result["text"]
     else:
+        assert not result.get("partial") and "error" not in result
         assert not result.get("engine_warnings") and not result.get("query_errors")
 
 
 @pytest.mark.parametrize("args", [{"query": "service site:unmatched.example.org"},
                                   {"queries": ["service site:unmatched.example.org"]},
                                   {"query": "service site:unmatched.example.org", "page": 2}])
-def test_site_filtered_empty_partial_result_keeps_coverage_unknown(args):
+def test_site_filtered_empty_result_keeps_coverage_unknown(args):
     with _http(_payload()):
         result = tool_web_search(**args)
-    assert result["ok"] is True and not result.get("sources")
+    assert result["ok"] is True and not result.get("partial")
+    assert "error" not in result and not result.get("sources")
     assert result["engine_warnings"]
     assert "WARNING:" in result["text"]
     assert "No web results" not in result["text"]

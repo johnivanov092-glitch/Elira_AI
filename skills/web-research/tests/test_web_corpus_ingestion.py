@@ -4,13 +4,80 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from webskill.application.web_evidence import corpus, retrieval
+from webskill.application.web_evidence.freshness import extract_dates
 from webskill.infrastructure.web_corpus import store
+
+
+@pytest.mark.parametrize("html,header,expected", [
+    ('<div class="post_news__date">Воскресенье, 04 Окт 2026, 10:01</div>'
+     '<article><p>Inflation report.</p></article>', None, {"published": "2026-10-04"}),
+    ('<main><p>Statistics for September 2026; week 5–11 October 2026.'
+     ' An event happened on 2026-10-04.</p></main>', None, {}),
+    ('<article><time datetime="2026-10-04">Event time</time></article>', None, {}),
+    ('<div class="post_news__date">31 Фев 2026, 10:01</div>', None, {}),
+    ('<time itemprop="datePublished" datetime="2026-10-04T10:01:00+06:00">'
+     '4 October 2026</time>', None, {"published": "2026-10-04"}),
+    ('<time pubdate datetime="2026-10-04T10:01:00+06:00"></time>', None,
+     {"published": "2026-10-04"}),
+    ('<script type="application/ld+json">{"@type":"NewsArticle",'
+     '"datePublished":"2026-10-04T10:01:00+06:00","dateModified":"2026-10-11"}'
+     '</script>', None, {"published": "2026-10-04"}),
+    ('<script type="application/ld+json">{"@graph":[{"@type":["NewsArticle"],'
+     '"datePublished":"2026-10-04"}]}</script>', None, {"published": "2026-10-04"}),
+    ('<script type="application/ld+json">{"@type":"Organization",'
+     '"datePublished":"2026-10-04"}</script>', None, {}),
+    ('<script type="application/ld+json">{"@graph":['
+     '{"@type":"NewsArticle","datePublished":"2026-10-04"},'
+     '{"@type":"NewsArticle","datePublished":"2026-10-08"}]}</script>', None, {}),
+    ('<time itemprop="datePublished" datetime="2026-10-08"></time>'
+     '<div class="post_news__date">04 Окт 2026, 10:01</div>', None, {}),
+    ('<meta property="article:published_time" content="2026-10-08T09:00:00+06:00">'
+     '<meta property="article:modified_time" content="2026-10-11">'
+     '<div class="post_news__date">04 Окт 2026, 10:01</div>',
+     'Mon, 12 Oct 2026 00:00:00 GMT', {"published": "2026-10-08", "modified": "2026-10-11"}),
+], ids=["visible-outside-article", "unknown-prose", "untyped-event", "invalid-calendar",
+        "typed-time", "pubdate-time", "news-json", "news-graph", "unrelated-json",
+        "conflicting-news-json", "conflicting-visible-dates", "meta-precedence"])
+def test_publication_date_requires_explicit_unambiguous_source_evidence(html, header, expected):
+    assert extract_dates(html, header) == expected
+
+
+@pytest.mark.parametrize("container", ["footer", "nav", "aside"])
+def test_navigation_dates_do_not_date_an_undated_article(container):
+    html = ('<main><article><p>Undated article.</p></article></main>'
+            f'<{container}><div class="post_news__date">04 Окт 2026, 10:01</div>'
+            '<time itemprop="datePublished" datetime="2026-10-04"></time>'
+            '<script type="application/ld+json">{"@type":"NewsArticle",'
+            f'"datePublished":"2026-10-04"}}</script></{container}>')
+    assert extract_dates(html, None) == {}
+
+
+def test_visible_article_date_survives_corpus_ingest_query_and_quote_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "_DB_PATH_OVERRIDE", str(tmp_path / "corpus.sqlite3"))
+    monkeypatch.setattr(retrieval, "_embed_rerank", lambda *args: None)
+    html = ('<html><head><title>Inflation report</title></head><body>'
+            '<div class="post_news__date">Воскресенье, 04 Окт 2026, 10:01</div>'
+            '<article><p>The violet telescope reports inflation for September.</p></article>'
+            '</body></html>')
+    monkeypatch.setattr(corpus, "_fetch_raw", lambda url: {
+        "ok": True, "final_url": url, "mime": "text/html", "charset": "utf-8",
+        "content": html.encode("utf-8"), "last_modified": None,
+    })
+    passport = corpus.ingest("https://example.org/inflation", "article-date-run")
+    assert passport["ok"] and passport["dates"] == {"published": "2026-10-04"}
+    hit = retrieval.web_query("article-date-run", "violet telescope")["results"][0]
+    assert hit["dates"] == passport["dates"]
+    assert retrieval.verify_quote(
+        "article-date-run", hit["doc_id"], hit["quote"], hit["offset"]
+    )["quote_verified"]
 
 
 def test_excerpt_includes_specific_match_after_common_term(tmp_path: Path, monkeypatch) -> None:

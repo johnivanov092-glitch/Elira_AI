@@ -18,6 +18,8 @@ def configure(state: Path, cache: bool = True) -> None:
     _STATE = state.resolve()
     _CACHE = cache
     _CURRENT_RUN_ID.set(hashlib.sha256(str(_STATE).encode()).hexdigest()[:32])
+    from webskill.research import reset
+    reset()
 
 
 def run_id() -> str:

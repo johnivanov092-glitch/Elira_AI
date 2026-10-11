@@ -15,10 +15,13 @@ metadata:
 
 ## Запуск
 
-У сервера ~57 инструментов (по три на каждую базу), поэтому всегда передавай
-`query` с нужными:
-`mcp(action='start', server_id='paper_search', query='search_papers search_arxiv read_arxiv_paper get_crossref_paper_by_doi')`
+При `enabled: true, autostart: true` сервер запускается вместе с Elira и остаётся
+прогретым. `search_papers` и `search_arxiv` сразу доступны в каждом прогоне;
+обязательного `mcp(start)` нет. Остальные инструменты получай по запросу:
+`mcp(action='tools', server_id='paper_search', query='read_arxiv_paper get_crossref_paper_by_doi')`
 — медицина: `search_pubmed search_europepmc read_pubmed_paper`.
+Если сервер не запущен или завершился с ошибкой, проверь `mcp(action='list')` и
+восстанови его через `mcp(action='start', server_id='paper_search')`.
 
 ## Главные инструменты
 

@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _import_path in (_REPO_ROOT / "backend", _REPO_ROOT / "skills/math", _REPO_ROOT / "skills/web-research"):
+    if str(_import_path) not in sys.path:
+        sys.path.insert(0, str(_import_path))
 
 _LOCAL_PROVIDER_DEFAULTS = {
     "LLAMA_SERVER_ENABLED": "false",
     "LOCAL_EMBED_ENABLED": "false",
 }
 
-os.environ["ELIRA_SKILLS_ROOT"] = str(Path(__file__).resolve().parents[2] / "skills")
+os.environ["ELIRA_SKILLS_ROOT"] = str(_REPO_ROOT / "skills")
 
 _TEST_DATA_DIR = tempfile.TemporaryDirectory(prefix="elira-pytest-data-")
 os.environ["ELIRA_DATA_DIR"] = _TEST_DATA_DIR.name
@@ -32,12 +37,6 @@ def isolate_local_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ELIRA_DATA_DIR", os.environ["ELIRA_DATA_DIR"])
     monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", os.environ["ELIRA_AGENT_RUNS_DIR"])
 
-
-# Integration tests exercise the independently shipped skill without adding it
-# to application imports or the sealed backend environment.
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills/web-research"))
 
 @pytest.fixture(autouse=True)
 def isolated_web_skill_state(tmp_path, monkeypatch):

@@ -1,8 +1,8 @@
 """Run-local tool schema visibility over the canonical provider registry.
 
 Activation only selects schemas. Permissions and tool execution remain with
-the existing registry and executor; globally running integrations stay hidden
-until explicitly selected by this run.
+the existing registry and executor; configured autostart integrations supply
+their base schemas, and other integrations appear when requested.
 """
 from __future__ import annotations
 
@@ -88,6 +88,10 @@ class RuntimeActivation:
             _load_runtime_activation_state(run_id)
             if restored_state is None else restored_state
         )
+        from app.application.tool_providers import mcp_runtime
+
+        mcp_runtime.wait_for_autostart()
+        mcp_server_ids = set(mcp_server_ids) | mcp_runtime.autostart_server_ids()
         return cls(
             project_root=project_root,
             mcp_server_ids=mcp_server_ids,
@@ -147,13 +151,14 @@ class RuntimeActivation:
     ) -> RuntimeSchemaUpdate | None:
         """Apply confirmed capability/MCP effects at the coordinator's boundary.
 
-        Rebuilding is observable even when the selection is unchanged. Preserve
-        the old successful-call behavior instead of deduplicating those builds.
-        Workflow pauses call this only after their dedicated branch has returned.
+        Already visible groups keep their current registry. Workflow pauses call
+        this only after their dedicated branch has returned.
         """
         if status != "ok" or not bool(tool_meta.get("ok", True)):
             return None
         if tool_name == "capability_load":
+            if tool_meta.get("already_available") is True:
+                return None
             group = str(
                 tool_meta.get("capability_group") or arguments.get("group") or ""
             ).strip().lower()

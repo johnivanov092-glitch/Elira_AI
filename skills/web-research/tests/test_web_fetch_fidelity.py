@@ -1,5 +1,6 @@
 """Public web_fetch regressions with only HTTP/browser boundaries replaced."""
 from types import SimpleNamespace
+import io
 from unittest.mock import AsyncMock, Mock
 from pathlib import Path
 import sys
@@ -12,8 +13,11 @@ from webskill.application.code_agent.tools import _web
 
 
 def _response(html, *, status=200, url="https://example.org/page", headers=None):
+    stream = io.BytesIO(html.encode("utf-8"))
+    raw = SimpleNamespace(read1=lambda amt, **kw: stream.read1(amt),
+                          connection=SimpleNamespace(sock=SimpleNamespace(shutdown=Mock())))
     return SimpleNamespace(text=html, status_code=status, url=url,
-                           encoding="utf-8", headers=headers or {}, close=Mock())
+                           encoding="utf-8", headers=headers or {}, close=Mock(), raw=raw)
 
 
 def _browser(monkeypatch, *, text, status=200, url="https://example.org/page", html=None):
@@ -37,7 +41,7 @@ def _browser(monkeypatch, *, text, status=200, url="https://example.org/page", h
 
 
 def test_web_fetch_preserves_short_dates_prices_and_table_values(monkeypatch):
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(
         "<main><h1>Release 3.14.7</h1><time>2026-09-19</time>"
         "<table><tr><th>Currency</th><th>Price</th></tr>"
         "<tr><td>USD</td><td>485.20</td></tr></table>"
@@ -47,9 +51,32 @@ def test_web_fetch_preserves_short_dates_prices_and_table_values(monkeypatch):
     assert all(value in result["text"] for value in ("3.14.7", "2026-09-19", "USD", "485.20"))
 
 
+def test_public_web_fetch_retains_publication_date_outside_readable_article(monkeypatch):
+    from webskill.application.web_evidence.receipts import valid_source
+
+    url = "https://example.org/inflation"
+    html = ('<html><head><title>Inflation report</title></head><body>'
+            '<div class="post_news__date">Воскресенье, 04 Окт 2026, 10:01</div>'
+            '<article><h1>Inflation for September</h1><p>'
+            + "The verified inflation figure is 9.3 percent. " * 20
+            + '</p></article></body></html>')
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response",
+                        lambda *args, **kwargs: _response(html, url=url, headers={"Content-Type": "text/html"}))
+    monkeypatch.setattr(_web, "_render_fallback", lambda *args: pytest.fail("Readable article needs no browser"))
+    result = _web.tool_web_fetch(url=url, max_chars=200)
+
+    assert result["ok"] and result["pages"][0]["truncated"]
+    assert result["pages"][0]["dates"] == {"published": "2026-10-04"}
+    assert result["sources"] and all(valid_source(source) for source in result["sources"])
+    assert all(source["dates"] == {"published": "2026-10-04"} for source in result["sources"])
+    assert all(source["url"] == url and source["quote_verified"] for source in result["sources"])
+    assert all("04 Окт 2026" not in source["quote"] for source in result["sources"])
+    assert "Опубликовано: 2026-10-04" in result["text"]
+
+
 def test_raw_plain_text_code_retains_indentation_and_angle_brackets(monkeypatch):
     code = 'def keep(engine):\n    if engine < 3:\n        return "<tag>"\n\n    return None\n'
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(code, headers={"Content-Type": "text/plain; charset=utf-8"}))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(code, headers={"Content-Type": "text/plain; charset=utf-8"}))
     monkeypatch.setattr(_web, "_render_fallback", lambda *a: pytest.fail("Plain text does not need a browser"))
     result = _web.tool_web_fetch(url="https://example.org/raw.py")
     assert result["ok"] and result["pages"][0]["mime"] == "text/plain"
@@ -59,7 +86,7 @@ def test_raw_plain_text_code_retains_indentation_and_angle_brackets(monkeypatch)
 @pytest.mark.parametrize("phrase,found", [("NOT recommended", True), ("no such phrase", False)])
 def test_find_preserves_context_offsets_and_never_fakes_a_missing_match(monkeypatch, phrase, found):
     text = "Unrelated details. " * 4000 + "Treatment is NOT\nrecommended for this population.\n" + "Appendix. " * 4000
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(text, headers={"Content-Type": "text/plain"}))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(text, headers={"Content-Type": "text/plain"}))
     result = _web.tool_web_fetch(url="https://example.org/reference.txt", find=phrase, max_chars=50000)
     assert result["ok"] is found
     assert len(result["text"]) <= 12000
@@ -73,10 +100,9 @@ def test_find_preserves_context_offsets_and_never_fakes_a_missing_match(monkeypa
         assert all(source["status"] == "failed" and not source["quote_verified"] for source in result["sources"])
 
 
-@pytest.mark.parametrize("options", [{"find": []}, {"find": "x" * 201}, {"find": "result", "store": True},
-                                     {"find": "result", "urls": ["https://example.org/a"]}])
+@pytest.mark.parametrize("options", [{"find": []}, {"find": "x" * 201}, {"find": "result", "store": True}])
 def test_invalid_find_request_is_rejected_before_network(monkeypatch, options):
-    monkeypatch.setattr("requests.get", lambda *a, **k: pytest.fail("Invalid request must not access network"))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: pytest.fail("Invalid request must not access network"))
     assert not _web.tool_web_fetch(url="https://example.org/a", **options)["ok"]
 
 
@@ -96,7 +122,7 @@ def test_fragment_fetch_starts_at_requested_section_not_page_start(monkeypatch, 
     html = ("<main><h1>Intro</h1><p>" + "Irrelevant introduction. " * 80 + "</p>"
             + anchor + "<p>USD 485.20. " + "Requested section details. " * 20
             + "</p><h2>Unrelated section</h2><p>Do not include this.</p></main>")
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html))
     result = _web.tool_web_fetch(url="https://example.org/page#prices", max_chars=500)
     assert result["ok"] is True
     assert "485.20" in result["text"]
@@ -111,7 +137,7 @@ def test_missing_fragment_lists_real_sections_without_browser_retry(monkeypatch)
             + "</p><a name='enabling'></a><h2>Enable foreign keys</h2>"
             "<p>PRAGMA foreign_keys = ON;</p><dt id='read_text'>read_text()</dt>"
             "<dd>Read the text.</dd><a name=''></a></main>")
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html))
     page, _ = _browser(monkeypatch, text="irrelevant browser body")
     result = _web.tool_web_fetch(url="https://example.org/page#enabling_foreign_keys")
     assert result["ok"] is False
@@ -122,7 +148,7 @@ def test_missing_fragment_lists_real_sections_without_browser_retry(monkeypatch)
 
 
 def test_static_http_error_never_becomes_a_verified_excerpt(monkeypatch):
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response("404 Not Found", status=404))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response("404 Not Found", status=404))
     page, _ = _browser(monkeypatch, text="404 Not Found", status=404)
     result = _web.tool_web_fetch(url="https://example.org/missing")
     assert result["ok"] is False
@@ -134,7 +160,7 @@ def test_static_http_error_never_becomes_a_verified_excerpt(monkeypatch):
 
 @pytest.mark.parametrize("status", [404, 503])
 def test_browser_http_error_never_upgrades_empty_static_html(monkeypatch, status):
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response("<body></body>"))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response("<body></body>"))
     _, browser = _browser(monkeypatch, text=f"HTTP {status} Error", status=status)
     result = _web.tool_web_fetch(url="https://example.org/page")
     assert result["ok"] is False
@@ -144,7 +170,7 @@ def test_browser_http_error_never_upgrades_empty_static_html(monkeypatch, status
 
 
 def test_healthy_thin_js_fallback_retains_final_url(monkeypatch):
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response("<main>Loading</main>"))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response("<main>Loading</main>"))
     final_url = "https://example.org/current"
     _browser(monkeypatch, text="Rendered price USD 485.20. " * 15, url=final_url)
     result = _web.tool_web_fetch(url="https://example.org/page")
@@ -154,7 +180,7 @@ def test_healthy_thin_js_fallback_retains_final_url(monkeypatch):
 
 
 def test_failed_browser_fallback_preserves_healthy_short_static_fact(monkeypatch):
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response("<main>USD 485.20</main>"))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response("<main>USD 485.20</main>"))
     _browser(monkeypatch, text="Forbidden", status=403)
     result = _web.tool_web_fetch(url="https://example.org/page")
     assert result["ok"] is True
@@ -170,7 +196,7 @@ def test_definition_fragment_includes_description_until_next_definition(monkeypa
             + "The file is closed after the read completes. " * 6
             + "</dd><dt id='Path.write_text'>Path.write_text()</dt>"
             "<dd>Overwrites the file.</dd></dl></main>")
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html))
     _browser(monkeypatch, text="Path.read_text()", html=html,
              url="https://example.org/page#Path.read_text")
     result = _web.tool_web_fetch(url="https://example.org/page#Path.read_text")
@@ -192,7 +218,7 @@ def test_redirect_receipt_uses_actual_url_and_revalidates_each_hop(monkeypatch):
         calls.append((url, kwargs["allow_redirects"]))
         return next(responses)
 
-    monkeypatch.setattr("requests.get", get)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", get)
     result = _web.tool_web_fetch(url=requested)
     assert result["ok"] is True
     assert calls == [(requested, False), (final, False)]

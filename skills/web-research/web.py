@@ -17,6 +17,9 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--state-dir', type=Path, default=Path.cwd() / '.web-research')
     p.add_argument('--no-cache', action='store_true')
+    p.add_argument('--research', action='store_true', help='Use run-local quick/deep budgets and page cache')
+    p.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--step', type=int, default=0)
     sub = p.add_subparsers(dest='action', required=True)
     search = sub.add_parser('search')
     search.add_argument('--query', action='append', required=True)
@@ -24,10 +27,12 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument('--categories', default='')
     search.add_argument('--time-range', default='')
     search.add_argument('--audience', default='')
+    search.add_argument('--mode', choices=['quick', 'deep'], default='quick')
     fetch = sub.add_parser('fetch')
     fetch.add_argument('--url', action='append', required=True)
     fetch.add_argument('--max-chars', type=int, default=8000)
     fetch.add_argument('--find', default='')
+    fetch.add_argument('--mode', choices=['quick', 'deep'], default=None)
     fetch.add_argument('--store', action='store_true')
     fetch.add_argument('--force-refresh', action='store_true')
     fetch.add_argument('--extraction-path', default='')
@@ -147,7 +152,11 @@ def main() -> int:
     context.configure(args.state_dir, cache=not args.no_cache)
     started = time.time()
     try:
-        result = execute(args)
+        if args.research and args.action in {'search', 'fetch'}:
+            from webskill import research
+            result = research.execute(args.action, args, lambda: execute(args))
+        else:
+            result = execute(args)
     except Exception as exc:
         from webskill.core.redaction import redact_text
         result = {'ok': False, 'error': type(exc).__name__, 'text': redact_text(str(exc))[:1000]}

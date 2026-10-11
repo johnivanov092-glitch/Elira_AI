@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import re
+import socket
+import threading
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
+
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 
 logger = logging.getLogger(__name__)
@@ -134,6 +140,13 @@ def _readable_container(soup: Any) -> Any:
     for selector in content_selectors:
         main_el = soup.select_one(selector)
         if main_el and len(main_el.get_text(strip=True)) > 100:
+            # Generic names also occur on individual sections (e.g. an RFC's
+            # section called "Content"). Do not silently discard most of a
+            # technical document while reporting its extraction as complete.
+            if selector in {".content", "#content", ".text-content"}:
+                body = soup.find("body") or soup
+                if len(main_el.get_text(strip=True)) < len(body.get_text(strip=True)) / 2:
+                    continue
             return main_el
     return soup.find("body") or soup
 
@@ -232,13 +245,153 @@ def _extract_page_links(soup: Any, final_url: str) -> tuple[tuple[tuple[str, str
     return tuple(links), truncated
 
 
+def _page_socket_timer(transport, expired: threading.Event) -> threading.Timer:
+    """Interrupt a captured socket when this page's remaining budget expires."""
+    from webskill.research import remaining_timeout
+
+    def interrupt() -> None:
+        expired.set()
+        try:
+            transport.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # The complete response may already have closed its socket.
+
+    timer = threading.Timer(remaining_timeout(20), interrupt)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+class _PageHeaderDeadline:
+    def getresponse(self):
+        # Capture before urllib3 transfers socket ownership to the response.
+        # DNS, connect, TLS and proxy CONNECT retain Requests' I/O timeouts;
+        # the native skill process independently enforces the run's deadline.
+        transport = self.sock
+        expired = threading.Event()
+        timer = _page_socket_timer(transport, expired)
+        try:
+            response = super().getresponse()
+            if expired.is_set():
+                response.close()
+                raise TimeoutError("page headers reading timed out")
+            return response
+        except Exception as exc:
+            if expired.is_set():
+                raise TimeoutError("page headers reading timed out") from exc
+            raise
+        finally:
+            timer.cancel()
+
+
+class _PageHTTPConnection(_PageHeaderDeadline, HTTPConnection):
+    pass
+
+
+class _PageHTTPSConnection(_PageHeaderDeadline, HTTPSConnection):
+    pass
+
+
+class _PageHTTPPool(HTTPConnectionPool):
+    ConnectionCls = _PageHTTPConnection
+
+
+class _PageHTTPSPool(HTTPSConnectionPool):
+    ConnectionCls = _PageHTTPSConnection
+
+
+class _PageDeadlineAdapter(HTTPAdapter):
+    @staticmethod
+    def _own_pools(manager) -> None:
+        # Copy instance routing: never change urllib3's shared classes. Keep
+        # specialized transports (e.g. SOCKS) using their original connections.
+        replacements = {HTTPConnectionPool: _PageHTTPPool, HTTPSConnectionPool: _PageHTTPSPool}
+        manager.pool_classes_by_scheme = {
+            scheme: replacements.get(pool, pool)
+            for scheme, pool in manager.pool_classes_by_scheme.items()
+        }
+
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self._own_pools(self.poolmanager)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        manager = super().proxy_manager_for(*args, **kwargs)
+        self._own_pools(manager)
+        return manager
+
+
+def _get_page_response(url: str, **kwargs):
+    import requests
+
+    with requests.Session() as session:
+        adapter = _PageDeadlineAdapter()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session.get(url, **kwargs)
+
+
+def _read_response_body(response) -> bytes:
+    """Bound streamed body I/O, including a chunk decoder waiting for bytes."""
+    import io
+    from urllib3.response import HTTPResponse
+    from webskill.research import remaining_timeout
+
+    maximum = 8 * 1024 * 1024
+    raw = response.raw
+    connection = getattr(raw, "connection", None) or getattr(raw, "_connection", None)
+    transport = getattr(connection, "sock", None)
+    if transport is None:
+        # Connection: close detaches the connection socket before the body is
+        # read. CPython's response buffer still owns that same live socket.
+        buffer = getattr(getattr(raw, "_fp", None), "fp", None)
+        transport = getattr(getattr(buffer, "raw", None), "_sock", None)
+    if transport is None or not callable(getattr(transport, "shutdown", None)):
+        raise OSError("page body cannot be read with an enforceable timeout")
+    expired = threading.Event()
+
+    timer = _page_socket_timer(transport, expired)
+    try:
+        encoded = bytearray()
+        while True:
+            remaining_timeout(20)
+            chunk = raw.read1(65536, decode_content=False)
+            if expired.is_set():
+                raise TimeoutError("page body reading timed out")
+            if not chunk:
+                break
+            encoded.extend(chunk)
+            if len(encoded) > maximum:
+                raise ValueError("page response exceeds 8 MiB wire cap")
+        # A server may ignore Accept-Encoding: identity. Decode a bounded
+        # in-memory response instead of allowing the live decoder to keep
+        # reading network bytes before it can produce its first output.
+        encodings = [part.strip().lower() for part in response.headers.get("Content-Encoding", "").split(",")]
+        if any(part and part != "identity" and part not in HTTPResponse.CONTENT_DECODERS for part in encodings):
+            raise ValueError("unsupported page Content-Encoding")
+        with HTTPResponse(body=io.BytesIO(encoded), headers=response.headers,
+                          preload_content=False) as buffered:
+            body = buffered.read(maximum + 1, decode_content=True)
+        if len(body) > maximum:
+            raise ValueError("page response exceeds 8 MiB decoded cap")
+        remaining_timeout(20)
+        if expired.is_set():
+            raise TimeoutError("page body reading timed out")
+        return body
+    except Exception as exc:
+        if expired.is_set() or isinstance(exc, TimeoutError):
+            raise TimeoutError("page body reading timed out") from exc
+        raise
+    finally:
+        timer.cancel()
+
+
 def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
     """Fetch HTML with explicit status/final URL; check every redirect hop."""
     from webskill.application.web.ssrf_guard import check_ssrf
 
     current = url
     try:
-        import requests
         from bs4 import BeautifulSoup
 
         headers = {
@@ -248,12 +401,15 @@ def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "ru,en;q=0.9",
+            "Accept-Encoding": "identity",
         }
         for _hop in range(6):
             ssrf_reason = check_ssrf(current)
             if ssrf_reason:
                 return PageFetchResult(final_url=current, error=f"invalid URL — {ssrf_reason}")
-            resp = requests.get(current, headers=headers, timeout=10, allow_redirects=False)
+            from webskill.research import remaining_timeout
+            resp = _get_page_response(current, headers=headers, timeout=remaining_timeout(10),
+                                      allow_redirects=False, stream=True)
             try:
                 status = resp.status_code
                 if status in (301, 302, 303, 307, 308):
@@ -276,7 +432,11 @@ def fetch_page(url: str, max_chars: int = 4000) -> PageFetchResult:
                     return PageFetchResult(final_url=final, status_code=status, error=f"HTTP {status}",
                                            retry_after=str(resp.headers.get("Retry-After", ""))[:128])
                 content_type = str(resp.headers.get("Content-Type", "")).split(";", 1)[0].lower()
-                body = getattr(resp, "content", b"")
+                body = _read_response_body(resp)
+                # Retain Requests' existing charset detection/text semantics
+                # after the bounded transport has populated its content cache.
+                resp._content = body
+                resp._content_consumed = True
                 if content_type == "application/pdf" or (isinstance(body, bytes) and body.lstrip().startswith(b"%PDF-")):
                     final = urlunsplit(urlsplit(final)._replace(fragment=""))
                     return PageFetchResult(

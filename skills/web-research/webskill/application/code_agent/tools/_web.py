@@ -25,8 +25,8 @@ _THIN_TEXT_THRESHOLD = 200
 # Batch web tools: the model can pass multiple queries/urls in ONE call and we
 # fan them out concurrently (I/O-bound → bounded thread pool). Caps keep upstream
 # engines/sites from being hammered.
-_WEB_BATCH_MAX = 5        # max queries / urls accepted per call (John, 2026-10-05)
-_WEB_BATCH_WORKERS = 5    # max concurrent requests
+_WEB_BATCH_MAX = 8        # deep research reads 5–8 pages per round (John, 2026-10-11)
+_WEB_BATCH_WORKERS = 8    # max concurrent requests
 _WEB_FIND_SCAN_CHARS = 200000
 _READ_EXCERPT_LABEL = "[excerpt; прочитанные фрагменты; соответствие выводов не проверено.]"
 _SEARCH_SNIPPET_LABEL = "    Сниппет: "
@@ -532,6 +532,12 @@ def _access_wall(requested: str, result: PageFetchResult) -> str:
 
 
 def _fetch_one(url: str, limit: int, *, force_refresh: bool = False) -> PageFetchResult:
+    from webskill.research import cached_page
+    return cached_page(url, limit, lambda target, size: _fetch_one_live(target, size, force_refresh=force_refresh),
+                       force_refresh=force_refresh)
+
+
+def _fetch_one_live(url: str, limit: int, *, force_refresh: bool = False) -> PageFetchResult:
     from webskill.application.web_evidence import availability
 
     site = _unreadable_site(url)
@@ -868,8 +874,6 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
         return _fetch_skill_extraction(project_root, url, extraction_path, max_chars, find)
     if find and store:
         return {"ok": False, "text": "ERROR: use find with store=false; stored documents are read through web_query"}
-    if find and _coerce_str_list(urls):
-        return {"ok": False, "text": "ERROR: find reads one document; pass its single url instead of urls"}
     if store and _web_corpus_on():
         targets = _coerce_str_list(urls) or ([url] if str(url).strip() else [])
         if targets:
@@ -1115,7 +1119,8 @@ async def _browser_render_async(url: str, wait_selector: str | None, limit: int,
             # become idle. Interactive/layout checks retain their load contract;
             # dynamic research pages can request a specific wait_selector.
             wait_until = "networkidle" if actions or viewport else "domcontentloaded"
-            response = await page.goto(url, wait_until=wait_until, timeout=30000)
+            from webskill.research import remaining_timeout
+            response = await page.goto(url, wait_until=wait_until, timeout=int(remaining_timeout(20) * 1000))
             status = response.status if response is not None else None
             retry_after = str(response.headers.get("retry-after", ""))[:128] if response is not None else ""
             if status is not None and not 200 <= status < 300:

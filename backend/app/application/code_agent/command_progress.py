@@ -1,9 +1,8 @@
-"""Run-local command observations and bounded recovery in the existing loop.
+"""Run-local tool repetition and command-result evidence in the existing loop.
 
-The agent loop owns the input/code epoch and persists ``snapshot()`` in its
-existing journal. Process IDs identify attempts only: they never establish
-progress. A poll of an existing job is not another execution, including after
-Resume. Only identical terminal outcomes from distinct attempts are compared.
+Call identity is independent of output and code mutations. Terminal command
+results retain their separate epoch-scoped evidence; a job poll is not another
+execution in that ledger. Both survive Resume in the existing run journal.
 """
 from __future__ import annotations
 
@@ -23,29 +22,76 @@ def _digest(value: Any) -> str:
     ).hexdigest()
 
 
+_VOLATILE_RESULT_FIELDS = {"record_path", "record_sha256", "started_at", "finished_at"}
 
 
+def _canonical_command(value: str) -> str:
+    """Collapse only unquoted spaces/tabs; preserve data and shell newlines."""
+    chars: list[str] = []
+    quote = ""
+    escaped = False
+    pending_space = False
+    for char in value:
+        if not quote and not escaped and char in {" ", "\t"}:
+            pending_space = True
+            continue
+        if pending_space:
+            if chars:
+                chars.append(" ")
+            pending_space = False
+        if escaped:
+            chars.append(char)
+            escaped = False
+        elif char in {"\\", "^"}:
+            chars.append(char)
+            escaped = True
+        elif quote:
+            chars.append(char)
+            if char == quote:
+                quote = ""
+        elif char in {"'", '"'}:
+            chars.append(char)
+            quote = char
+        else:
+            chars.append(char)
+    return "".join(chars)
 
 
+def _canonical_arguments(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: (_canonical_command(item) if key == "command" and isinstance(item, str)
+                      else _canonical_arguments(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_arguments(item) for item in value]
+    return value
 
 
+def _normalized_result(value: Any) -> Any:
+    """Drop receipt metadata from JSON, including JSON emitted in stdout."""
+    if isinstance(value, dict):
+        return {key: _normalized_result(item) for key, item in value.items()
+                if key not in _VOLATILE_RESULT_FIELDS}
+    if isinstance(value, list):
+        return [_normalized_result(item) for item in value]
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+        if isinstance(decoded, (dict, list)):
+            return _normalized_result(decoded)
+    return value
+
+
+def _call_key(tool_name: str, arguments: Any) -> str:
+    return _digest({"tool": tool_name, "arguments": _canonical_arguments(arguments)})
 
 
 def _valid_digest(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
-
-
-
-
-
 class CommandProgress:
-    """Compare exact observed results within one code/input version.
-
-    A notice says that observed output repeated, not that business work failed.
-    Changed artifacts/inputs must advance the caller's epoch. Missing typed
-    execution/output evidence is ignored rather than inferred from prose.
-    """
+    """Count canonical tool calls and preserve typed command observations."""
 
     def __init__(self) -> None:
         self._epoch: str | int | None = None
@@ -54,11 +100,15 @@ class CommandProgress:
         self._notice: dict[str, str] = {}
         self._revision = 0
         self._diagnostics: dict[str, str] = {}
+        self._calls: dict[str, int] = {}
+        self._sequence: list[str] = []
+        self._pending_call: str | None = None
+        self._call_notice: dict[str, str] = {}
 
     @classmethod
     def from_snapshot(cls, value: Any) -> "CommandProgress":
         tracker = cls()
-        if not isinstance(value, dict) or value.get("version") != 1:
+        if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] not in (1, 2):
             return tracker
         epoch = value.get("epoch")
         if type(epoch) not in (str, int, type(None)):
@@ -94,26 +144,44 @@ class CommandProgress:
             row = tracker._results.get(key) if isinstance(key, str) else None
             if row and row.get("notified", bool(row.get("refusals"))) and row["result"] == result and notice["text"]:
                 tracker._notice = {"key": key, "result": result, "text": notice["text"]}
+        calls = value.get("calls")
+        if isinstance(calls, dict):
+            tracker._calls = {key: count for key, count in calls.items()
+                              if _valid_digest(key) and type(count) is int and count > 0}
+        sequence = value.get("sequence")
+        if isinstance(sequence, list):
+            tracker._sequence = [key for key in sequence[-6:] if _valid_digest(key) and key in tracker._calls]
+        call_notice = value.get("call_notice")
+        if (isinstance(call_notice, dict) and isinstance(call_notice.get("text"), str)
+                and _valid_digest(call_notice.get("key"))
+                and tracker._calls.get(call_notice["key"], 0) >= 3):
+            tracker._call_notice = {"key": call_notice["key"], "text": call_notice["text"]}
         return tracker
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "epoch": self._epoch,
             "results": {key: dict(value) for key, value in self._results.items()},
             "attempts": {key: dict(value) for key, value in self._attempts.items()},
             "notice": dict(self._notice),
             "revision": self._revision,
             "diagnostics": dict(self._diagnostics),
+            "calls": dict(self._calls),
+            "sequence": list(self._sequence),
+            "call_notice": dict(self._call_notice),
         }
 
     def context(self) -> str:
-        """Active advice to pin across Resume until its evidence changes."""
-        return self._notice.get("text", "")
+        """Active advice to pin across Resume until another strategy is chosen."""
+        return self._call_notice.get("text", "") or self._notice.get("text", "")
 
-
-
-
+    def apply_user_clarification(self) -> None:
+        """New owner-supplied inputs permit another strategy after a blocked run."""
+        self._calls.clear()
+        self._sequence.clear()
+        self._pending_call = None
+        self._call_notice.clear()
     def _sync_epoch(self, epoch: str | int) -> None:
         if type(epoch) not in (str, int):
             raise ValueError("Command progress epoch must identify the code/input version")
@@ -125,68 +193,78 @@ class CommandProgress:
             self._revision = 0
 
     def before_dispatch(
-        self, tool_name: str, arguments: dict[str, Any], *, cwd: str, epoch: str | int = 0,
+        self, tool_name: str, arguments: Any, *, cwd: str, epoch: str | int = 0,
         model_turn: int | None = None,
     ) -> dict[str, Any] | None:
-        """Stop another unchanged execution, while permitting distinct diagnosis.
-
-        This is a recovery boundary, not a permission check or a business-result
-        verifier. Logs/status of existing jobs remain available without limits.
-        A newly observed diagnostic authorizes one probe of external state; two
-        unchanged probes exhaust recovery for this exact command/input version.
-        """
+        """Warn on call three; stop before call five in a row or six overall."""
         self._sync_epoch(epoch)
-        if tool_name not in {"run_bash", "run_server"}:
+        key = _call_key(tool_name, arguments)
+        if self._call_notice.get("key") != key:
+            self._call_notice.clear()
+        count = self._calls.get(key, 0) + 1
+        self._calls[key] = count
+        self._sequence = (self._sequence + [key])[-6:]
+        consecutive = 0
+        for previous in reversed(self._sequence):
+            if previous != key:
+                break
+            consecutive += 1
+        alternating = (len(self._sequence) == 6 and self._sequence[0] != self._sequence[1]
+                       and self._sequence[::2] == [self._sequence[0]] * 3
+                       and self._sequence[1::2] == [self._sequence[1]] * 3)
+        self._pending_call = key
+        if consecutive < 5 and count < 6 and not alternating:
             return None
-        if tool_name == "run_server" and arguments.get("action", "start") != "start":
-            return None
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command or not cwd:
-            return None
-        command_hash = command_digest(command.strip())
-        key = _digest({"tool": tool_name, "command": command_hash, "cwd": cwd})
-        row = self._results.get(key)
-        if row is None or row["count"] < 3:
-            return None
-        if row["rechecks"] < 2 and self._revision > row["checked_revision"]:
-            row["checked_revision"] = self._revision
-            row["rechecks"] += 1
-            row["refusals"] = 0
-            return None
-        row["refusals"] += 1
-        status = "blocked" if row["rechecks"] >= 2 or row["refusals"] >= 2 else "recovery_required"
+        self._pending_call = None
+        limit = "чередование A-B-A-B-A-B" if alternating else (
+            f"{consecutive} подряд" if consecutive >= 5 else f"{count} за прогон")
         text = (
-            f"[ВОССТАНОВЛЕНИЕ ХОДА ЗАДАЧИ] Повтор {tool_name} не исполнен: "
-            f"{row['count']} отдельных запуска дали одинаковый наблюдаемый результат "
-            "в том же каталоге и версии входов/кода. Корректность бизнес-результата не оценивалась. "
-            "Сначала выполни другую диагностическую проверку: прочитай входы, проверь конкретный "
-            "артефакт или внешнее состояние. Новый наблюдаемый результат разрешает одну контрольную "
-            "попытку. Измени способ решения, если контрольная попытка снова ничего не изменила. "
-            "Для работающей фоновой задачи используй run_server(action='logs') без нового запуска."
+            f"[ВОССТАНОВЛЕНИЕ ХОДА ЗАДАЧИ] Повтор {tool_name} не исполнен: {limit}. "
+            "Задача не завершена: повторная стратегия исчерпана. "
+            "Уже полученные результаты сохранены; их корректность не оценивалась. "
+            "Прогон приостановлен (blocked), Resume доступен: измени запрос/способ "
+            "либо добавь новые данные и продолжи по уже полученному."
         )
-        if status == "blocked":
-            text += " Повторная стратегия исчерпана; задача приостановлена и доступна для Resume с новыми данными или другим способом."
-        self._notice = {"key": key, "result": row["result"], "text": text}
-        return {"status": status, "reason": "repeated_command_without_progress",
-                "command_sha256": command_hash, "result_sha256": row["result"],
-                "observed_attempts": row["count"], "rechecks": row["rechecks"],
+        self._call_notice = {"key": key, "text": text}
+        return {"status": "blocked", "reason": "repeated_tool_call", "call_sha256": key,
+                "call_count": count, "consecutive_calls": consecutive, "alternating_cycle": alternating,
                 "business_outcome": "not_assessed", "text": text}
 
     def observe(
         self,
         tool_name: str,
-        arguments: dict[str, Any],
+        arguments: Any,
         output: dict[str, Any],
         *,
         execution_status: str = "ok",
         epoch: str | int = 0,
         cwd: str = "",
     ) -> str | None:
+        call_hint = None
+        key = _call_key(tool_name, arguments)
+        if self._pending_call == key:
+            self._pending_call = None
+            count = self._calls[key]
+            if count == 3:
+                call_hint = (
+                    f"[ВОССТАНОВЛЕНИЕ ХОДА ЗАДАЧИ] Этот вызов {tool_name} уже выполнялся "
+                    f"{count} раза, результат выше; измени запрос/способ или отвечай по тому, что есть."
+                )
+                self._call_notice = {"key": key, "text": call_hint}
+        result_hint = self._observe_command_result(
+            tool_name, arguments, output, execution_status=execution_status, epoch=epoch, cwd=cwd,
+        )
+        return call_hint or result_hint
+
+    def _observe_command_result(
+        self, tool_name: str, arguments: dict[str, Any], output: dict[str, Any], *,
+        execution_status: str, epoch: str | int, cwd: str,
+    ) -> str | None:
         self._sync_epoch(epoch)
         if (execution_status == "ok" and output.get("ok", True)
                 and tool_name in {"read_file", "grep", "glob", "project_map"}):
             key = _digest({"tool": tool_name, "arguments": arguments, "cwd": cwd})
-            result = _digest(output)
+            result = _digest(_normalized_result(output))
             if self._diagnostics.get(key) != result:
                 self._diagnostics[key] = result
                 self._revision += 1
@@ -229,7 +307,12 @@ class CommandProgress:
         directory = output.get("cwd") or cwd
         if not isinstance(directory, str) or not directory:
             return None
-        output_hash = output.get("output_sha256")
+        # Typed text takes precedence over the raw digest: skill receipt paths
+        # and timestamps must not make otherwise identical results look new.
+        if isinstance(output.get("stdout"), str) and isinstance(output.get("stderr"), str):
+            output_hash = _digest(_normalized_result({"stdout": output["stdout"], "stderr": output["stderr"]}))
+        else:
+            output_hash = output.get("output_sha256")
         if not _valid_digest(output_hash):
             if not (isinstance(output.get("stdout"), str) and isinstance(output.get("stderr"), str)):
                 return None
@@ -250,7 +333,7 @@ class CommandProgress:
         if previous["count"] == 3:
             # Recovery needs evidence observed after repetition was established.
             previous["checked_revision"] = self._revision
-        if previous["notified"]:
+        if previous["count"] < 3 or previous["notified"]:
             return None
         previous["notified"] = True
         hint = (

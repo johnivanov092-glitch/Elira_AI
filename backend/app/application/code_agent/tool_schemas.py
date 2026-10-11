@@ -15,11 +15,82 @@ from app.application.code_agent.capabilities import (
 
 
 def build_tool_schemas() -> list[dict[str, Any]]:
-    return _base_tool_schemas()
+    schemas = _base_tool_schemas()
+    for schema in schemas:
+        schema["function"]["parameters"]["additionalProperties"] = False
+    return schemas
+
+
+def _checklist_item_schema(required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "id": {"type": "string"}, "text": {"type": "string"},
+            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+            "position": {"type": "integer"}, "blocker": {"type": "string"},
+        },
+        "required": required,
+    }
 
 
 def _base_tool_schemas() -> list[dict[str, Any]]:
     return [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Все запросы одного пакета пиши на одном языке: для технической документации на английском, "
+                    "для regional:<страна> выбери один подходящий язык региона. Если язык вопроса пользователя "
+                    "используется в регионе, выбери его для всего пакета. Не дублируй запросы переводами. "
+                    "Search via the mutable web-research engine; batch all subquestions in one call. "
+                    "Example: web_search(queries=[\"English query\"],audience=\"global\",mode=\"quick\"). "
+                    "Вопрос на русском о Казахстане: web_search(queries=[\"новости Казахстана за неделю\","
+                    "\"экономика Казахстана за неделю\"],audience=\"regional:Kazakhstan\",mode=\"deep\"). "
+                    "quick: 1 search + 1 parallel read of 2–3 pages, then answer. Explicit deep analysis, "
+                    "research or weekly news: mode=deep, plan subquestions, up to 3 search/read rounds, "
+                    "5–8 pages per read, 20 sites total. Follow up only gaps, contradictions or news with one source. "
+                    "At 30s finish soon; at 60s web stops and you answer from collected sources, naming gaps."
+                ),
+                "parameters": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "queries": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8,
+                                    "description": "Все запросы пакета на одном языке: технические темы — английский; regional:<страна> — язык вопроса пользователя, если он используется в регионе, иначе один подходящий язык региона. Не дублируй запросы переводами."},
+                        "audience": {"type": "string", "description": "global or regional:<country>"},
+                        "mode": {"type": "string", "enum": ["quick", "deep"]},
+                        "time_range": {"type": "string", "enum": ["", "day", "week", "month", "year"]},
+                        "categories": {"type": "string", "enum": ["", "general", "news", "it", "science", "images", "videos", "map", "music", "files"]},
+                    },
+                    "required": ["queries", "audience", "mode"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": (
+                    "Read all needed HTTP(S) pages in one parallel call through web-research. "
+                    "Example: web_fetch(urls=[\"https://example.com\",\"https://example.org\"]). "
+                    "Use one call for 2–3 quick pages or 5–8 deep pages. Repeat URLs use this run's cache. "
+                    "find selects the same verbatim phrase from each URL; metadata includes title and publication dates. "
+                    "Answer with links to pages actually read, list unavailable pages separately. "
+                    "JS interactions use Playwright MCP; PDF/DOCX uses document-read via run_bash."
+                ),
+                "parameters": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
+                        "mode": {"type": "string", "enum": ["quick", "deep"],
+                                 "description": "Режим чтения; если не передан, наследуется режим исследования текущего запуска."},
+                        "find": {"type": "string", "maxLength": 200,
+                                 "description": "Точная фраза до 200 символов; ищется отдельно в каждой странице из urls."},
+                    },
+                    "required": ["urls"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -137,11 +208,12 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "resource_process",
                 "description": (
-                    "Inspect metadata of an attached resource by resource_id (NOT a path). "
+                    "Inspect metadata of an attachment in THIS chat by its real resource_id, never a filename or URL. "
                     "The only operation is 'inspect'; execution_target accepts 'auto' or "
                     "'local_cpu'. For content, use resource_materialize and the matching "
                     "mutable document-read, ocr or audio-transcribe skill. Run its script "
-                    "with ordinary tools and publish finished files with resource_publish."
+                    "with ordinary tools and publish finished files with resource_publish. "
+                    "Example: resource_process(resource_id=\"<id from chat attachments>\", operation=\"inspect\")."
                 ),
                 "parameters": {
                     "type": "object",
@@ -168,7 +240,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "optional destination_name (a RELATIVE name inside the workspace; default "
                     "= the resource's safe basename). Writes a NEW file — it never overwrites "
                     "an existing one. Returns a project-relative path only. Use this when the "
-                    "user wants to convert/encode/run/unpack an attached file locally."
+                    "user wants to convert/encode/run/unpack an attached file locally. Only attachments of THIS chat; "
+                    "files already in the task folder use run_bash and the matching skill, URLs use web_fetch. "
+                    "Example: resource_materialize(resource_id=\"<id from chat attachments>\")."
                 ),
                 "parameters": {
                     "type": "object",
@@ -196,7 +270,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "safe basename). For PDF/DOCX the runtime performs external document QA "
                     "before publication. If the task promises an exact page count, pass the "
                     "optional expected_page_count; omit it otherwise. It copies the file to the download area and returns a "
-                    "download_url — it never overwrites an existing download of the same name."
+                    "download_url and the actual download_name. A taken name gets a free numbered suffix, without overwriting. "
+                    "An invalid Vision verdict still delivers the file marked visually unverified; known document defects fail QA. "
+                    "Example: resource_publish(project_path=\"transcript.txt\")."
                 ),
                 "parameters": {
                     "type": "object",
@@ -333,12 +409,12 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "items": {
                             "type": "array",
-                            "items": {"type": "object"},
+                            "items": _checklist_item_schema(["text"]),
                             "description": "New or replacement checklist items with text/status/position/blocker.",
                         },
                         "updates": {
                             "type": "array",
-                            "items": {"type": "object"},
+                            "items": _checklist_item_schema(["id"]),
                             "description": "Updates for existing checklist items; each update needs id.",
                         },
                     },
@@ -359,6 +435,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "role": {
                             "type": "string",
+                            "enum": ["explore", "plan", "verify", "review"],
                             "description": "One of: explore, plan, verify, review.",
                         },
                         "task": {
@@ -381,7 +458,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Run a platform-native shell command inside the project root. "
                     "On Windows this is cmd.exe (use dir/type/where or explicitly invoke "
-                    "powershell.exe); on POSIX it is /bin/sh. Returns stdout, stderr, and exit code. "
+                    "powershell.exe -NoProfile -Command); single quotes and /dev/null are not cmd syntax. "
+                    "On POSIX it is /bin/sh. Returns stdout, stderr, and exit code. "
                     "Runs until the command exits or the user presses Stop. For a long-lived process that "
                     "never returns on its own — a dev server, watcher, `npm run dev`, `uvicorn`, "
                     "`flask run` — use run_server so the runtime can track it."

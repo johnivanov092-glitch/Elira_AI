@@ -138,6 +138,27 @@ def _inline_script_argv(command: str) -> list[str] | None:
     return None
 
 
+def _cmd_syntax_hint(command: str) -> str:
+    """Advisory only: likely cmd syntax errors, never rewrite or block a command."""
+    if re.match(r'^\s*(?:"[^"\n]*[/\\])?(?:powershell|pwsh|bash|wsl|ssh)(?:\.exe)?(?:"|\s)',
+                command, re.IGNORECASE):
+        return ""
+    notes = []
+    if re.search(r"\bfindstr\b", command, re.IGNORECASE) and "\\|" in command:
+        notes.append('findstr не поддерживает \\|; передай шаблоны отдельно через /c:"a" /c:"b"')
+    if re.search(r"\bcurl(?:\.exe)?\b", command, re.IGNORECASE) and "%{" in command:
+        notes.append("проверь проценты в curl -w; внутри .bat знак % записывается как %%")
+    if "/dev/null" in command:
+        notes.append("вместо /dev/null используй NUL")
+    # Skip quoted program code/JSON: apostrophes inside a double-quoted argument
+    # are data, rather than shell quoting. Multiline interpreter argv is skipped
+    # by the caller because it never goes through cmd.
+    if any(match.group("single") for match in re.finditer(r'''"[^"\n]*"|(?P<single>'[^'\n]+')''', command)):
+        notes.append("одинарные кавычки не группируют аргументы, используй двойные")
+    return ("Это cmd.exe: " + "; ".join(notes) +
+            ". Сложный скрипт: powershell.exe -NoProfile -Command \"...\".") if notes else ""
+
+
 def tool_run_bash(
     project_root: Path, *, command: str, timeout: int = 60,
     env_overrides: dict[str, str | None] | None = None,
@@ -254,6 +275,10 @@ def tool_run_bash(
     # such as grep/findstr that use non-zero as a domain result should be handled
     # by their dedicated tools or explicitly normalized by the command itself.
     ok = proc.returncode == 0
+    if not ok and os.name == "nt" and _argv is None:
+        syntax_hint = _cmd_syntax_hint(cleaned_command)
+        if syntax_hint:
+            parts.append(syntax_hint)
     from app.application.code_agent.skill_result import read_skill_sources, read_skill_job
     from app.application.code_agent.legacy_sources import format_source
     skill_job = read_skill_job(stdout, project_root, run_id) if ok else {}

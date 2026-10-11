@@ -9,20 +9,25 @@ metadata:
 
 Применяй, когда сайт нужно пройти по шагам: клики, формы, вкладки, проверка
 своего веб-приложения, ошибки в консоли и запросы. Просто прочитать страницу —
-навык web-research; одна форма — его команда `browser`.
+встроенный `web_fetch`; JavaScript и формы — Playwright.
 
 ## Запуск
 
-`mcp(action='start', server_id='playwright', query='browser_navigate browser_snapshot browser_click browser_type browser_fill_form')`
-— для отладки добавь `browser_console_messages browser_network_requests browser_take_screenshot`.
+При `enabled: true, autostart: true` сервер запускается вместе с Elira в headless
+и остаётся прогретым. В каждом прогоне сразу доступны navigate, snapshot, click,
+type, fill_form, wait_for и take_screenshot; обязательного `mcp(start)` нет.
+Для дополнительных инструментов запроси
+`mcp(action='tools', server_id='playwright', query='browser_console_messages browser_network_requests browser_tabs browser_close')`.
+Если сервер не запущен или завершился с ошибкой, проверь `mcp(action='list')` и
+восстанови его через `mcp(action='start', server_id='playwright')`.
 
 ## Главные инструменты
 
 - `playwright__browser_navigate(url)`.
 - `playwright__browser_snapshot()` — дерево страницы с метками элементов
   (`ref`); основа для действий, лучше скриншота.
-- `playwright__browser_click(target, element?)` — `target` = метка из snapshot.
-- `playwright__browser_type(target, text, submit?)`,
+- `playwright__browser_click(ref, element?)` — `ref` = метка из snapshot.
+- `playwright__browser_type(ref, text, submit?)`,
   `playwright__browser_fill_form(fields)`, `playwright__browser_select_option(...)`.
 - `playwright__browser_wait_for(text? | time?)`.
 - `playwright__browser_console_messages(level)`,

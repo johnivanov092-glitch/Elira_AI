@@ -1,5 +1,6 @@
 """Preserve destinations from page navigation without reading linked pages."""
 from pathlib import Path
+import io
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -10,8 +11,11 @@ from webskill.application.code_agent.tools import _web
 
 
 def _response(html, url="https://example.org/guide/page"):
+    stream = io.BytesIO(html.encode("utf-8"))
+    raw = SimpleNamespace(read1=lambda amt, **kw: stream.read1(amt),
+                          connection=SimpleNamespace(sock=SimpleNamespace(shutdown=Mock())))
     return SimpleNamespace(text=html, status_code=200, url=url,
-                           encoding="utf-8", headers={}, close=Mock())
+                           encoding="utf-8", headers={}, close=Mock(), raw=raw)
 
 
 def test_fetch_keeps_distinct_document_links_without_reading_them(monkeypatch):
@@ -22,7 +26,7 @@ def test_fetch_keeps_distinct_document_links_without_reading_them(monkeypatch):
             f"<a href='{english}'>Text in English</a>"
             f"<a href='{complete}'>Complete brochure</a></main>")
     get = Mock(return_value=_response(html))
-    monkeypatch.setattr("requests.get", get)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", get)
     result = _web.tool_web_fetch(url="https://example.org/guide/page")
     assert result["ok"] is True
     assert result["pages"][0]["links"] == [
@@ -46,7 +50,7 @@ def test_fetch_resolves_page_base_without_unquoting_signed_links(monkeypatch):
             "<a href='https://[bad'>Invalid URL</a>"
             "<a href='https://example.org:bad/path'>Invalid port</a></main>")
     final_url = "https://example.org/redirected/page"
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html, final_url))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html, final_url))
     result = _web.tool_web_fetch(url="https://example.org/guide/page")
     assert result["pages"][0]["links"] == [
         {"label": "Current release", "url": "https://example.org/docs/download/a%2Fb?q=x%26y%3Dz"},
@@ -59,7 +63,7 @@ def test_fetch_marks_bounded_link_manifest(monkeypatch):
     html = ("<main><p>" + "Release directory. " * 15 + "</p>" + "".join(
         f"<a href='/release/{number}'>Release {number}</a>" for number in range(80)
     ) + "</main>")
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html))
     result = _web.tool_web_fetch(url="https://example.org/guide/page")
     assert 0 < len(result["pages"][0]["links"]) <= 20
     assert result["pages"][0]["links_truncated"] is True
@@ -71,7 +75,7 @@ def test_news_index_keeps_all_article_cards_and_links(monkeypatch):
         f"<article><h2>News {number}</h2><p>{'Event details. ' * 12}</p>"
         f"<a href='/news/{number}'>Article {number}</a></article>" for number in range(3)
     ) + "</main>"
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html))
     result = _web.tool_web_fetch(url="https://example.org/guide/page")
     assert result["ok"]
     assert all(f"News {number}" in result["text"] for number in range(3))
@@ -83,14 +87,14 @@ def test_news_index_keeps_all_article_cards_and_links(monkeypatch):
 def test_single_article_keeps_focus_in_main_container(monkeypatch):
     html = ("<main><p>Unrelated promotion</p><article><h1>Article</h1><p>"
             + "Event details. " * 12 + "</p><a href='/source'>Source</a></article></main>")
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response(html))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response(html))
     result = _web.tool_web_fetch(url="https://example.org/guide/page")
     assert "Event details." in result["text"]
     assert "Unrelated promotion" not in result["text"]
 
 
 def test_browser_fallback_retains_links_from_rendered_main_dom(monkeypatch):
-    monkeypatch.setattr("requests.get", lambda *a, **k: _response("<main>Loading</main>"))
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", lambda *a, **k: _response("<main>Loading</main>"))
     target = "https://www.firefox.com/en-US/releases/"
     html = ("<main><p>" + "Current channel information. " * 15 + "</p>"
             f"<a href='{target}'>Release Notes</a></main>")

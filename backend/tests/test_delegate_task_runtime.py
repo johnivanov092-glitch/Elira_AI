@@ -158,7 +158,7 @@ def test_actual_parent_delegate_reaches_canonical_child_and_preserves_project(tm
         count += 1
         if count == 1:
             return response(calls=[call("delegate_task", role=role,
-                task="Inspect discount.py for calculation errors without edits.", run_id="forged-parent")])
+                task="Inspect discount.py for calculation errors without edits.")])
         assert finding in kwargs["messages"][-1]["content"]
         owner = RunJournal.load(parent_id).agent_lock_path
         assert json.loads(owner.read_text(encoding="utf-8"))["run_id"] == parent_id

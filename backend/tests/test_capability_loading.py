@@ -28,7 +28,7 @@ def _tool_names(registry) -> set[str]:
     }
 
 
-def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> None:
+def test_initial_registry_exposes_core_including_builtin_web_tools(tmp_path) -> None:
     registry = build_runtime_tool_registry(
         tmp_path,
         builtin_tool_names=builtin_tools_for_groups(()),
@@ -36,8 +36,9 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
     )
 
     names = _tool_names(registry)
-    assert names == {"capability_load"}
-    assert {"web_search", "web_fetch", "browser", "computer"}.isdisjoint(names)
+    assert names == set(CORE_BUILTIN_TOOLS)
+    assert {"web_search", "web_fetch"} <= names
+    assert {"browser", "computer"}.isdisjoint(names)
 
     hidden_result = registry.dispatch_raw(
         "memory",
@@ -177,7 +178,8 @@ def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
     assert {"resource_process"} <= names
     assert "read_image" not in names
     assert "file_gen" not in names
-    assert {"web_search", "computer", "csv", "memory"}.isdisjoint(names)
+    assert {"web_search", "web_fetch"} <= names
+    assert {"computer", "csv", "memory"}.isdisjoint(names)
 
 
 def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path) -> None:

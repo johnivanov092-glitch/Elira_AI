@@ -25,6 +25,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.application.agent_kernel.tool_result import ensure_tool_result
+from app.application.agent_kernel.builtin_arguments import (
+    normalize_builtin_arguments, validate_builtin_arguments,
+)
 
 DispatchFn = Callable[[str, dict[str, Any]], dict[str, Any]]
 
@@ -133,7 +136,13 @@ def execute_tool(
     """Execute one tool call through the unified policy and audit layer."""
     from app.application.tool_registry.runtime import get_tool
     tool_name = request.tool_name
-    request.args = {k: v for k, v in request.args.items() if not k.startswith("_runtime_")}
+    request.args = normalize_builtin_arguments(tool_name, request.args)
+    argument_error = validate_builtin_arguments(tool_name, request.args)
+    if argument_error is not None:
+        _emit_executed(request, argument_error, "error")
+        return ToolExecutionResult(status="error", output=argument_error,
+                                   error=argument_error["error"])
+    request.args = {k: v for k, v in request.args.items() if not str(k).startswith("_runtime_")}
 
     # ToolSpec is presentation/audit metadata, not an authorization boundary.
     # Unknown and legacy-disabled/classified tools still reach the single Workflow
@@ -204,7 +213,8 @@ def execute_tool(
             _run_token = None
         try:
             from app.application.agent_kernel.runtime_context import bind_runtime_context
-            with bind_runtime_context(request.runtime_context):
+            with bind_runtime_context({**request.runtime_context, "run_id": request.run_id,
+                                       "permission_mode": request.permission_mode}):
                 _result_box["raw"] = dispatch_fn(tool_name, request.args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model as tool error
             _result_box["raw"] = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}

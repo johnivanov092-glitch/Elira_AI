@@ -58,7 +58,7 @@ def test_list_does_not_expose_config_or_credentials(client):
     assert "private-value" not in response.text
     assert "another-secret" not in response.text
     row = response.json()["servers"][0]
-    assert set(row) == {"id", "description", "transport", "enabled", "status", "last_error"}
+    assert set(row) == {"id", "description", "transport", "enabled", "autostart", "status", "last_error"}
     assert row["status"] == "error"
     client.post("/api/mcp/servers/test/lifecycle", json={"action": "stop"})
     assert client.get("/api/mcp/servers").json()["servers"][0]["status"] == "stopped"
@@ -68,6 +68,18 @@ def test_unknown_server_and_operations_are_rejected(client):
     assert client.post("/api/mcp/servers/missing/lifecycle", json={"action": "start"}).status_code == 404
     assert client.post("/api/mcp/servers/test/lifecycle", json={"action": "shell"}).status_code == 422
     assert client.post("/api/mcp/servers/test/lifecycle", json={"action": "start", "command": "bad"}).status_code == 422
+
+
+def test_editor_round_trip_and_enabled_toggle_preserve_autostart(client):
+    config = client.get("/api/mcp/servers/test/config").json()["config"]
+    config["autostart"] = True
+    assert client.put("/api/mcp/servers/test", json={"config": config}).status_code == 200
+    assert client.post("/api/mcp/servers/test/enabled", json={"enabled": False}).status_code == 200
+    loaded = client.get("/api/mcp/servers/test/config").json()["config"]
+    assert loaded["autostart"] is True and loaded["enabled"] is False
+    loaded["description"] = "Изменено в редакторе"
+    assert client.put("/api/mcp/servers/test", json={"config": loaded}).status_code == 200
+    assert client.get("/api/mcp/servers").json()["servers"][0]["autostart"] is True
 
 
 def test_failure_stays_failed_and_redacts_error(client, monkeypatch):

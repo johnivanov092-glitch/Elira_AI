@@ -202,3 +202,41 @@ def test_vision_budget_stops_before_uninspected_pages(tmp_path, monkeypatch, pag
     assert calls == [("page-1.png", 5.0)]
     assert status == "unverified" and issues[0]["code"] == "qa_budget_exhausted"
     assert str(pages) in issues[-1]["message"]
+
+
+def test_invalid_layout_retains_bounded_text_verdict_without_images_or_secrets(tmp_path, monkeypatch):
+    monkeypatch.setattr("pdf2image.convert_from_path", lambda *a, **k: [Image.new("RGB", (16, 16))])
+    monkeypatch.setattr("app.application.pdf.poppler.poppler_options", lambda: {})
+    raw = "Not JSON. password=PRIVATE_VALUE data:image/png;base64,AAAA " + "x" * 6000
+    monkeypatch.setattr(vision, "describe_image_result", lambda *a, **k: vision.VisionResult(
+        text=raw, status_code=200, finish_reason="stop", elapsed_ms=23))
+    diagnostics = []
+    status, issues = qa._inspect_pages(tmp_path / "fixture.pdf", 1, diagnostics=diagnostics)
+    assert status == "unverified" and issues[0]["code"] == "vision_response_invalid"
+    diagnostic = diagnostics[0]
+    assert diagnostic["page"] == 1 and diagnostic["http_status"] == 200
+    assert diagnostic["finish_reason"] == "stop" and diagnostic["elapsed_ms"] == 23
+    assert diagnostic["error"] == "vision_response_invalid"
+    assert diagnostic["response_chars"] == len(raw) and diagnostic["truncated"] is True
+    assert len(diagnostic["raw_response"]) == 4096
+    assert "PRIVATE_VALUE" not in diagnostic["raw_response"] and "data:image" not in diagnostic["raw_response"]
+    assert "[REDACTED]" in diagnostic["raw_response"] and "[IMAGE OMITTED]" in diagnostic["raw_response"]
+    assert "request" not in diagnostic
+
+
+def test_validate_document_keeps_vision_diagnostics_in_qa_result(tmp_path, monkeypatch):
+    from docx import Document
+
+    path = tmp_path / "document.docx"
+    document = Document()
+    document.add_paragraph("Пример документа")
+    document.save(path)
+    monkeypatch.setattr(qa, "_render_to_pdf", lambda *a: (tmp_path / "preview.pdf", "test"))
+    monkeypatch.setattr(qa, "_page_count", lambda *a: 1)
+    monkeypatch.setattr("pdf2image.convert_from_path", lambda *a, **k: [Image.new("RGB", (16, 16))])
+    monkeypatch.setattr("app.application.pdf.poppler.poppler_options", lambda: {})
+    monkeypatch.setattr(vision, "describe_image_result", lambda *a, **k: vision.VisionResult(
+        text="Layout is fine", status_code=200, finish_reason="stop", elapsed_ms=5))
+    result = qa.validate_document(path)
+    assert result["status"] == "unverified" and result["vision_status"] == "unverified"
+    assert result["vision_diagnostics"][0]["raw_response"] == "Layout is fine"

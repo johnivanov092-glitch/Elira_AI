@@ -2,6 +2,7 @@
 from copy import deepcopy
 import datetime
 import json
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -34,6 +35,12 @@ def _encoded(snapshot):
 
 def _log(root):
     return subprocess.run(["git", "-C", str(root), "log", "--format=%s"], capture_output=True, text=True).stdout
+
+
+@pytest.mark.parametrize("path", sorted((Path(__file__).resolve().parents[2] / "skills").glob("*/SKILL.md")),
+                         ids=lambda path: path.parent.name)
+def test_factory_skills_can_be_loaded_by_runtime_catalog(path):
+    skills.read_package(path.parent.name, path.parent)
 
 
 def test_seed_copies_builtins_and_active_legacy_packages_then_archives_retired_data(data):

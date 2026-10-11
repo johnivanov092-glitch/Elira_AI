@@ -11,6 +11,8 @@ from app.application.code_agent.taskspec import (
     CriteriaTracker, executed_ssh_verification, merge_task_spec, task_requirements,
 )
 
+_DEFAULT_CALL_ARGS = object()
+
 def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
                               text_result: str, tool_ok: bool, auto: bool = False) -> bool:
     """Feed one executed tool call into the observational criterion tracker.
@@ -87,9 +89,10 @@ class RunObservations:
             )
         # Even prose outside a recognised criteria section changes the inputs.
         self.outcome.apply_user_clarification(text)
+        self.commands.apply_user_clarification()
         self.verifications.clear()
 
-    def before_dispatch(self, name: str, args: dict, *, root: Path, model_turn: int | None = None) -> dict | None:
+    def before_dispatch(self, name: str, args: Any, *, root: Path, model_turn: int | None = None) -> dict | None:
         self.project_root = root.resolve()
         return self.commands.before_dispatch(
             name, args, epoch=self.progress_epoch(), cwd=str(root), model_turn=model_turn,
@@ -100,7 +103,8 @@ class RunObservations:
         return f"{self.code_input_epoch}:{len(self.outcome.contract.get('clarifications', []))}"
 
     def observe_result(self, *, name: str, args: dict, output: dict, status: str,
-                       text: str, state_changed: bool, root: Path) -> dict:
+                       text: str, state_changed: bool, root: Path,
+                       call_args: Any = _DEFAULT_CALL_ARGS) -> dict:
         self.project_root = root.resolve()
         self.evidence.record_tool_result(
             tool_name=name, arguments=args, execution_status=status,
@@ -111,7 +115,7 @@ class RunObservations:
         self.outcome.observe(name, args, output, project_root=root,
                              input_epoch=self.code_input_epoch, execution_status=status)
         recovery = self.commands.observe(
-            name, args, output, execution_status=status,
+            name, args if call_args is _DEFAULT_CALL_ARGS else call_args, output, execution_status=status,
             epoch=self.progress_epoch(), cwd=str(root),
         )
         fields = {"task_outcome": self.outcome.snapshot(),

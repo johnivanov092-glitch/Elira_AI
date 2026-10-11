@@ -60,7 +60,7 @@ def _format_checklist_text(result: dict[str, Any]) -> str:
 
 def tool_todo_update(
     *,
-    run_id: str,
+    run_id: str = "",
     items: list[dict[str, Any]] | None = None,
     updates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -131,7 +131,7 @@ def _format_delegate_text(result: dict[str, Any]) -> str:
 def tool_delegate_task(
     project_root: Path,
     *,
-    run_id: str,
+    run_id: str = "",
     role: str = "explore",
     task: str,
     num_ctx: int = 0,

@@ -91,6 +91,7 @@ def list_servers():
             "description": server.get("description", ""),
             "transport": server["transport"],
             "enabled": server["enabled"],
+            "autostart": server["autostart"],
             "status": server["status"],
             "last_error": _safe_message(str(server.get("last_error") or ""), servers) or None,
         }

@@ -55,6 +55,16 @@ def _shutdown_integration_runtimes() -> None:
     mcp_runtime.stop_all_servers()
 
 
+def _warm_integration_runtimes() -> None:
+    """Schedule configured MCP warmup; a failed server cannot prevent startup."""
+    try:
+        from app.application.tool_providers import mcp_runtime
+
+        mcp_runtime.start_autostart_servers()
+    except Exception:
+        logger.warning("MCP startup warmup failed", exc_info=True)
+
+
 def _recover_workflow_requests() -> None:
     try:
         from app.application.workflows.db_path import get_workflow_db_path
@@ -70,6 +80,7 @@ def _recover_workflow_requests() -> None:
 def _activate_release_runtime() -> None:
     _recover_workflow_requests()
     _recover_background_job_runtime()
+    _warm_integration_runtimes()
     from app.application.drift.runtime import start_drift_scheduler
     start_drift_scheduler()
 
@@ -77,6 +88,7 @@ def _activate_release_runtime() -> None:
 release_runtime.set_callbacks(activate=_activate_release_runtime)
 if not release_runtime.is_staging():
     app.add_event_handler("startup", _recover_background_job_runtime)
+    app.add_event_handler("startup", _warm_integration_runtimes)
 app.add_event_handler("shutdown", _shutdown_integration_runtimes)
 app.add_middleware(release_runtime.ReleaseDrainMiddleware)
 app.add_api_route(release_runtime.CONTROL_PATH, release_runtime.control, methods=["POST"])

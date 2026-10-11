@@ -74,8 +74,11 @@ def test_kernel_separates_trusted_context_and_cleans_up(tmp_path):
     request = ToolExecutionRequest("run", "agent", "scope", "read_file",
         {"path": "x", "_runtime_resource_id": "forged"}, "test", permission_mode="bypass",
         runtime_context={"resource_id": "trusted"})
+    assert execute_tool(request, dispatch).error == "invalid_tool_arguments"
+    assert observed == []
+    request.args = {"path": "x"}
     assert execute_tool(request, dispatch).status == "ok"
-    assert observed == [({"path": "x"}, {"resource_id": "trusted"})]
+    assert observed == [({"path": "x"}, {"resource_id": "trusted", "run_id": "run", "permission_mode": "bypass"})]
     assert not current_runtime_context()
 
 def test_child_job_is_adopted_only_for_its_run_and_stops(tmp_path, monkeypatch):

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 import re
 import sys
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -33,6 +35,9 @@ def _response(url: str, text: str, content_type: str) -> requests.Response:
     response.encoding = "utf-8"
     response.headers["Content-Type"] = content_type
     response._content = text.encode("utf-8")
+    stream = io.BytesIO(response._content)
+    response.raw = SimpleNamespace(read1=lambda amt, **kw: stream.read1(amt), close=Mock(),
+        connection=SimpleNamespace(sock=SimpleNamespace(shutdown=Mock())))
     return response
 
 
@@ -49,7 +54,7 @@ def native_web_transport(monkeypatch):
     monkeypatch.setattr(web_engines, "session", lambda: Mock(get=search_get))
     monkeypatch.setattr("webskill.application.web.ssrf_guard.check_ssrf", lambda *a, **k: None)
     page_get = Mock(side_effect=lambda url, **kwargs: _response(url, HTML, "text/html; charset=utf-8"))
-    monkeypatch.setattr(requests, "get", page_get)
+    monkeypatch.setattr("webskill.infrastructure.search.web_runtime._get_page_response", page_get)
     monkeypatch.setattr(_web, "_render_fallback", lambda *a: pytest.fail("Native HTML text is sufficient"))
     return search_get, page_get
 

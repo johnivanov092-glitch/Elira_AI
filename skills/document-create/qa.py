@@ -6,6 +6,7 @@ independent vision inspection to the exact SHA-256 later published to the user.
 """
 from __future__ import annotations
 from elira_common.files import sha256_file as document_sha256
+from elira_common.redaction import redact_text
 
 import base64
 import hashlib
@@ -32,6 +33,7 @@ _MAX_VISION_PAGES = 12
 _WORD_TIMEOUT_SECONDS = 45
 _VISION_TIMEOUT_SECONDS = 30.0
 _DOCUMENT_QA_BUDGET_SECONDS = 105.0
+_VISION_DIAGNOSTIC_CHARS = 4096
 _GLUED_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{20,}", re.UNICODE)
 _GLUED_TITLE_SIGNALS = ("ДЛЯ", "СБОРКА", "КОМПЬЮТЕР", "DDR", "ПК")
 DOCUMENT_QA_ATTEMPT_LIMIT = 2
@@ -451,7 +453,10 @@ def _parse_layout_response(response: str) -> tuple[bool, list[str]] | None:
     return layout_issue, [item.strip()[:300] for item in issues]
 
 
-def _inspect_pages(pdf_path: Path, pages: int, *, deadline: float | None = None) -> tuple[str, list[dict[str, str]]]:
+def _inspect_pages(
+    pdf_path: Path, pages: int, *, deadline: float | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> tuple[str, list[dict[str, str]]]:
     if deadline is None:
         deadline = time.monotonic() + _DOCUMENT_QA_BUDGET_SECONDS
     if pages < 1:
@@ -496,6 +501,15 @@ def _inspect_pages(pdf_path: Path, pages: int, *, deadline: float | None = None)
         )
         logger.info("document vision page=%s error=%s http=%s finish=%s elapsed_ms=%s",
                     index, response.error, response.status_code, response.finish_reason, response.elapsed_ms)
+        diagnostic = {
+            "page": index,
+            "error": response.error,
+            "http_status": response.status_code,
+            "finish_reason": response.finish_reason,
+            "elapsed_ms": response.elapsed_ms,
+        }
+        if diagnostics is not None:
+            diagnostics.append(diagnostic)
         if response.error:
             return index, "unverified", [_issue(response.error,
                 f"Vision-QA: страница {index}, {response.error}, HTTP={response.status_code}, elapsed_ms={response.elapsed_ms}.")]
@@ -506,6 +520,15 @@ def _inspect_pages(pdf_path: Path, pages: int, *, deadline: float | None = None)
         parsed = _parse_layout_response(response.text or "")
         if parsed is None:
             logger.warning("document vision page=%s: invalid layout JSON (characters=%s)", index, len(response.text or ""))
+            # Store only the textual verdict, never the page, request or provider body.
+            raw = re.sub(r"data:image/[^;\s,]+;base64,[A-Za-z0-9+/=]+", "[IMAGE OMITTED]", response.text or "")
+            raw = redact_text(raw)
+            diagnostic.update({
+                "error": "vision_response_invalid",
+                "raw_response": raw[:_VISION_DIAGNOSTIC_CHARS],
+                "response_chars": len(response.text or ""),
+                "truncated": len(raw) > _VISION_DIAGNOSTIC_CHARS,
+            })
             return index, "unverified", [_issue(
                 "vision_response_invalid",
                 f"Vision-QA не вернул структурированный результат для страницы {index}.",
@@ -577,7 +600,10 @@ def validate_document(
                 f"Ожидалось страниц: {expected_page_count}; после рендера: {pages}.",
             ))
 
-        vision_status, vision_issues = _inspect_pages(pdf_path, pages, deadline=deadline)
+        result["vision_diagnostics"] = []
+        vision_status, vision_issues = _inspect_pages(
+            pdf_path, pages, deadline=deadline, diagnostics=result["vision_diagnostics"],
+        )
         result["vision_status"] = vision_status
         result["issues"] = structural_issues + count_issues + vision_issues
         if structural_issues or count_issues or vision_status == "failed":

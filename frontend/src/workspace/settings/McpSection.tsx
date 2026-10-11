@@ -7,7 +7,7 @@ import {
 import { Loading, McpBtn, Note, Wrap } from "./_shared";
 
 const STATUS: Record<McpServer["status"], string> = {
-  running: "Запущен", stopped: "Остановлен", crashed: "Соединение потеряно", error: "Ошибка запуска",
+  running: "Запущен", starting: "Запускается", stopped: "Остановлен", crashed: "Соединение потеряно", error: "Ошибка запуска",
 };
 
 const btn = "flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-t2 hover:bg-hover disabled:opacity-50";
@@ -20,6 +20,7 @@ const TEMPLATE = {
   cwd: "",
   env: {},
   enabled: true,
+  autostart: false,
 };
 
 /** Editing one entry of data/mcp_servers.json; `id === ""` adds a new server. */
@@ -118,7 +119,14 @@ export function McpSection() {
     await act(id, () => deleteMcpServer(id));
   }
 
-  const startIds = (servers ?? []).filter((s) => s.enabled && s.status !== "running").map((s) => s.id);
+  let editorConfig: Record<string, unknown> | null = null;
+  if (editor) {
+    try {
+      const parsed: unknown = JSON.parse(editor.text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) editorConfig = parsed as Record<string, unknown>;
+    } catch { /* An unfinished JSON edit disables the checkbox until it parses. */ }
+  }
+  const startIds = (servers ?? []).filter((s) => s.enabled && !["running", "starting"].includes(s.status)).map((s) => s.id);
   const stopIds = (servers ?? []).filter((s) => s.status !== "stopped").map((s) => s.id);
   const editorPanel = editor && (
     <div className="mb-3 rounded-lg border border-line px-3 py-2.5">
@@ -128,6 +136,11 @@ export function McpSection() {
         Значения секретов скрыты (●●●) — оставьте как есть, они сохранятся. Новый секрет добавьте в «Секреты» и
         укажите его ссылку sref_… в env_secret_refs или secret_header_refs.
       </div>
+      <label className="mb-2 flex items-center gap-2 text-[12px] text-t2">
+        <input type="checkbox" checked={editorConfig?.autostart === true} disabled={!!busy || !editorConfig}
+          onChange={(e) => { if (editorConfig) setEditor({ ...editor, text: JSON.stringify({ ...editorConfig, autostart: e.target.checked }, null, 2) }); }} />
+        Запускать вместе с Elira
+      </label>
       <textarea
         aria-label="JSON записи MCP"
         value={editor.text}
@@ -146,8 +159,8 @@ export function McpSection() {
   return (
     <Wrap title="MCP">
       <Note>
-        Серверы из data/mcp_servers.json — того же файла, который правит Elira. Elira запускает сервер, когда он
-        нужен задаче; выключенный сервер не запускается. Для HTTP кнопка «Стоп» отключает Elira от сервера.
+        Серверы с автозапуском прогреваются вместе с Elira. Остальные запускаются по запросу;
+        выключенный сервер не запускается. Для HTTP кнопка «Стоп» отключает Elira от сервера.
       </Note>
       <div className="my-3 flex flex-wrap items-center gap-2 text-[12px]">
         <button type="button" disabled={!!busy || !startIds.length} onClick={() => void control(startIds, "start")} className={btn}><Play size={13} /> Запустить все</button>
@@ -168,7 +181,7 @@ export function McpSection() {
                   <div className="min-w-0 flex-1">
                     <div className="break-words font-medium">{server.id}</div>
                     {server.description && <div className="break-words text-[11.5px] text-t2">{server.description}</div>}
-                    <div className="text-[11.5px] text-mut">{server.enabled ? STATUS[server.status] : "Выключен"} · {server.transport}</div>
+                    <div className="text-[11.5px] text-mut">{server.enabled ? STATUS[server.status] : "Выключен"} · {server.transport}{server.autostart ? " · автозапуск" : ""}</div>
                   </div>
                   <label className="flex shrink-0 items-center gap-1 text-[11.5px] text-t2" title="Выключенный сервер не запускается">
                     <input type="checkbox" checked={server.enabled} disabled={!!busy} aria-label={`Включён ${server.id}`}
@@ -176,8 +189,8 @@ export function McpSection() {
                     вкл.
                   </label>
                   {server.enabled && (
-                    <McpBtn busy={!!busy} label={`${server.status === "running" ? "Остановить" : "Запустить"} ${server.id}`} onClick={() => void control([server.id], server.status === "running" ? "stop" : "start")}>
-                      {server.status === "running" ? <Square size={13} /> : <Play size={13} />}
+                    <McpBtn busy={!!busy} label={`${["running", "starting"].includes(server.status) ? "Остановить" : "Запустить"} ${server.id}`} onClick={() => void control([server.id], ["running", "starting"].includes(server.status) ? "stop" : "start")}>
+                      {["running", "starting"].includes(server.status) ? <Square size={13} /> : <Play size={13} />}
                     </McpBtn>
                   )}
                   {server.enabled && (

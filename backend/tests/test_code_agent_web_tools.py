@@ -64,6 +64,8 @@ class WebSearchToolTest(unittest.TestCase):
             result = tool_web_search(query="abracadabra_no_hits")
         self.assertIn("No web results", result["text"])
         self.assertIs(result["ok"], True)
+        self.assertFalse(result.get("partial"))
+        self.assertNotIn("error", result)
 
     def test_backend_failure_is_not_reported_as_success(self) -> None:
         with patch(
@@ -365,6 +367,8 @@ class BatchWebToolsTest(unittest.TestCase):
             result = tool_web_search(queries=["q1", "q2"])
         text = result["text"]
         self.assertIs(result["ok"], True)
+        self.assertFalse(result.get("partial"))
+        self.assertNotIn("error", result)
         self.assertIn("2 parallel queries", text)
         self.assertIn("https://a.com", text)
         self.assertIn("https://b.com", text)
@@ -396,7 +400,7 @@ class BatchWebToolsTest(unittest.TestCase):
             result = tool_web_fetch(urls=["https://x/1", "https://x/2"])
         self.assertIs(result["ok"], False)
 
-    def test_search_batch_accepts_5_caps_6_and_keeps_five_workers(self) -> None:
+    def test_search_batch_caps_eight_and_keeps_parallel_workers(self) -> None:
         import webskill.application.code_agent.tools._web as w
         for count, kwargs, expected_limit in ((5, {}, 5), (6, {"top_k": 11}, 10)):
             with self.subTest(count=count):
@@ -407,12 +411,14 @@ class BatchWebToolsTest(unittest.TestCase):
                 with patch.object(w, "_run_search", side_effect=probe):
                     result = tool_web_search(queries=queries, **kwargs)
                 self.assertIs(result["ok"], True)
-                self.assertEqual({args[0] for args in probe.seen}, set(queries[:5]))
-                self.assertEqual(len(probe.seen), 5)
+                self.assertFalse(result.get("partial"))
+                self.assertNotIn("error", result)
+                self.assertEqual({args[0] for args in probe.seen}, set(queries[:8]))
+                self.assertEqual(len(probe.seen), min(count, 8))
                 self.assertEqual({args[1] for args in probe.seen}, {expected_limit})
                 self.assertEqual(probe.peak, 5)
                 self.assertEqual([source["url"] for source in result["sources"]],
-                                 [f"https://example.org/{query}" for query in queries[:5]])
+                                 [f"https://example.org/{query}" for query in queries[:8]])
 
     def test_search_overflow_keeps_50_sources_and_fair_whole_results(self) -> None:
         import webskill.application.code_agent.tools._web as w
@@ -427,6 +433,8 @@ class BatchWebToolsTest(unittest.TestCase):
         with patch.object(w, "_run_search", side_effect=search):
             result = tool_web_search(queries=queries, top_k=10)
         self.assertIs(result["ok"], True)
+        self.assertFalse(result.get("partial"))
+        self.assertNotIn("error", result)
         urls = [f"https://example.org/{query}/{rank}" for query in queries for rank in range(10)]
         self.assertEqual([source["url"] for source in result["sources"]], urls)
         self.assertTrue(all(valid_source(source) for source in result["sources"]))
@@ -458,7 +466,7 @@ class BatchWebToolsTest(unittest.TestCase):
         self.assertIn("Showing 1 of 2 results", result["text"])
         self.assertNotIn("x" * WEB_TOOL_RESULT_LLM_LIMIT, result["text"])
 
-    def test_fetch_batch_accepts_5_caps_6_keeps_workers_and_current_receipts(self) -> None:
+    def test_fetch_batch_caps_eight_and_keeps_current_receipts(self) -> None:
         import webskill.application.code_agent.tools._web as w
         from app.application.code_agent.loop_helpers import _truncate_for_llm
         from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
@@ -474,16 +482,16 @@ class BatchWebToolsTest(unittest.TestCase):
                 with patch.object(w, "_fetch_one", side_effect=probe):
                     result = tool_web_fetch(urls=urls, **kwargs)
                 self.assertIs(result["ok"], True)
-                self.assertEqual({args[0] for args in probe.seen}, set(urls[:5]))
-                self.assertEqual(len(probe.seen), 5)
+                self.assertEqual({args[0] for args in probe.seen}, set(urls[:8]))
+                self.assertEqual(len(probe.seen), min(count, 8))
                 self.assertEqual({args[1] for args in probe.seen}, {expected_limit})
                 self.assertEqual(probe.peak, 5)
-                self.assertEqual([page["url"] for page in result["pages"]], urls[:5])
+                self.assertEqual([page["url"] for page in result["pages"]], urls[:8])
                 self.assertTrue(all(page["truncated"] for page in result["pages"]))
                 text = result["text"]
                 self.assertLessEqual(len(text), WEB_TOOL_RESULT_LLM_LIMIT)
                 self.assertEqual(_truncate_for_llm(text, WEB_TOOL_RESULT_LLM_LIMIT), text)
-                self.assertEqual({source["url"] for source in result["sources"]}, set(urls[:5]))
+                self.assertEqual({source["url"] for source in result["sources"]}, set(urls[:8]))
                 self.assertTrue(all(valid_source(source) for source in result["sources"]))
                 evidence = RunEvidence(sources=result["sources"])
                 evidence.mark_sources_presented([{"role": "tool", "content": text}])
@@ -508,10 +516,10 @@ class BatchWebToolsTest(unittest.TestCase):
                     result = tool_web_fetch(urls=urls, store=True)
                 ordinary_fetch.assert_not_called()
                 self.assertIs(result["ok"], True)
-                self.assertEqual([row[0] for row in seen], urls[:5])
+                self.assertEqual([row[0] for row in seen], urls[:8])
                 self.assertEqual({row[1] for row in seen}, {"store-batch"})
                 self.assertEqual({row[2] for row in seen}, {threading.get_ident()})
-                self.assertEqual([source["url"] for source in result["sources"]], urls[:5])
+                self.assertEqual([source["url"] for source in result["sources"]], urls[:8])
                 self.assertTrue(all(valid_source(source) for source in result["sources"]))
 
 
@@ -528,7 +536,10 @@ class ToolRegistrationTest(unittest.TestCase):
     def test_builtin_schemas_and_dispatch_do_not_duplicate_skill(self):
         names = {s['function']['name'] for s in build_tool_schemas()}
         dispatch = build_tool_dispatch(Path('.'))
-        for name in ('web_search', 'web_fetch', 'web_query', 'web_claim_add', 'browser', 'http_api'):
+        for name in ('web_search', 'web_fetch'):
+            self.assertIn(name, names)
+            self.assertIn(name, dispatch)
+        for name in ('web_query', 'web_claim_add', 'browser', 'http_api'):
             self.assertNotIn(name, names)
             self.assertNotIn(name, dispatch)
 

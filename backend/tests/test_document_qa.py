@@ -22,6 +22,7 @@ def private_downloads(tmp_path, monkeypatch):
 
     generated = tmp_path / "generated-downloads"
     generated.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "GENERATED_DIR", generated)
     return generated
 
@@ -54,7 +55,7 @@ def test_glued_centered_docx_heading_fails_validation(tmp_path) -> None:
     assert result["status"] == "failed"
     assert result["sha256"]
     assert result["page_count"] == 1
-    inspect_pages.assert_called_once_with(path, 1, deadline=ANY)
+    inspect_pages.assert_called_once_with(path, 1, deadline=ANY, diagnostics=[])
     assert {issue["code"] for issue in result["issues"]} == {
         "suspicious_glued_heading",
     }
@@ -261,16 +262,19 @@ def test_page_count_contract_is_inferred_only_from_explicit_document_wording() -
     assert infer_expected_page_count("Проверь страницу 2 сайта") is None
 
 
-def test_taken_download_name_is_refused_before_render_and_qa(tmp_path, private_downloads) -> None:
-    # Review defects 37e9fdf680d9 / 432e4a817120: destination_exists came only after the full QA.
+def test_taken_download_name_gets_free_name_with_one_qa(tmp_path, private_downloads) -> None:
     (private_downloads / "proposal.docx").write_bytes(b"published earlier")
     (private_downloads / "Report.docx").write_bytes(b"published earlier")
     (tmp_path / "proposal.docx").write_bytes(b"new version")
 
-    with patch("app.application.code_agent.tools._resources.validate_document") as publish_qa:
+    qa = {"status": "passed", "sha256": hashlib.sha256(b"new version").hexdigest(), "issues": []}
+    with patch("app.application.code_agent.tools._resources.validate_document", return_value=qa) as publish_qa:
         published = tool_resource_publish(tmp_path, project_path="proposal.docx")
-    assert published["error"] == "destination_exists"
-    publish_qa.assert_not_called()
+    assert published["ok"] is True and published["download_name"] == "proposal (2).docx"
+    assert published["document_qa"]["target"] == "proposal (2).docx"
+    assert (private_downloads / "proposal.docx").read_bytes() == b"published earlier"
+    assert (private_downloads / "proposal (2).docx").read_bytes() == b"new version"
+    publish_qa.assert_called_once()
 
 
 def test_renaming_download_does_not_reset_source_qa_attempts(tmp_path):
@@ -285,3 +289,92 @@ def test_renaming_download_does_not_reset_source_qa_attempts(tmp_path):
         result = tool_resource_publish(tmp_path, project_path="same.docx", download_name="third.docx", run_id="rename-budget", expected_page_count=1)
         assert result["error"] == "document_validation_attempts_exhausted"
         assert validate.call_count == 2
+
+
+def test_repeated_publication_uses_actual_free_name_and_keeps_old_bytes(tmp_path, private_downloads):
+    source = tmp_path / "расшифровка.txt"
+    source.write_bytes(b"first transcript")
+    first = tool_resource_publish(tmp_path, project_path=source.name)
+    source.write_bytes(b"second transcript")
+    second = tool_resource_publish(tmp_path, project_path=source.name)
+    assert first["ok"] is True and second["ok"] is True
+    assert first["download_name"] == "расшифровка.txt"
+    assert second["download_name"] == "расшифровка (2).txt"
+    assert "%282%29" in second["download_url"]
+    assert (private_downloads / first["download_name"]).read_bytes() == b"first transcript"
+    assert (private_downloads / second["download_name"]).read_bytes() == b"second transcript"
+    assert second["sha256"] == hashlib.sha256(b"second transcript").hexdigest()
+
+
+def test_atomic_name_race_retries_copy_without_repeating_document_qa(tmp_path, private_downloads, monkeypatch):
+    from app.application.media import resource_store
+
+    source = tmp_path / "race.docx"
+    source.write_bytes(b"reviewed bytes")
+    qa = {"status": "passed", "sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "issues": []}
+    publish_copy = resource_store.publish_copy
+    calls = []
+    def competing_publication(**kwargs):
+        calls.append(kwargs["final_name"])
+        if len(calls) == 1:
+            (private_downloads / kwargs["final_name"]).write_bytes(b"other chat")
+        return publish_copy(**kwargs)
+    monkeypatch.setattr(resource_store, "publish_copy", competing_publication)
+    with patch("app.application.code_agent.tools._resources.validate_document", return_value=qa) as validate:
+        result = tool_resource_publish(tmp_path, project_path=source.name)
+    assert result["ok"] is True and result["download_name"] == "race (2).docx"
+    assert result["document_qa"]["target"] == result["download_name"]
+    assert calls == ["race.docx", "race (2).docx"] and validate.call_count == 1
+    assert (private_downloads / "race.docx").read_bytes() == b"other chat"
+
+
+def test_numbered_download_name_keeps_safe_length_and_extension(tmp_path, private_downloads):
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"bytes")
+    requested = "x" * 196 + ".txt"
+    (private_downloads / requested).write_bytes(b"occupied")
+    result = tool_resource_publish(tmp_path, project_path=source.name, download_name=requested)
+    assert result["ok"] is True and len(result["download_name"]) == 200
+    assert result["download_name"].endswith(" (2).txt")
+    assert (private_downloads / requested).read_bytes() == b"occupied"
+
+
+def test_invalid_vision_verdict_delivers_docx_marked_unverified(tmp_path, private_downloads):
+    source = tmp_path / "unverified.docx"
+    source.write_bytes(b"rendered document")
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    qa = {
+        "status": "unverified", "sha256": sha, "vision_status": "unverified",
+        "renderer": "microsoft_word", "page_count": 1,
+        "issues": [{"code": "vision_response_invalid", "message": "invalid layout JSON"}],
+        "vision_diagnostics": [{"page": 1, "raw_response": "The page looks fine."}],
+    }
+    with patch("app.application.code_agent.tools._resources.validate_document", return_value=qa):
+        result = tool_resource_publish(tmp_path, project_path=source.name, run_id="unverified-delivery")
+    assert result["ok"] is True and result["evidence"] == "document_qa_unverified"
+    assert "Визуально не проверено" in result["text"]
+    assert result["document_qa"]["status"] == "unverified"
+    assert result["document_qa"]["vision_diagnostics"] == qa["vision_diagnostics"]
+    assert result["sha256"] == sha and (private_downloads / result["download_name"]).read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("status,codes,correct_hash", [
+    ("failed", ["vision_response_invalid", "layout_issue"], True),
+    ("failed", ["page_count_mismatch"], True),
+    ("unverified", ["vision_timeout"], True),
+    ("unverified", ["vision_response_invalid", "renderer_unavailable"], True),
+    ("unverified", ["vision_response_invalid"], False),
+    ("unverified", [], True),
+])
+def test_publication_does_not_bypass_other_qa_failures(tmp_path, private_downloads, status, codes, correct_hash):
+    source = tmp_path / "rejected.docx"
+    source.write_bytes(b"document")
+    qa = {
+        "status": status, "vision_status": "unverified",
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest() if correct_hash else "0" * 64,
+        "issues": [{"code": code, "message": code} for code in codes],
+    }
+    with patch("app.application.code_agent.tools._resources.validate_document", return_value=qa):
+        result = tool_resource_publish(tmp_path, project_path=source.name)
+    assert result["ok"] is False and "download_name" not in result
+    assert not list(private_downloads.iterdir())

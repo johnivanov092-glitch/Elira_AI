@@ -42,6 +42,381 @@ def call(name, **arguments):
     return {"function": {"name": name, "arguments": arguments}}
 
 
+def test_repeated_reads_warn_in_tool_result_and_block_with_durable_resume(tmp_path):
+    (tmp_path / "state.txt").write_text("checked", encoding="utf-8")
+    run_id = "contracts-repeat-resume"
+    model_messages = []
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        assert len(model_messages) <= 5, "repeat guard did not stop the loop"
+        return response(calls=[call("read_file", path="state.txt")])
+
+    events = list(agent_loop.stream_code_agent(
+        user_message="Прочитай state.txt.", project_root=tmp_path, run_id=run_id,
+        chat_fn=chat, base_tools=["read_file"], auto_remember=False, permission_mode="bypass",
+    ))
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == 5
+    assert all(receipt["ok"] for receipt in receipts[:4])
+    assert "3 раза" in receipts[2]["result"]
+    assert receipts[4]["dispatched"] is False and receipts[4]["error"] == "repeated_tool_call"
+    assert events[-1]["stop_reason"] == "blocked" and events[-1]["resumable"]
+    assert RunJournal.load(run_id).state["status"] == "blocked"
+    assert RunJournal.load(run_id).state["command_progress"]["calls"] == receipts[-1]["command_progress"]["calls"]
+    assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+               for message in model_messages[3])
+    assert not any("3 раза" in text for messages in model_messages for text in user_texts(messages))
+
+    # Resume retains the run-wide identity counts; another method can complete.
+    resumed_events = list(agent_loop.stream_code_agent(**build_continuation_kwargs(
+        run_id, chat_fn=lambda **kwargs: response("Файл уже прочитан: checked."),
+    )))
+    assert resumed_events[-1]["stop_reason"] == "answer"
+    assert not any(event["type"] == "tool_call" for event in resumed_events)
+
+
+@pytest.mark.parametrize("interleave", [False, True], ids=["five-consecutive", "six-total"])
+def test_repeated_read_only_denials_warn_and_block_without_dispatch(tmp_path, monkeypatch, interleave):
+    run_id = "contracts-repeat-read-only-denied"
+    model_messages = []
+    repeated_call = call("write_file", path="forbidden.txt", content="write")
+    attempted_calls = []
+    for index in range(6 if interleave else 5):
+        if interleave and index:
+            attempted_calls.append(call("run_bash", command=f"denied-command-{index}"))
+        attempted_calls.append(repeated_call)
+    warning_index = 4 if interleave else 2
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("read-only denial must not reach the executor")
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        assert len(model_messages) <= len(attempted_calls), "denied calls bypassed the repeat guard"
+        return response(calls=[attempted_calls[len(model_messages) - 1]])
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", no_dispatch)
+    events = list(agent_loop.stream_code_agent(
+        user_message="Только изучи проект.", project_root=tmp_path, run_id=run_id,
+        chat_fn=chat, base_tools=["write_file", "run_bash"], auto_remember=False,
+        permission_mode="bypass", read_only=True,
+    ))
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == len(attempted_calls)
+    assert all(event["error"] == "delegate_read_only" for event in receipts[:-1])
+    assert all(event["dispatched"] is False and event["state_changed"] is False for event in receipts)
+    assert "3 раза" in receipts[warning_index]["result"]
+    assert receipts[-1]["error"] == "repeated_tool_call"
+    assert events[-1]["stop_reason"] == "blocked" and events[-1]["resumable"]
+    journal = RunJournal.load(run_id)
+    assert journal.state["status"] == "blocked"
+    assert journal.state["command_progress"] == receipts[-1]["command_progress"]
+    journal_receipts = [json.loads(line) for line in journal.events_path.read_text(encoding="utf-8").splitlines()
+                        if json.loads(line).get("type") == "tool_call"]
+    assert journal_receipts[warning_index]["result"] == receipts[warning_index]["result"]
+    assert journal_receipts[-1]["error"] == "repeated_tool_call"
+    assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+               for message in model_messages[warning_index + 1])
+    assert not any("3 раза" in text for messages in model_messages for text in user_texts(messages))
+    assert not (tmp_path / "forbidden.txt").exists()
+
+    # An unchanged Resume retains the denied-call count and blocks before execution.
+    resumed = list(agent_loop.stream_code_agent(**build_continuation_kwargs(
+        run_id, chat_fn=lambda **kwargs: response(calls=[
+            call("write_file", path="forbidden.txt", content="write"),
+        ]),
+    )))
+    resumed_receipts = [event for event in resumed if event["type"] == "tool_call"]
+    assert len(resumed_receipts) == 1
+    assert resumed_receipts[0]["error"] == "repeated_tool_call"
+    assert resumed_receipts[0]["dispatched"] is False
+    assert resumed[-1]["stop_reason"] == "blocked" and resumed[-1]["resumable"]
+
+
+def test_repeated_persistence_denials_warn_in_third_tool_result(tmp_path, monkeypatch):
+    run_id = "contracts-repeat-persistence-denied"
+    model_messages = []
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("task persistence denial must not reach the executor")
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        if len(model_messages) <= 3:
+            return response(calls=[call("memory", action="add", text="Запрещённый факт.")])
+        return response("Долговременная память не изменена.")
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", no_dispatch)
+    events = list(agent_loop.stream_code_agent(
+        user_message="Не сохраняй информацию в память.", project_root=tmp_path,
+        run_id=run_id, chat_fn=chat, base_tools=["memory"], auto_remember=False,
+        permission_mode="bypass",
+    ))
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == 3
+    assert all(event["error"] == "task_persistence_denied" for event in receipts)
+    assert all(event["dispatched"] is False and event["execution_status"] == "rejected"
+               for event in receipts)
+    assert "3 раза" in receipts[2]["result"]
+    assert receipts[2]["recovery_context"] in receipts[2]["result"]
+    assert RunJournal.load(run_id).state["command_progress"] == receipts[2]["command_progress"]
+    assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+               for message in model_messages[3])
+    assert not any("3 раза" in text for messages in model_messages for text in user_texts(messages))
+
+
+def test_recovered_read_paths_preserve_attempted_call_identity(tmp_path):
+    nested = tmp_path / "folder"
+    nested.mkdir()
+    (nested / "state_report.txt").write_text("checked", encoding="utf-8")
+    model_messages = []
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        assert len(model_messages) <= 6
+        if len(model_messages) == 1:
+            return response(calls=[call("glob", pattern="**/state*.txt")])
+        return response(calls=[call("read_file", path="folder/state.txt")])
+
+    events = list(agent_loop.stream_code_agent(
+        user_message="Найди и прочитай state.txt.", project_root=tmp_path,
+        chat_fn=chat, base_tools=["glob", "read_file"], auto_remember=False,
+        permission_mode="bypass",
+    ))
+    receipts = [event for event in events if event["type"] == "tool_call" and event["tool"] == "read_file"]
+    assert len(receipts) == 5
+    assert all(event["ok"] for event in receipts[:4])
+    assert receipts[0]["arguments"]["path"] == "folder/state_report.txt"
+    assert "3 раза" in receipts[2]["result"]
+    assert receipts[4]["error"] == "repeated_tool_call" and receipts[4]["dispatched"] is False
+    assert events[-1]["stop_reason"] == "blocked"
+
+
+@pytest.mark.parametrize(("name", "arguments"), [
+    ("ask_user", {"question": "Как продолжить?"}),
+    ("workflow_request", {"kind": "input", "message": "Как продолжить?", "schema": {}}),
+    ("workflow_request", {"kind": "elevation", "message": "Нет программы."}),
+])
+def test_special_workflow_results_warn_and_block_repeated_calls(tmp_path, monkeypatch, name, arguments):
+    run_id = "contracts-repeat-workflow"
+    model_messages = []
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("special Workflow must not reach the tool executor")
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        assert len(model_messages) <= 5, "special Workflow bypassed the repeat guard"
+        return response(calls=[call(name, **arguments)])
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", no_dispatch)
+    events = []
+    for event in agent_loop.stream_code_agent(
+        user_message="Уточни дальнейшие действия.", project_root=tmp_path,
+        run_id=run_id, chat_fn=chat, auto_remember=False, permission_mode="bypass",
+    ):
+        events.append(event)
+        if event["type"] == "workflow_request":
+            assert agent_loop.submit_workflow_response(event["response_id"], "decline", {})
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == 5
+    assert not any(event["ok"] for event in receipts)
+    assert "3 раза" in receipts[2]["result"]
+    assert receipts[4]["error"] == "repeated_tool_call" and receipts[4]["dispatched"] is False
+    assert events[-1]["stop_reason"] == "blocked" and events[-1]["resumable"]
+    assert RunJournal.load(run_id).state["command_progress"] == receipts[-1]["command_progress"]
+    assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+               for message in model_messages[3])
+    assert not any("3 раза" in text for messages in model_messages for text in user_texts(messages))
+
+
+def test_runtime_workflow_receipts_share_repeat_observer(tmp_path, monkeypatch):
+    from app.application.agent_kernel.executor import ToolExecutionResult
+
+    model_messages = []
+    executions = []
+
+    def execute(request, **kwargs):
+        executions.append(request)
+        return ToolExecutionResult(status="ok", output={
+            "ok": False, "status": "needs_input", "text": "Требуются данные.",
+            "request": {"kind": "input", "message": "Введи данные.", "schema": {}},
+        })
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        assert len(model_messages) <= 5
+        return response(calls=[call("read_file", path="state.txt")])
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", execute)
+    events = []
+    for event in agent_loop.stream_code_agent(
+        user_message="Прочитай state.txt.", project_root=tmp_path, chat_fn=chat,
+        base_tools=["read_file"], auto_remember=False, permission_mode="bypass",
+    ):
+        events.append(event)
+        if event["type"] == "workflow_request":
+            assert agent_loop.submit_workflow_response(event["response_id"], "decline", {})
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == 5 and len(executions) == 4
+    assert "3 раза" in receipts[2]["result"]
+    assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+               for message in model_messages[3])
+    assert receipts[4]["error"] == "repeated_tool_call" and receipts[4]["dispatched"] is False
+    assert events[-1]["stop_reason"] == "blocked"
+
+
+@pytest.mark.parametrize(("name", "arguments", "waiting_status"), [
+    ("ask_user", {"question": "Как продолжить?"}, "needs_input"),
+    ("workflow_request", {"kind": "input", "message": "Введи данные."}, "needs_input"),
+    ("run_bash", {"command": "echo forbidden"}, "waiting_approval"),
+])
+def test_paused_workflow_call_counts_survive_unchanged_resume(tmp_path, monkeypatch, name, arguments, waiting_status):
+    run_id = "contracts-repeat-paused-workflow"
+    calls = 0
+
+    def chat(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert calls <= 5
+        return response(calls=[call(name, **arguments)])
+
+    monkeypatch.setattr("app.application.code_agent.tools._dispatch.tool_run_bash",
+                        lambda *args, **kwargs: pytest.fail("paused approval reached handler"))
+    kwargs = dict(user_message="Уточни дальнейшие действия.", project_root=tmp_path,
+                  run_id=run_id, chat_fn=chat, auto_remember=False,
+                  permission_mode="ask", pause_for_workflow_request=True)
+    for count in range(1, 5):
+        events = list(agent_loop.stream_code_agent(**kwargs))
+        assert events[-1]["stop_reason"] == "workflow_request"
+        state = RunJournal.load(run_id).state
+        assert list(state["command_progress"]["calls"].values()) == [count]
+        receipt = next(event for event in events if event["type"] == "tool_call")
+        assert receipt["execution_status"] == waiting_status and receipt["dispatched"] is False
+        if count == 3:
+            assert "3 раза" in receipt["result"]
+            history = RunJournal.load(run_id).load_model_history()["messages"]
+            assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+                       for message in history)
+            assert "3 раза" in state["command_progress"]["call_notice"]["text"]
+        kwargs = build_continuation_kwargs(run_id, chat_fn=chat)
+        kwargs["pause_for_workflow_request"] = True
+    events = list(agent_loop.stream_code_agent(**kwargs))
+    assert events[-1]["stop_reason"] == "blocked" and events[-1]["resumable"]
+    assert not any(event["type"] == "workflow_request" for event in events)
+    assert next(event for event in events if event["type"] == "tool_call")["dispatched"] is False
+
+
+@pytest.mark.parametrize("raw_args", [[], None, False, 0, "[1]", "null", "false", "{bad JSON"])
+def test_invalid_native_argument_shapes_are_rejected_without_coercion(tmp_path, monkeypatch, raw_args):
+    from app.application.agent_kernel.executor import ToolExecutionResult
+
+    executions = []
+    calls = 0
+
+    def execute(request, **kwargs):
+        executions.append(request)
+        return ToolExecutionResult(status="error", output={"ok": False, "text": "Unexpected execution."})
+
+    def chat(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert calls <= 5
+        return response(calls=[{"function": {"name": "project_map", "arguments": raw_args}}])
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", execute)
+    events = list(agent_loop.stream_code_agent(
+        user_message="Изучи проект.", project_root=tmp_path, chat_fn=chat,
+        base_tools=["project_map"], auto_remember=False, permission_mode="ask",
+        pause_for_workflow_request=True,
+    ))
+    assert not executions
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == 5
+    assert all(event["error"] == "invalid_tool_arguments" and event["dispatched"] is False
+               for event in receipts[:4])
+    assert "3 раза" in receipts[2]["result"]
+    assert receipts[4]["error"] == "repeated_tool_call"
+    assert not any(event["type"] in {"tool_started", "workflow_request"} for event in events)
+
+
+def test_encoded_native_arguments_and_foreign_coercion_keep_existing_contract(tmp_path, monkeypatch):
+    from app.application.agent_kernel.executor import ToolExecutionResult
+
+    (tmp_path / "note.txt").write_text("checked", encoding="utf-8")
+    replies = iter([
+        response(calls=[{"function": {"name": "read_file", "arguments": '{"path":"note.txt"}'}}]),
+        response("Прочитано."),
+    ])
+    events = list(agent_loop.stream_code_agent(
+        user_message="Прочитай note.txt.", project_root=tmp_path, chat_fn=lambda **kwargs: next(replies),
+        base_tools=["read_file"], auto_remember=False, permission_mode="bypass",
+    ))
+    assert next(event for event in events if event["type"] == "tool_call")["ok"]
+    seen = []
+
+    def execute(request, **kwargs):
+        seen.append((request.tool_name, request.args))
+        return ToolExecutionResult(status="ok", output={"ok": True, "text": "Provider result."})
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", execute)
+    replies = iter([
+        response(calls=[{"function": {"name": "paper_search__search_arxiv", "arguments": ["legacy"]}}]),
+        response("Результат получен."),
+    ])
+    list(agent_loop.stream_code_agent(
+        user_message="Используй внешний инструмент.", project_root=tmp_path,
+        chat_fn=lambda **kwargs: next(replies), auto_remember=False, permission_mode="bypass",
+    ))
+    assert seen == [("paper_search__search_arxiv", {})]
+
+
+@pytest.mark.parametrize(("name", "arguments", "read_only"), [
+    ("ask_user", {"question": "Как продолжить?", "unexpected": True}, False),
+    ("ask_user", {"question": 3}, False),
+    ("ask_user", {}, False),
+    ("ask_user", {"question": "Как продолжить?", "options": [3]}, False),
+    ("workflow_request", {"kind": "unknown", "message": "Ввод."}, False),
+    ("workflow_request", {"kind": "input", "message": 3}, False),
+    ("workflow_request", {"kind": "input", "message": "Ввод.", "schema": []}, False),
+    ("workflow_request", {"kind": "input", "message": "Ввод.", "unexpected": True}, False),
+    ("workflow_request", {"message": "Ввод."}, False),
+    ("write_file", {"path": "bad.txt", "content": 3}, True),
+    ("memory", {"action": "add", "text": 3}, False),
+])
+def test_invalid_calls_are_observed_before_workflow_and_policy_denials(
+    tmp_path, monkeypatch, name, arguments, read_only,
+):
+    model_messages = []
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("invalid call reached executor")
+
+    def chat(**kwargs):
+        model_messages.append(deepcopy(kwargs["messages"]))
+        assert len(model_messages) <= 5
+        return response(calls=[call(name, **arguments)])
+
+    monkeypatch.setattr(agent_loop, "_kernel_exec", no_dispatch)
+    events = list(agent_loop.stream_code_agent(
+        user_message="Не сохраняй информацию; только изучи задачу.", project_root=tmp_path,
+        chat_fn=chat, auto_remember=False, permission_mode="ask", read_only=read_only,
+        pause_for_workflow_request=True,
+    ))
+    assert not any(event["type"] in {"workflow_request", "tool_started"} for event in events)
+    receipts = [event for event in events if event["type"] == "tool_call"]
+    assert len(receipts) == 5
+    assert all(event["error"] == "invalid_tool_arguments" and event["argument_errors"]
+               for event in receipts[:4])
+    assert all(event["dispatched"] is False and event["state_changed"] is False for event in receipts)
+    assert "3 раза" in receipts[2]["result"] and "Пример аргументов" in receipts[2]["result"]
+    assert any(message["role"] == "tool" and "3 раза" in str(message.get("content"))
+               for message in model_messages[3])
+    assert receipts[4]["error"] == "repeated_tool_call"
+    assert events[-1]["stop_reason"] == "blocked" and events[-1]["resumable"]
+
+
 def test_stream_and_sync_facades_preserve_results_order_and_dispatch(tmp_path, monkeypatch):
     (tmp_path / "state.txt").write_text("checked", encoding="utf-8")
     original_execute = agent_loop._kernel_exec
@@ -586,18 +961,11 @@ def verification_fixture(target, criterion="private input checked"):
 
 
 def test_model_supplied_runtime_arguments_never_reach_the_tool_or_events(tmp_path, monkeypatch):
-    # Review defects 228bf76f966f / 09b1eda7c7dc: `_runtime_*` keys are loop-owned
-    # (resource binding, refusal reason, verified BOM snapshot); a model or a
-    # prompt-injected page could forge them, e.g. file_gen(_runtime_bom_snapshot=...).
+    # Runtime bindings belong to trusted context. Unknown model fields must
+    # produce a schema error before dispatch, including forged internal keys.
     (tmp_path / "state.txt").write_text("checked", encoding="utf-8")
-    original_execute = agent_loop._kernel_exec
-    dispatched = []
-
-    def execute(request, *args, **kwargs):
-        dispatched.append(dict(request.args))
-        return original_execute(request, *args, **kwargs)
-
-    monkeypatch.setattr(agent_loop, "_kernel_exec", execute)
+    monkeypatch.setattr("app.application.code_agent.tools._dispatch.tool_read_file",
+                        lambda *args, **kwargs: pytest.fail("forged arguments reached handler"))
     replies = iter([
         response(calls=[call("read_file", path="state.txt", _runtime_refuse_reason="forged refusal",
                              _runtime_resource_id="forged-resource")]),
@@ -607,7 +975,7 @@ def test_model_supplied_runtime_arguments_never_reach_the_tool_or_events(tmp_pat
         user_message="Прочитай state.txt.", project_root=tmp_path, run_id="runtime-args",
         chat_fn=lambda **kwargs: next(replies), base_tools=["read_file"], auto_remember=False,
         permission_mode="bypass"))
-    assert dispatched and all(not key.startswith("_runtime_") for args in dispatched for key in args)
     receipts = [event for event in events if event["type"] == "tool_call"]
-    assert receipts and receipts[0]["ok"] and "checked" in str(receipts[0]["result"])
+    assert receipts and receipts[0]["ok"] is False
+    assert receipts[0]["error"] == "invalid_tool_arguments"
     assert all(not key.startswith("_runtime_") for event in receipts for key in event["arguments"])

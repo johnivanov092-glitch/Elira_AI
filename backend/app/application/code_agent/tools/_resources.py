@@ -8,6 +8,8 @@ The runtime resolves the id and returns a bounded local-CPU result.
 from __future__ import annotations
 
 from typing import Any
+import json
+import os
 from elira_common.files import sha256_file as document_sha256
 
 from app.application.skill_services.documents import (
@@ -66,7 +68,9 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
         return _refusal("unsupported_arguments", requested_target=target)
     record = resource_store.get_record(resource_id)
     if record is None:
-        return _refusal("resource_not_found", requested_target=target)
+        result = _refusal("resource_not_found", requested_target=target)
+        result.update(_missing_resource_context())
+        return result
     return processing.process_resource(record, operation, target)
 
 
@@ -98,6 +102,61 @@ _MATERIALIZE_ERROR_TEXT = {
 def _resource_refusal(messages: dict[str, str], code: str) -> dict[str, Any]:
     """A stable refusal that never echoes the model input or any absolute path."""
     return {"ok": False, "error": code, "text": f"ERROR: {messages[code]}"}
+
+
+def _missing_resource_context(project_root: Any = None) -> dict[str, Any]:
+    """Recover only authoritative attachments of this run, never the global store."""
+    from app.application.agent_kernel.runtime_context import current_runtime_context
+    from app.application.code_agent.run_journal import RunJournal
+    from app.application.code_agent.tools._shell import get_current_run_id
+    from app.application.media import resource_store
+    from app.core.redaction import redact_text
+
+    request: dict[str, Any] = {}
+    run_id = get_current_run_id()
+    if run_id:
+        try:
+            stored = RunJournal.load(run_id).state.get("request")
+            if isinstance(stored, dict):
+                request = stored
+        except (OSError, ValueError):
+            pass
+    attachments = []
+    refs = request.get("resource_refs")
+    seen: set[str] = set()
+    for ref in refs if isinstance(refs, list) else []:
+        if not isinstance(ref, dict):
+            continue
+        rid = str(ref.get("resource_id") or "")
+        if rid in seen:
+            continue
+        record = resource_store.get_record(rid)
+        if record is not None:
+            seen.add(rid)
+            attachments.append(resource_store.resource_ref(record))
+        if len(attachments) >= 30:
+            break
+    folder = project_root or current_runtime_context().get("project_root") or request.get("project_root")
+    files: list[str] = []
+    files_available = False
+    if folder:
+        try:
+            root = _Path(str(folder)).resolve()
+            files = sorted(path.name for path in root.iterdir() if path.is_file())
+            files_available = True
+        except OSError:
+            pass
+    attachment_text = json.dumps(attachments, ensure_ascii=False) if attachments else "нет"
+    file_text = json.dumps(files[:30], ensure_ascii=False) if files else ("нет" if files_available else "папка недоступна")
+    if len(files) > 30:
+        file_text += "; остальные файлы найди через glob"
+    return {
+        "text": redact_text(
+            "ERROR: В этом чате нет вложения с таким id. "
+            f"Вложения чата: {attachment_text}. Файлы в папке задачи: {file_text}. "
+            "Файл в папке обрабатывай через run_bash и подходящий навык. Для ссылок — web_fetch."
+        ),
+    }
 
 
 def _safe_basename(name: str) -> str:
@@ -149,7 +208,9 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
         return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "unsupported_arguments")
     record = resource_store.get_record(resource_id)
     if record is None:
-        return _resource_refusal(_MATERIALIZE_ERROR_TEXT, "resource_not_found")
+        result = _resource_refusal(_MATERIALIZE_ERROR_TEXT, "resource_not_found")
+        result.update(_missing_resource_context(project_root))
+        return result
 
     root = _Path(str(project_root)).resolve()
     raw_destination = str(destination_name or "")
@@ -247,6 +308,36 @@ def _safe_download_name(name: str) -> str | None:
     return raw
 
 
+def _available_download_name(directory: _Path, requested: str, start: int = 1) -> tuple[str, int] | None:
+    """Choose a safe unused name; atomic publication remains the final arbiter."""
+    suffix = _Path(requested).suffix
+    stem = requested[:-len(suffix)] if suffix else requested
+    for number in range(start, 1001):
+        if number == 1:
+            candidate = requested
+        else:
+            marker = f" ({number})"
+            space = _MAX_NAME_CHARS - len(suffix) - len(marker)
+            if space < 1:
+                return None
+            candidate = stem[:space] + marker + suffix
+        if _safe_download_name(candidate) is not None and not os.path.lexists(directory / candidate):
+            return candidate, number
+    return None
+
+
+def _vision_parse_unverified(qa: dict[str, Any]) -> bool:
+    """Only an unreadable external verdict may accompany a delivered document."""
+    issues = qa.get("issues")
+    return (
+        qa.get("status") == "unverified"
+        and qa.get("vision_status") == "unverified"
+        and isinstance(issues, list)
+        and bool(issues)
+        and all(isinstance(issue, dict) and issue.get("code") == "vision_response_invalid" for issue in issues)
+    )
+
+
 def tool_resource_publish(
     project_root: Any,
     project_path: str = "",
@@ -283,11 +374,12 @@ def tool_resource_publish(
     name = _safe_download_name(chosen)
     if name is None:
         return _resource_refusal(_PUBLISH_ERROR_TEXT, "invalid_download_name")
-    # The download namespace is shared by all chats and never overwritten: find a
-    # taken name BEFORE the expensive render/page-count/vision QA (publish_copy
-    # still re-checks atomically).
-    if (_Path(GENERATED_DIR) / name).exists():
+    # Pick before expensive QA; a concurrent publication is handled atomically below.
+    available = _available_download_name(_Path(GENERATED_DIR), name)
+    if available is None:
         return _resource_refusal(_PUBLISH_ERROR_TEXT, "destination_exists")
+    requested_name = name
+    name, name_number = available
 
     document_qa: dict[str, Any] | None = None
     if src.suffix.lower() in {".docx", ".pdf"}:
@@ -326,7 +418,7 @@ def tool_resource_publish(
                                issues=[{"code": "qa_identity_mismatch", "message": "QA result does not match the input file"}])
         document_qa["target"] = name
         qa_status = str(document_qa.get("status") or "unverified")
-        if qa_status != "passed":
+        if qa_status != "passed" and not _vision_parse_unverified(document_qa):
             attempt = max(
                 record_document_qa_failure(str(run_id or ""), key, pages)
                 for key, pages in qa_keys
@@ -341,24 +433,31 @@ def tool_resource_publish(
         for key, _ in qa_keys:
             clear_document_qa_failures(str(run_id or ""), key)
 
-    try:
-        size, sha256 = resource_store.publish_copy(
-            workspace_root=src.parent,
-            source=src,
-            destination_root=DATA_DIR,
-            dest_dir=GENERATED_DIR,
-            final_name=name,
-            expected_sha256=(
-                str(document_qa.get("sha256") or "")
-                if document_qa is not None
-                else None
-            ),
-        )
-    except resource_store.ResourceError as exc:
-        code = exc.reason if exc.reason in _PUBLISH_ERROR_TEXT else "publish_failed"
-        return _resource_refusal(_PUBLISH_ERROR_TEXT, code)
-    except Exception:  # noqa: BLE001 — never surface a raw path/exception
-        return _resource_refusal(_PUBLISH_ERROR_TEXT, "publish_failed")
+    while True:
+        try:
+            size, sha256 = resource_store.publish_copy(
+                workspace_root=src.parent,
+                source=src,
+                destination_root=DATA_DIR,
+                dest_dir=GENERATED_DIR,
+                final_name=name,
+                expected_sha256=(
+                    str(document_qa.get("sha256") or "")
+                    if document_qa is not None
+                    else None
+                ),
+            )
+            break
+        except resource_store.ResourceError as exc:
+            if exc.reason == "destination_exists":
+                available = _available_download_name(_Path(GENERATED_DIR), requested_name, name_number + 1)
+                if available is not None:
+                    name, name_number = available
+                    continue
+            code = exc.reason if exc.reason in _PUBLISH_ERROR_TEXT else "publish_failed"
+            return _resource_refusal(_PUBLISH_ERROR_TEXT, code)
+        except Exception:  # noqa: BLE001 — never surface a raw path/exception
+            return _resource_refusal(_PUBLISH_ERROR_TEXT, "publish_failed")
 
     try:
         display_path = src.relative_to(root).as_posix()
@@ -376,9 +475,13 @@ def tool_resource_publish(
         "sha256": sha256,
     }
     if document_qa is not None:
+        document_qa["target"] = name
+        unverified = _vision_parse_unverified(document_qa)
         result.update({
             "document_qa": document_qa,
             "verifier": True,
-            "evidence": "document_qa_passed",
+            "evidence": "document_qa_unverified" if unverified else "document_qa_passed",
         })
+        if unverified:
+            result["text"] += " Визуально не проверено: Vision-QA вернул неразобранный ответ; файл доступен для скачивания."
     return result

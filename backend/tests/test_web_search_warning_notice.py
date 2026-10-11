@@ -44,6 +44,9 @@ def test_actual_batch_failure_warning_does_not_disappear_beside_success():
     with _http(reply=reply):
         output = tool_web_search(queries=["working", "failed"])
     assert output["ok"] is True and output["partial"] is True
+    assert "error" not in output
+    assert len(output["query_errors"]) == 1 and output["query_errors"][0]["query"] == "failed"
+    assert "mwmbl" in output["query_errors"][0]["error"] and "timeout" in output["query_errors"][0]["error"]
     assert output["engine_warnings"] == [{"query": "working", **WARNINGS[0]},
                                          {"query": "failed", "engine": "mwmbl", "error": "timeout"}]
 

@@ -177,10 +177,11 @@ def search_searxng(
     if pageno and int(pageno) > 1:
         params["pageno"] = str(int(pageno))   # W6: SearXNG result pagination
 
+    from webskill.research import remaining_timeout
     response = session().get(
         f"{base}/search",
         params=params,
-        timeout=20,
+        timeout=remaining_timeout(20),
     )
     response.raise_for_status()
     payload = response.json()

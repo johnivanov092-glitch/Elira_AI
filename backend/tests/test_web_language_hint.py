@@ -1,9 +1,7 @@
-"""Language requirements at the mutable search boundary; failures remain visible."""
+"""Language instructions do not rewrite successful search or transport evidence."""
 import pytest
 from webskill.application.code_agent.tools import _web
 from webskill.infrastructure.search import web_search
-
-HINT = "[Языки поиска]"
 
 @pytest.fixture(autouse=True)
 def search(monkeypatch):
@@ -12,76 +10,63 @@ def search(monkeypatch):
         'engines_used': ['fixture'],
     })
 
-@pytest.mark.parametrize('query,missing', [
-    ('world war z perks', 'запросы на русском'),
-    ('новости Казахстана', 'запросы на английском'),
+@pytest.mark.parametrize('query,audience', [
+    ('svelte vs react', 'global'),
+    ('сравнение Svelte и React', 'global'),
+    ('новости Казахстана', 'regional:Kazakhstan'),
 ])
-def test_single_language_reminder_names_missing_language(query, missing):
-    result = _web.tool_web_search(query=query)
-    assert missing in result['text']
-    assert 'регион' in result['text'].lower()
-
-def test_mixed_queries_need_no_language_reminder():
-    result = _web.tool_web_search(queries=['world war z perks', 'прокачка перков wwz'])
-    assert HINT not in result['text']
-
-def test_one_reminder_across_repeated_single_language_searches():
-    results = [_web.tool_web_search(query=q) for q in ['world war z perks', 'world war z xp']]
-    assert sum(HINT in r['text'] for r in results) == 1
-
-def test_no_new_reminder_after_both_languages_used():
-    first = _web.tool_web_search(query='прокачка перков world war z')
-    second = _web.tool_web_search(query='world war z perks leveling')
-    assert HINT in first['text']
-    assert HINT not in second['text']
-
-def test_declared_global_topic_needs_both_languages_across_task():
-    first = _web.tool_web_search(queries=['svelte vs react 2026', 'svelte 5 runes'], audience='global')
-    assert first['ok'] is False and first['error'] == 'audience_languages'
-    assert 'запросы на русском' in first['text']
-    second = _web.tool_web_search(queries=['svelte vs react 2026', 'сравнение svelte и react'], audience='global')
-    third = _web.tool_web_search(query='site:svelte.dev runes', audience='global')
-    assert second['ok'] and third['ok']
-
-def test_declared_regional_topic_may_stay_in_one_language():
-    result = _web.tool_web_search(query='новости Казахстана за неделю', audience='regional:Казахстан')
-    assert result['ok']
-
-def test_language_rejections_remain_bounded():
-    results = [_web.tool_web_search(query='svelte vs react', audience='global') for _ in range(3)]
-    assert [r['ok'] for r in results] == [False, False, True]
+def test_single_language_search_returns_evidence_without_language_error(query, audience):
+    result = _web.tool_web_search(query=query, audience=audience)
+    assert result['ok'] and result['sources']
+    assert 'error' not in result and not result.get('partial')
+    assert '[Языки поиска]' not in result['text']
 
 
-def test_no_cache_cannot_create_rejection_loop_or_state(tmp_path):
+def test_separate_calls_do_not_create_a_language_requirement():
+    first = _web.tool_web_search(query='сравнение Svelte и React', audience='global')
+    second = _web.tool_web_search(query='svelte vs react', audience='global')
+    assert first['ok'] and second['ok']
+    assert 'error' not in first and 'error' not in second
+
+
+def test_regional_language_unchanged():
+    result = _web.tool_web_search(query='новости Казахстана', audience='regional:Kazakhstan')
+    assert result['ok'] and '[Языки поиска]' not in result['text']
+
+
+def test_language_policy_preserves_long_result_without_injecting_hints():
+    from webskill.search_language import search_with_language_policy
+
+    sources = [{'url': 'https://example.org/source'}]
+    original = {'ok': True, 'text': 'Source body. ' * 1000, 'sources': sources}
+    result = search_with_language_policy(['English query'], 'global', lambda: original)
+    assert result is original
+
+
+@pytest.mark.parametrize('error', ['search_unavailable', 'argument_format', 'web_time_budget'])
+def test_language_policy_preserves_original_error_and_evidence(error):
+    from webskill.search_language import search_with_language_policy
+
+    original = {'ok': False, 'partial': True, 'error': error, 'text': 'Original failure.',
+                'results': [{'query': 'English query'}], 'sources': [{'url': 'https://example.org'}]}
+    assert search_with_language_policy(['English query'], 'global', lambda: original) == original
+
+
+def test_language_policy_is_idempotent_at_existing_call_boundaries():
+    from webskill.search_language import search_with_language_policy
+
+    original = {'ok': True, 'text': 'Original results.', 'results': [{'query': 'English query'}],
+                'sources': [{'url': 'https://example.org'}], 'warnings': ['engine timed out']}
+    first = search_with_language_policy(['English query'], 'global', lambda: original)
+    second = search_with_language_policy(['English query'], 'global', lambda: first)
+    assert second is first is original
+
+
+def test_no_cache_search_never_writes_language_state(tmp_path):
     from webskill import context
     state = tmp_path / 'no-cache'
     context.configure(state, cache=False)
     for _ in range(3):
-        assert _web.tool_web_search(query='world war z', audience='global')['ok']
+        result = _web.tool_web_search(query='svelte vs react', audience='global')
+        assert result['ok'] and result['sources'] and 'error' not in result
     assert not state.exists()
-
-
-def test_corrupt_language_state_is_advisory(tmp_path):
-    from webskill import context
-    directory = context.data_file('search-language')
-    directory.mkdir()
-    (directory / 'bad.json').write_text('{', encoding='utf-8')
-    result = _web.tool_web_search(query='world war z', audience='global')
-    assert result['ok']
-    assert 'недоступно' in result['text']
-
-
-def test_discarded_sixth_query_cannot_satisfy_language_requirement():
-    result = _web.tool_web_search(queries=['english ' + str(i) for i in range(5)] + ['русский'], audience='global')
-    assert not result['ok'] and result['error'] == 'audience_languages'
-
-
-def test_rejection_budget_survives_process_restart(tmp_path):
-    import json
-    import subprocess
-    import sys
-    from pathlib import Path
-    skill = Path(__file__).resolve().parents[2] / 'skills/web-research'
-    code = "from pathlib import Path; import json,sys; from webskill import context; from webskill.search_language import search_with_language_policy; context.configure(Path(sys.argv[1])); print(json.dumps(search_with_language_policy(['english'], 'global', lambda: {'ok': True, 'text': 'results'})))"
-    rows = [json.loads(subprocess.check_output([sys.executable, '-c', code, str(tmp_path / 'shared-state')], cwd=skill, encoding='utf-8')) for _ in range(3)]
-    assert [r['ok'] for r in rows] == [False, False, True]

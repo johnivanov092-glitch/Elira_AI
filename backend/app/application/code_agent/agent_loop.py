@@ -77,6 +77,7 @@ from app.application.agent_kernel.executor import (
     execute_tool as _kernel_exec,
     workflow_approval_matches,
 )
+from app.application.agent_kernel.builtin_arguments import normalize_builtin_arguments, validate_builtin_arguments
 from app.application.monitoring.inference import record_inference_telemetry
 # Project indexing/RAG was extracted to .indexing; re-exported here so existing
 # importers (file_watcher, code_agent_routes, tests) keep importing these names
@@ -129,9 +130,8 @@ from app.application.code_agent.project_prompt import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-# `_runtime_*` arguments are injected by this loop only (resource binding,
-# refusal reasons, the verified BOM snapshot). A model or prompt-injected page
-# must not supply them, and they are not part of any published event.
+# Trusted resource bindings travel in runtime_context. Internal `_runtime_*`
+# fields must never appear in public arguments or accept model-supplied values.
 _RUNTIME_ARGUMENT_PREFIX = "_runtime_"
 
 
@@ -1074,17 +1074,77 @@ def _stream_code_agent_core(
                     _history_checkpoint(turn_context.messages)
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
-                raw_args = fn.get("arguments") or {}
-                parsed_args = _without_runtime_arguments(ToolRegistry._coerce_args(raw_args))
-                runtime_context: dict[str, str] = {}
+                raw_args = fn.get("arguments", {})
+                parsed_args = normalize_builtin_arguments(name, ToolRegistry._coerce_args(raw_args))
+                # Preserve invalid JSON shapes; coercion remains the foreign-provider contract.
+                call_arguments = raw_args
+                if isinstance(raw_args, str):
+                    try:
+                        call_arguments = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        pass
+                call_arguments = normalize_builtin_arguments(name, call_arguments)
+                # Path recovery/trusted document fields may change execution args below.
+                if isinstance(call_arguments, dict):
+                    call_arguments = dict(call_arguments)
+                runtime_context: dict[str, str] = {"step": str(step)}
+                recovery = observations.before_dispatch(name, call_arguments, root=root, model_turn=step)
+                if recovery is not None:
+                    # Count attempted calls even when a later policy denies dispatch.
+                    yield {"type": "command_recovery", "step": step, **recovery,
+                           "command_progress": command_progress.snapshot()}
+                    turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                     "name": name, "content": json.dumps(recovery, ensure_ascii=False)})
+                    yield {"type": "tool_call", "step": step, "tool": name,
+                           "arguments": _public_arguments(parsed_args), "result": recovery["text"],
+                           "ok": False, "error": recovery["reason"], "dispatched": False,
+                           "state_changed": False, "execution_status": "rejected",
+                           "command_progress": command_progress.snapshot()}
+                    if recovery["status"] == "blocked":
+                        if _history_checkpoint:
+                            _history_checkpoint(turn_context.messages, final_text=recovery["text"])
+                        yield {"type": "final_response", "step": step, "text": recovery["text"],
+                               "answer_state": "accepted", "answer_status": "degraded",
+                               "task_outcome": task_outcome.snapshot()}
+                        yield {"type": "done", "ok": False, "steps": step,
+                               "stop_reason": "blocked", "resumable": True,
+                               "answer_status": "degraded", "error": recovery["reason"],
+                               "command_progress": command_progress.snapshot(),
+                               **_completion_fields(criteria, terminated_incomplete=True)}
+                        return
+                    continue
+                argument_error = validate_builtin_arguments(name, call_arguments)
+                if argument_error is not None:
+                    text = str(argument_error["text"])
+                    observed_fields = observations.observe_result(
+                        name=name, args=parsed_args, output=argument_error, status="rejected",
+                        text=text, state_changed=False, root=root, call_args=call_arguments,
+                    )
+                    if observed_fields.get("recovery_context"):
+                        text += "\n\n" + observed_fields["recovery_context"]
+                    turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                                  "name": name, "content": text})
+                    yield {"type": "tool_call", "step": step, "tool": name,
+                           "arguments": _public_arguments(parsed_args), "result": text,
+                           "ok": False, "error": argument_error["error"],
+                           "argument_errors": argument_error["argument_errors"], "dispatched": False,
+                           "state_changed": False, "execution_status": "rejected", **observed_fields}
+                    continue
                 if read_only and not delegate_tool_allowed(name, parsed_args):
                     denial = "Delegated inspection is read-only; this tool or operation is outside its scope."
+                    observed_fields = observations.observe_result(
+                        name=name, args=parsed_args, output={"ok": False, "error": "delegate_read_only"},
+                        status="rejected", text=denial, state_changed=False, root=root,
+                        call_args=call_arguments,
+                    )
+                    if observed_fields.get("recovery_context"):
+                        denial += "\n\n" + observed_fields["recovery_context"]
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                                   "name": name, "content": denial})
                     yield {"type": "tool_call", "step": step, "tool": name,
                            "arguments": _public_arguments(parsed_args), "result": denial,
                            "ok": False, "error": "delegate_read_only", "dispatched": False,
-                           "state_changed": False, "execution_status": "rejected"}
+                           "state_changed": False, "execution_status": "rejected", **observed_fields}
                     continue
                 _read_requested_path = ""
                 _read_recovered_from = ""
@@ -1131,14 +1191,37 @@ def _stream_code_agent_core(
                         runtime_context["refuse_reason"] = (
                             "Сначала используй glob, ResourceRef или другой подтверждённый путь."
                         )
+                def observe_workflow_result(event: dict[str, Any], *, output: dict | None = None,
+                                            status: str | None = None) -> None:
+                    text = str(event.get("result") or "")
+                    status = status or str(event.get("execution_status") or (
+                        "ok" if event.get("ok") is True else "rejected"))
+                    fields = observations.observe_result(
+                        name=name, args=parsed_args,
+                        output=output if output is not None else {"ok": event.get("ok") is True, "text": text},
+                        status=status, text=text, state_changed=False, root=root,
+                        call_args=call_arguments,
+                    )
+                    event.update(fields)
+                    event.update({"execution_status": status, "state_changed": False})
+                    if fields.get("recovery_context"):
+                        event["result"] = text + "\n\n" + fields["recovery_context"]
+
                 if name in {"ask_user", "workflow_request"}:
                     workflow_runner = run_ask_user if name == "ask_user" else run_workflow_request
                     workflow_result = yield from workflow_runner(
                         parsed_args, step=step, cancel_event=cancel_event,
                         pause_for_workflow_request=pause_for_workflow_request,
+                        result_observer=observe_workflow_result,
                     )
                     if workflow_result.terminal is not None:
+                        if workflow_result.tool_text:
+                            turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                                          "name": name, "content": workflow_result.tool_text})
+                            if _history_checkpoint:
+                                _history_checkpoint(turn_context.messages)
                         yield {**workflow_result.terminal,
+                               "command_progress": command_progress.snapshot(),
                                **_completion_fields(criteria, terminated_incomplete=True)}
                         return
                     turn_context.messages.append({"role": "tool", "content": workflow_result.tool_text, "name": name})
@@ -1150,22 +1233,6 @@ def _stream_code_agent_core(
                         kind = str(parsed_args.get("kind") or "").strip().lower()
                         call_log.append(f"workflow_request({kind})")
                     continue
-                if name == "todo_update":
-                    # P12.1: checklist mutations are bound to the current run.
-                    # The model never chooses the run_id; executor policy/audit
-                    # still applies below because todo_update is a normal tool.
-                    parsed_args["run_id"] = rid
-                    # Resumed runs may replace or reshape their checklist freely.
-                if name == "delegate_task":
-                    # P12.2: subagents are children of the current run. The
-                    # model chooses role/task, not parent_run_id. The workflow
-                    # permission is inherited so bypass stays bypass end-to-end.
-                    parsed_args["run_id"] = rid
-                    parsed_args["permission_mode"] = permission_mode
-                if name == "resource_publish":
-                    # Bind document-QA retry accounting to this run. The schema does
-                    # not expose run_id, so the model cannot choose or reuse it.
-                    parsed_args["run_id"] = rid
                 if document_page_count_contract is not None:
                     is_published_document = (
                         name == "resource_publish"
@@ -1181,43 +1248,23 @@ def _stream_code_agent_core(
                     _phase_event = _enter_verification_phase()
                     if _phase_event is not None:
                         yield _phase_event
-                recovery = observations.before_dispatch(name, parsed_args, root=root, model_turn=step)
-                if recovery is not None:
-                    # Successful exit/output repetition is not a failed business
-                    # result. Enforce a different observation before executing the
-                    # same command again, even if the model ignores the advice.
-                    yield {"type": "command_recovery", "step": step, **recovery,
-                           "command_progress": command_progress.snapshot()}
-                    turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
-                                     "name": name, "content": json.dumps(recovery, ensure_ascii=False)})
-                    yield {"type": "tool_call", "step": step, "tool": name,
-                           "arguments": _public_arguments(parsed_args), "result": recovery["text"],
-                           "ok": False, "error": recovery["reason"], "dispatched": False,
-                           "state_changed": False, "execution_status": "rejected",
-                           "command_progress": command_progress.snapshot()}
-                    if recovery["status"] == "blocked":
-                        if _history_checkpoint:
-                            _history_checkpoint(turn_context.messages, final_text=recovery["text"])
-                        yield {"type": "final_response", "step": step, "text": recovery["text"],
-                               "answer_state": "accepted", "answer_status": "degraded",
-                               "task_outcome": task_outcome.snapshot()}
-                        yield {"type": "done", "ok": False, "steps": step,
-                               "stop_reason": "blocked", "resumable": True,
-                               "answer_status": "degraded", "error": recovery["reason"],
-                               "command_progress": command_progress.snapshot(),
-                               **_completion_fields(criteria, terminated_incomplete=True)}
-                        return
-                    continue
                 writes_memory = name == "memory" and str(parsed_args.get("action") or "").lower() == "add"
                 memory_fact = parsed_args.get("text") or parsed_args.get("query")
                 if writes_memory and not task_memory_write_allowed(run_persistence_policy(rid), memory_fact):
                     denial = "Долговременное сохранение запрещено политикой текущей задачи."
+                    observed_fields = observations.observe_result(
+                        name=name, args=parsed_args, output={"ok": False, "error": "task_persistence_denied"},
+                        status="rejected", text=denial, state_changed=False, root=root,
+                        call_args=call_arguments,
+                    )
+                    if observed_fields.get("recovery_context"):
+                        denial += "\n\n" + observed_fields["recovery_context"]
                     turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                                   "name": name, "content": denial})
                     yield {"type": "tool_call", "step": step, "tool": name,
                            "arguments": _public_arguments(parsed_args), "result": denial,
                            "ok": False, "error": "task_persistence_denied", "dispatched": False,
-                           "state_changed": False, "execution_status": "rejected"}
+                           "state_changed": False, "execution_status": "rejected", **observed_fields}
                     continue
                 _request = ToolExecutionRequest(
                     run_id=rid,
@@ -1240,9 +1287,16 @@ def _stream_code_agent_core(
                     _request, dispatch_fn=registry.dispatch_raw, executor=_kernel_exec,
                     step=step, cancel_event=cancel_event,
                     pause_for_workflow_request=pause_for_workflow_request,
+                    result_observer=observe_workflow_result,
                 )
                 if execution.terminal is not None:
+                    if execution.result is not None and execution.result.output.get("text"):
+                        turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                                      "name": name, "content": str(execution.result.output["text"])})
+                        if _history_checkpoint:
+                            _history_checkpoint(turn_context.messages)
                     yield {**execution.terminal,
+                           "command_progress": command_progress.snapshot(),
                            **_completion_fields(criteria, terminated_incomplete=True)}
                     return
                 _exec_result = execution.result
@@ -1255,9 +1309,18 @@ def _stream_code_agent_core(
                     workflow_result = yield from run_runtime_workflow(
                         name, parsed_args, tool_meta, step=step, cancel_event=cancel_event,
                         pause_for_workflow_request=pause_for_workflow_request,
+                        result_observer=lambda event: observe_workflow_result(
+                            event, output=tool_meta, status=_exec_result.status,
+                        ),
                     )
                     if workflow_result.terminal is not None:
+                        if workflow_result.tool_text:
+                            turn_context.messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                                          "name": name, "content": workflow_result.tool_text})
+                            if _history_checkpoint:
+                                _history_checkpoint(turn_context.messages)
                         yield {**workflow_result.terminal,
+                               "command_progress": command_progress.snapshot(),
                                **_completion_fields(criteria, terminated_incomplete=True)}
                         return
                     turn_context.messages.append({"role": "tool", "content": workflow_result.tool_text, "name": name})
@@ -1388,7 +1451,7 @@ def _stream_code_agent_core(
                     "remote_process_identity_captured", "remote_cleanup_ready",
                     "error", "recovered_from", "recovered_path",
                     "resolved_from_resource", "resource_id", "resource_name",
-                    "sources", "engine_warnings", "query_sources", "resource", "chars", "preview_chars", "truncated_preview",
+                    "sources", "engine_warnings", "query_sources", "web_research", "resource", "chars", "preview_chars", "truncated_preview",
                     "selected_target", "execution_target",
                 ):
                     if opt in tool_meta:
@@ -1401,9 +1464,12 @@ def _stream_code_agent_core(
                 observed_fields = observations.observe_result(
                     name=name, args=parsed_args, output=tool_meta, status=_exec_result.status,
                     text=text_result, state_changed=_state_changed, root=root,
+                    call_args=call_arguments,
                 )
                 event.update(observed_fields)
                 recovery_context = observed_fields.get("recovery_context", "")
+                if recovery_context:
+                    event["result"] += "\n\n" + recovery_context
                 if _skill_snapshot_changed:
                     yield {"type": "skills_changed", "step": step,
                            "active_skills": turn_context.skills.snapshots()}
@@ -1445,6 +1511,8 @@ def _stream_code_agent_core(
                     name=name, args=parsed_args, ok=_tool_ok, text=text_result,
                     messages=turn_context.messages,
                 )
+                if _unchanged_read and recovery_context:
+                    _unchanged_read += "\n\n" + recovery_context
                 _tool_message = {"role": "tool", "content": _unchanged_read or _tool_content, "name": name}
                 turn_context.messages.append(_tool_message)
                 if not _unchanged_read:

@@ -121,6 +121,7 @@ def run_tool(
     step: int,
     cancel_event: threading.Event,
     pause_for_workflow_request: bool,
+    result_observer: Callable[[dict[str, Any]], None] | None = None,
 ) -> Generator[dict[str, Any], None, ExecutionOutcome]:
     """Execute one prepared request; approved arguments remain unchanged."""
     name = request.tool_name
@@ -162,6 +163,16 @@ def run_tool(
         )
         response_id = uuid.uuid4().hex
         if pause_for_workflow_request:
+            event = {
+                "type": "tool_call", "step": step, "tool": name,
+                "arguments": display_args, "result": str(result.output.get("text") or "Workflow ожидает одобрения."),
+                "ok": False, "execution_status": "waiting_approval", "dispatched": False,
+                "state_changed": False,
+            }
+            if result_observer is not None:
+                result_observer(event)
+                result.output["text"] = str(event["result"])
+            yield event
             yield {
                 "type": "workflow_request", "step": step,
                 "status": "waiting_approval", "response_id": response_id,
@@ -218,6 +229,7 @@ def run_ask_user(
     step: int,
     cancel_event: threading.Event,
     pause_for_workflow_request: bool,
+    result_observer: Callable[[dict[str, Any]], None] | None = None,
 ) -> Generator[dict[str, Any], None, WorkflowOutcome]:
     """Ask-user preserves accepted input before reporting a simultaneous Stop."""
     question = str(parsed_args.get("question") or "").strip()
@@ -235,11 +247,19 @@ def run_ask_user(
         "sensitive": False,
     }
     if pause_for_workflow_request:
+        event = {
+            "type": "tool_call", "step": step, "tool": "ask_user", "arguments": redact_secrets(parsed_args),
+            "result": "Workflow ожидает ответа пользователя.", "ok": False,
+            "execution_status": "needs_input", "dispatched": False, "state_changed": False,
+        }
+        if result_observer is not None:
+            result_observer(event)
+        yield event
         yield {
             "type": "workflow_request", "step": step,
             "status": "needs_input", "request": request,
         }
-        return WorkflowOutcome(terminal=_paused_event(step, "needs_input", request))
+        return WorkflowOutcome(tool_text=str(event["result"]), terminal=_paused_event(step, "needs_input", request))
     response_id = uuid.uuid4().hex
     begin_workflow_response(response_id)
     yield {
@@ -260,11 +280,15 @@ def run_ask_user(
         redact_secrets({"request_id": response_id, "question": question, "answer": answer})
         if accepted and isinstance(answer, str) and answer.strip() else None
     )
-    yield {
+    event = {
         "type": "tool_call", "step": step, "tool": "ask_user",
         "arguments": redact_secrets(parsed_args), "result": text, "ok": accepted,
         **({"workflow_input": workflow_input} if workflow_input is not None else {}),
     }
+    if result_observer is not None:
+        result_observer(event)
+        text = str(event["result"])
+    yield event
     if cancel_event.is_set():
         return WorkflowOutcome(text, waited.response, True, _cancelled_event(step))
     return WorkflowOutcome(text, waited.response)
@@ -276,6 +300,7 @@ def run_workflow_request(
     step: int,
     cancel_event: threading.Event,
     pause_for_workflow_request: bool,
+    result_observer: Callable[[dict[str, Any]], None] | None = None,
 ) -> Generator[dict[str, Any], None, WorkflowOutcome]:
     """The model-selected input/secret/elevation branch keeps Stop priority."""
     kind = str(parsed_args.get("kind") or "").strip().lower()
@@ -298,10 +323,14 @@ def run_workflow_request(
             native_spec["cwd"] = cwd
         request_schema = {"x-elira-elevation": native_spec}
     if request_error:
-        yield {
+        event = {
             "type": "tool_call", "step": step, "tool": "workflow_request",
             "arguments": redact_secrets(parsed_args), "result": request_error, "ok": False,
         }
+        if result_observer is not None:
+            result_observer(event)
+            request_error = str(event["result"])
+        yield event
         return WorkflowOutcome(tool_text=request_error)
     request = {
         "kind": kind, "message": message, "schema": request_schema,
@@ -309,10 +338,18 @@ def run_workflow_request(
     }
     status = f"needs_{kind}"
     if pause_for_workflow_request:
+        event = {
+            "type": "tool_call", "step": step, "tool": "workflow_request", "arguments": redact_secrets(parsed_args),
+            "result": "Workflow ожидает ответа пользователя.", "ok": False,
+            "execution_status": status, "dispatched": False, "state_changed": False,
+        }
+        if result_observer is not None:
+            result_observer(event)
+        yield event
         yield {
             "type": "workflow_request", "step": step, "status": status, "request": request,
         }
-        return WorkflowOutcome(terminal=_paused_event(step, status, request))
+        return WorkflowOutcome(tool_text=str(event["result"]), terminal=_paused_event(step, status, request))
     response_id = uuid.uuid4().hex
     begin_workflow_response(response_id)
     yield {
@@ -325,11 +362,15 @@ def run_workflow_request(
     if waited.cancelled:
         return WorkflowOutcome(response=waited.response, cancelled=True, terminal=_cancelled_event(step))
     text = "Workflow UI response: " + json.dumps(waited.response or {}, ensure_ascii=False)
-    yield {
+    event = {
         "type": "tool_call", "step": step, "tool": "workflow_request",
         "arguments": redact_secrets(parsed_args), "result": text,
         "ok": str((waited.response or {}).get("action") or "") == "accept",
     }
+    if result_observer is not None:
+        result_observer(event)
+        text = str(event["result"])
+    yield event
     return WorkflowOutcome(text, waited.response)
 
 
@@ -341,6 +382,7 @@ def run_runtime_workflow(
     step: int,
     cancel_event: threading.Event,
     pause_for_workflow_request: bool,
+    result_observer: Callable[[dict[str, Any]], None] | None = None,
 ) -> Generator[dict[str, Any], None, WorkflowOutcome]:
     """Runtime requests expose the initial receipt before their Workflow wait."""
     status = str(tool_meta.get("status") or "").strip()
@@ -357,18 +399,21 @@ def run_runtime_workflow(
         "sensitive": kind == "secret" or bool(request.get("sensitive", False)),
     })
     response_id = uuid.uuid4().hex
-    yield {
+    event = {
         "type": "tool_call", "step": step, "tool": tool_name,
         "arguments": redact_secrets(parsed_args),
         "result": _truncate(str(tool_meta.get("text") or "")),
         "ok": False, "state_changed": False,
     }
+    if result_observer is not None:
+        result_observer(event)
+    yield event
     if pause_for_workflow_request:
         yield {
             "type": "workflow_request", "step": step, "status": status,
             "response_id": response_id, "request": request,
         }
-        return WorkflowOutcome(terminal=_paused_event(step, status, request, response_id))
+        return WorkflowOutcome(tool_text=str(event["result"]), terminal=_paused_event(step, status, request, response_id))
     begin_workflow_response(response_id)
     yield {
         "type": "workflow_request", "step": step, "status": status,
@@ -380,4 +425,6 @@ def run_runtime_workflow(
     if waited.cancelled:
         return WorkflowOutcome(response=waited.response, cancelled=True, terminal=_cancelled_event(step))
     text = f"Workflow UI response for {tool_name}: " + json.dumps(waited.response or {}, ensure_ascii=False)
+    if event.get("recovery_context"):
+        text += "\n\n" + str(event["recovery_context"])
     return WorkflowOutcome(text, waited.response)
