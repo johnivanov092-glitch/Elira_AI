@@ -178,6 +178,18 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
     text = str(result.get("text") or "")
     if warning and not text.startswith(warning):
         text = warning + "\n\n" + text
+    if not error and result.get("ok") is True and action in {"search", "fetch"}:
+        # The model sees what is left, instead of spending a call on a refusal
+        # (SWE run c6166f63: a second quick search cost 2.5 s past the 20 s norm).
+        searches_left = max(0, (1 if mode == "quick" else 3) - state["searches"])
+        rounds = (2 if state["fetches"] == 1 and state.get("failed_urls") else 1) if mode == "quick" else 3
+        reads_left = max(0, rounds - state["fetches"])
+        budget = f"Бюджет ({mode}): поисков осталось {searches_left}, чтений {reads_left}."
+        if not searches_left and not reads_left:
+            budget += " Отвечай по прочитанному."
+        elif not searches_left:
+            budget += " Новый поиск не пройдёт: читай найденное."
+        text = text.rstrip() + "\n\n" + budget
     from webskill.context import WEB_TOOL_RESULT_LLM_LIMIT
     cache_notice = "\n".join(notes)
     notice_room = max(0, WEB_TOOL_RESULT_LLM_LIMIT - len(text) - 2)

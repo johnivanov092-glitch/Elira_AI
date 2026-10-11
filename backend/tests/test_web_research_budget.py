@@ -23,7 +23,9 @@ def test_quick_has_one_single_language_search_and_then_closes_search(queries):
     operation = Mock(return_value={"ok": True, "text": "found", "sources": [{"url": "https://a"}]})
     first = research.execute("search", args(mode="quick", queries=queries), operation)
     assert first["ok"] and "error" not in first and not first.get("partial")
-    assert first["sources"] == [{"url": "https://a"}] and first["text"] == "found"
+    assert first["sources"] == [{"url": "https://a"}] and first["text"].startswith("found")
+    # The model sees the budget left instead of spending a call on a refusal (SWE run c6166f63).
+    assert first["text"].endswith("поисков осталось 0, чтений 1. Новый поиск не пройдёт: читай найденное.")
     assert first["web_research"]["search_rounds"] == 1
     assert "language_correction_available" not in first["web_research"]
     second = research.execute("search", args(queries=["Another query"]), operation)
@@ -73,7 +75,8 @@ def test_deep_single_language_search_has_only_three_rounds():
     for round_number in range(1, 4):
         result = research.execute("search", args(mode="deep", queries=["English query"]), operation)
         assert result["ok"] and "error" not in result and not result.get("partial")
-        assert result["sources"] == [{"url": "https://a"}] and result["text"].endswith("found")
+        assert result["sources"] == [{"url": "https://a"}] and result["text"].startswith("found")
+        assert f"поисков осталось {3 - round_number}, чтений 3." in result["text"]
         assert result["web_research"]["search_rounds"] == round_number
         assert "language_correction_available" not in result["web_research"]
     stopped = research.execute("search", args(mode="deep"), operation)
