@@ -31,7 +31,7 @@ def test_math_route_is_visible_before_any_tool_or_work_guidance(tmp_path, monkey
     def chat(**kwargs):
         calls.append(deepcopy(kwargs["messages"]))
         assert WORK not in str(kwargs["messages"])
-        assert "Расчёты проверяй навыком math" in kwargs["messages"][0]["content"]
+        assert "Расчёты делай инструментом math" in kwargs["messages"][0]["content"]
         return _reply(text="Проверяется начальная инструкция.")
 
     events = list(agent_loop.stream_code_agent(
