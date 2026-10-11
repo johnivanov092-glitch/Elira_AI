@@ -72,10 +72,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "name": "web_fetch",
                 "description": (
                     "Read all needed HTTP(S) pages in one parallel call through web-research. "
-                    "Example: web_fetch(urls=[\"https://example.com\",\"https://example.org\"]). "
+                    "Example: web_fetch(urls=[\"S1\",\"S3\",\"L2\"]). "
                     "Use one call for 2–3 quick pages or 5–8 deep pages. Repeat URLs use this run's cache. "
                     "find selects the same verbatim phrase from each URL; metadata includes title and publication dates. "
-                    "Open only addresses from web_search results, links on read pages or the user's message. "
+                    "Open pages by their label from results — S3 (search result), L7 (article on a read page) — "
+                    "or an address the user gave; never compose an address yourself. "
                     "Cite read pages by their number [n] from the result; Elira inserts the address. "
                     "A home/section page is headlines: open the article before stating its facts. "
                     "List unavailable pages separately. "
@@ -84,7 +85,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object", "additionalProperties": False,
                     "properties": {
-                        "urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
+                        "urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8,
+                                 "description": "Метки из результатов (S3, L7) или адрес из сообщения пользователя."},
                         "mode": {"type": "string", "enum": ["quick", "deep"],
                                  "description": "Режим чтения; если не передан, наследуется режим исследования текущего запуска."},
                         "find": {"type": "string", "maxLength": 200,

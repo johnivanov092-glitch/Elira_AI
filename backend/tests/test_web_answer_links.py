@@ -151,7 +151,7 @@ def test_redirect_and_home_page_are_named_with_numbers(tmp_path: Path, fake_skil
     assert result["redirected"] == [INVENTED] and result["index_pages"] == [HOME]
     assert f"Запрошен {INVENTED}, но сервер отдал другую страницу [1] «Невидимые соседи в квартире»" in result["text"]
     assert "[2] «Новости Казахстана» — главная или рубрика" in result["text"]
-    assert ARTICLES[0]["url"] in result["text"] and f"[2] [fetched: {HOME}]" in result["text"]
+    assert "L1 Новость 1" in result["text"] and f"[2] [fetched: {HOME}]" in result["text"]
 
 
 def test_budget_refusal_adds_no_page_notes(tmp_path: Path, fake_skill):
@@ -161,3 +161,22 @@ def test_budget_refusal_adds_no_page_notes(tmp_path: Path, fake_skill):
     _web.tool_web_search(tmp_path, queries=["давка"])
     result = _web.tool_web_fetch(tmp_path, urls=[READ])
     assert result["text"] == "Лимит времени исследования исчерпан" and result["page_numbers"] == {}
+
+
+def test_pages_open_by_label_and_unknown_labels_are_refused(tmp_path: Path, fake_skill):
+    calls, responses = fake_skill
+    responses["search"] = {"ok": True, "sources": [{"url": HOME, "status": "discovered"}],
+                           "text": f"Found 1 results\n\n[1] Zakon.kz\n    {HOME}\n    [discovered]\n"}
+    responses["fetch"] = lambda urls: {
+        "ok": True, "text": "".join(f"[fetched: {u}]\nтекст\n" for u in urls),
+        "pages": [_page(u, title="Zakon.kz", links=ARTICLES if u == HOME else ()) for u in urls],
+        "sources": [{"url": u, "status": "excerpt"} for u in urls]}
+    search = _web.tool_web_search(tmp_path, queries=["новости"])
+    assert f"[S1] Zakon.kz\n    {HOME}" in search["text"]
+    home = _web.tool_web_fetch(tmp_path, urls=["S1"])
+    assert home["page_numbers"] == {HOME: 1} and "L3 Новость 3" in home["text"]
+    article = _web.tool_web_fetch(tmp_path, urls=["[L3]"])
+    assert article["page_numbers"] == {ARTICLES[2]["url"]: 2}
+    refused = _web.tool_web_fetch(tmp_path, urls=["L99"])
+    assert refused["error"] == "url_not_from_sources" and "L99" in refused["text"]
+    assert [urls for action, urls in calls if action == "fetch"] == [[HOME], [ARTICLES[2]["url"]]]

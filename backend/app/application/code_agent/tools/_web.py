@@ -139,9 +139,29 @@ def _load_ledger(project_root: Path) -> dict[str, Any]:
         value = {}
     allowed = value.get("allowed")
     pages = value.get("pages")
+    refs = value.get("refs")
     return {"allowed": dict(allowed) if isinstance(allowed, dict) else {},
             "pages": [page for page in pages if isinstance(page, dict) and isinstance(page.get("url"), str)]
-            if isinstance(pages, list) else []}
+            if isinstance(pages, list) else [],
+            # S<n> = search result, L<n> = article link on a read page: the model
+            # picks a page by its label and never has to copy a long address.
+            "refs": {key: url for key, url in refs.items() if isinstance(url, str)}
+            if isinstance(refs, dict) else {}}
+
+
+def _ref(ledger: dict[str, Any], prefix: str, url: str) -> str:
+    """Stable label for an address within this run (S3, L12)."""
+    key = _page_key(url)
+    for label, known in ledger["refs"].items():
+        if label.startswith(prefix) and _page_key(known) == key:
+            return label
+    label = f"{prefix}{1 + sum(1 for name in ledger['refs'] if name.startswith(prefix))}"
+    ledger["refs"][label] = url
+    return label
+
+
+_REF_ARGUMENT = re.compile(r"^\[?([SL]\d{1,4})\]?$", re.IGNORECASE)
+_SEARCH_ITEM = re.compile(r"^\[(\d+)\] (.*)\n(\s+)(https?://\S+)", re.MULTILINE)
 
 
 def _save_ledger(project_root: Path, ledger: dict[str, Any]) -> None:
@@ -214,8 +234,15 @@ def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "
     for source in result.get("sources") or []:
         if isinstance(source, dict):
             _allow(ledger, source.get("url"))
+
+    def label(match: re.Match[str]) -> str:
+        _allow(ledger, match.group(4))
+        return f"[{_ref(ledger, 'S', match.group(4))}] {match.group(2)}\n{match.group(3)}{match.group(4)}"
+    text = _SEARCH_ITEM.sub(label, str(result.get("text") or ""))
     _save_ledger(project_root, ledger)
-    return result
+    if text and "[S" in text:
+        text += "\n\nОткрывай найденное по метке: web_fetch(urls=[\"S1\", \"S3\"]) — адрес подставит Elira."
+    return {**result, "text": text}
 
 
 def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
@@ -225,22 +252,33 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
         _allow(ledger, url)
     for page in ledger["pages"]:
         _allow(ledger, page["url"])
-    requested = [url for url in urls if isinstance(url, str)]
+    requested: list[str] = []
+    unknown_refs: list[str] = []
+    for item in urls:
+        if not isinstance(item, str):
+            continue
+        label = _REF_ARGUMENT.match(item.strip())
+        if label:
+            target = ledger["refs"].get(label.group(1).upper())
+            (requested if target else unknown_refs).append(target or item.strip())
+        else:
+            requested.append(item.strip())
     refused = [url for url in requested if _page_key(url) not in ledger["allowed"]]
-    permitted = [url for url in requested if url not in refused]
+    permitted = list(dict.fromkeys(url for url in requested if url not in refused))
     refusal = ""
-    if refused:
+    if refused or unknown_refs:
         hosts = {(urlsplit(url).hostname or "").lower().removeprefix("www.") for url in refused}
-        nearby = [url for url in ledger["allowed"].values()
-                  if (urlsplit(url).hostname or "").lower().removeprefix("www.") in hosts][:5]
+        nearby = [f"{name} {url}" for name, url in ledger["refs"].items()
+                  if (urlsplit(url).hostname or "").lower().removeprefix("www.") in hosts][:8]
         refusal = (
-            "Не открыто: " + ", ".join(refused) + " — этого адреса нет в выдаче поиска, на прочитанных страницах "
-            "и в сообщениях пользователя. Не составляй адреса сам: возьми ссылку из результата web_search или из "
-            "списка ссылок прочитанной страницы; нужной нет — сделай web_search."
-            + (" Известные адреса этого сайта: " + ", ".join(nearby) + "." if nearby else ""))
+            "Не открыто: " + ", ".join([*refused, *unknown_refs]) + " — такого адреса или метки нет в выдаче поиска, "
+            "на прочитанных страницах и в сообщениях пользователя. Не составляй адреса сам: открывай по метке "
+            "из результатов (S… — выдача поиска, L… — статья с прочитанной страницы); нужной нет — сделай web_search."
+            + (" Метки этого сайта: " + "; ".join(nearby) + "." if nearby else ""))
     if not permitted:
         _save_ledger(project_root, ledger)
-        return {"ok": False, "error": "url_not_from_sources", "text": refusal, "refused_urls": refused}
+        return {"ok": False, "error": "url_not_from_sources", "text": refusal,
+                "refused_urls": [*refused, *unknown_refs]}
     result = _call(project_root, "fetch", ["--find", find,
         *(["--mode", mode] if mode is not None else []),
         *[part for url in permitted for part in ("--url", url)]])
@@ -277,10 +315,11 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
                          "Это не запрошенный материал — не ссылайся на запрошенный адрес и не считай его прочитанным.")
         if index:
             index_pages.append(final)
-            articles = _article_links(final, links)
+            articles = [(_ref(ledger, "L", target), label) for label, target in _article_links(final, links)]
             notes.append(f"[{number}] «{title}» — главная или рубрика: это заголовки, а не содержание статей. "
-                         "Факты по заголовкам не утверждай; открой нужные статьи"
-                         + (": " + "; ".join(f"{label} — {target}" for label, target in articles) if articles else ".")
+                         "Факты по заголовкам не утверждай; открой нужные статьи по метке, "
+                         "например web_fetch(urls=[\"L1\", \"L2\"])"
+                         + (":\n" + "\n".join(f"{name} {label}" for name, label in articles) if articles else ".")
                          )
     _save_ledger(project_root, ledger)
     text = str(result.get("text") or "")
@@ -296,4 +335,4 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
         text = (text.rstrip() + "\n\n" + "\n".join(notes)).lstrip()
     return {**result, "text": text, "page_numbers": page_numbers, "index_pages": index_pages,
             **({"redirected": redirected} if redirected else {}),
-            **({"refused_urls": refused} if refused else {})}
+            **({"refused_urls": [*refused, *unknown_refs]} if refused or unknown_refs else {})}
