@@ -87,7 +87,7 @@ def test_a_russian_table_row_about_an_english_page_keeps_its_main_figure():
            f"| [huggingface.co]({card}) — официальная страница модели Hugging Face / Qwen |")
     assert point_problems(row, texts, {}, "Есть ли у Qwen результаты на SWE-bench Multilingual?", TODAY) == []
     invented = f"- Qwen3.8-Flash-Next набрала 91.5% на SWE-bench Multilingual [huggingface.co]({card})."
-    assert point_problems(invented, texts, {}, "Есть ли у Qwen результаты?", TODAY)[0]["missing"] == ["91"]
+    assert point_problems(invented, texts, {}, "Есть ли у Qwen результаты?", TODAY)[0]["missing"] == ["91.5"]
 
 
 def test_an_extra_link_that_does_not_carry_the_point_is_stripped_not_the_point():
@@ -133,6 +133,54 @@ def test_a_point_on_another_read_page_is_recited_there():
     caspian = f"- На Каспии погибли 12 военнослужащих, возбуждено уголовное дело [zakon]({STORM})."
     assert reattribute_points(caspian, TEXTS, DATES, request, TODAY) == (caspian, 0)
     assert reattribute_points(caspian, TEXTS, DATES, "Что случилось на Каспии?", TODAY)[1] == 1
+
+
+def test_a_point_moves_only_to_a_page_that_plainly_carries_it():
+    # KZ run 027209f0: "резервы сократились на 5,4%" went to a flu article (its 5 and 4 matched).
+    from app.application.code_agent.web_points import reattribute_points
+    flu = "https://24.kz/ru/news/798040-pervye-sluchai-grippa"
+    texts = {flu: "[2] [fetched: flu] Первые случаи гриппа выявили в двух регионах в начале октября; "
+                  "заболеваемость ОРВИ за неделю снизилась на 10,2%, сократились обращения. 5 случаев, 4 региона."}
+    answer = f"- Международные резервы в сентябре сократились на 5,4%, с начала года выросли на 1,5% [kz]({ROYAL})."
+    assert reattribute_points(answer, {**TEXTS, **texts}, DATES, "Новости Казахстана", TODAY) == (answer, 0)
+    assert point_problems(answer, {**TEXTS, **texts}, DATES, "Новости", TODAY)[0]["missing"][:2] == ["5.4", "1.5"]
+
+
+def test_a_list_item_without_a_link_is_checked_against_every_read_page():
+    # KZ run 027209f0: "[5]" named no read page, lost its marker and the point stayed unsourced.
+    from app.application.code_agent.web_points import reattribute_points
+    answer = ("**Политика**\n"
+              "- За неделю полицейские пресекли 201 факт пьяного вождения в Астане и Шымкенте\n\n"
+              "**ЧП**\n"
+              "- Во время учений на Каспии погибли 12 военнослужащих, возбуждено уголовное дело.\n"
+              "  - Король Бельгии Филипп прилетел в Астану\n"
+              "```\n- 999 строк кода не проверяются\n```")
+    problems = point_problems(answer, TEXTS, DATES, "Что случилось в Казахстане?", TODAY)
+    assert [(problem["line"], problem.get("unsourced")) for problem in problems] == [(1, True)]
+    linked, moved = reattribute_points(answer, TEXTS, DATES, "Что случилось в Казахстане?", TODAY)
+    assert moved == 1 and f"уголовное дело [regtv.kz]({CASPIAN})." in linked
+    assert "  - Король Бельгии Филипп прилетел в Астану\n" in linked  # a nested item gets no link
+    cleaned, removed = remove_unverified_points(linked, point_problems(
+        linked, TEXTS, DATES, "Что случилось в Казахстане?", TODAY), set())
+    assert removed == 1 and "201" not in cleaned and "**Политика**" not in cleaned  # the bold title went too
+    assert cleaned.startswith("**ЧП**") and "999 строк" in cleaned
+
+
+def test_bare_addresses_become_links_the_checks_see():
+    # NGINX runs 091ef13b / f30050e9: "— https://my.f5.com/…" named an unread page past every check.
+    from app.application.code_agent.web_points import link_bare_urls
+    text = ("1. Бюллетень — https://nginx.org/en/security_advisories.html (обновлено).\n"
+            "2. NVD: https://nvd.nist.gov/vuln/detail/CVE-2026-42530, `curl https://x.org/a` и [ok](https://ok.org/b)\n"
+            "```\nhttps://code.org/c\n```")
+    assert link_bare_urls(text) == (
+        "1. Бюллетень — [nginx.org](https://nginx.org/en/security_advisories.html) (обновлено).\n"
+        "2. NVD: [nvd.nist.gov](https://nvd.nist.gov/vuln/detail/CVE-2026-42530), `curl https://x.org/a` "
+        "и [ok](https://ok.org/b)\n```\nhttps://code.org/c\n```")
+    twice = f"- [zakon.kz]({ROYAL}) https://www.zakon.kz/politika/6534612-korol-belgii-prileteli.html — визит"
+    assert link_bare_urls(twice) == f"- [zakon.kz]({ROYAL}) — визит"  # the list marker stays
+    answer = f"Проверено: данные с официальной страницы [zakon]({ROYAL}) и вторым источником [x]({STORM})."
+    cleaned, _ = remove_unverified_points(answer, [], {STORM})
+    assert cleaned.endswith("вторым источником.")  # no gap where the link was
 
 
 def test_read_links_show_the_publication_date_and_a_false_verified_line_goes():

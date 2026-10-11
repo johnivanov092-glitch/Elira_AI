@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 _WORD = re.compile(r"[A-Za-zА-Яа-яЁё]{5,}")
@@ -43,9 +43,36 @@ def _period_days(request: str) -> int | None:
     return None
 
 
-def _support(prose: str, page: str) -> tuple[bool, list[str]]:
-    """Whether the page carries the point: (unsupported, what is missing)."""
-    page_numbers = set(re.findall(r"\d+", page))
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_ITEM = re.compile(r"\s*(?:[-*+•]\s|\d{1,2}[.)]\s|\|)")
+_TOP_ITEM = re.compile(r"(?:[-*+•]\s|\d{1,2}[.)]\s)")
+_TABLE_RULE = re.compile(r"\s*\|?\s*:?-{3,}")
+_FENCE = re.compile(r"\s*(?:```|~~~)")
+
+
+_FIGURE = re.compile(r"(?<![A-Za-zА-Яа-яЁё])\d+(?:[.,]\d+)*")
+
+
+def _numbers(text: str, figures_only: bool = False) -> list[str]:
+    """Figures as written: "5,4" is one number (KZ run 027209f0 matched its 5 and 4 anywhere).
+
+    ``figures_only``: digits glued to letters (Qwen3.8, H1N1) belong to a name, not a figure.
+    """
+    pattern = _FIGURE if figures_only else _NUMBER
+    return [re.sub(r"\.0+$", "", number.replace(",", ".")) for number in pattern.findall(text)]
+
+
+class _Support(NamedTuple):
+    unsupported: bool  # the page does not carry the point
+    missing: list[str]
+    strict: bool  # the page plainly carries it: enough to cite that page instead
+
+
+def _support(prose: str, page: str) -> _Support:
+    """Whether the page carries the point, and what of it is missing there."""
+    page_numbers: set[str] = set()
+    for number in _numbers(page):
+        page_numbers.update((number, number.split(".")[0]))
     # A Russian point about an English page (and vice versa) cannot share its
     # wording: only words in the page's script count; names and numbers decide.
     cyrillic = len(re.findall(r"[а-яё]", page))
@@ -57,14 +84,30 @@ def _support(prose: str, page: str) -> tuple[bool, list[str]]:
         if word.lower() not in _STOP and script == page_script:
             words.setdefault(_stem(word), word)
     missing = [word for stem, word in words.items() if stem not in page]
-    numbers = list(dict.fromkeys(number for number in re.findall(r"\d+", _DATE_NUMBER.sub(" ", prose))
+    numbers = list(dict.fromkeys(number for number in _numbers(_DATE_NUMBER.sub(" ", prose), figures_only=True)
                                  if len(number) >= 2 and not _YEAR.match(number)))
     missing_numbers = [number for number in numbers if number not in page_numbers]
     # The point's own figures: unsupported when none of them is on the page
     # (an auxiliary setting such as 256K may come from elsewhere on the page).
     unsupported = ((len(words) >= 3 and len(missing) * 2 > len(words))
                    or bool(numbers and len(missing_numbers) == len(numbers)))
-    return unsupported, [*missing_numbers, *missing][:5]
+    strict = not missing_numbers and (len(missing) * 3 <= len(words) if len(words) >= 3 else len(numbers) >= 2)
+    return _Support(unsupported, [*missing_numbers, *missing][:5], strict)
+
+
+def _prose(line: str) -> str:
+    return re.sub(r"[*_`#>|]", " ", _LINK.sub(" ", line))
+
+
+def _outside_code(lines: list[str]) -> list[tuple[int, str]]:
+    """(index, line) of the answer lines outside fenced code blocks."""
+    result, in_code = [], False
+    for index, line in enumerate(lines):
+        if _FENCE.match(line):
+            in_code = not in_code
+        elif not in_code:
+            result.append((index, line))
+    return result
 
 
 def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dict[str, str],
@@ -73,20 +116,30 @@ def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dic
 
     A point carried by one of its pages keeps it; its other links that do not
     carry the point are listed as ``weak`` (removed from the answer, no retry).
+    A list item or table row with no link at all is ``unsourced`` when no read
+    page carries it (KZ run 027209f0: a made-up [5] vanished with its link).
     """
     texts = {url.rstrip("/"): text.lower().replace("ё", "е") for url, text in page_texts.items()}
     dates = {url.rstrip("/"): value for url, value in page_dates.items()}
     days = _period_days(user_request)
     start = (today or date.today()) - timedelta(days=days) if days else None
     problems: list[dict[str, Any]] = []
-    for index, line in enumerate(str(answer_text or "").split("\n")):
+    for index, line in _outside_code(str(answer_text or "").split("\n")):
         cited = [match.group(2).rstrip("/") for match in _LINK.finditer(line)]
         shown = [url for url in dict.fromkeys(cited) if url in texts]
+        prose = _prose(line)
+        if not cited and texts and _ITEM.match(line) and not _TABLE_RULE.match(line):
+            checks = [_support(prose, text) for text in texts.values()]
+            if all(check.unsupported for check in checks):
+                problems.append({"line": index, "excerpt": prose.strip()[:90], "old": [], "weak": [],
+                                 "missing": min((check.missing for check in checks), key=len),
+                                 "unsourced": True})
+            continue
         if not shown:
             continue
-        prose = re.sub(r"[*_`#>|]", " ", _LINK.sub(" ", line))
-        unsupported, missing = _support(prose, " ".join(texts[url] for url in shown))
-        weak = [] if unsupported or len(shown) < 2 else [url for url in shown if _support(prose, texts[url])[0]]
+        unsupported, missing, _ = _support(prose, " ".join(texts[url] for url in shown))
+        weak = [] if unsupported or len(shown) < 2 else [url for url in shown
+                                                         if _support(prose, texts[url]).unsupported]
         old = []
         if start is not None:
             for url in cited:
@@ -115,16 +168,20 @@ def _host(url: str) -> str:
 
 def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates: dict[str, str],
                        user_request: str, today: date | None = None) -> tuple[str, int]:
-    """A point its cited page does not carry, but another read page does, cites that page.
+    """A point cites the read page that plainly carries it.
 
-    KZ run d5904cc4: the model read the article later and kept the old numbers.
-    The same check decides: the point must be on the new page and in the asked
-    period, else the line stays as it was (and is removed later).
+    KZ run d5904cc4: the model read the article later and kept the old numbers;
+    a point its cited page does not carry moves to the in-period read page that
+    plainly carries it (``strict``), and a top-level list item with no link
+    gets that page's link. Otherwise the line stays as it was (and the point
+    check removes it later).
     """
-    problems = blocking_problems(point_problems(answer_text, page_texts, page_dates, user_request, today))
-    if not problems:
-        return answer_text, 0
     texts = {url.rstrip("/"): (url, text.lower().replace("ё", "е")) for url, text in page_texts.items()}
+    if not texts:
+        return answer_text, 0
+    problems = {problem["line"]: problem
+                for problem in blocking_problems(point_problems(answer_text, page_texts, page_dates,
+                                                                user_request, today))}
     days = _period_days(user_request)
     start = (today or date.today()) - timedelta(days=days) if days else None
 
@@ -133,28 +190,70 @@ def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates:
             return start is None or not page_dates.get(url) or date.fromisoformat(page_dates[url]) >= start
         except ValueError:
             return True
-    lines = str(answer_text).split("\n")
-    moved = 0
-    for problem in problems:
-        line = lines[problem["line"]]
-        cited = {match.group(2).rstrip("/") for match in _LINK.finditer(line)}
-        prose = re.sub(r"[*_`#>|]", " ", _LINK.sub(" ", line))
+
+    def carrier(prose: str, cited: set[str]) -> str:
         best: tuple[int, str] | None = None
         for key, (url, text) in texts.items():
             if key in cited or not in_period(url):
                 continue
-            unsupported, missing = _support(prose, text)
-            if not unsupported and (best is None or len(missing) < best[0]):
-                best = (len(missing), url)
-        if best is None:
+            check = _support(prose, text)
+            if check.strict and (best is None or len(check.missing) < best[0]):
+                best = (len(check.missing), url)
+        return best[1] if best else ""
+    lines = str(answer_text).split("\n")
+    moved = 0
+    for index, line in _outside_code(lines):
+        links = list(_LINK.finditer(line))
+        if index in problems and links:
+            url = carrier(_prose(line), {match.group(2).rstrip("/") for match in links})
+            read = [match for match in links if match.group(2).rstrip("/") in texts]
+            if not url or not read:
+                continue
+            line = line.replace(read[0].group(0), f"[{_host(url)}]({url})", 1)
+            for match in read[1:]:
+                line = re.sub(r"(?:\s*,)?[ \t]*" + re.escape(match.group(0)), "", line, count=1)
+        elif not links and index not in problems and _TOP_ITEM.match(line):
+            url = carrier(_prose(line), set())
+            if not url:
+                continue
+            body, end = re.match(r"(.*?)([.;]?)\s*$", line).groups()
+            line = f"{body} [{_host(url)}]({url}){end}"
+        else:
             continue
-        read = [match for match in _LINK.finditer(line) if match.group(2).rstrip("/") in texts]
-        line = line.replace(read[0].group(0), f"[{_host(best[1])}]({best[1]})", 1)
-        for match in read[1:]:
-            line = re.sub(r"(?:,\s*)?" + re.escape(match.group(0)), "", line, count=1)
-        lines[problem["line"]] = line
+        lines[index] = line
         moved += 1
     return "\n".join(lines), moved
+
+
+_BARE_URL = re.compile(r"(?<![(\[<\w/=\"'])https?://[^\s<>()\[\]\"'`]+")
+
+
+def link_bare_urls(answer_text: str) -> str:
+    """A bare address in a web answer becomes a link, so the link checks see it.
+
+    NGINX runs 091ef13b / f30050e9: source lists named unread pages as plain
+    "— https://…", which no check read, and their words were taken for the point.
+    """
+    lines = str(answer_text or "").split("\n")
+    for index, line in _outside_code(lines):
+        parts = line.split("`")
+        for at in range(0, len(parts), 2):  # outside inline code
+            def link(match: re.Match[str]) -> str:
+                url = match.group(0).rstrip(".,;:!?»")
+                return f"[{_host(url)}]({url})" + match.group(0)[len(url):]
+            parts[at] = _BARE_URL.sub(link, parts[at])
+        line = "`".join(parts)
+        # "[1] https://same" renders as two links to one page: a line keeps the first.
+        seen: set[str] = set()
+        repeats = []
+        for match in _LINK.finditer(line):
+            if _link_key(match.group(2)) in seen:
+                repeats.append(match.span())
+            seen.add(_link_key(match.group(2)))
+        for start, end in reversed(repeats):
+            line = line[:start].rstrip(" \t") + line[end:]
+        lines[index] = line
+    return "\n".join(lines)
 
 
 def date_read_links(answer_text: str, page_dates: dict[str, str]) -> str:
@@ -175,7 +274,9 @@ def describe_point_problems(problems: list[dict[str, Any]], limit: int = 6) -> s
     parts = []
     for problem in problems[:limit]:
         reasons = []
-        if problem["missing"]:
+        if problem.get("unsourced"):
+            reasons.append("без ссылки, и ни в одной прочитанной статье нет: " + ", ".join(problem["missing"]))
+        elif problem["missing"]:
             reasons.append("на странице нет: " + ", ".join(problem["missing"]))
         if problem["old"]:
             reasons.append("статья от " + ", ".join(problem["old"]) + " — раньше запрошенного периода")
@@ -208,8 +309,11 @@ def _link_key(url: str) -> str:
 
 
 def _heading_level(line: str) -> int:
+    """#…###### headings, and a line that is wholly bold (a heading in effect) as the lowest level."""
     match = re.match(r"\s*(#{1,6})\s", line)
-    return len(match.group(1)) if match else 0
+    if match:
+        return len(match.group(1))
+    return 7 if re.fullmatch(r"\s*(\*\*|__)[^*_\n]+\1\s*:?\s*", line) else 0
 
 
 def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
@@ -235,7 +339,7 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
             removed += 1
             continue
         for match in broken:
-            line = re.sub(r"(?:,\s*)?" + re.escape(match.group(0)), "", line, count=1)
+            line = re.sub(r"(?:\s*,)?[ \t]*" + re.escape(match.group(0)), "", line, count=1)
             stripped += 1
         kept.append(line)
     if not removed:
