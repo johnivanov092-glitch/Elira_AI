@@ -89,7 +89,7 @@ def test_complete_frame_shortens_next_wait_and_final_result_keeps_sources(transp
     transport.process.stdout.readline.side_effect = read_line
     transport.process.communicate.return_value = (json.dumps(result_body).encode(), b"")
     result = _web.tool_web_search(transport.root, queries=["пример", "example"])
-    assert result == result_body
+    assert {key: value for key, value in result.items() if key != "labels"} == result_body  # labels: S1… map
     assert transport.process.communicate.call_args.kwargs["timeout"] == pytest.approx(0.3)
     command = transport.popen.call_args.args[0]
     assert "--native" in command and command[command.index("--step") + 1] == "7"
