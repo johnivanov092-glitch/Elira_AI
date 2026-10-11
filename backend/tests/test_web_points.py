@@ -78,6 +78,35 @@ def test_acceptance_asks_once_then_marks_the_point():
     assert "хуситов" not in second.text and "Убрано пунктов: 1" in second.text
 
 
+def test_headlines_with_no_article_read_get_one_correction_then_go():
+    # KZ run efb2e8ef: only home pages were opened; the answer cited [1]…[13] and passed untouched.
+    evidence = RunEvidence()
+    evidence.record_tool_result(
+        tool_name="web_fetch", arguments={"urls": ["S3"]}, execution_status="ok",
+        output={"ok": True, "index_pages": ["https://www.zakon.kz/"], "labels": {"L1": ROYAL},
+                "pages": [{"url": "https://www.zakon.kz/", "final_url": "https://www.zakon.kz/", "ok": True}],
+                "sources": [{"url": "https://www.zakon.kz/", "status": "excerpt"}]},
+        text_result="", state_changed=False)
+    answer = ("Сделано: собрал сводки.\nОсталось: ничего — данных достаточно.\n\n## Политика\n"
+              "- Король Филипп и королева Матильда прибыли в Астану (11 окт) [1][3]\n"
+              "- Казахстан осудил атаки хуситов на объекты Саудовской Аравии [3]")
+    owner = AnswerAcceptance()
+
+    def evaluate(step):
+        return owner.evaluate(
+            final_text=answer, raw_user_message="Новости Казахстана за неделю", pending_redirected_jobs=(),
+            active_capability_groups=set(), task_outcome=TaskOutcome(), run_evidence=evidence,
+            code_input_epoch=0, quote_word_limit=None, step=step, run_id="kz-nothing-read")
+    first = evaluate(4)
+    assert first.action == "retry" and first.reason == "web_source"
+    assert "не прочитано ни одной статьи" in first.correction
+    owner.commit(first)
+    second = evaluate(5)
+    assert second.action == "accept" and second.answer_status == "degraded"
+    assert "Король" not in second.text and "[1]" not in second.text and "Осталось" not in second.text
+    assert "Подтверждённых пунктов нет: все 2 убраны" in second.text and "## Политика" not in second.text
+
+
 def test_a_russian_table_row_about_an_english_page_keeps_its_main_figure():
     # SWE run 57ad0d5a: the row was dropped for 95/256 and Russian wording.
     card = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"

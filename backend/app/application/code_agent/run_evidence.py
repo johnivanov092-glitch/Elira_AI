@@ -675,6 +675,11 @@ class RunEvidence:
     def web_index_pages(self) -> set[str]:
         return set(self._web_index_pages)
 
+    @property
+    def web_researched(self) -> bool:
+        """This run searched or opened web pages (labels, home pages or read pages)."""
+        return bool(self._web_labels or self._web_index_pages or self._web_numbers)
+
     def unread_web_links(self, answer_text: str) -> tuple[Any, ...]:
         """Markdown links in the answer to web pages this run did not read."""
         read = {url for url, page in self._web_pages.items() if page["status"] == "read"}

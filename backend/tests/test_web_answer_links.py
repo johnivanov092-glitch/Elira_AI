@@ -62,7 +62,7 @@ def test_points_resting_on_unread_pages_are_removed():
     assert f"Давка на концерте в Шымкенте, возбуждено уголовное дело. [NUR.KZ]({READ})" in decision.text
     for gone in ("кабельная шахта", "вратарь", "Король Бельгии", FAILED, DISCOVERED, INVENTED):
         assert gone not in decision.text
-    assert decision.text.endswith("_Убрано пунктов: 3 — не нашлось в прочитанных статьях или вне запрошенного периода._")
+    assert decision.text.endswith("_Убрано пунктов: 3 — не подтверждены прочитанными статьями или вне запрошенного периода._")
 
 
 def test_answer_without_web_research_is_untouched():

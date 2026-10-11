@@ -111,15 +111,19 @@ def _outside_code(lines: list[str]) -> list[tuple[int, str]]:
 
 
 def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dict[str, str],
-                   user_request: str, today: date | None = None) -> list[dict[str, Any]]:
+                   user_request: str, today: date | None = None, *,
+                   researched: bool = False) -> list[dict[str, Any]]:
     """Points (answer lines) whose cited read page does not carry them or is out of period.
 
     A point carried by one of its pages keeps it; its other links that do not
     carry the point are listed as ``weak`` (removed from the answer, no retry).
     A list item or table row with no link at all is ``unsourced`` when no read
-    page carries it (KZ run 027209f0: a made-up [5] vanished with its link).
+    page carries it (KZ run 027209f0: a made-up [5] vanished with its link);
+    ``researched`` with nothing read, no page carries it (KZ run efb2e8ef: only
+    home pages were opened and the answer cited [1]…[13]).
     """
     texts = {url.rstrip("/"): text.lower().replace("ё", "е") for url, text in page_texts.items()}
+    pages = list(texts.values()) or ([""] if researched else [])
     dates = {url.rstrip("/"): value for url, value in page_dates.items()}
     days = _period_days(user_request)
     start = (today or date.today()) - timedelta(days=days) if days else None
@@ -128,8 +132,8 @@ def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dic
         cited = [match.group(2).rstrip("/") for match in _LINK.finditer(line)]
         shown = [url for url in dict.fromkeys(cited) if url in texts]
         prose = _prose(line)
-        if not cited and texts and _ITEM.match(line) and not _TABLE_RULE.match(line):
-            checks = [_support(prose, text) for text in texts.values()]
+        if not cited and pages and _ITEM.match(line) and not _TABLE_RULE.match(line):
+            checks = [_support(prose, text) for text in pages]
             if all(check.unsupported for check in checks):
                 problems.append({"line": index, "excerpt": prose.strip()[:90], "old": [], "weak": [],
                                  "missing": min((check.missing for check in checks), key=len),
@@ -223,6 +227,19 @@ def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates:
         lines[index] = line
         moved += 1
     return "\n".join(lines), moved
+
+
+_NUMBER_MARKS = re.compile(r"[ \t]*(?<![\w\]])(?:\[\d{1,3}(?:\s*[,;]\s*\d{1,3})*\])+(?![(\[:])")
+
+
+def drop_citation_numbers(answer_text: str) -> str:
+    """[n] markers when no page was read name nothing; they go (outside code)."""
+    lines = str(answer_text or "").split("\n")
+    for index, line in _outside_code(lines):
+        parts = line.split("`")
+        parts[::2] = [_NUMBER_MARKS.sub("", part) for part in parts[::2]]
+        lines[index] = "`".join(parts)
+    return "\n".join(lines)
 
 
 _BARE_URL = re.compile(r"(?<![(\[<\w/=\"'])https?://[^\s<>()\[\]\"'`]+")
@@ -349,14 +366,21 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
     result: list[str] = []
     following = ""
     for line in reversed(kept):
-        if re.match(r"\s*\**Проверено\**\s*:", line):
-            continue  # the model's "verified …" no longer holds; the closing line says what was removed
+        if re.match(r"\s*\**(?:Проверено|Осталось)\**\s*:", line):
+            continue  # the model's "verified … / nothing left" no longer holds; the closing line says what went
         level = _heading_level(line)
         if level and (not following or 0 < _heading_level(following) <= level
                       or re.fullmatch(r"\s*([-*_])\1{2,}\s*", following)):
             continue  # a heading with nothing left under it (same-level heading, a rule or the end)
         result.append(line)
         following = line if line.strip() else following
+    verified = any(_LINK.search(line) or (_ITEM.match(line) and not _TABLE_RULE.match(line)) for line in result)
+    if not verified:  # nothing left to structure: the headings go too
+        result = [line for line in result if not _heading_level(line)]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(reversed(result))).strip()
-    text += f"\n\n_Убрано пунктов: {removed} — не нашлось в прочитанных статьях или вне запрошенного периода._"
+    if verified:
+        text += f"\n\n_Убрано пунктов: {removed} — не подтверждены прочитанными статьями или вне запрошенного периода._"
+    else:
+        text += (f"\n\n_Подтверждённых пунктов нет: все {removed} убраны — не подтверждены прочитанными статьями "
+                 "или вне запрошенного периода._")
     return text, removed + stripped
