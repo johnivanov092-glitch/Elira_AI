@@ -168,6 +168,17 @@ def test_redirect_and_home_page_are_named_with_numbers(tmp_path: Path, fake_skil
     assert "[1] [fetched: " in result["text"] and "насморк" in result["text"]
 
 
+def test_a_home_page_the_user_gave_is_read_not_hidden(tmp_path: Path, fake_skill):
+    _, responses = fake_skill
+    responses["fetch"] = {"ok": True, "text": f"[fetched: {HOME}]\nглавная zakon.kz",
+                          "pages": [_page(HOME, title="Zakon.kz", links=ARTICLES)],
+                          "sources": [{"url": HOME, "status": "excerpt"}]}
+    with bind_runtime_context({"user_urls": json.dumps([HOME])}):
+        result = _web.tool_web_fetch(tmp_path, urls=[HOME])
+    assert result["index_pages"] == [] and result["page_numbers"] == {HOME: 1}
+    assert "главная zakon.kz" in result["text"]
+
+
 def test_budget_refusal_adds_no_page_notes(tmp_path: Path, fake_skill):
     _, responses = fake_skill
     responses["search"] = {"ok": True, "text": "Found", "sources": [{"url": READ, "status": "discovered"}]}

@@ -204,7 +204,7 @@ def _is_index_page(url: str, links: list[dict[str, Any]]) -> bool:
     """A home or section page: a list of headlines, not the articles themselves."""
     segments = [part for part in urlsplit(url).path.split("/") if part]
     shallow = not segments or (len(segments) == 1 and not re.search(r"\d|\.s?html?$", segments[0]))
-    return shallow and len(links) >= 5
+    return shallow and len(links) >= 3
 
 
 def _article_links(url: str, links: list[dict[str, Any]], limit: int = 12) -> list[tuple[str, str]]:
@@ -248,6 +248,7 @@ def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "
 def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
                    mode: str | None = None) -> dict[str, Any]:
     ledger = _load_ledger(project_root)
+    user_keys = {_page_key(url) for url in _user_urls()}
     for url in _user_urls():
         _allow(ledger, url)
     for page in ledger["pages"]:
@@ -302,7 +303,8 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
             _allow(ledger, link.get("url"))
         key = _page_key(final)
         title = str(page.get("title") or final)
-        if _is_index_page(final, links):
+        # A home page the user asked for by address is the page they want to read.
+        if _is_index_page(final, links) and not {key, _page_key(asked)} & user_keys:
             # Headlines are not articles: the model sees only the labelled list,
             # so it has nothing to build facts from but the opened articles.
             index_pages.append(final)

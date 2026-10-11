@@ -908,7 +908,11 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
             "text": header + separator.join(text for text, _, _ in receipts),
             "ok": any(block.ok for block in ordered),
             "sources": [source for _, sources, _ in receipts for source in sources],
-            "pages": [_page_metadata(url_list[i], block) for i, (_, _, block) in enumerate(receipts)],
+            # Text is fitted to the batch budget; page links stay complete metadata
+            # (Elira lists a home page's articles by label from them).
+            "pages": [_page_metadata(url_list[i], replace(block, links=ordered[i].links,
+                                                          links_truncated=ordered[i].links_truncated))
+                      for i, (_, _, block) in enumerate(receipts)],
         }
 
     # ── Single page (back-compat) ────────────────────────────────────────────

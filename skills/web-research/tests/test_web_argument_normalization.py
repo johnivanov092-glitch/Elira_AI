@@ -152,3 +152,11 @@ def test_unrelated_tool_arguments_are_not_interpreted_as_web_batches() -> None:
 
     assert normalized == arguments
     assert normalized is not arguments
+
+
+def test_batch_pages_metadata_keeps_all_links_when_text_is_fitted() -> None:
+    links = tuple((f"Новость {n}", f"https://example.org/news/{n}") for n in range(30))
+    page = PageFetchResult(text="Заголовок. " * 4000, final_url="https://example.org/", links=links)
+    with patch.object(_web, "_fetch_one", return_value=page):
+        result = _web.tool_web_fetch(urls=["https://example.org/", "https://example.org/a", "https://example.org/b"])
+    assert len(result["pages"][0]["links"]) == 30
