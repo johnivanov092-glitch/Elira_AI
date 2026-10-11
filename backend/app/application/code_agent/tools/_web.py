@@ -321,7 +321,8 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
                 labels[name] = target
                 articles.append((name, label))
             index_blocks[key] = (
-                f"[fetched: {final}]\n«{title}» — главная или рубрика: заголовки скрыты, это не содержание статей "
+                f"[без номера] [fetched: {final}]\n«{title}» — главная или рубрика (в нумерацию страниц не входит): "
+                "заголовки скрыты, это не содержание статей "
                 "и не источник для ответа. Открой нужные статьи одним вызовом по меткам, например "
                 "web_fetch(urls=[\"L1\", \"L2\"])" + (":\n" + "\n".join(f"{name} {label}" for name, label in articles)
                                                       if articles else "; ссылок на статьи нет — сделай web_search."))

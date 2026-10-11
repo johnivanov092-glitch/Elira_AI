@@ -77,7 +77,7 @@ def test_answer_without_web_research_is_untouched():
 def test_numbers_become_links_and_a_home_page_source_gets_one_correction():
     evidence = RunEvidence()
     evidence.record_tool_result(
-        tool_name="web_fetch", arguments={"urls": [READ, HOME]}, execution_status="ok",
+        tool_name="web_fetch", arguments={"urls": [READ, HOME], "mode": "deep"}, execution_status="ok",
         output={"ok": True, "page_numbers": {READ: 1}, "index_pages": [HOME],
                 "pages": [{"url": READ, "final_url": READ, "title": "Давка на концерте", "ok": True},
                           {"url": HOME, "final_url": HOME, "title": "Zakon.kz", "ok": True}],
@@ -154,7 +154,7 @@ def test_redirect_and_home_page_are_named_with_numbers(tmp_path: Path, fake_skil
     assert result["redirected"] == [INVENTED] and result["index_pages"] == [HOME]
     assert result["page_numbers"] == {SERVED: 1}  # a home page is not a citable source
     assert f"Запрошен {INVENTED}, но сервер отдал другую страницу [1] «Невидимые соседи в квартире»" in result["text"]
-    assert "«Новости Казахстана» — главная или рубрика: заголовки скрыты" in result["text"]
+    assert "«Новости Казахстана» — главная или рубрика (в нумерацию страниц не входит): заголовки скрыты" in result["text"]
     assert "L1 Новость 1" in result["text"] and "король прилетел" not in result["text"]
     assert "[1] [fetched: " in result["text"] and "насморк" in result["text"]
 

@@ -307,6 +307,7 @@ class RunEvidence:
         self._web_page_dates: dict[str, str] = {}
         self._web_page_texts: dict[str, str] = {}
         self._web_labels: dict[str, str] = {}  # S3 / L7 → address
+        self._web_deep = False  # a web call asked for deep research
 
 
     @property
@@ -680,6 +681,11 @@ class RunEvidence:
         """This run searched or opened web pages (labels, home pages or read pages)."""
         return bool(self._web_labels or self._web_index_pages or self._web_numbers)
 
+    @property
+    def web_deep(self) -> bool:
+        """A web call of this run asked for deep research (mode=deep)."""
+        return self._web_deep
+
     def unread_web_links(self, answer_text: str) -> tuple[Any, ...]:
         """Markdown links in the answer to web pages this run did not read."""
         read = {url for url, page in self._web_pages.items() if page["status"] == "read"}
@@ -708,6 +714,7 @@ class RunEvidence:
             self._sources = merge_sources(self._sources, output.get("sources", []))
         if tool in {"web_search", "web_fetch"}:
             self._record_web_pages(output.get("sources"))
+            self._web_deep = self._web_deep or str(arguments.get("mode") or "") == "deep"
             labels = output.get("labels")
             if isinstance(labels, dict):
                 self._web_labels.update({name: url for name, url in labels.items()

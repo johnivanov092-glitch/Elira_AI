@@ -52,7 +52,7 @@ def test_an_article_older_than_the_asked_week_is_out_of_period():
 def test_acceptance_asks_once_then_marks_the_point():
     evidence = RunEvidence()
     evidence.record_tool_result(
-        tool_name="web_fetch", arguments={"urls": ["L3", "L6"]}, execution_status="ok",
+        tool_name="web_fetch", arguments={"urls": ["L3", "L6"], "mode": "deep"}, execution_status="ok",
         output={"ok": True, "page_numbers": {ROYAL: 1, STORM: 2},
                 "page_texts": {ROYAL: TEXTS[ROYAL], STORM: TEXTS[STORM]},
                 "page_dates": {ROYAL: DATES[ROYAL], STORM: DATES[STORM]},
@@ -76,13 +76,31 @@ def test_acceptance_asks_once_then_marks_the_point():
     assert second.action == "accept" and second.answer_status == "degraded"
     assert second.text.split("\n")[0].endswith(f"[zakon.kz, 11.10.2026]({ROYAL}).")  # the page's date
     assert "хуситов" not in second.text and "Убрано пунктов: 1" in second.text
+    # A quick search (SWE run 16109bde, +7 s past 20 s) gets no extra model call: the point goes at once.
+    quick = RunEvidence()
+    quick.record_tool_result(
+        tool_name="web_fetch", arguments={"urls": ["L3", "L6"], "mode": "quick"}, execution_status="ok",
+        output=evidence_output(ROYAL, STORM),
+        text_result="", state_changed=False)
+    at_once = AnswerAcceptance().evaluate(
+        final_text=answer, raw_user_message="Новости Казахстана", pending_redirected_jobs=(),
+        active_capability_groups=set(), task_outcome=TaskOutcome(), run_evidence=quick,
+        code_input_epoch=0, quote_word_limit=None, step=4, run_id="kz-quick")
+    assert at_once.action == "accept" and "хуситов" not in at_once.text and "Король" in at_once.text
+
+
+def evidence_output(*urls: str) -> dict:
+    return {"ok": True, "page_numbers": {url: number for number, url in enumerate(urls, 1)},
+            "page_texts": {url: TEXTS[url] for url in urls}, "page_dates": {url: DATES[url] for url in urls},
+            "pages": [{"url": url, "final_url": url, "title": url, "ok": True} for url in urls],
+            "sources": [{"url": url, "status": "excerpt"} for url in urls]}
 
 
 def test_headlines_with_no_article_read_get_one_correction_then_go():
     # KZ run efb2e8ef: only home pages were opened; the answer cited [1]…[13] and passed untouched.
     evidence = RunEvidence()
     evidence.record_tool_result(
-        tool_name="web_fetch", arguments={"urls": ["S3"]}, execution_status="ok",
+        tool_name="web_fetch", arguments={"urls": ["S3"], "mode": "deep"}, execution_status="ok",
         output={"ok": True, "index_pages": ["https://www.zakon.kz/"], "labels": {"L1": ROYAL},
                 "pages": [{"url": "https://www.zakon.kz/", "final_url": "https://www.zakon.kz/", "ok": True}],
                 "sources": [{"url": "https://www.zakon.kz/", "status": "excerpt"}]},
@@ -210,6 +228,16 @@ def test_bare_addresses_become_links_the_checks_see():
     answer = f"Проверено: данные с официальной страницы [zakon]({ROYAL}) и вторым источником [x]({STORM})."
     cleaned, _ = remove_unverified_points(answer, [], {STORM})
     assert cleaned.endswith("вторым источником.")  # no gap where the link was
+
+
+def test_a_written_address_beats_a_wrong_number():
+    # SWE run 16109bde: "[2] https://www.swebench.com/" — page 2 was a model card, the home page had no number.
+    from app.application.code_agent.web_points import prefer_written_addresses
+    pages = [(ROYAL, "Король"), (STORM, "Буря")]
+    text = (f"- [2] https://www.swebench.com/ — официальный сайт\n- [1] {ROYAL} — визит\n"
+            f"- [2] — {CASPIAN} — Каспий")
+    assert prefer_written_addresses(text, pages) == (
+        f"- https://www.swebench.com/ — официальный сайт\n- [1] {ROYAL} — визит\n- {CASPIAN} — Каспий")
 
 
 def test_read_links_show_the_publication_date_and_a_false_verified_line_goes():

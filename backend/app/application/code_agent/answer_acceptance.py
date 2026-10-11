@@ -20,7 +20,7 @@ from app.application.code_agent.run_evidence import RunEvidence, drop_unverified
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.web_points import (
     blocking_problems, date_read_links, describe_point_problems, drop_citation_numbers, link_bare_urls,
-    point_problems, reattribute_points, remove_unverified_points, resolve_web_labels,
+    point_problems, prefer_written_addresses, reattribute_points, remove_unverified_points, resolve_web_labels,
 )
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
@@ -84,7 +84,7 @@ class AnswerAcceptance:
             # Nothing was read: a [n] in a web answer names no page.
             return drop_citation_numbers(text) if run_evidence.web_researched else text
         from app.application.skill_services.web_answers import render_numbered_links
-        return link_bare_urls(render_numbered_links(text, numbered))
+        return link_bare_urls(render_numbered_links(prefer_written_addresses(text, numbered), numbered))
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
@@ -158,8 +158,9 @@ class AnswerAcceptance:
             )
         quote_source_failed = bool(quote_source_problems)
         # A home/section page holds headlines, not the facts, and every point must
-        # come from the page it cites (and from the asked period): one chance to
-        # open the right articles or drop those points; then the marks stay.
+        # come from the page it cites (and from the asked period): in deep research
+        # one chance to open the right articles; then the unverified points go.
+        # A quick search (10–20 s, John 2026-10-11) gets no extra model call: they go at once.
         request_text = raw_user_message or str(durable_task or "")
         try:
             checked_text = self._with_rendered_numbers(final_text, run_evidence)
@@ -173,7 +174,7 @@ class AnswerAcceptance:
         unsupported_points = blocking_problems(point_problems(
             checked_text, run_evidence.web_page_texts, run_evidence.web_page_dates, request_text,
             researched=run_evidence.web_researched))
-        if (index_cited or unsupported_points) and not self.web_source_correction_sent:
+        if (index_cited or unsupported_points) and run_evidence.web_deep and not self.web_source_correction_sent:
             reasons = []
             if unsupported_points and not run_evidence.numbered_read_pages():
                 reasons.append("в этом прогоне не прочитано ни одной статьи: главные страницы и выдача поиска "
@@ -187,7 +188,7 @@ class AnswerAcceptance:
                 "retry", final_text, reason="web_source", correction=(
                     "[Проверка веб-источников] " + "; ".join(reasons) + ". Для каждого такого пункта открой "
                     "его статью одним web_fetch по метке (L…/S…) и сошлись номером [n] именно этой статьи, "
-                    "либо убери пункт. Остальной ответ не меняй."
+                    "либо убери пункт. Остальной ответ не меняй и не упоминай в нём эту проверку."
                 ),
                 log_note="web answer points lack their cited source",
                 event={"type": "answer_format_correction", "step": step, "contract": "web_source_citation"},

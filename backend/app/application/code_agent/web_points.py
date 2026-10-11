@@ -229,6 +229,24 @@ def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates:
     return "\n".join(lines), moved
 
 
+_NUMBER_THEN_ADDRESS = re.compile(r"\[(\d{1,3})\](\s*[—–:-]?\s*)(https?://[^\s<>()\[\]\"'`]+)")
+
+
+def prefer_written_addresses(answer_text: str, numbered_pages: list[tuple[str, str]]) -> str:
+    """"[2] https://a" where page 2 is another page: the written address decides, the number goes.
+
+    SWE run 16109bde: the model counted an unnumbered home page as [2]; the
+    number rendered to another page under the home page's description.
+    """
+    def keep(match: re.Match[str]) -> str:
+        number = int(match.group(1))
+        url = numbered_pages[number - 1][0] if 1 <= number <= len(numbered_pages) else ""
+        if url and _link_key(url) == _link_key(match.group(3).rstrip(".,;:!?»")):
+            return match.group(0)
+        return match.group(3)
+    return _NUMBER_THEN_ADDRESS.sub(keep, str(answer_text or ""))
+
+
 _NUMBER_MARKS = re.compile(r"[ \t]*(?<![\w\]])(?:\[\d{1,3}(?:\s*[,;]\s*\d{1,3})*\])+(?![(\[:])")
 
 
