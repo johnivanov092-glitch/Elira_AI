@@ -23,6 +23,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
         ("recall",      "Recall",       "project", "Search, index or report the project index", 60, 20000, True),
         ("library",     "Library",      "memory",  "Search and read the user's Library documents", 15, 20000, True),
+        ("math",        "Math",         "project", "Exact calculation through the MATH skill engine", 60, 20000, True),
         ("resource_process", "Resource Inspect", "media", "Inspect metadata of an attached resource by resource_id on local CPU. Content processing uses materialize and mutable skills; no path.", 15, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────

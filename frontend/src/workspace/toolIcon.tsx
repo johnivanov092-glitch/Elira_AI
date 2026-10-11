@@ -12,7 +12,7 @@ export function toolIcon(tool: string): LucideIcon {
   if (tool === "delegate_task") return GitBranch;
   if (tool === "ssh_run" || tool === "ssh_read" || tool === "ssh_write" || tool === "ssh_list_hosts") return Server;
   if (tool === "computer") return Monitor;
-  if (tool === "calc" || tool === "finance_calc") return Calculator;
+  if (tool === "math" || tool === "calc" || tool === "finance_calc") return Calculator;
   if (tool === "unit_convert") return Ruler;
   if (tool === "csv") return Sheet;
   return Wrench;

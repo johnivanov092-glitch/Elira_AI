@@ -96,8 +96,9 @@ a successfully completed run.
   Legacy profiles remain readable but do not switch identity, tone or sampling.
   Their evidence/calculation requirements survive as relevant task instructions.
 - Every normal first turn sees the work tools in `tool_policy.BASE_TOOLS`
-  (read/write/edit_file, glob, grep, run_bash, run_server, todo_update)
-  plus `capability_load` and `ask_user`. Calculations use the mutable MATH skill.
+  (read/write/edit_file, glob, grep, run_bash, run_server, todo_update, math)
+  plus `capability_load` and `ask_user`. Calculations use the mutable MATH skill
+  through the `math` tool.
   Workflow questions remain available through the runtime.
   Explicit search, attachments and resumed activations may add schemas. The model loads other
   groups through the existing registry; routing hints do not preload them. An external
@@ -175,7 +176,10 @@ a successfully completed run.
   Native calc and unit_convert are retired, including stale app-owned registry
   rows. Unit conversion uses the same MATH CLI; table aggregation uses data-analysis.
   Shared Decimal/calendar utilities live in `shared/elira_common`.
-  The skill runs with ordinary shell permissions; it is not a privileged tool.
+  The base tool `math` (owner decision 2026-10-11) is one call into that CLI: it
+  writes the request JSON and runs the installed skill's `calculate.py` in the
+  skill `.venv`. It owns no formulas; write_file + run_bash took 6–8 steps per sum.
+  It is read-only for Workflow except `plot`, which writes a PNG.
   Correct task execution takes priority over short-chat TTFT; the discovery-only
   default was reverted on 2026-09-06 after a live current-events refusal.
 - Task guidance arrives with tools, including Web and external MCP/SSH/IT Ops
@@ -675,7 +679,8 @@ CSV lives in data-analysis, image interpretation in vision, Telegram behavior in
 telegram, document rendering/QA in document-create. `skill_services` contains only
 module adapters so UI preview, bot lifecycle and cleanup reuse the installed skill
 implementation. There is no separate model tool registry or permission layer.
-Model requests run the skill CLI through the existing run_bash/run_server path.
+Model requests run the skill CLI through the existing run_bash/run_server path;
+the one exception is the base `math` tool, a direct entry into the MATH CLI.
 `ELIRA_BACKEND_ROOT` identifies shared platform services for child processes;
 `ELIRA_SKILLS_ROOT` identifies the mutable skill tree. Missing installed modules fail
 explicitly; factory fallback is only used when that skill has not been installed.

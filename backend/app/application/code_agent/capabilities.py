@@ -20,6 +20,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "project": frozenset({
         "read_file", "write_file", "edit_file", "glob", "grep",
         "project_map", "recall", "todo_update", "delegate_task", "run_bash", "run_server",
+        "math",
     }),
     "mcp": frozenset({"mcp"}),
     # ssh/itops also switch on their integration provider (PROVIDER_GROUPS).

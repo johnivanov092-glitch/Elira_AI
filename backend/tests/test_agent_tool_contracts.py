@@ -79,6 +79,7 @@ def test_every_builtin_owner_returns_the_structured_result_contract(tmp_path: Pa
         "delegate_task": {"run_id": "", "task": ""},
         "run_bash": {"command": ""},
         "run_server": {"action": "__invalid__"},
+        "math": {"request": "__invalid__"},
         "web_search": {"query": ""},
         "web_fetch": {"url": ""},
         "web_query": {"query": ""},

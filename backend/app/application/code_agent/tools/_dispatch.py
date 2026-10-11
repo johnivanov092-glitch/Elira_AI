@@ -29,6 +29,7 @@ from app.application.code_agent.tools._resources import (
     tool_resource_publish,
 )
 from app.application.code_agent.tools._mcp import tool_mcp
+from app.application.code_agent.tools._math import tool_math
 from app.application.code_agent.tools._capability import tool_capability_load
 
 
@@ -49,6 +50,8 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "run_server": lambda **kw: tool_run_server(project_root, **kw),
         "mcp": lambda **kw: tool_mcp(project_root, **kw),
+        # One MATH request through the installed skill engine; owns no formulas.
+        "math": lambda **kw: tool_math(project_root, **kw),
         # Reads a run-bound resource by opaque id (no project path involved).
         "resource_process": lambda **kw: tool_resource_process(**kw),
         # Writes a run-bound resource into the run's project workspace (needs root).

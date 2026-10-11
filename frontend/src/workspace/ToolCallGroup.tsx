@@ -9,6 +9,13 @@ import "./ToolCallGroup.css";
 // The single meaningful bit of an args object, flattened + capped — the "gist"
 // shown on a collapsed row instead of the raw command wall.
 function shortArg(args: Record<string, unknown>): string {
+  // math carries one MATH request object: show its operation and expression.
+  const request = args.request;
+  if (request && typeof request === "object") {
+    const fields = request as Record<string, unknown>;
+    const flat = [fields.operation, fields.expression].filter((v) => typeof v === "string" && v).join(" ");
+    if (flat) return flat.length > 72 ? flat.slice(0, 72) + "…" : flat;
+  }
   for (const key of ["path", "command", "query", "pattern", "url", "task", "code", "host", "action", "text"]) {
     const value = args[key];
     if (typeof value === "string" && value) {
@@ -68,6 +75,7 @@ const ACTIVE_LABELS: Record<string, string> = {
   ssh_run: "Выполняю команду на сервере",
   ssh_list_hosts: "Проверяю доступные серверы",
   resource_publish: "Подготавливаю файл для скачивания",
+  math: "Считаю",
   calc: "Считаю",
   finance_calc: "Считаю смету",
   unit_convert: "Перевожу единицы",

@@ -5,6 +5,7 @@ requires a Workflow UI request; ``bypass`` always returns ``auto``.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -225,6 +226,16 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
         return str(payload.get("action") or "").strip().lower() != "messages"
     if name == "itops_registry":
         return str(payload.get("action") or "").strip().lower() not in {"list", "mikrotik_list"}
+    if name == "math":
+        # A calculation changes nothing; only plot writes a PNG. A request that
+        # does not parse cannot run, so it is not a change either.
+        request = payload.get("request", payload)
+        if isinstance(request, str):
+            try:
+                request = json.loads(request)
+            except ValueError:
+                return False
+        return isinstance(request, dict) and str(request.get("operation") or "").strip().lower() == "plot"
     parts = _creative_mcp_parts(name)
     if parts is None:
         return True

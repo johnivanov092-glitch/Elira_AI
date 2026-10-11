@@ -431,4 +431,31 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "math",
+                "description": (
+                    "Exact calculation in one call through the MATH skill engine. request is the MATH "
+                    "JSON: operation and its parameters at top level, numbers as decimal strings. Forms: "
+                    '{"operation":"evaluate","expression":"125000*16/100"}; '
+                    '{"operation":"solve","expression":"2*x+y=10;x-y=2"}; '
+                    '{"operation":"unit_convert","value":"2","from_unit":"TB","to_unit":"GiB","places":2} '
+                    "(TB/GB decimal, TiB/GiB binary); "
+                    '{"operation":"vat_add","amount":"125000","vat_percent":"16"} (vat_extract: VAT included); '
+                    '{"operation":"markup","cost":"300000","markup_percent":"25"}; '
+                    '{"operation":"invoice","items":[{"name":"RAM","qty":2,"price":"45500.50"}],'
+                    '"markup_percent":"10","vat_percent":"16"}. '
+                    "Other operations (loans, statistics, geometry, dates, CIDR/RAID, plots): read the "
+                    "needed guide of skill math first. Independent calculations: one call each, same turn."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "request": {"type": "object", "description": "MATH request: operation and its parameters."},
+                    },
+                    "required": ["request"],
+                },
+            },
+        },
     ]
