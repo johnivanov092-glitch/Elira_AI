@@ -137,12 +137,13 @@ def test_encoded_fetch_batch_uses_existing_store_path() -> None:
     fetch.assert_not_called()
 
 
-def test_encoded_fetch_batch_respects_single_document_find_constraint() -> None:
-    with patch.object(_web, "_fetch_one") as fetch:
+def test_encoded_fetch_batch_applies_find_to_each_page() -> None:
+    # Batch find is allowed since 2026-10-11 (deep research reads 5–8 pages per round).
+    page = PageFetchResult(text="Intro. The phrase is here.", final_url="https://example.org/a")
+    with patch.object(_web, "_fetch_one", return_value=page) as fetch:
         result = _web.tool_web_fetch(urls='["https://example.org/a"]', find="phrase")
-    assert result["ok"] is False
-    assert "find reads one document" in result["text"]
-    fetch.assert_not_called()
+    assert result["ok"] is True
+    assert fetch.call_count == 1 and fetch.call_args.args[0] == "https://example.org/a"
 
 
 def test_unrelated_tool_arguments_are_not_interpreted_as_web_batches() -> None:

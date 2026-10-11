@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 import json
+import logging
 from typing import Any, Literal
 
 from app.application.code_agent.answer_contracts import (
@@ -17,6 +18,8 @@ from app.application.code_agent.answer_contracts import (
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
+
+logger = logging.getLogger(__name__)
 
 RetryReason = Literal[
     "background", "evidence", "user_constraint", "delivery", "quote", "quote_source",
@@ -199,10 +202,20 @@ class AnswerAcceptance:
                 f"{quote_word_limit} слов или неверно указано число слов в цитате. "
                 "Ответ не прошёл проверку этого условия."
             )
+        # John 2026-10-06: the answer stays; a link to a page this run did not
+        # read loses its address and gets a mark (lost with the 09.10 web move).
+        unread_links_marked = False
+        try:
+            unread_links = run_evidence.unread_web_links(final_text)
+            if unread_links:
+                final_text = run_evidence.mark_unread_web_links(final_text, unread_links)
+                unread_links_marked = True
+        except Exception:  # a missing/broken web skill must not lose the answer
+            logger.warning("unread web link check unavailable", exc_info=True)
         answer_status = (
             "degraded" if (download_delivery_failed or bool(missing_requirements)
                            or unverified_document_qa_claim or quote_format_failed
-                           or quote_source_failed
+                           or quote_source_failed or unread_links_marked
                            or runtime_echo) else "complete"
         )
         if runtime_echo:

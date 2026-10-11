@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.application.agent_kernel.runtime_context import current_runtime_context
 from app.application.code_agent.tools._math import _skill_python
@@ -113,8 +114,40 @@ def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "
         *[part for query in queries for part in ("--query", query)]])
 
 
+def _page_key(url: str) -> str:
+    """Same page despite http/https, www, case of host or a trailing slash."""
+    try:
+        parts = urlsplit(str(url).strip())
+    except ValueError:
+        return str(url)
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    path = parts.path.rstrip("/") or "/"
+    return f"{host}{path}?{parts.query}" if parts.query else f"{host}{path}"
+
+
+def _redirected_requests(urls: list[str], result: dict[str, Any]) -> list[str]:
+    """Requested addresses whose read page is a different one (a redirect)."""
+    sources = [source for source in result.get("sources") or []
+               if isinstance(source, dict) and isinstance(source.get("url"), str)]
+    if not sources:
+        return []
+    opened = {_page_key(source["url"]) for source in sources}
+    return [url for url in urls if isinstance(url, str) and _page_key(url) not in opened]
+
+
 def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
                    mode: str | None = None) -> dict[str, Any]:
-    return _call(project_root, "fetch", ["--find", find,
+    result = _call(project_root, "fetch", ["--find", find,
         *(["--mode", mode] if mode is not None else []),
         *[part for url in urls for part in ("--url", url)]])
+    redirected = _redirected_requests(urls, result)
+    if redirected:
+        # The reader returns the page the server actually served; say so plainly,
+        # or the model cites the requested (possibly invented) address as read.
+        notes = "\n".join(
+            f"Адрес {url} не открылся как запрошено: сервер вернул другую страницу (её адрес и заголовок "
+            "указаны в «fetched» выше). Это не та страница — не ссылайся на этот адрес и не считай его прочитанным."
+            for url in redirected)
+        result = {**result, "redirected": redirected,
+                  "text": (str(result.get("text") or "").rstrip() + "\n\n" + notes).lstrip()}
+    return result

@@ -116,7 +116,8 @@ def test_discovery_loads_project_in_same_loop_and_reads_file(tmp_path):
         project_root=tmp_path, chat_fn=chat, auto_remember=False, permission_mode="bypass",
         base_tools=["capability_load"],
     ))
-    assert names(calls[0]) == {"capability_load", "ask_user", "workflow_request"}
+    # web_search/web_fetch are core since 2026-10-11 (John: web always in the base).
+    assert names(calls[0]) == {"capability_load", "web_search", "web_fetch", "ask_user", "workflow_request"}
     assert {"read_file", "write_file", "run_bash"} <= names(calls[1])
     assert base_system(calls[0]["messages"]) == base_system(calls[1]["messages"]) == base_system(calls[2]["messages"])
     assert any(m["role"] == "tool" and "проверенный факт" in m.get("content", "") for m in calls[2]["messages"])

@@ -62,12 +62,14 @@ class RedactSecretsUnitTest(unittest.TestCase):
 
 class ApprovalRedactionMatchingTest(unittest.TestCase):
     def test_workflow_request_is_redacted_but_matching_stays_exact(self) -> None:
+        # An MCP tool: built-in schemas reject unknown fields before approval (2026-10-11),
+        # while redaction must still hide a secret field of a free-form tool call.
         raw_args = {"command": "curl --password hunter2 https://api", "password": "hunter2"}
         request = ToolExecutionRequest(
             run_id="run-1",
             agent_id="code-agent",
             project_scope_id="scope:x",
-            tool_name="run_bash",
+            tool_name="api__call",
             args=raw_args,
             source="code-agent",
             permission_mode="ask",
@@ -87,12 +89,12 @@ class ApprovalRedactionMatchingTest(unittest.TestCase):
         approved_tool = workflow_request["schema"]["x-elira-tool"]
         self.assertEqual(approved_tool["arguments"]["password"], REDACTED)
         self.assertTrue(
-            workflow_approval_matches(approved_tool, "run_bash", raw_args)
+            workflow_approval_matches(approved_tool, "api__call", raw_args)
         )
         self.assertFalse(
             workflow_approval_matches(
                 approved_tool,
-                "run_bash",
+                "api__call",
                 {**raw_args, "password": "different"},
             )
         )

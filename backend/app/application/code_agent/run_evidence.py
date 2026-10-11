@@ -297,6 +297,10 @@ class RunEvidence:
             source["presented"] = False
         self._present_source_ids: set[str] = set()
         self._referenced_source_ids = {source["id"] for source in self._sources if source.get("referenced") is True}
+        # Pages this run discovered, read or failed to open (web_search/web_fetch),
+        # kept whatever the call's ok and beyond the excerpt cap: links in the
+        # answer are checked against what was actually read (John 2026-10-06).
+        self._web_pages: dict[str, dict[str, str]] = {}
 
 
     @property
@@ -608,6 +612,39 @@ class RunEvidence:
         })
 
 
+    def _record_web_pages(self, sources: Any) -> None:
+        if not isinstance(sources, list):
+            return
+        rank = {"discovered": 0, "failed": 1, "read": 2}
+        for source in sources:
+            if not isinstance(source, dict) or not isinstance(source.get("url"), str):
+                continue
+            status = {"excerpt": "read", "fetched": "read", "failed": "failed",
+                      "discovered": "discovered"}.get(str(source.get("status") or ""))
+            if status is None:
+                continue
+            url = source["url"]
+            known = self._web_pages.get(url)
+            if known is None or rank[status] > rank[known["status"]]:
+                self._web_pages[url] = {"status": status, "error": str(source.get("error") or "")}
+
+    def unread_web_links(self, answer_text: str) -> tuple[Any, ...]:
+        """Markdown links in the answer to web pages this run did not read."""
+        read = {url for url, page in self._web_pages.items() if page["status"] == "read"}
+        # Excerpts restored from an earlier slice also count as read pages.
+        read |= {source["url"] for source in self._sources
+                 if source.get("status") == "excerpt" and isinstance(source.get("url"), str)}
+        if not self._web_pages and not read:
+            return ()
+        from app.application.skill_services.web_answers import unread_link_violations
+        return unread_link_violations(answer_text, read_source_urls=read,
+                                      known_source_urls=set(self._web_pages) | read)
+
+    def mark_unread_web_links(self, answer_text: str, violations: Iterable[Any]) -> str:
+        from app.application.skill_services.web_answers import mark_unread_links
+        failed = {url: page["error"] for url, page in self._web_pages.items() if page["status"] == "failed"}
+        return mark_unread_links(answer_text, tuple(violations), failed_errors=failed)
+
     def record_tool_result(
         self,
         *,
@@ -622,6 +659,8 @@ class RunEvidence:
         self._record_operation(tool, arguments, execution_status, output, state_changed)
         if execution_status == "ok" and output.get("ok") is True:
             self._sources = merge_sources(self._sources, output.get("sources", []))
+        if tool in {"web_search", "web_fetch"}:
+            self._record_web_pages(output.get("sources"))
         document_qa = output.get("document_qa")
         if isinstance(document_qa, dict):
             qa_status = str(document_qa.get("status") or "unverified").strip().lower()

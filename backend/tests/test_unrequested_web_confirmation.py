@@ -25,9 +25,9 @@ def test_model_prose_does_not_manufacture_builtin_web_actions(tmp_path, draft):
     events = list(stream_code_agent(user_message='Обсудим результат.', project_root=tmp_path,
         chat_fn=chat, permission_mode='accept_edits', auto_remember=False))
     assert len(captures) == 1
+    # Web tools are visible since 2026-10-11, but prose never triggers a call by itself.
     assert not any(e['type'] == 'tool_call' for e in events)
-    assert not {'web_search', 'web_fetch', 'browser', 'http_api'} & {
-        t['function']['name'] for t in captures[0]['tools']}
+    assert not {'browser', 'http_api'} & {t['function']['name'] for t in captures[0]['tools']}
     assert next(e['text'] for e in events if e['type'] == 'final_response') == draft
 
 @pytest.mark.parametrize('streaming', [False, True])
