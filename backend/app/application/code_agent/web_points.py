@@ -4,7 +4,7 @@ A mechanical provenance check, not a judgement of quality: the significant
 words and numbers of a point are looked up in the text the model was shown for
 the cited page, and the page's publication date is compared with the period
 the user asked for ("за неделю", "сегодня"). The answer is never rewritten;
-a point that fails gets one correction request, then a visible mark.
+a point that fails gets one correction request, then it is removed (John 2026-10-11).
 """
 from __future__ import annotations
 
@@ -96,15 +96,43 @@ def describe_point_problems(problems: list[dict[str, Any]], limit: int = 6) -> s
     return "; ".join(parts)
 
 
-def mark_point_problems(answer_text: str, problems: list[dict[str, Any]]) -> str:
-    by_line = {problem["line"]: problem for problem in problems}
+def _link_key(url: str) -> str:
+    return url.split("#", 1)[0].rstrip("/")
+
+
+def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
+                             bad_urls: set[str]) -> tuple[str, int]:
+    """John 2026-10-11: only verified points reach the chat.
+
+    A line is dropped when its point is not on its cited page or is out of the
+    asked period, or when every link it has is unread / a home page. In a kept
+    line a bad link is removed. Sections left empty lose their heading. Returns
+    the text and how many points and links were removed.
+    """
+    bad = {_link_key(url) for url in bad_urls}
+    drop = {problem["line"] for problem in problems}
     lines = str(answer_text or "").split("\n")
-    for index, problem in by_line.items():
-        if 0 <= index < len(lines):
-            marks = []
-            if problem["missing"]:
-                marks.append("источник этого не подтверждает")
-            if problem["old"]:
-                marks.append("статья от " + ", ".join(problem["old"]) + " — вне запрошенного периода")
-            lines[index] = lines[index].rstrip() + " (" + "; ".join(marks) + ")"
-    return "\n".join(lines)
+    kept: list[str] = []
+    removed = stripped = 0
+    for index, line in enumerate(lines):
+        links = [match for match in _LINK.finditer(line)]
+        broken = [match for match in links if _link_key(match.group(2)) in bad]
+        if index in drop or (links and len(broken) == len(links)):
+            removed += 1
+            continue
+        for match in broken:
+            line = re.sub(r"(?:,\s*)?" + re.escape(match.group(0)), "", line, count=1)
+            stripped += 1
+        kept.append(line)
+    if not removed:
+        return ("\n".join(kept), stripped) if stripped else (answer_text, 0)
+    result: list[str] = []
+    for index, line in enumerate(kept):
+        if line.lstrip().startswith("#"):
+            rest = [item for item in kept[index + 1:] if item.strip()]
+            if not rest or rest[0].lstrip().startswith("#"):
+                continue  # a heading with nothing left under it
+        result.append(line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(result)).strip()
+    text += f"\n\n_Убрано пунктов: {removed} — не нашлось в прочитанных статьях или вне запрошенного периода._"
+    return text, removed + stripped

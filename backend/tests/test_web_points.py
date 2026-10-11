@@ -7,7 +7,7 @@ from datetime import date
 from app.application.code_agent.answer_acceptance import AnswerAcceptance
 from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent.task_outcomes import TaskOutcome
-from app.application.code_agent.web_points import mark_point_problems, point_problems
+from app.application.code_agent.web_points import point_problems, remove_unverified_points
 
 ROYAL = "https://www.zakon.kz/politika/6534612-korol-belgii-prileteli.html"
 STORM = "https://www.zakon.kz/nauka/6534599-moshchnaya-magnitnaya-burya.html"
@@ -41,8 +41,11 @@ def test_an_article_older_than_the_asked_week_is_out_of_period():
     problems = point_problems(answer, TEXTS, DATES, "Новости Казахстана за последнюю неделю", TODAY)
     assert problems == [{"line": 0, "excerpt": problems[0]["excerpt"], "missing": [], "old": ["2026-09-24"]}]
     assert point_problems(answer, TEXTS, DATES, "Что случилось на Каспии?", TODAY) == []
-    marked = mark_point_problems(answer, problems)
-    assert marked.endswith("(статья от 2026-09-24 — вне запрошенного периода)")
+    digest = f"## ЧП\n{answer}\n\n## Политика\n- Король прилетел в Астану [zakon]({ROYAL})."
+    cleaned, removed = remove_unverified_points(digest, point_problems(
+        digest, TEXTS, DATES, "Новости Казахстана за последнюю неделю", TODAY), set())
+    assert removed == 1 and "## ЧП" not in cleaned and "Каспии" not in cleaned  # empty section goes too
+    assert cleaned.startswith("## Политика\n- Король прилетел") and "Убрано пунктов: 1" in cleaned
 
 
 def test_acceptance_asks_once_then_marks_the_point():
@@ -70,6 +73,5 @@ def test_acceptance_asks_once_then_marks_the_point():
     owner.commit(first)
     second = evaluate(5)
     assert second.action == "accept" and second.answer_status == "degraded"
-    lines = second.text.split("\n")
-    assert lines[0].endswith(f"[zakon.kz]({ROYAL}).")
-    assert lines[1].endswith("(источник этого не подтверждает)")
+    assert second.text.split("\n")[0].endswith(f"[zakon.kz]({ROYAL}).")
+    assert "хуситов" not in second.text and "Убрано пунктов: 1" in second.text

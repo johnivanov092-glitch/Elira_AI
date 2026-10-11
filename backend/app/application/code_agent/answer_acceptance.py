@@ -18,13 +18,14 @@ from app.application.code_agent.answer_contracts import (
 )
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
-from app.application.code_agent.web_points import describe_point_problems, mark_point_problems, point_problems
+from app.application.code_agent.web_points import (
+    describe_point_problems, point_problems, remove_unverified_points,
+)
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 logger = logging.getLogger(__name__)
 
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
-_INDEX_MARK = " (главная/рубрика: статья не открыта)"
 
 
 def index_page_links(answer_text: str, index_pages: Collection[str]) -> list[str]:
@@ -32,19 +33,6 @@ def index_page_links(answer_text: str, index_pages: Collection[str]) -> list[str
     keys = {url.rstrip("/") for url in index_pages}
     return list(dict.fromkeys(match.group(2) for match in _MARKDOWN_LINK.finditer(answer_text)
                               if match.group(2).rstrip("/") in keys))
-
-
-def mark_index_page_links(answer_text: str, index_pages: Collection[str]) -> str:
-    """A fact cited to a home/section page rests on a headline, not on a read article."""
-    if not index_pages:
-        return answer_text
-    keys = {url.rstrip("/") for url in index_pages}
-
-    def mark(match: re.Match[str]) -> str:
-        if match.group(2).rstrip("/") not in keys or answer_text[match.end():].startswith(_INDEX_MARK):
-            return match.group(0)
-        return match.group(0) + _INDEX_MARK
-    return _MARKDOWN_LINK.sub(mark, answer_text)
 
 RetryReason = Literal[
     "background", "evidence", "user_constraint", "delivery", "quote", "quote_source", "web_source",
@@ -274,15 +262,11 @@ class AnswerAcceptance:
             final_text = self._with_rendered_numbers(final_text, run_evidence)
             points = point_problems(final_text, run_evidence.web_page_texts, run_evidence.web_page_dates,
                                     raw_user_message or str(durable_task or ""))
-            if points:
-                final_text, unread_links_marked = mark_point_problems(final_text, points), True
-            unread_links = run_evidence.unread_web_links(final_text)
-            if unread_links:
-                final_text = run_evidence.mark_unread_web_links(final_text, unread_links)
-                unread_links_marked = True
-            index_marked = mark_index_page_links(final_text, run_evidence.web_index_pages)
-            if index_marked != final_text:
-                final_text, unread_links_marked = index_marked, True
+            unread_urls = {str(item.url) for item in run_evidence.unread_web_links(final_text)}
+            # John 2026-10-11: only verified points reach the chat; the rest is removed.
+            final_text, removed_points = remove_unverified_points(
+                final_text, points, unread_urls | run_evidence.web_index_pages)
+            unread_links_marked = removed_points > 0
         except Exception:  # a missing/broken web skill must not lose the answer
             logger.warning("unread web link check unavailable", exc_info=True)
         answer_status = (

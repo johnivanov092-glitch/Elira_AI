@@ -682,11 +682,6 @@ class RunEvidence:
         return unread_link_violations(answer_text, read_source_urls=read,
                                       known_source_urls=set(self._web_pages) | read)
 
-    def mark_unread_web_links(self, answer_text: str, violations: Iterable[Any]) -> str:
-        from app.application.skill_services.web_answers import mark_unread_links
-        failed = {url: page["error"] for url, page in self._web_pages.items() if page["status"] == "failed"}
-        return mark_unread_links(answer_text, tuple(violations), failed_errors=failed)
-
     def record_tool_result(
         self,
         *,

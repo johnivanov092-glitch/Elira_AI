@@ -56,21 +56,13 @@ ANSWER = (
 )
 
 
-def test_answer_keeps_read_links_and_marks_the_rest():
-    evidence = _evidence()
-    marked = evidence.mark_unread_web_links(ANSWER, evidence.unread_web_links(ANSWER))
-    assert f"]({READ})" in marked
-    for url in (FAILED, DISCOVERED, INVENTED):
-        assert url not in marked
-    assert "Informburo (ссылка убрана: не открылась — код 404)" in marked
-    assert "Zakon (ссылка убрана: страница не прочитана)" in marked
-    assert "Давка на концерте" in marked and "Король Бельгии" in marked  # the answer itself stays
-
-
-def test_acceptance_marks_unread_links_and_reports_partial():
+def test_points_resting_on_unread_pages_are_removed():
     decision = _acceptance(ANSWER, _evidence())
     assert decision.action == "accept" and decision.answer_status == "degraded"
-    assert INVENTED not in decision.text and f"]({READ})" in decision.text
+    assert f"Давка на концерте в Шымкенте, возбуждено уголовное дело. [NUR.KZ]({READ})" in decision.text
+    for gone in ("кабельная шахта", "вратарь", "Король Бельгии", FAILED, DISCOVERED, INVENTED):
+        assert gone not in decision.text
+    assert decision.text.endswith("_Убрано пунктов: 3 — не нашлось в прочитанных статьях или вне запрошенного периода._")
 
 
 def test_answer_without_web_research_is_untouched():
@@ -104,8 +96,7 @@ def test_numbers_become_links_and_a_home_page_source_gets_one_correction():
         active_capability_groups=set(), task_outcome=TaskOutcome(), run_evidence=evidence,
         code_input_epoch=0, quote_word_limit=None, step=5, run_id="kz-home")
     assert second.action == "accept" and second.answer_status == "degraded"
-    assert f"[nur.kz]({READ})" in second.text
-    assert f"[Zakon]({HOME}) (главная/рубрика: статья не открыта)" in second.text
+    assert f"[nur.kz]({READ})" in second.text and HOME not in second.text
 
 
 @pytest.fixture
