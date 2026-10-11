@@ -19,7 +19,7 @@ from app.application.code_agent.answer_contracts import (
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.web_points import (
-    describe_point_problems, point_problems, remove_unverified_points, resolve_web_labels,
+    blocking_problems, describe_point_problems, point_problems, remove_unverified_points, resolve_web_labels,
 )
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
@@ -165,8 +165,8 @@ class AnswerAcceptance:
             logger.warning("numbered web citations unavailable", exc_info=True)
             checked_text = final_text
         index_cited = index_page_links(checked_text, run_evidence.web_index_pages)
-        unsupported_points = point_problems(checked_text, run_evidence.web_page_texts,
-                                            run_evidence.web_page_dates, request_text)
+        unsupported_points = blocking_problems(point_problems(
+            checked_text, run_evidence.web_page_texts, run_evidence.web_page_dates, request_text))
         if (index_cited or unsupported_points) and not self.web_source_correction_sent:
             reasons = []
             if index_cited:

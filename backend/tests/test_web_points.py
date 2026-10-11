@@ -39,7 +39,8 @@ def test_a_number_absent_from_the_page_fails():
 def test_an_article_older_than_the_asked_week_is_out_of_period():
     answer = f"- На Каспии погибли 12 военнослужащих, возбуждено уголовное дело [regtv]({CASPIAN})."
     problems = point_problems(answer, TEXTS, DATES, "Новости Казахстана за последнюю неделю", TODAY)
-    assert problems == [{"line": 0, "excerpt": problems[0]["excerpt"], "missing": [], "old": ["2026-09-24"]}]
+    assert problems == [{"line": 0, "excerpt": problems[0]["excerpt"], "missing": [], "old": ["2026-09-24"],
+                         "weak": []}]
     assert point_problems(answer, TEXTS, DATES, "Что случилось на Каспии?", TODAY) == []
     digest = f"## ЧП\n{answer}\n\n## Политика\n- Король прилетел в Астану [zakon]({ROYAL})."
     cleaned, removed = remove_unverified_points(digest, point_problems(
@@ -87,6 +88,28 @@ def test_a_russian_table_row_about_an_english_page_keeps_its_main_figure():
     assert point_problems(row, texts, {}, "Есть ли у Qwen результаты на SWE-bench Multilingual?", TODAY) == []
     invented = f"- Qwen3.8-Flash-Next набрала 91.5% на SWE-bench Multilingual [huggingface.co]({card})."
     assert point_problems(invented, texts, {}, "Есть ли у Qwen результаты?", TODAY)[0]["missing"] == ["91"]
+
+
+def test_an_extra_link_that_does_not_carry_the_point_is_stripped_not_the_point():
+    # KZ run at 3f41a4e: a kept point carried an unrelated second article (24.kz flu).
+    answer = (f"## Политика\n"
+              f"- Король Филипп и королева Матильда прилетели в Астану, Токаев встретил их в аэропорту "
+              f"[zakon]({ROYAL}), [zakon]({STORM}).")
+    problems = point_problems(answer, TEXTS, DATES, "Новости Казахстана за неделю", TODAY)
+    assert [(problem["line"], problem["missing"], problem["weak"]) for problem in problems] == [(1, [], [STORM])]
+    cleaned, removed = remove_unverified_points(answer, problems, set())
+    assert removed == 1 and STORM not in cleaned and ROYAL in cleaned
+    assert "Король Филипп" in cleaned and "Убрано пунктов" not in cleaned  # a link went, no point did
+
+
+def test_a_heading_left_empty_before_a_rule_goes_too():
+    answer = (f"## Политика\n- Король прилетел в Астану [zakon]({ROYAL}).\n\n"
+              f"## Прочее за неделю\n- Казахстан осудил атаки хуситов на объекты Саудовской Аравии [zakon]({STORM}).\n\n"
+              f"---\nИсточники выше.")
+    problems = point_problems(answer, TEXTS, DATES, "Новости Казахстана", TODAY)
+    cleaned, removed = remove_unverified_points(answer, problems, set())
+    assert removed == 1 and "## Прочее за неделю" not in cleaned and "хуситов" not in cleaned
+    assert "## Политика" in cleaned and "---" in cleaned
 
 
 def test_search_labels_become_numbers_or_unread_links():

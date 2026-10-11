@@ -43,9 +43,37 @@ def _period_days(request: str) -> int | None:
     return None
 
 
+def _support(prose: str, page: str) -> tuple[bool, list[str]]:
+    """Whether the page carries the point: (unsupported, what is missing)."""
+    page_numbers = set(re.findall(r"\d+", page))
+    # A Russian point about an English page (and vice versa) cannot share its
+    # wording: only words in the page's script count; names and numbers decide.
+    cyrillic = len(re.findall(r"[а-яё]", page))
+    latin = len(re.findall(r"[a-z]", page))
+    page_script = "cyrillic" if cyrillic >= latin else "latin"
+    words: dict[str, str] = {}
+    for word in _WORD.findall(prose):
+        script = "cyrillic" if re.match(r"[А-Яа-яЁё]", word) else "latin"
+        if word.lower() not in _STOP and script == page_script:
+            words.setdefault(_stem(word), word)
+    missing = [word for stem, word in words.items() if stem not in page]
+    numbers = list(dict.fromkeys(number for number in re.findall(r"\d+", _DATE_NUMBER.sub(" ", prose))
+                                 if len(number) >= 2 and not _YEAR.match(number)))
+    missing_numbers = [number for number in numbers if number not in page_numbers]
+    # The point's own figures: unsupported when none of them is on the page
+    # (an auxiliary setting such as 256K may come from elsewhere on the page).
+    unsupported = ((len(words) >= 3 and len(missing) * 2 > len(words))
+                   or bool(numbers and len(missing_numbers) == len(numbers)))
+    return unsupported, [*missing_numbers, *missing][:5]
+
+
 def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dict[str, str],
                    user_request: str, today: date | None = None) -> list[dict[str, Any]]:
-    """Points (answer lines) whose cited read page does not carry them or is out of period."""
+    """Points (answer lines) whose cited read page does not carry them or is out of period.
+
+    A point carried by one of its pages keeps it; its other links that do not
+    carry the point are listed as ``weak`` (removed from the answer, no retry).
+    """
     texts = {url.rstrip("/"): text.lower().replace("ё", "е") for url, text in page_texts.items()}
     dates = {url.rstrip("/"): value for url, value in page_dates.items()}
     days = _period_days(user_request)
@@ -53,30 +81,12 @@ def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dic
     problems: list[dict[str, Any]] = []
     for index, line in enumerate(str(answer_text or "").split("\n")):
         cited = [match.group(2).rstrip("/") for match in _LINK.finditer(line)]
-        shown = [texts[url] for url in cited if url in texts]
+        shown = [url for url in dict.fromkeys(cited) if url in texts]
         if not shown:
             continue
         prose = re.sub(r"[*_`#>|]", " ", _LINK.sub(" ", line))
-        page = " ".join(shown)
-        page_numbers = set(re.findall(r"\d+", page))
-        # A Russian point about an English page (and vice versa) cannot share its
-        # wording: only words in the page's script count; names and numbers decide.
-        cyrillic = len(re.findall(r"[а-яё]", page))
-        latin = len(re.findall(r"[a-z]", page))
-        page_script = "cyrillic" if cyrillic >= latin else "latin"
-        words: dict[str, str] = {}
-        for word in _WORD.findall(prose):
-            script = "cyrillic" if re.match(r"[А-Яа-яЁё]", word) else "latin"
-            if word.lower() not in _STOP and script == page_script:
-                words.setdefault(_stem(word), word)
-        missing = [word for stem, word in words.items() if stem not in page]
-        numbers = list(dict.fromkeys(number for number in re.findall(r"\d+", _DATE_NUMBER.sub(" ", prose))
-                                     if len(number) >= 2 and not _YEAR.match(number)))
-        missing_numbers = [number for number in numbers if number not in page_numbers]
-        # The point's own figures: unsupported when none of them is on the page
-        # (an auxiliary setting such as 256K may come from elsewhere on the page).
-        unsupported = ((len(words) >= 3 and len(missing) * 2 > len(words))
-                       or bool(numbers and len(missing_numbers) == len(numbers)))
+        unsupported, missing = _support(prose, " ".join(texts[url] for url in shown))
+        weak = [] if unsupported or len(shown) < 2 else [url for url in shown if _support(prose, texts[url])[0]]
         old = []
         if start is not None:
             for url in cited:
@@ -86,11 +96,16 @@ def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dic
                         old.append(value)
                 except ValueError:
                     continue
-        if unsupported or old:
+        if unsupported or old or weak:
             problems.append({"line": index, "excerpt": prose.strip()[:90],
-                             "missing": [*missing_numbers, *missing][:5] if unsupported else [],
-                             "old": sorted(set(old))})
+                             "missing": missing if unsupported else [], "old": sorted(set(old)),
+                             "weak": weak})
     return problems
+
+
+def blocking_problems(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Problems that remove a point (and earn the one correction); weak extra links do not."""
+    return [problem for problem in problems if problem["missing"] or problem["old"]]
 
 
 def describe_point_problems(problems: list[dict[str, Any]], limit: int = 6) -> str:
@@ -139,13 +154,15 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
     the text and how many points and links were removed.
     """
     bad = {_link_key(url) for url in bad_urls}
-    drop = {problem["line"] for problem in problems}
+    drop = {problem["line"] for problem in blocking_problems(problems)}
+    weak = {problem["line"]: {_link_key(url) for url in problem.get("weak", ())} for problem in problems}
     lines = str(answer_text or "").split("\n")
     kept: list[str] = []
     removed = stripped = 0
     for index, line in enumerate(lines):
         links = [match for match in _LINK.finditer(line)]
-        broken = [match for match in links if _link_key(match.group(2)) in bad]
+        broken = [match for match in links
+                  if _link_key(match.group(2)) in bad or _link_key(match.group(2)) in weak.get(index, ())]
         if index in drop or (links and len(broken) == len(links)):
             removed += 1
             continue
@@ -159,8 +176,8 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
     for index, line in enumerate(kept):
         if line.lstrip().startswith("#"):
             rest = [item for item in kept[index + 1:] if item.strip()]
-            if not rest or rest[0].lstrip().startswith("#"):
-                continue  # a heading with nothing left under it
+            if not rest or rest[0].lstrip().startswith("#") or re.fullmatch(r"\s*([-*_])\1{2,}\s*", rest[0]):
+                continue  # a heading with nothing left under it (next heading, a rule or the end)
         result.append(line)
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(result)).strip()
     text += f"\n\n_Убрано пунктов: {removed} — не нашлось в прочитанных статьях или вне запрошенного периода._"
