@@ -304,6 +304,8 @@ class RunEvidence:
         # Citation numbers shown with each read page ([n]) and home/section pages.
         self._web_numbers: dict[int, tuple[str, str]] = {}
         self._web_index_pages: set[str] = set()
+        self._web_page_dates: dict[str, str] = {}
+        self._web_page_texts: dict[str, str] = {}
 
 
     @property
@@ -643,6 +645,20 @@ class RunEvidence:
         for url in output.get("index_pages") or []:
             if isinstance(url, str):
                 self._web_index_pages.add(url)
+        for field, target in (("page_dates", self._web_page_dates), ("page_texts", self._web_page_texts)):
+            values = output.get(field)
+            if isinstance(values, dict):
+                target.update({url: value for url, value in values.items()
+                               if isinstance(url, str) and isinstance(value, str)})
+
+    @property
+    def web_page_dates(self) -> dict[str, str]:
+        return dict(self._web_page_dates)
+
+    @property
+    def web_page_texts(self) -> dict[str, str]:
+        """The text the model saw for each read page, for checking the answer's points."""
+        return dict(self._web_page_texts)
 
     def numbered_read_pages(self) -> list[tuple[str, str]]:
         """(url, title) of page n at position n-1; unknown numbers stay empty."""

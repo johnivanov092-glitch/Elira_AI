@@ -285,6 +285,8 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
         *[part for url in permitted for part in ("--url", url)]])
     numbers = {_page_key(page["url"]): index for index, page in enumerate(ledger["pages"], 1)}
     page_numbers: dict[str, int] = {}
+    page_dates: dict[str, str] = {}
+    page_texts: dict[str, str] = {}
     index_pages: list[str] = []
     index_blocks: dict[str, str] = {}
     redirected: list[str] = []
@@ -320,6 +322,10 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
             numbers[key] = len(ledger["pages"])
         number = numbers[key]
         page_numbers[final] = number
+        dates = page.get("dates") if isinstance(page.get("dates"), dict) else {}
+        published = str(dates.get("published") or "")[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", published):
+            page_dates[final] = published
         if _page_key(asked) != key:
             # The server answered with another page; name it, or the model cites
             # the requested (possibly invented) address as if it had been read.
@@ -328,24 +334,37 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
                          "Это не запрошенный материал — не ссылайся на запрошенный адрес и не считай его прочитанным.")
     _save_ledger(project_root, ledger)
     text = str(result.get("text") or "")
-    if index_blocks:
-        separator = "\n\n———\n\n"
-        head, body = (text.split("\n\n", 1) if text.startswith("Fetched ") and "\n\n" in text else ("", text))
-        blocks = []
-        for block in body.split(separator):
-            fetched = re.search(r"\[fetched: (\S+?)\]", block)
-            blocks.append(index_blocks.get(_page_key(fetched.group(1)), block) if fetched else block)
-        text = (head + "\n\n" if head else "") + separator.join(blocks)
+    separator = "\n\n———\n\n"
+    head, body = (text.split("\n\n", 1) if text.startswith("Fetched ") and "\n\n" in text else ("", text))
+    blocks = []
+    for block in body.split(separator):
+        fetched = re.search(r"\[fetched: (\S+?)\]", block)
+        key = _page_key(fetched.group(1)) if fetched else ""
+        if key in index_blocks:
+            block = index_blocks[key]
+        elif fetched:
+            # The text the model saw for this page: the answer's points are checked against it.
+            for url in page_numbers:
+                if _page_key(url) == key:
+                    page_texts[url] = block[:20000]
+        blocks.append(block)
+    text = (head + "\n\n" if head else "") + separator.join(blocks)
     if page_numbers:
-        by_key = {_page_key(url): number for url, number in page_numbers.items()}
-        text = re.sub(r"\[fetched: (\S+?)\]",
-                      lambda match: (f"[{by_key[_page_key(match.group(1))]}] " if _page_key(match.group(1)) in by_key
-                                     else "") + match.group(0), text)
-        notes.insert(0, "Ссылайся на прочитанные страницы номером [n] из этого результата — адрес подставит Elira.")
+        by_key = {_page_key(url): (number, page_dates.get(url, "")) for url, number in page_numbers.items()}
+
+        def marker(match: re.Match[str]) -> str:
+            number, published = by_key.get(_page_key(match.group(1)), (0, ""))
+            if not number:
+                return match.group(0)
+            return f"[{number}] " + (f"(опубл. {published}) " if published else "") + match.group(0)
+        text = re.sub(r"\[fetched: (\S+?)\]", marker, text)
+        notes.insert(0, "Ссылайся на прочитанные страницы номером [n] из этого результата — адрес подставит Elira. "
+                        "Каждый пункт ответа бери из той страницы, на которую ссылаешься.")
     if refusal:
         notes.append(refusal)
     if notes:
         text = (text.rstrip() + "\n\n" + "\n".join(notes)).lstrip()
     return {**result, "text": text, "page_numbers": page_numbers, "index_pages": index_pages,
+            "page_dates": page_dates, "page_texts": page_texts,
             **({"redirected": redirected} if redirected else {}),
             **({"refused_urls": [*refused, *unknown_refs]} if refused or unknown_refs else {})}

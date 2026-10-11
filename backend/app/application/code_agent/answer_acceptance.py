@@ -18,6 +18,7 @@ from app.application.code_agent.answer_contracts import (
 )
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
+from app.application.code_agent.web_points import describe_point_problems, mark_point_problems, point_problems
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,14 @@ class AnswerAcceptance:
     quote_source_correction_sent: bool = False
     user_constraint_correction_sent: bool = False
     web_source_correction_sent: bool = False
+
+    @staticmethod
+    def _with_rendered_numbers(text: str, run_evidence: RunEvidence) -> str:
+        numbered = run_evidence.numbered_read_pages()
+        if not numbered:
+            return text
+        from app.application.skill_services.web_answers import render_numbered_links
+        return render_numbered_links(text, numbered)
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
@@ -157,18 +166,32 @@ class AnswerAcceptance:
                 retain_rejected_answer=(run_evidence.has_mutations or task_outcome.artifact_contract_seen),
             )
         quote_source_failed = bool(quote_source_problems)
-        # A home/section page holds headlines, not the facts: one chance to open
-        # the articles (labels L…) or drop those points; then the marks stay.
-        index_cited = index_page_links(final_text, run_evidence.web_index_pages)
-        if index_cited and not self.web_source_correction_sent:
+        # A home/section page holds headlines, not the facts, and every point must
+        # come from the page it cites (and from the asked period): one chance to
+        # open the right articles or drop those points; then the marks stay.
+        request_text = raw_user_message or str(durable_task or "")
+        try:
+            checked_text = self._with_rendered_numbers(final_text, run_evidence)
+        except Exception:
+            logger.warning("numbered web citations unavailable", exc_info=True)
+            checked_text = final_text
+        index_cited = index_page_links(checked_text, run_evidence.web_index_pages)
+        unsupported_points = point_problems(checked_text, run_evidence.web_page_texts,
+                                            run_evidence.web_page_dates, request_text)
+        if (index_cited or unsupported_points) and not self.web_source_correction_sent:
+            reasons = []
+            if index_cited:
+                reasons.append("ссылка на главную или рубрику (это заголовок, а не статья): " + ", ".join(index_cited))
+            if unsupported_points:
+                reasons.append("пункт не взят из страницы, на которую ссылается: "
+                               + describe_point_problems(unsupported_points))
             return AcceptanceDecision(
                 "retry", final_text, reason="web_source", correction=(
-                    "[Проверка веб-источников] Пункты со ссылкой на главную или рубрику опираются на заголовок, "
-                    "а не на прочитанную статью: " + ", ".join(index_cited) + ". Открой нужные статьи одним "
-                    "web_fetch по меткам L… из результата и ссылайся номером [n] прочитанной статьи, "
-                    "либо убери эти пункты. Остальной ответ не меняй."
+                    "[Проверка веб-источников] " + "; ".join(reasons) + ". Для каждого такого пункта открой "
+                    "его статью одним web_fetch по метке (L…/S…) и сошлись номером [n] именно этой статьи, "
+                    "либо убери пункт. Остальной ответ не меняй."
                 ),
-                log_note="answer cites home/section pages as sources",
+                log_note="web answer points lack their cited source",
                 event={"type": "answer_format_correction", "step": step, "contract": "web_source_citation"},
             )
         answer_verification = task_outcome.verify_answer(
@@ -248,10 +271,11 @@ class AnswerAcceptance:
         unread_links_marked = False
         try:
             # Read pages are cited by number; the address comes from the run, never the model.
-            numbered = run_evidence.numbered_read_pages()
-            if numbered:
-                from app.application.skill_services.web_answers import render_numbered_links
-                final_text = render_numbered_links(final_text, numbered)
+            final_text = self._with_rendered_numbers(final_text, run_evidence)
+            points = point_problems(final_text, run_evidence.web_page_texts, run_evidence.web_page_dates,
+                                    raw_user_message or str(durable_task or ""))
+            if points:
+                final_text, unread_links_marked = mark_point_problems(final_text, points), True
             unread_links = run_evidence.unread_web_links(final_text)
             if unread_links:
                 final_text = run_evidence.mark_unread_web_links(final_text, unread_links)
