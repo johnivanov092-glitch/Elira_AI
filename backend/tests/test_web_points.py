@@ -75,3 +75,22 @@ def test_acceptance_asks_once_then_marks_the_point():
     assert second.action == "accept" and second.answer_status == "degraded"
     assert second.text.split("\n")[0].endswith(f"[zakon.kz]({ROYAL}).")
     assert "хуситов" not in second.text and "Убрано пунктов: 1" in second.text
+
+
+def test_a_russian_table_row_about_an_english_page_keeps_its_main_figure():
+    # SWE run 57ad0d5a: the row was dropped for 95/256 and Russian wording.
+    card = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"
+    texts = {card: "[2] [fetched: card] Benchmark | Qwen3.8-Flash-Next\nSWE-Bench Multilingual | 81.0\n"
+                   "SWE-Bench Pro | 62.5 (mini-SWE-agent)"}
+    row = (f"| **Qwen3.8-Flash-Next** | **81.0%** (с harness mini-SWE-agent, temp=1.0, top_p=0.95, 256K контекст) "
+           f"| [huggingface.co]({card}) — официальная страница модели Hugging Face / Qwen |")
+    assert point_problems(row, texts, {}, "Есть ли у Qwen результаты на SWE-bench Multilingual?", TODAY) == []
+    invented = f"- Qwen3.8-Flash-Next набрала 91.5% на SWE-bench Multilingual [huggingface.co]({card})."
+    assert point_problems(invented, texts, {}, "Есть ли у Qwen результаты?", TODAY)[0]["missing"] == ["91"]
+
+
+def test_search_labels_become_numbers_or_unread_links():
+    from app.application.code_agent.web_points import resolve_web_labels
+    labels = {"S9": ROYAL, "S10": STORM}
+    text = resolve_web_labels("- Визит короля [S9, S10].", labels, [(ROYAL, "Король")])
+    assert text == f"- Визит короля [1], [S10]({STORM})."

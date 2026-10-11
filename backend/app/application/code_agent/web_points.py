@@ -59,15 +59,24 @@ def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dic
         prose = re.sub(r"[*_`#>|]", " ", _LINK.sub(" ", line))
         page = " ".join(shown)
         page_numbers = set(re.findall(r"\d+", page))
+        # A Russian point about an English page (and vice versa) cannot share its
+        # wording: only words in the page's script count; names and numbers decide.
+        cyrillic = len(re.findall(r"[а-яё]", page))
+        latin = len(re.findall(r"[a-z]", page))
+        page_script = "cyrillic" if cyrillic >= latin else "latin"
         words: dict[str, str] = {}
         for word in _WORD.findall(prose):
-            if word.lower() not in _STOP:
+            script = "cyrillic" if re.match(r"[А-Яа-яЁё]", word) else "latin"
+            if word.lower() not in _STOP and script == page_script:
                 words.setdefault(_stem(word), word)
         missing = [word for stem, word in words.items() if stem not in page]
-        numbers = [number for number in re.findall(r"\d+", _DATE_NUMBER.sub(" ", prose))
-                   if len(number) >= 2 and not _YEAR.match(number)]
-        missing_numbers = [number for number in dict.fromkeys(numbers) if number not in page_numbers]
-        unsupported = (len(words) >= 3 and len(missing) * 2 > len(words)) or bool(missing_numbers)
+        numbers = list(dict.fromkeys(number for number in re.findall(r"\d+", _DATE_NUMBER.sub(" ", prose))
+                                     if len(number) >= 2 and not _YEAR.match(number)))
+        missing_numbers = [number for number in numbers if number not in page_numbers]
+        # The point's own figures: unsupported when none of them is on the page
+        # (an auxiliary setting such as 256K may come from elsewhere on the page).
+        unsupported = ((len(words) >= 3 and len(missing) * 2 > len(words))
+                       or bool(numbers and len(missing_numbers) == len(numbers)))
         old = []
         if start is not None:
             for url in cited:
@@ -94,6 +103,26 @@ def describe_point_problems(problems: list[dict[str, Any]], limit: int = 6) -> s
             reasons.append("статья от " + ", ".join(problem["old"]) + " — раньше запрошенного периода")
         parts.append(f"«{problem['excerpt']}…» — " + "; ".join(reasons))
     return "; ".join(parts)
+
+
+_LABELS = re.compile(r"\[((?:[SL]\d{1,4})(?:\s*[,;]\s*[SL]\d{1,4})*)\]")
+
+
+def resolve_web_labels(answer_text: str, labels: dict[str, str], numbered_pages: list[tuple[str, str]]) -> str:
+    """[S9] / [L3] in an answer: the number of the read page, or a link to the unread one."""
+    if not labels:
+        return answer_text
+    numbers = {url.rstrip("/"): number for number, (url, _) in enumerate(numbered_pages, 1) if url}
+
+    def replace(match: re.Match[str]) -> str:
+        parts = []
+        for name in re.split(r"\s*[,;]\s*", match.group(1)):
+            url = labels.get(name.upper())
+            if url:
+                number = numbers.get(url.rstrip("/"))
+                parts.append(f"[{number}]" if number else f"[{name.upper()}]({url})")
+        return ", ".join(parts) if parts else match.group(0)
+    return _LABELS.sub(replace, answer_text)
 
 
 def _link_key(url: str) -> str:

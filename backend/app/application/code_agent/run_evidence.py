@@ -306,6 +306,7 @@ class RunEvidence:
         self._web_index_pages: set[str] = set()
         self._web_page_dates: dict[str, str] = {}
         self._web_page_texts: dict[str, str] = {}
+        self._web_labels: dict[str, str] = {}  # S3 / L7 → address
 
 
     @property
@@ -652,6 +653,10 @@ class RunEvidence:
                                if isinstance(url, str) and isinstance(value, str)})
 
     @property
+    def web_labels(self) -> dict[str, str]:
+        return dict(self._web_labels)
+
+    @property
     def web_page_dates(self) -> dict[str, str]:
         return dict(self._web_page_dates)
 
@@ -698,6 +703,10 @@ class RunEvidence:
             self._sources = merge_sources(self._sources, output.get("sources", []))
         if tool in {"web_search", "web_fetch"}:
             self._record_web_pages(output.get("sources"))
+            labels = output.get("labels")
+            if isinstance(labels, dict):
+                self._web_labels.update({name: url for name, url in labels.items()
+                                         if isinstance(name, str) and isinstance(url, str)})
         if tool == "web_fetch":
             self._record_web_numbers(output)
         document_qa = output.get("document_qa")

@@ -235,14 +235,18 @@ def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "
         if isinstance(source, dict):
             _allow(ledger, source.get("url"))
 
+    labels: dict[str, str] = {}
+
     def label(match: re.Match[str]) -> str:
         _allow(ledger, match.group(4))
-        return f"[{_ref(ledger, 'S', match.group(4))}] {match.group(2)}\n{match.group(3)}{match.group(4)}"
+        name = _ref(ledger, "S", match.group(4))
+        labels[name] = match.group(4)
+        return f"[{name}] {match.group(2)}\n{match.group(3)}{match.group(4)}"
     text = _SEARCH_ITEM.sub(label, str(result.get("text") or ""))
     _save_ledger(project_root, ledger)
     if text and "[S" in text:
         text += "\n\nОткрывай найденное по метке: web_fetch(urls=[\"S1\", \"S3\"]) — адрес подставит Elira."
-    return {**result, "text": text}
+    return {**result, "text": text, "labels": labels}
 
 
 def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
@@ -287,6 +291,7 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
     page_numbers: dict[str, int] = {}
     page_dates: dict[str, str] = {}
     page_texts: dict[str, str] = {}
+    labels: dict[str, str] = {}
     index_pages: list[str] = []
     index_blocks: dict[str, str] = {}
     redirected: list[str] = []
@@ -310,7 +315,11 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
             # Headlines are not articles: the model sees only the labelled list,
             # so it has nothing to build facts from but the opened articles.
             index_pages.append(final)
-            articles = [(_ref(ledger, "L", target), label) for label, target in _article_links(final, links)]
+            articles = []
+            for label, target in _article_links(final, links):
+                name = _ref(ledger, "L", target)
+                labels[name] = target
+                articles.append((name, label))
             index_blocks[key] = (
                 f"[fetched: {final}]\n«{title}» — главная или рубрика: заголовки скрыты, это не содержание статей "
                 "и не источник для ответа. Открой нужные статьи одним вызовом по меткам, например "
@@ -365,6 +374,6 @@ def tool_web_fetch(project_root: Path, *, urls: list[str], find: str = "",
     if notes:
         text = (text.rstrip() + "\n\n" + "\n".join(notes)).lstrip()
     return {**result, "text": text, "page_numbers": page_numbers, "index_pages": index_pages,
-            "page_dates": page_dates, "page_texts": page_texts,
+            "page_dates": page_dates, "page_texts": page_texts, "labels": labels,
             **({"redirected": redirected} if redirected else {}),
             **({"refused_urls": [*refused, *unknown_refs]} if refused or unknown_refs else {})}

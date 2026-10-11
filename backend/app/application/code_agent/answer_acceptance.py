@@ -19,7 +19,7 @@ from app.application.code_agent.answer_contracts import (
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.web_points import (
-    describe_point_problems, point_problems, remove_unverified_points,
+    describe_point_problems, point_problems, remove_unverified_points, resolve_web_labels,
 )
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
@@ -78,6 +78,7 @@ class AnswerAcceptance:
     @staticmethod
     def _with_rendered_numbers(text: str, run_evidence: RunEvidence) -> str:
         numbered = run_evidence.numbered_read_pages()
+        text = resolve_web_labels(text, run_evidence.web_labels, numbered)
         if not numbered:
             return text
         from app.application.skill_services.web_answers import render_numbered_links
