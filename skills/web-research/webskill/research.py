@@ -24,6 +24,7 @@ _PAGE_LOCKS: dict[str, threading.Lock] = {}
 _PAGE_DEADLINE = contextvars.ContextVar('web_page_deadline', default=None)
 _STOP = "Лимит времени исследования 60 с исчерпан — отвечай по прочитанному и отметь непроверенное."
 _WARN = "Прошло 30 с: заверши по прочитанному, перечисли, что не проверено."
+_FIND_LIMIT = {"quick": 2, "deep": 6}  # phrase lookups on pages already read, per run
 
 
 def remaining_timeout(maximum: float = 20) -> float:
@@ -155,6 +156,14 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
             elif new:
                 state["fetches"] += 1
                 state["urls"].extend(new)
+            elif str(getattr(args, "find", "") or "").strip():
+                # A phrase looked up again on pages already read cost nothing and
+                # looped (SWE run 9b2d118f: 10 finds on one arXiv page, 42 s).
+                if state.get("finds", 0) >= _FIND_LIMIT[mode]:
+                    error, hint = "web_find_budget", ("Поиск фраз по прочитанным страницам исчерпан — "
+                                                      "отвечай по прочитанному и отметь, чего не нашлось.")
+                else:
+                    state["finds"] = state.get("finds", 0) + 1
     _write(path, state)
     if getattr(args, 'native', False):
         print(json.dumps({'web_deadline_epoch': _DEADLINE}), flush=True)
@@ -184,8 +193,10 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
         searches_left = max(0, (1 if mode == "quick" else 3) - state["searches"])
         rounds = (2 if state["fetches"] == 1 and state.get("failed_urls") else 1) if mode == "quick" else 3
         reads_left = max(0, rounds - state["fetches"])
-        budget = f"Бюджет ({mode}): поисков осталось {searches_left}, чтений {reads_left}."
-        if not searches_left and not reads_left:
+        finds_left = max(0, _FIND_LIMIT[mode] - state.get("finds", 0))
+        budget = (f"Бюджет ({mode}): поисков осталось {searches_left}, чтений {reads_left}, "
+                  f"поисков фразы по прочитанному {finds_left}.")
+        if not searches_left and not reads_left and not finds_left:
             budget += " Отвечай по прочитанному."
         elif not searches_left:
             budget += " Новый поиск не пройдёт: читай найденное."

@@ -25,7 +25,8 @@ def test_quick_has_one_single_language_search_and_then_closes_search(queries):
     assert first["ok"] and "error" not in first and not first.get("partial")
     assert first["sources"] == [{"url": "https://a"}] and first["text"].startswith("found")
     # The model sees the budget left instead of spending a call on a refusal (SWE run c6166f63).
-    assert first["text"].endswith("поисков осталось 0, чтений 1. Новый поиск не пройдёт: читай найденное.")
+    assert first["text"].endswith("поисков осталось 0, чтений 1, поисков фразы по прочитанному 2. "
+                                  "Новый поиск не пройдёт: читай найденное.")
     assert first["web_research"]["search_rounds"] == 1
     assert "language_correction_available" not in first["web_research"]
     second = research.execute("search", args(queries=["Another query"]), operation)
@@ -76,7 +77,7 @@ def test_deep_single_language_search_has_only_three_rounds():
         result = research.execute("search", args(mode="deep", queries=["English query"]), operation)
         assert result["ok"] and "error" not in result and not result.get("partial")
         assert result["sources"] == [{"url": "https://a"}] and result["text"].startswith("found")
-        assert f"поисков осталось {3 - round_number}, чтений 3." in result["text"]
+        assert f"поисков осталось {3 - round_number}, чтений 3," in result["text"]
         assert result["web_research"]["search_rounds"] == round_number
         assert "language_correction_available" not in result["web_research"]
     stopped = research.execute("search", args(mode="deep"), operation)
@@ -508,3 +509,14 @@ def test_eight_url_find_and_cached_repeat_keep_12k_limit_and_all_receipts(monkey
             assert "Verified score" in source["quote"]
         if step == 2:
             assert len(result["web_research"]["cached"]) == 8
+
+
+def test_phrase_lookups_on_read_pages_are_bounded():
+    # SWE run 9b2d118f: ten finds on one arXiv page (each a new phrase) took 42 s.
+    operation = Mock(return_value={"ok": True, "text": "page", "pages": [{"url": "https://a", "ok": True}]})
+    first = research.execute("fetch", args(mode="quick", urls=["https://a"]), operation)
+    assert first["ok"] and "поисков фразы по прочитанному 2." in first["text"]
+    for phrase in ("first", "second"):
+        assert research.execute("fetch", args(urls=["https://a"], find=phrase), operation)["ok"]
+    stopped = research.execute("fetch", args(urls=["https://a"], find="third"), operation)
+    assert stopped["error"] == "web_find_budget" and operation.call_count == 3
