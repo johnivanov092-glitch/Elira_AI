@@ -8,6 +8,12 @@ export type TelegramStatus = {
   token_preview: string;
   legacy_token_present: boolean;
   bot_username?: string;
+  /** The person left the bot on: it starts by itself once the vault is unlocked. */
+  enabled?: boolean;
+  vault_initialized?: boolean;
+  vault_locked?: boolean;
+  /** The owner talks to Elira with full rights; bound by /pair <code>. */
+  owner?: { chat_id: number; username: string; first_name: string } | null;
 };
 
 export type TelegramUser = {
@@ -44,4 +50,9 @@ export async function listTelegramUsers(): Promise<TelegramUser[]> {
 
 export function setTelegramUserAccess(chatId: number, allowed: boolean): Promise<unknown> {
   return request(`/api/telegram/users/${encodeURIComponent(String(chatId))}`, { method: "POST", body: { allowed } });
+}
+
+/** A one-time code (10 minutes): sending `/pair <code>` to the bot makes that account the owner. */
+export function createTelegramPairCode(): Promise<{ ok: boolean; code: string; expires_at: number }> {
+  return request("/api/telegram/pair", { method: "POST" });
 }

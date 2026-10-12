@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import secrets
 import sqlite3
+import time
 from datetime import datetime
 from typing import Any
 
@@ -201,3 +203,24 @@ def get_telegram_log(
         return {"ok": True, "log": [dict(row) for row in rows], "count": len(rows)}
     finally:
         conn.close()
+
+
+# -- the owner (John 2026-10-12) ----------------------------------------------
+# Kept here, not in the mutable skill, so Settings work whatever skill copy is
+# installed; the skill's /pair handler reads and spends the same code.
+PAIR_SECONDS = 600
+
+
+def owner_chat_id() -> int | None:
+    value = get_config_value("owner_chat_id", "").strip()
+    return int(value) if value.lstrip("-").isdigit() else None
+
+
+def create_pair_code() -> dict[str, Any]:
+    """A one-time code: sending /pair <code> to the bot makes that account the owner."""
+    code = f"{secrets.randbelow(10 ** 6):06d}"
+    expires = time.time() + PAIR_SECONDS
+    set_config_value("pair_code", code)
+    set_config_value("pair_expires", str(expires))
+    set_config_value("pair_attempts", "0")
+    return {"ok": True, "code": code, "expires_at": expires}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -133,10 +135,29 @@ def unlock_vault(body: VaultUnlockRequest):
     credential = body.credential.get_secret_value()
     try:
         if body.method == "recovery":
-            return vault.unlock(recovery_key=credential)
-        return vault.unlock(passphrase=credential)
+            result = vault.unlock(recovery_key=credential)
+        else:
+            result = vault.unlock(passphrase=credential)
     except Exception as exc:
         _raise_vault_http_error(exc)
+    _start_waiting_integrations()
+    return result
+
+
+def _start_waiting_integrations() -> None:
+    """A bot the person left on comes back once its token can be read (John 2026-10-12)."""
+    import threading
+
+    def start() -> None:
+        try:
+            from app.application import telegram
+
+            autostart = getattr(telegram, "autostart_telegram_bot", None)  # older skill copies lack it
+            if autostart:
+                autostart()
+        except Exception:
+            logging.getLogger(__name__).warning("Telegram autostart after unlock failed", exc_info=True)
+    threading.Thread(target=start, daemon=True, name="telegram-autostart").start()
 
 
 @router.post("/vault/lock", summary="Lock the portable vault")

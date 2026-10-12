@@ -23,9 +23,18 @@ class TelegramUserAccessRequest(BaseModel):
 
 def _status() -> dict:
     from app.application import telegram
+    from app.application.telegram.store import get_config_value, list_telegram_users, owner_chat_id
+    from app.infrastructure.secrets import vault
 
     config = telegram.get_telegram_config()
     status = telegram.telegram_bot_status()
+    try:
+        vault_state = vault.status()
+    except Exception:
+        vault_state = {"initialized": True, "locked": True}
+    owner_id = owner_chat_id()
+    users = list_telegram_users().get("users") or []
+    owner = next((user for user in users if user.get("chat_id") == owner_id), None)
     return {
         "ok": True,
         "running": bool(status.get("running")),
@@ -33,6 +42,11 @@ def _status() -> dict:
         "has_token": bool(config.get("has_token")),
         "token_preview": str(config.get("bot_token") or ""),
         "legacy_token_present": bool(config.get("legacy_token_present")),
+        "enabled": get_config_value("enabled", "") == "true",
+        "vault_initialized": bool(vault_state.get("initialized")),
+        "vault_locked": bool(vault_state.get("initialized")) and bool(vault_state.get("locked")),
+        "owner": ({"chat_id": owner_id, "username": (owner or {}).get("username", ""),
+                   "first_name": (owner or {}).get("first_name", "")} if owner_id else None),
     }
 
 
@@ -78,6 +92,14 @@ def telegram_test():
     if not result.get("ok"):
         raise HTTPException(409, str(result.get("error") or "Telegram connection failed"))
     return {"ok": True, "bot_username": result.get("bot_username", ""), "bot_name": result.get("bot_name", "")}
+
+
+@router.post("/pair")
+def telegram_pair():
+    """A one-time code: the person sends /pair <code> to the bot and becomes its owner."""
+    from app.application.telegram.store import create_pair_code
+
+    return create_pair_code()
 
 
 @router.get("/users")

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, PlugZap, RefreshCw, Square } from "lucide-react";
+import { Crown, Lock, Play, PlugZap, RefreshCw, Square } from "lucide-react";
 import {
-  getTelegramStatus, listTelegramUsers, setTelegramToken, setTelegramUserAccess, startTelegramBot,
-  stopTelegramBot, testTelegramBot, type TelegramStatus, type TelegramUser,
+  createTelegramPairCode, getTelegramStatus, listTelegramUsers, setTelegramToken, setTelegramUserAccess,
+  startTelegramBot, stopTelegramBot, testTelegramBot, type TelegramStatus, type TelegramUser,
 } from "../../api/telegram";
-import { createPortableSecret } from "../../api/workflows";
+import { createPortableSecret, unlockPortableVault } from "../../api/workflows";
 import { Loading, McpBtn, Note, Wrap } from "./_shared";
 
 const btn = "flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-t2 hover:bg-hover disabled:opacity-50";
@@ -15,6 +15,8 @@ export function TelegramSection() {
   const [status, setStatus] = useState<TelegramStatus | null>(null);
   const [users, setUsers] = useState<TelegramUser[]>([]);
   const [token, setToken] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [pair, setPair] = useState<{ code: string; expires_at: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -61,6 +63,23 @@ export function TelegramSection() {
     }, () => "Токен сохранён в хранилище секретов.");
   }
 
+  async function unlock() {
+    const value = passphrase;
+    if (!value) return;
+    await run(async () => {
+      await unlockPortableVault(value);
+      if (mounted.current) setPassphrase("");
+    }, () => (status?.enabled ? "Хранилище разблокировано — бот запускается." : "Хранилище разблокировано."));
+  }
+
+  async function makePairCode() {
+    await run(async () => {
+      const result = await createTelegramPairCode();
+      if (mounted.current) setPair({ code: result.code, expires_at: result.expires_at });
+    });
+  }
+
+  const owner = status?.owner;
   return (
     <Wrap title="Telegram">
       <Note>Бот Elira в Telegram. Токен хранится в хранилище секретов (оно должно быть разблокировано). Отправлять сообщения из чата Elira может сама — попросите «скинь в Telegram».</Note>
@@ -68,6 +87,29 @@ export function TelegramSection() {
       {message && <div className="mt-3 text-[12px] text-t2">{message}</div>}
       {status === null ? (!error && <Loading />) : (
         <div className="mt-3 flex flex-col gap-3 text-[12.5px]">
+          {status.vault_initialized === false && (
+            <div className="flex flex-col gap-1 rounded-lg border border-line px-3 py-2.5">
+              <div className="flex items-center gap-2 font-medium"><Lock size={13} /> Хранилище секретов не создано</div>
+              <div className="text-[11.5px] text-mut">Токен бота хранится в нём: создайте хранилище в разделе «Хранилище секретов» и сохраните ключ восстановления.</div>
+            </div>
+          )}
+          {status.vault_locked && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-line px-3 py-2.5">
+              <div className="flex items-center gap-2 font-medium"><Lock size={13} /> Хранилище секретов заперто</div>
+              <div className="text-[11.5px] text-mut">
+                Токен бота лежит в нём: без разблокировки ключ не сохранить и бот не запустить.
+                {status.enabled ? " Включённый бот запустится сам после разблокировки." : ""}
+              </div>
+              <div className="flex gap-2">
+                <input type="password" autoComplete="current-password" aria-label="Пароль хранилища" placeholder="Пароль хранилища"
+                  value={passphrase} onChange={(e) => setPassphrase(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void unlock(); }}
+                  className="min-w-0 flex-1 rounded-md border border-line bg-transparent px-2.5 py-1.5 text-[12.5px] outline-none focus:border-acl" />
+                <button type="button" className={btn} disabled={busy || !passphrase} onClick={() => void unlock()}>Разблокировать</button>
+              </div>
+              <div className="text-[11px] text-mut">Ключ восстановления — в разделе «Хранилище секретов».</div>
+            </div>
+          )}
           <div className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2.5">
             <span className={`h-2 w-2 shrink-0 rounded-full ${status.running ? "bg-green-400" : "bg-mut"}`} />
             <div className="min-w-0 flex-1">
@@ -88,15 +130,36 @@ export function TelegramSection() {
               <button type="button" className={btn} disabled={busy || !token.trim()} onClick={() => void saveToken()}>Сохранить</button>
             </div>
           </div>
+          <div className="flex flex-col gap-1.5 rounded-lg border border-line px-3 py-2.5">
+            <div className="flex items-center gap-2 font-medium"><Crown size={13} /> Владелец</div>
+            <div className="text-[11.5px] text-mut">
+              {owner
+                ? `${owner.first_name || owner.username || owner.chat_id}${owner.username ? ` (@${owner.username})` : ""} — полный доступ, как в Elira; переписка в чате «Telegram».`
+                : "Не привязан. Владелец общается с Elira как в приложении — с полным доступом."}
+            </div>
+            {pair ? (
+              <div className="text-[12px]">
+                Отправьте боту со своего аккаунта: <code className="rounded bg-surface px-1.5 py-0.5 font-mono">/pair {pair.code}</code>
+                <span className="ml-1 text-[11px] text-mut">(код действует 10 минут, одна привязка)</span>
+              </div>
+            ) : (
+              <div>
+                <button type="button" className={btn} disabled={busy || !status.running} onClick={() => void makePairCode()}>
+                  {owner ? "Сменить владельца" : "Привязать мой Telegram"}
+                </button>
+                {!status.running && <span className="ml-2 text-[11px] text-mut">сначала запустите бота</span>}
+              </div>
+            )}
+          </div>
           <div>
-            <div className="mb-1.5 text-[11.5px] text-mut">Кто может писать боту</div>
+            <div className="mb-1.5 text-[11.5px] text-mut">Кто ещё может писать боту — ограниченный доступ: разговор без действий</div>
             {users.length === 0 ? <Note>Пока никто не писал боту.</Note> : (
               <div className="flex flex-col gap-1.5">
                 {users.map((user) => (
                   <label key={user.chat_id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
                     <input type="checkbox" checked={Boolean(user.allowed)} disabled={busy} onChange={(e) => void run(() => setTelegramUserAccess(user.chat_id, e.target.checked))} />
                     <span className="min-w-0 flex-1 break-words">{user.first_name || user.username || "Без имени"}{user.username ? ` (@${user.username})` : ""}</span>
-                    <span className="text-[11px] text-mut">{user.chat_id}</span>
+                    <span className="text-[11px] text-mut">{owner?.chat_id === user.chat_id ? "владелец" : user.chat_id}</span>
                   </label>
                 ))}
               </div>

@@ -81,6 +81,35 @@ export default function WorkspaceShell() {
     if (connected) refreshSessions();
   }, [connected, refreshSessions]);
 
+  // Chats written outside this window (the Telegram bot, John 2026-10-12) show up
+  // without a restart: the list refreshes, and the open chat takes the new turns
+  // when the server has more of them and nothing runs in it here.
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  useEffect(() => {
+    if (!connected) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await listCodeSessions();
+          const id = activeKeyRef.current;
+          const before = sessionsRef.current.find((item) => item.id === id);
+          const after = next.find((item) => item.id === id);
+          setSessions(next);
+          if (!before || !after || after.updated_at === before.updated_at) return;
+          if (bg.isRunning(id) || loadFailedKeys.current.has(id)) return;
+          const saved = await getCodeSession(id);
+          if (!saved || activeKeyRef.current !== id || bg.isRunning(id)) return;
+          const turns = deserializeTurns(saved.turns);
+          if (turns.length > bg.getSnapshot(id).turns.length) {
+            bg.seed(id, turns, saved.task_ledger || [], saved.context_state || null);
+          }
+        } catch { /* offline: the next tick tries again */ }
+      })();
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [connected]);
+
   // Map from a run key (draft id or server id) to its server session id, for
   // sessions whose run finished while off-screen. Lets background persistence
   // resolve the right server id without React state churn.

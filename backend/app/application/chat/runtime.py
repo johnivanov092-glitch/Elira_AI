@@ -101,6 +101,8 @@ def run_agent(
     pause_for_workflow_request: bool = False,
     resume: bool = False,
     workflow_approval: dict[str, Any] | None = None,
+    on_event: Any = None,
+    read_only: bool = False,
     **_ignored_legacy_options: Any,
 ) -> dict[str, Any]:
     """Run the universal code-agent core and return the historical dict shape.
@@ -131,6 +133,8 @@ def run_agent(
         pause_for_workflow_request=pause_for_workflow_request,
         resume=resume,
         workflow_approval=workflow_approval,
+        on_event=on_event,
+        read_only=read_only,
     )
     answer = str(result.get("response") or "")
     error = str(result.get("error") or "")

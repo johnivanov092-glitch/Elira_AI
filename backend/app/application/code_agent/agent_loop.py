@@ -1846,10 +1846,12 @@ def run_code_agent(
     resource_refs: list[dict[str, Any]] | None = None,
     parent_run_id: str | None = None,
     read_only: bool = False,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.
-    Workflow input waits until a UI decision or Stop.
+    Workflow input waits until a UI decision or Stop. ``on_event`` sees each
+    event as it comes (the Telegram bot's short status line); it cannot stop the run.
     """
     tool_calls_log: list[dict[str, Any]] = []
     response_text = ""
@@ -1899,6 +1901,11 @@ def run_code_agent(
         parent_run_id=parent_run_id,
         read_only=read_only,
     ):
+        if on_event is not None:
+            try:
+                on_event(event)
+            except Exception:
+                logger.debug("run observer failed", exc_info=True)
         et = event.get("type")
         if et == "step_started":
             response_text = ""
