@@ -116,8 +116,8 @@ class TerminalSession:
         self._busy = False  # a command was entered and its prompt has not come back
         self._listeners: list[Callable[[str | None], None]] = []
         self._carry = ""  # an unfinished OSC held for the next read
+        self._win32_input = False  # the console asked for key events (CSI ?9001h)
         self._last_output = time.monotonic()
-        self._settled = False  # the shell went quiet after its first prompt
         self._alive = True
         threading.Thread(target=self._read_loop, name=f"terminal-{self.id}", daemon=True).start()
 
@@ -136,6 +136,8 @@ class TerminalSession:
         pieces = data.split(_PROMPT)
         for index, piece in enumerate(pieces):
             self._exits.extend(int(code) for code in _EXIT.findall(piece))
+            if "\x1b[?9001" in piece:
+                self._win32_input = piece.rfind("\x1b[?9001h") > piece.rfind("\x1b[?9001l")
             self._stream.feed(piece)
             if index < len(pieces) - 1:
                 row = self._row() + (1 if self._screen.cursor.x else 0)
@@ -209,7 +211,29 @@ class TerminalSession:
         if "\r" in data:
             with self._lock:
                 self._busy = True
-        self._proc.write(data)
+        self._proc.write(self._keys(data))
+
+    def _keys(self, data: str) -> str:
+        """Non-ASCII characters as ready key events when the console asked for win32-input-mode.
+
+        Plain UTF-8 makes the console map each character to a key of its own
+        keyboard layout; with an English one, capital Cyrillic has no key and
+        PowerShell dropped it ("Привет" arrived as "ривет", "ПРИВЕТ" as "Т").
+        """
+        with self._lock:
+            win32_input = self._win32_input
+        if not win32_input or data.isascii():
+            return data
+        out = []
+        for char in data:
+            if char.isascii():
+                out.append(char)
+                continue
+            raw = char.encode("utf-16-le")
+            for index in range(0, len(raw), 2):  # a surrogate pair is two key events
+                unit = int.from_bytes(raw[index:index + 2], "little")
+                out.append(f"\x1b[0;0;{unit};1;0;1_\x1b[0;0;{unit};0;0;1_")
+        return "".join(out)
 
     def resize(self, cols: int, rows: int) -> None:
         cols, rows = max(20, min(int(cols), 400)), max(5, min(int(rows), 200))
@@ -228,15 +252,12 @@ class TerminalSession:
             if self._busy:
                 return {"ok": False, "error": "terminal_busy",
                         "text": "В терминале ещё идёт команда. Экран:\n" + self.read_locked(15)}
-            # A quiet shell first: PSReadLine shows the prompt before it reads keys (the
-            # first typed characters were lost, "Привет" arrived as "ривет"), and a
-            # cancelled line may still redraw a prompt that must not end this command.
-            quiet = 0.15 if self._settled else 0.5
-            self._lock.wait_for(lambda: time.monotonic() - self._last_output > quiet, timeout=4)
-            self._settled = True
+            # A quiet shell first: a cancelled line may still redraw a prompt that must
+            # not end this command.
+            self._lock.wait_for(lambda: time.monotonic() - self._last_output > 0.15, timeout=4)
             before, start, exits = self._prompts, self._row(), len(self._exits)
             self._busy = True
-        self._proc.write(command + "\r")
+        self._proc.write(self._keys(command) + "\r")
         stopped = False
         with self._lock:
             while self._prompts <= before and self._alive:

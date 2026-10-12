@@ -30,6 +30,17 @@ def test_powershell_command_output_and_exit_code_come_back_clean(manager, tmp_pa
     assert "Привет, терминал" in session.read()
 
 
+@pytest.mark.parametrize("profile", ["powershell", "cmd", "bash"])
+def test_capital_cyrillic_is_typed_whatever_the_keyboard_layout(manager, tmp_path, profile):
+    # Release verify 2026-10-12: with an English layout the console dropped capital
+    # Cyrillic ("Привет" → "ривет", "ПРИВЕТ" → "Т"); keys now go as key events.
+    if profile not in profiles():
+        pytest.skip(f"{profile} is not installed")
+    session = manager.create(profile, tmp_path)
+    words = session.run("echo Ёлка Привет МИР")["text"].split()  # PowerShell prints a word per line
+    assert words == ["Ёлка", "Привет", "МИР"]
+
+
 def test_cmd_tab_runs_without_exit_codes(manager, tmp_path):
     session = manager.create("cmd", tmp_path)
     result = session.run("echo Привет & ping -n 1 127.0.0.1")
