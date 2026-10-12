@@ -258,3 +258,41 @@ def test_search_labels_become_numbers_or_unread_links():
     labels = {"S9": ROYAL, "S10": STORM}
     text = resolve_web_labels("- Визит короля [S9, S10].", labels, [(ROYAL, "Король")])
     assert text == f"- Визит короля [1], [S10]({STORM})."
+
+
+def test_a_search_the_model_chose_for_a_knowledge_question_keeps_its_points():
+    # Golden chat-list-compare (2026-10-12): "Сравни три фреймворка" — the model searched on
+    # its own; a point from its own knowledge was removed and the answer marked degraded.
+    from app.application.code_agent.web_points import web_requested
+    assert not web_requested("Сравни три фреймворка: React, Vue, Svelte")
+    assert web_requested("Новости Казахстана за неделю") and web_requested("https://github.com/a/b — что это?")
+    assert web_requested("Найди в интернете результаты Qwen и ответь с источником")
+    evidence = RunEvidence()
+    evidence.record_tool_result(
+        tool_name="web_fetch", arguments={"urls": ["S1"], "mode": "deep"}, execution_status="ok",
+        output=evidence_output(ROYAL), text_result="", state_changed=False)
+    answer = ("- Король Филипп и королева Матильда прилетели в Астану, Токаев встретил их в аэропорту [1].\n"
+              "- Казахстан решительно осудил атаки хуситов на объекты Саудовской Аравии [1].\n"
+              "- Хорошая практика — сравнивать экосистемы и порог входа фреймворков самостоятельно.")
+    decision = AnswerAcceptance().evaluate(
+        final_text=answer, raw_user_message="Расскажи про визит короля Бельгии в Астану",
+        pending_redirected_jobs=(), active_capability_groups=set(), task_outcome=TaskOutcome(),
+        run_evidence=evidence, code_input_epoch=0, quote_word_limit=None, step=4, run_id="chat-knowledge")
+    assert decision.action == "accept" and decision.answer_status == "complete"
+    lines = decision.text.split("\n")
+    assert lines[0].endswith(f"[zakon.kz, 11.10.2026]({ROYAL}).")
+    assert lines[1] == "- Казахстан решительно осудил атаки хуситов на объекты Саудовской Аравии."  # link went
+    assert "Хорошая практика" in decision.text and "Убрано" not in decision.text
+
+
+def test_a_site_name_in_brackets_is_not_a_link_and_a_carried_point_gets_the_real_one():
+    # KZ golden 9abf2b1d: "- **Lenovo и QAIRU** … [informburo.kz]" stayed with no link and no date.
+    from app.application.code_agent.web_points import drop_site_labels, reattribute_points
+    answer = ("- Король Филипп прилетел в Астану, обсуждали инвестиции и транзит [zakon.kz]\n"
+              "- `pip install x [extra.io]`")
+    dropped = drop_site_labels(answer)
+    assert dropped == ("- Король Филипп прилетел в Астану, обсуждали инвестиции и транзит\n"
+                       "- `pip install x [extra.io]`")
+    loose, moved = reattribute_points(dropped, TEXTS, DATES, "Новости Казахстана", TODAY, link_carried=True)
+    assert moved == 1 and loose.split("\n")[0].endswith(f"транзит [zakon.kz]({ROYAL})")
+    assert reattribute_points(dropped, TEXTS, DATES, "Новости Казахстана", TODAY) == (dropped, 0)  # not plain

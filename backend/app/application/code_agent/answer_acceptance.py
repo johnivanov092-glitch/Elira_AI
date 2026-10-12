@@ -19,8 +19,9 @@ from app.application.code_agent.answer_contracts import (
 from app.application.code_agent.run_evidence import RunEvidence, drop_unverified_quotes
 from app.application.code_agent.task_outcomes import TaskOutcome
 from app.application.code_agent.web_points import (
-    blocking_problems, date_read_links, describe_point_problems, drop_citation_numbers, link_bare_urls,
-    point_problems, prefer_written_addresses, reattribute_points, remove_unverified_points, resolve_web_labels,
+    blocking_problems, date_read_links, describe_point_problems, drop_citation_numbers, drop_site_labels,
+    link_bare_urls, point_problems, prefer_written_addresses, reattribute_points, remove_unverified_points,
+    resolve_web_labels, web_requested,
 )
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
@@ -82,9 +83,10 @@ class AnswerAcceptance:
         text = resolve_web_labels(text, run_evidence.web_labels, numbered)
         if not numbered:
             # Nothing was read: a [n] in a web answer names no page.
-            return drop_citation_numbers(text) if run_evidence.web_researched else text
+            return drop_site_labels(drop_citation_numbers(text)) if run_evidence.web_researched else text
         from app.application.skill_services.web_answers import render_numbered_links
-        return link_bare_urls(render_numbered_links(prefer_written_addresses(text, numbered), numbered))
+        return drop_site_labels(link_bare_urls(render_numbered_links(prefer_written_addresses(text, numbered),
+                                                                     numbered)))
 
     def commit(self, decision: AcceptanceDecision) -> None:
         """Commit one-shot flags after the coordinator applies earlier effects."""
@@ -161,7 +163,10 @@ class AnswerAcceptance:
         # come from the page it cites (and from the asked period): in deep research
         # one chance to open the right articles; then the unverified points go.
         # A quick search (10–20 s, John 2026-10-11) gets no extra model call: they go at once.
+        # Only when the user asked for the web: a search the model chose for a knowledge
+        # question keeps its points and loses only the links that do not carry them.
         request_text = raw_user_message or str(durable_task or "")
+        strict_web = web_requested(request_text)
         try:
             checked_text = self._with_rendered_numbers(final_text, run_evidence)
         except Exception:
@@ -169,12 +174,13 @@ class AnswerAcceptance:
             checked_text = final_text
         # A point another read page carries is re-cited at acceptance, not retried.
         checked_text, _ = reattribute_points(checked_text, run_evidence.web_page_texts,
-                                             run_evidence.web_page_dates, request_text)
+                                             run_evidence.web_page_dates, request_text, link_carried=strict_web)
         index_cited = index_page_links(checked_text, run_evidence.web_index_pages)
         unsupported_points = blocking_problems(point_problems(
             checked_text, run_evidence.web_page_texts, run_evidence.web_page_dates, request_text,
             researched=run_evidence.web_researched))
-        if (index_cited or unsupported_points) and run_evidence.web_deep and not self.web_source_correction_sent:
+        if ((index_cited or unsupported_points) and strict_web and run_evidence.web_deep
+                and not self.web_source_correction_sent):
             reasons = []
             if unsupported_points and not run_evidence.numbered_read_pages():
                 reasons.append("в этом прогоне не прочитано ни одной статьи: главные страницы и выдача поиска "
@@ -272,14 +278,14 @@ class AnswerAcceptance:
             # Read pages are cited by number; the address comes from the run, never the model.
             final_text = self._with_rendered_numbers(final_text, run_evidence)
             final_text, _ = reattribute_points(final_text, run_evidence.web_page_texts,
-                                               run_evidence.web_page_dates, request_text)
+                                               run_evidence.web_page_dates, request_text, link_carried=strict_web)
             points = point_problems(final_text, run_evidence.web_page_texts, run_evidence.web_page_dates,
                                     request_text, researched=run_evidence.web_researched)
             unread_urls = {str(item.url) for item in run_evidence.unread_web_links(final_text)}
             # John 2026-10-11: only verified points reach the chat; the rest is removed.
             final_text, removed_points = remove_unverified_points(
-                final_text, points, unread_urls | run_evidence.web_index_pages)
-            unread_links_marked = removed_points > 0
+                final_text, points, unread_urls | run_evidence.web_index_pages, strict=strict_web)
+            unread_links_marked = strict_web and removed_points > 0
             final_text = date_read_links(final_text, run_evidence.web_page_dates)
         except Exception:  # a missing/broken web skill must not lose the answer
             logger.warning("unread web link check unavailable", exc_info=True)

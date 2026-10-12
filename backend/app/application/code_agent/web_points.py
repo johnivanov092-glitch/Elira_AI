@@ -12,6 +12,8 @@ from datetime import date, timedelta
 import re
 from typing import Any, NamedTuple
 
+from app.application.code_agent.run_evidence import requires_external_source
+
 _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 _WORD = re.compile(r"[A-Za-zА-Яа-яЁё]{5,}")
 _DATE_NUMBER = re.compile(
@@ -50,6 +52,7 @@ _TABLE_RULE = re.compile(r"\s*\|?\s*:?-{3,}")
 _FENCE = re.compile(r"\s*(?:```|~~~)")
 
 
+_LATIN_NAME = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Z][a-z]{2,}|[A-Z]{3,})(?![A-Za-z])")
 _FIGURE = re.compile(r"(?<![A-Za-zА-Яа-яЁё])\d+(?:[.,]\d+)*")
 
 
@@ -66,6 +69,7 @@ class _Support(NamedTuple):
     unsupported: bool  # the page does not carry the point
     missing: list[str]
     strict: bool  # the page plainly carries it: enough to cite that page instead
+    evidence: bool  # the point has something to check (3+ words in the page's script, or a figure)
 
 
 def _support(prose: str, page: str) -> _Support:
@@ -87,12 +91,21 @@ def _support(prose: str, page: str) -> _Support:
     numbers = list(dict.fromkeys(number for number in _numbers(_DATE_NUMBER.sub(" ", prose), figures_only=True)
                                  if len(number) >= 2 and not _YEAR.match(number)))
     missing_numbers = [number for number in numbers if number not in page_numbers]
+    # Latin names (Lenovo, QAIRU, Halyk) are written so on Russian pages too: they
+    # count on any page (KZ golden 9abf2b1d: a Lenovo point went to a royal-visit article).
+    names = list(dict.fromkeys(_LATIN_NAME.findall(prose)))
+    missing_names = [name for name in names if name.lower() not in page]
+    strong_words = len(words) >= 3 and len(missing) * 3 <= len(words)
     # The point's own figures: unsupported when none of them is on the page
-    # (an auxiliary setting such as 256K may come from elsewhere on the page).
+    # (an auxiliary setting such as 256K may come from elsewhere on the page);
+    # its names likewise, unless its wording plainly matches.
     unsupported = ((len(words) >= 3 and len(missing) * 2 > len(words))
-                   or bool(numbers and len(missing_numbers) == len(numbers)))
-    strict = not missing_numbers and (len(missing) * 3 <= len(words) if len(words) >= 3 else len(numbers) >= 2)
-    return _Support(unsupported, [*missing_numbers, *missing][:5], strict)
+                   or bool(numbers and len(missing_numbers) == len(numbers))
+                   or bool(names and len(missing_names) == len(names) and not strong_words))
+    strict = (not missing_numbers and not missing_names
+              and (strong_words if len(words) >= 3 else len(numbers) + len(names) >= 2))
+    return _Support(unsupported, [*missing_numbers, *missing_names, *missing][:5], strict,
+                    len(words) >= 3 or bool(numbers) or bool(names))
 
 
 def _prose(line: str) -> str:
@@ -141,7 +154,7 @@ def point_problems(answer_text: str, page_texts: dict[str, str], page_dates: dic
             continue
         if not shown:
             continue
-        unsupported, missing, _ = _support(prose, " ".join(texts[url] for url in shown))
+        unsupported, missing, *_ = _support(prose, " ".join(texts[url] for url in shown))
         weak = [] if unsupported or len(shown) < 2 else [url for url in shown
                                                          if _support(prose, texts[url]).unsupported]
         old = []
@@ -171,7 +184,8 @@ def _host(url: str) -> str:
 
 
 def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates: dict[str, str],
-                       user_request: str, today: date | None = None) -> tuple[str, int]:
+                       user_request: str, today: date | None = None, *,
+                       link_carried: bool = False) -> tuple[str, int]:
     """A point cites the read page that plainly carries it.
 
     KZ run d5904cc4: the model read the article later and kept the old numbers;
@@ -195,15 +209,17 @@ def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates:
         except ValueError:
             return True
 
-    def carrier(prose: str, cited: set[str]) -> str:
-        best: tuple[int, str] | None = None
+    def carrier(prose: str, cited: set[str], carried: bool = False) -> str:
+        # ``carried``: a page that carries the point by the keep rule will do (a plain match first).
+        best: tuple[int, int, str] | None = None
         for key, (url, text) in texts.items():
             if key in cited or not in_period(url):
                 continue
             check = _support(prose, text)
-            if check.strict and (best is None or len(check.missing) < best[0]):
-                best = (len(check.missing), url)
-        return best[1] if best else ""
+            if check.strict or (carried and check.evidence and not check.unsupported):
+                rank = (0 if check.strict else 1, len(check.missing), url)
+                best = rank if best is None or rank[:2] < best[:2] else best
+        return best[2] if best else ""
     lines = str(answer_text).split("\n")
     moved = 0
     for index, line in _outside_code(lines):
@@ -217,7 +233,7 @@ def reattribute_points(answer_text: str, page_texts: dict[str, str], page_dates:
             for match in read[1:]:
                 line = re.sub(r"(?:\s*,)?[ \t]*" + re.escape(match.group(0)), "", line, count=1)
         elif not links and index not in problems and _TOP_ITEM.match(line):
-            url = carrier(_prose(line), set())
+            url = carrier(_prose(line), set(), link_carried)
             if not url:
                 continue
             body, end = re.match(r"(.*?)([.;]?)\s*$", line).groups()
@@ -245,6 +261,19 @@ def prefer_written_addresses(answer_text: str, numbered_pages: list[tuple[str, s
             return match.group(0)
         return match.group(3)
     return _NUMBER_THEN_ADDRESS.sub(keep, str(answer_text or ""))
+
+
+_SITE_LABEL = re.compile(r"[ \t]*\[(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\](?![(\[])", re.IGNORECASE)
+
+
+def drop_site_labels(answer_text: str) -> str:
+    """"[informburo.kz]" with no address names no page (KZ golden 9abf2b1d); it goes, outside code."""
+    lines = str(answer_text or "").split("\n")
+    for index, line in _outside_code(lines):
+        parts = line.split("`")
+        parts[::2] = [_SITE_LABEL.sub("", part) for part in parts[::2]]
+        lines[index] = "`".join(parts)
+    return "\n".join(lines)
 
 
 _NUMBER_MARKS = re.compile(r"[ \t]*(?<![\w\]])(?:\[\d{1,3}(?:\s*[,;]\s*\d{1,3})*\])+(?![(\[:])")
@@ -351,17 +380,29 @@ def _heading_level(line: str) -> int:
     return 7 if re.fullmatch(r"\s*(\*\*|__)[^*_\n]+\1\s*:?\s*", line) else 0
 
 
+def web_requested(user_request: str) -> bool:
+    """The user asked for the web (sources, news, an address) — not only the model chose to search."""
+    text = str(user_request or "")
+    return requires_external_source(text) or bool(re.search(r"https?://|\bновост\w*|\bnews\b", text, re.IGNORECASE))
+
+
 def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
-                             bad_urls: set[str]) -> tuple[str, int]:
+                             bad_urls: set[str], *, strict: bool = True) -> tuple[str, int]:
     """John 2026-10-11: only verified points reach the chat.
 
     A line is dropped when its point is not on its cited page or is out of the
     asked period, or when every link it has is unread / a home page. In a kept
     line a bad link is removed. Sections left empty lose their heading. Returns
     the text and how many points and links were removed.
+
+    ``strict=False`` — the user did not ask for the web, the model searched on
+    its own (golden chat-list-compare, 2026-10-12): no point is removed; a link
+    that does not carry its point or names an unread page goes, the point stays
+    as the model's own knowledge.
     """
     bad = {_link_key(url) for url in bad_urls}
-    drop = {problem["line"] for problem in blocking_problems(problems)}
+    blocking = {problem["line"] for problem in blocking_problems(problems)}
+    drop = blocking if strict else set()
     weak = {problem["line"]: {_link_key(url) for url in problem.get("weak", ())} for problem in problems}
     lines = str(answer_text or "").split("\n")
     kept: list[str] = []
@@ -369,8 +410,9 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
     for index, line in enumerate(lines):
         links = [match for match in _LINK.finditer(line)]
         broken = [match for match in links
-                  if _link_key(match.group(2)) in bad or _link_key(match.group(2)) in weak.get(index, ())]
-        if index in drop or (links and len(broken) == len(links)):
+                  if _link_key(match.group(2)) in bad or _link_key(match.group(2)) in weak.get(index, ())
+                  or (not strict and index in blocking)]
+        if index in drop or (strict and links and len(broken) == len(links)):
             removed += 1
             continue
         for match in broken:
