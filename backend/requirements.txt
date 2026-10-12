@@ -34,5 +34,9 @@ cryptography>=43.0
 # File watching (realtime auto-index of the code-agent project)
 watchdog>=4.0,<7.0
 
+# Console panel terminal tabs: pseudo-console + screen emulator for what Elira reads
+pywinpty==3.0.5; sys_platform == "win32"
+pyte==0.8.2
+
 # Heavy capabilities (image-gen, OCR, Excel/PDF tables, pandas, screenshots)
 # live in requirements-optional.txt and load lazily when first used.

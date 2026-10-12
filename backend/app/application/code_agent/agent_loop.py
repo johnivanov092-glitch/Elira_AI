@@ -1447,7 +1447,7 @@ def _stream_code_agent_core(
                     "touched_path", "old_content", "new_content", "diff_action",
                     "exit_code", "verifier", "evidence", "download_url",
                     "download_name", "project_path", "size", "sha256", "document_qa",
-                    "actual_url", "local_url", "actual_port", "port", "pid",
+                    "actual_url", "local_url", "actual_port", "port", "pid", "terminal",
                     "server_started", "media", "action", "kind", "status",
                     "job_id", "log_path", "recovered",
                     "command", "cwd", "command_sha256", "output_sha256", "attempt_id",
@@ -1914,7 +1914,7 @@ def run_code_agent(
                     "ok", "exit_code", "verifier", "evidence",
                     "touched_path", "old_content", "new_content", "diff_action",
                     "download_url", "download_name", "project_path", "size", "sha256",
-                    "actual_url", "local_url", "actual_port", "port", "pid",
+                    "actual_url", "local_url", "actual_port", "port", "pid", "terminal",
                     "server_started", "media", "sources", "engine_warnings", "query_sources", "skill",
                 ) if k in event},
             })

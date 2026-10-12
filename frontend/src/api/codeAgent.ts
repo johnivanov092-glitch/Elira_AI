@@ -123,6 +123,8 @@ export type CodeAgentToolCall = {
   local_url?: string;
   actual_port?: number;
   port?: number;
+  /** run_bash(terminal=…): the Console tab the command ran in, shown live there. */
+  terminal?: string;
   pid?: number;
   server_started?: boolean;
   /** run_server(kind="job"): durable lifecycle state and log location. */

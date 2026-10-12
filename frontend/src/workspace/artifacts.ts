@@ -32,6 +32,8 @@ export type ServerArtifact = {
 export type Artifacts = {
   file?: FileArtifact;
   console?: string;
+  /** The Console tab Elira's last terminal command ran in (opened there). */
+  terminal?: string;
   downloads: DownloadArtifact[];
   server?: ServerArtifact;
 };
@@ -56,6 +58,7 @@ function safeLoopbackUrl(value: unknown): string | undefined {
 export function deriveArtifacts(turns: Turn[]): Artifacts {
   let file: FileArtifact | undefined;
   let consoleOut: string | undefined;
+  let terminal: string | undefined;
   const downloads: DownloadArtifact[] = [];
   let server: ServerArtifact | undefined;
   let callIdx = 0; // global tool-call position across the run — the download's identity
@@ -100,12 +103,14 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
           && (!server?.pid || Number(c.arguments?.pid) === server.pid)) {
           server = undefined;
         }
+      } else if (c.tool === "run_bash" && c.terminal) {
+        terminal = c.terminal;
       } else if (c.tool === "run_bash") {
         consoleOut = c.result;
       }
     }
   }
-  return { file, console: consoleOut, downloads, server };
+  return { file, console: consoleOut, terminal, downloads, server };
 }
 
 export function serverArtifactKey(a: Artifacts): string {

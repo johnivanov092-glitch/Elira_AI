@@ -214,6 +214,8 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
     name = str(tool_name or "").strip()
     if name == "capability_load":
         return False
+    if name == "run_bash" and payload.get("terminal") and not str(payload.get("command") or "").strip():
+        return False  # reading the screen of a console tab
     if name == "run_server":
         return str(payload.get("action") or "start").strip().lower() not in {"list", "logs"}
     if name == "memory":

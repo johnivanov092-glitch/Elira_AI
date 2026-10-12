@@ -473,6 +473,15 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "properties": {
                         "command": {"type": "string"},
+                        "terminal": {
+                            "type": "string",
+                            "description": (
+                                "Run in a tab of the Console panel, where the user watches it live "
+                                "(PowerShell, cmd or Git Bash): \"active\" — the open tab (a PowerShell tab "
+                                "is created if none), \"new\" — a new PowerShell tab, or a tab id. "
+                                "An empty command reads the tab's screen."
+                            ),
+                        },
                     },
                     "required": ["command"],
                 },

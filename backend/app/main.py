@@ -50,9 +50,11 @@ def _recover_background_job_runtime() -> None:
 
 def _shutdown_integration_runtimes() -> None:
     """Release explicitly started child runtimes on a graceful backend stop."""
+    from app.application.terminal.sessions import manager as terminal_manager
     from app.application.tool_providers import mcp_runtime
 
     mcp_runtime.stop_all_servers()
+    terminal_manager.close_all()
 
 
 def _warm_integration_runtimes() -> None:

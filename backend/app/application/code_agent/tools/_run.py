@@ -159,12 +159,58 @@ def _cmd_syntax_hint(command: str) -> str:
             ". Сложный скрипт: powershell.exe -NoProfile -Command \"...\".") if notes else ""
 
 
+def _run_in_terminal(project_root: Path, command: str, terminal: str) -> dict[str, Any]:
+    """John 2026-10-12: Elira works in the Console panel's shell tabs (full control).
+
+    Same tool, approval and Stop as any command; Stop sends Ctrl+C to the tab and
+    the user's shell stays. An empty command reads the tab's screen.
+    """
+    from app.application.code_agent.tools._shell import run_was_stopped
+    from app.application.terminal.sessions import manager
+
+    try:
+        session = None if terminal == "new" else manager.get(terminal)
+        if session is None and terminal in ("active", "new"):
+            session = manager.create("powershell", project_root, title="Elira")
+    except Exception as exc:  # no pseudo-console here, or the tab limit
+        return {"ok": False, "error": "terminal_unavailable", "text": f"ERROR: терминал недоступен: {exc}"}
+    if session is None:
+        tabs = ", ".join(f"{item['id']} ({item['title']})" for item in manager.list()) or "нет"
+        return {"ok": False, "error": "terminal_not_found",
+                "text": f"Вкладки терминала {terminal} нет; открыты: {tabs}."}
+    header = f"[терминал «{session.title}» {session.id}]"
+    if not command:
+        return {"ok": True, "text": f"{header} экран:\n{session.read(80)}", "terminal": session.id}
+    run_id = _CURRENT_RUN_ID.get()
+    result = session.run(command, should_stop=lambda: run_was_stopped(run_id))
+    output = _truncate_middle(str(result.get("text") or "").rstrip(), _SHELL_STDOUT_LIMIT)
+    exit_code = result.get("exit_code")
+    if result.get("error") == "cancelled":
+        text = f"{header} $ {command}\nПрервано пользователем (Стоп): в терминал отправлен Ctrl+C.\n{output}"
+    elif result.get("error") in ("terminal_busy", "terminal_closed", "terminal_not_ready"):
+        text = f"{header} {output}"
+    else:
+        text = f"{header} $ {command}\nexit={'—' if exit_code is None else exit_code}\n{output}"
+    return {
+        "ok": bool(result.get("ok")),
+        "error": result.get("error") or (None if result.get("ok") else "nonzero_exit"),
+        "text": text.rstrip(),
+        "exit_code": exit_code,
+        "terminal": session.id,
+        "command": redact_text(command),
+        "command_sha256": command_digest(command),
+        "cwd": session.cwd,
+    }
+
+
 def tool_run_bash(
     project_root: Path, *, command: str, timeout: int = 60,
-    env_overrides: dict[str, str | None] | None = None,
+    env_overrides: dict[str, str | None] | None = None, terminal: str = "",
 ) -> dict[str, Any]:
     del timeout  # compatibility input; Workflow Stop owns termination
     cleaned_command = (command or "").strip()
+    if str(terminal or "").strip():
+        return _run_in_terminal(project_root, cleaned_command, str(terminal).strip())
     if not cleaned_command:
         return {"text": "ERROR: command is empty", "ok": False}
     run_id = _CURRENT_RUN_ID.get()

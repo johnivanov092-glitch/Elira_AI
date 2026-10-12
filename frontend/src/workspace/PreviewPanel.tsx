@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { CheckCircle2, ChevronRight, Download, FileText, Folder, Loader2, X } from "lucide-react";
 import { DownloadLink } from "../components/DownloadLink";
 import MarkdownRenderer from "../components/MarkdownRenderer";
@@ -6,6 +6,8 @@ import { getAdvancedProjectTree, readAdvancedProjectFile } from "../api/project"
 import { buildApiUrl } from "../api/client";
 import { cn } from "../ui/cn";
 import { lineDiff, type Artifacts } from "./artifacts";
+// xterm is large: the Console tab loads it on first open, not with the app.
+const TerminalPane = lazy(() => import("./TerminalPane").then((module) => ({ default: module.TerminalPane })));
 
 type Tab = "preview" | "code" | "console" | "diff" | "tree";
 
@@ -50,6 +52,17 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
     : null;
   const [tab, setTab] = useState<Tab>(server || isHtml || isMd || downloads.length > 0 ? "preview" : file ? "code" : "console");
   const [previewLoading, setPreviewLoading] = useState(true);
+  // Once opened, the terminal stays mounted (hidden on other tabs) so its shells keep their screen.
+  const [consoleOpened, setConsoleOpened] = useState(tab === "console");
+
+  useEffect(() => {
+    if (tab === "console") setConsoleOpened(true);
+  }, [tab]);
+
+  useEffect(() => {
+    if (!artifacts.terminal) return;
+    setTab("console");
+  }, [artifacts.terminal]);
 
   useEffect(() => {
     setPreviewLoading(true);
@@ -147,7 +160,15 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {consoleOpened && (
+        <div className={cn("min-h-0 flex-1", tab !== "console" && "hidden")}>
+          <Suspense fallback={<div className="flex items-center gap-2 px-4 py-3 text-[12px] text-mut"><Loader2 size={13} className="animate-spin" /> Открываю терминал…</div>}>
+            <TerminalPane project={project} focusId={artifacts.terminal} agentOutput={artifacts.console} />
+          </Suspense>
+        </div>
+      )}
+
+      <div className={cn("min-h-0 flex-1 overflow-auto", tab === "console" && "hidden")}>
         {tab === "preview" && (
           pdfUrl ? (
             <div className="relative h-full">
@@ -198,10 +219,6 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
 
         {tab === "code" && (
           file ? <Pre>{file.content}</Pre> : <Empty>Файл ещё не создан.</Empty>
-        )}
-
-        {tab === "console" && (
-          artifacts.console ? <Pre>{artifacts.console}</Pre> : <Empty>Команды ещё не запускались.</Empty>
         )}
 
         {tab === "diff" && (

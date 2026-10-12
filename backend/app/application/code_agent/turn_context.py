@@ -299,6 +299,13 @@ class TurnContext:
             guidance["project_context"] = _build_project_context(self.root, self.working_dir)
         if "project" in guidance and "project" not in self.sent_guidance:
             guidance["project"] += "\n" + _shell_guidance()
+            try:
+                from app.application.terminal.sessions import open_tabs_note
+                tabs_note = open_tabs_note()
+            except Exception:  # no pseudo-console on this machine: no tabs to name
+                tabs_note = ""
+            if tabs_note:
+                guidance["project"] += "\n" + tabs_note
             guidance["project"] += (
                 _NO_PROJECT_BLOCK if _is_scratch_workspace(self.root) else _PROJECT_CONNECTED_BLOCK
             )
