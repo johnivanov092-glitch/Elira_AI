@@ -14,6 +14,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ _REPLAY_LIMIT = 400_000  # characters of raw output a reconnecting tab replays
 _OUTPUT_LIMIT = 30_000  # characters of one command's output returned to Elira
 _SESSION_LIMIT = 8
 _READY_SECONDS = 20.0
+_LOG_BLOCKS = 40  # finished commands a tab remembers for Elira
+_LOG_CHARS = 6000  # how much of them one read returns
 
 # The pseudo-console starts its shell with Ctrl+C disabled (a new process group);
 # children inherit that, so ^C never stopped ping -t. The shell turns it back on.
@@ -113,6 +116,12 @@ class TerminalSession:
         self._prompts = 0  # prompts shown so far (OSC 133;A)
         self._prompt_rows: list[int] = []  # absolute screen row of each prompt
         self._exits: list[int] = []  # exit codes reported (OSC 133;D)
+        # Each finished command with its output, taken when the next prompt comes:
+        # cls cannot take it away (live run b38eebd4: Elira "looked" with echo/cls,
+        # cleared the user's nslookup and answered that the terminal was empty).
+        self._log: deque[tuple[int, str]] = deque(maxlen=_LOG_BLOCKS)
+        self._log_seq = 0
+        self._agent_seen = 0  # the last block Elira was shown
         self._busy = False  # a command was entered and its prompt has not come back
         self._listeners: list[Callable[[str | None], None]] = []
         self._carry = ""  # an unfinished OSC held for the next read
@@ -141,6 +150,8 @@ class TerminalSession:
             self._stream.feed(piece)
             if index < len(pieces) - 1:
                 row = self._row() + (1 if self._screen.cursor.x else 0)
+                if self._prompt_rows:
+                    self._log_block(self._prompt_rows[-1], row)
                 self._prompt_rows.append(row)
                 self._prompts += 1
                 self._busy = False
@@ -190,15 +201,60 @@ class TerminalSession:
                     self._listeners.remove(listener)
         return replay, unsubscribe
 
+    def _rows(self, first: int, last: int) -> list[str]:
+        """Rendered rows [first, last) by absolute number (only those, not the whole history)."""
+        screen = self._screen
+        history = screen.history.top
+        dropped = screen.scrolled - len(history)
+        rows = []
+        for absolute in range(max(first, dropped), last):
+            index = absolute - dropped
+            if index < len(history):
+                line = history[index]
+                rows.append("".join(line[x].data for x in range(screen.columns)).rstrip())
+            elif index - len(history) < screen.lines:
+                rows.append(screen.display[index - len(history)].rstrip())
+        return rows
+
+    def _log_block(self, first: int, last: int) -> None:
+        rows = self._rows(first, last)
+        while rows and not rows[-1]:
+            rows.pop()
+        if not rows or (len(rows) == 1 and rows[0].rstrip().endswith((">", "$", "#"))):
+            return  # an empty Enter, or a cleared screen
+        self._log_seq += 1
+        self._log.append((self._log_seq, "\n".join(rows)))
+
+    def recent(self, limit: int = _LOG_CHARS, *, unseen_only: bool = False) -> str:
+        """The last commands of this tab with their output (older first), as Elira should see them."""
+        with self._lock:
+            blocks = [text for seq, text in self._log if not unseen_only or seq > self._agent_seen]
+            self._agent_seen = self._log_seq
+        text = ""
+        for block in reversed(blocks):
+            if text and len(text) + len(block) > limit:
+                break
+            text = block + ("\n" + text if text else "")
+        return text[-limit:]
+
+    def mark_seen(self) -> None:
+        """Elira has the tab's log up to now (her own command is not shown back to her)."""
+        with self._lock:
+            self._agent_seen = self._log_seq
+
     def _lines(self) -> tuple[int, list[str]]:
         screen = self._screen
         history = ["".join(line[x].data for x in range(screen.columns)).rstrip() for line in screen.history.top]
         return screen.scrolled - len(history), history + [line.rstrip() for line in screen.display]
 
     def read(self, lines: int = 80) -> str:
-        """The last rows of the screen as the user sees them."""
+        """What happened in the tab: its last commands with output, then the screen now."""
+        history = self.recent()
         with self._lock:
-            return self.read_locked(lines)
+            screen = self.read_locked(lines if not history else 6)
+        if not history:
+            return screen
+        return f"Последние команды во вкладке (раньше — выше; очистка экрана их не стирает):\n{history}\n\nЭкран сейчас:\n{screen}"
 
     def read_locked(self, lines: int) -> str:
         _, rows = self._lines()
@@ -417,6 +473,8 @@ def open_tabs_note() -> str:
     names = ", ".join(f"«{tab['title']}» {tab['id']} — {shells.get(tab['profile'], tab['profile'])}"
                       + (", активная" if tab["active"] else "") for tab in tabs)
     return (f"В панели «Консоль» открыт терминал пользователя: {names}. «Терминал/консоль» в просьбе — это он: "
-            "что там сейчас — run_bash(command=\"\", terminal=\"active\"); команду, которую пользователь хочет "
+            "что пользователь там делал и что вывелось — run_bash(command=\"\", terminal=\"active\") "
+            "(его команды с выводом сохраняются и после cls; не запускай echo/cls, чтобы посмотреть, "
+            "и не очищай его экран без просьбы); команду, которую пользователь хочет "
             "видеть там, — run_bash(command=…, terminal=\"active\") прямо на языке этой оболочки "
             "(в PowerShell — без обёртки powershell.exe).")

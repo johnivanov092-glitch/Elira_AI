@@ -89,3 +89,26 @@ def test_open_tabs_are_named_in_the_run_instructions(manager, tmp_path):
     tab = manager.create("cmd", tmp_path, title="Мой cmd")
     note = sessions.open_tabs_note()
     assert f"«Мой cmd» {tab.id} — cmd, активная" in note and 'terminal="active"' in note
+
+
+def _wait_idle(tab, limit: float = 15) -> None:
+    deadline = time.monotonic() + limit
+    while tab.info()["busy"] and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
+def test_the_users_commands_reach_elira_even_after_cls(manager, tmp_path):
+    # Live runs b38eebd4 / df407cac / cd0c87b5: the user's nslookup in the cmd tab never
+    # reached Elira — she "looked" with echo done and cls, cleared it and answered "empty".
+    tab = manager.create("cmd", tmp_path)
+    tab.run("echo warm")
+    tab.mark_seen()
+    tab.write("echo repro.kz Address: 37.46.50.196\r")  # the user types in the tab
+    _wait_idle(tab)
+    probe = tool_run_bash(tmp_path, command="echo done", terminal=tab.id)
+    assert "до этой команды пользователь выполнил" in probe["text"] and "37.46.50.196" in probe["text"]
+    assert "37.46.50.196" not in tool_run_bash(tmp_path, command="echo done", terminal=tab.id)["text"]
+    tab.write("cls\r")
+    _wait_idle(tab)
+    looked = tool_run_bash(tmp_path, command="", terminal=tab.id)
+    assert "37.46.50.196" in looked["text"] and "Экран сейчас" in looked["text"]

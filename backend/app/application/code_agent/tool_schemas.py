@@ -479,7 +479,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                                 "Run in a tab of the Console panel, where the user watches it live "
                                 "(PowerShell, cmd or Git Bash): \"active\" — the open tab (a PowerShell tab "
                                 "is created if none), \"new\" — a new PowerShell tab, or a tab id. "
-                                "An empty command reads the tab's screen."
+                                "An empty command returns what the user ran in the tab with its output "
+                                "(kept even after cls) — use it to look; never echo/cls to look, never clear "
+                                "the user's screen unasked."
                             ),
                         },
                     },

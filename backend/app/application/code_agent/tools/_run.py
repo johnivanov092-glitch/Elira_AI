@@ -182,7 +182,11 @@ def _run_in_terminal(project_root: Path, command: str, terminal: str) -> dict[st
     if not command:
         return {"ok": True, "text": f"{header} экран:\n{session.read(80)}", "terminal": session.id}
     run_id = _CURRENT_RUN_ID.get()
+    # What the user ran here since Elira's last command comes with every result, so
+    # a probe such as `echo` still shows it (live run b38eebd4 answered "empty").
+    before = session.recent(2500, unseen_only=True)
     result = session.run(command, should_stop=lambda: run_was_stopped(run_id))
+    session.mark_seen()
     output = _truncate_middle(str(result.get("text") or "").rstrip(), _SHELL_STDOUT_LIMIT)
     exit_code = result.get("exit_code")
     if result.get("error") == "cancelled":
@@ -191,6 +195,8 @@ def _run_in_terminal(project_root: Path, command: str, terminal: str) -> dict[st
         text = f"{header} {output}"
     else:
         text = f"{header} $ {command}\nexit={'—' if exit_code is None else exit_code}\n{output}"
+    if before:
+        text = f"{header} до этой команды пользователь выполнил во вкладке:\n{before}\n\n{text}"
     return {
         "ok": bool(result.get("ok")),
         "error": result.get("error") or (None if result.get("ok") else "nonzero_exit"),
