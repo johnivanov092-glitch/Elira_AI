@@ -28,6 +28,12 @@ _THIN_TEXT_THRESHOLD = 200
 _WEB_BATCH_MAX = 8        # deep research reads 5–8 pages per round (John, 2026-10-11)
 _WEB_BATCH_WORKERS = 8    # max concurrent requests
 _WEB_FIND_SCAN_CHARS = 200000
+# Reranked search (John 2026-10-13): with the local reranker on, each query asks
+# SearXNG for more results, the reranker orders them all by the user's question
+# and the model sees the best few — never more than it would have seen before.
+_RERANK_POOL = 10         # results asked per query
+_RERANK_MAX_DOCS = 16     # one rerank call: ~2 s on the server CPU (8 snippets/s)
+_RERANK_KEEP = 8
 _READ_EXCERPT_LABEL = "[excerpt; прочитанные фрагменты; соответствие выводов не проверено.]"
 _SEARCH_SNIPPET_LABEL = "    Сниппет: "
 _SEARCH_SNIPPET_START = re.compile(r"^    \[search-snippet:v1[^\n]*\]\n", re.MULTILINE)
@@ -97,6 +103,49 @@ def _run_search(query: str, limit: int, cat: str, tr: str) -> list[dict]:
     sources = [item for item in result.get("sources") or []
                if not _unreadable_site(item.get("href") or item.get("url") or "")]
     return SearchResults(sources, engine_warnings=result.get("engine_warnings") or [])
+
+
+def _rerank_pool(limit: int, category: str) -> int:
+    from webskill.context import is_local_rerank_enabled
+    return max(limit, _RERANK_POOL) if is_local_rerank_enabled() and category != "images" else limit
+
+
+def _best_for_question(question: str, groups: list[list[dict]], keep: int) -> list[dict] | None:
+    """The results that best answer the question, best first; None keeps the engine order.
+
+    Candidates are taken in turn from each query's list, so every language and
+    wording reaches the reranker before the call is capped.
+    """
+    from webskill.context import rerank_scores
+
+    candidates, seen = [], set()
+    for rank in range(max((len(rows) for rows in groups), default=0)):
+        for rows in groups:
+            url = (rows[rank].get("href") or rows[rank].get("url") or "").strip() if rank < len(rows) else ""
+            if url and url not in seen and len(candidates) < _RERANK_MAX_DOCS:
+                seen.add(url)
+                candidates.append(rows[rank])
+    documents = ["\n".join(part for part in (
+        str(item.get("title") or ""),
+        str(item.get("body") or item.get("snippet") or item.get("content") or "")[:200],
+        str(item.get("href") or item.get("url") or ""),
+    ) if part) for item in candidates]
+    scores = rerank_scores(question, documents) if len(candidates) > 1 else None
+    if scores is None:
+        return None
+    # A home or section page matches a news question word for word, yet it is a
+    # list of headlines, not a source (the fetch rule, backend _is_index_page): it
+    # goes after the articles (KZ run dbd2b141 read five home pages in a row).
+    order = sorted(range(len(candidates)), key=lambda index: (
+        _shallow_url(str(candidates[index].get("href") or candidates[index].get("url") or "")), -scores[index]))
+    return [candidates[index] for index in order[:keep]]
+
+
+def _shallow_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    segments = [part for part in urlsplit(url).path.split("/") if part]
+    return not segments or (len(segments) == 1 and not re.search(r"\d|\.s?html?$", segments[0]))
 
 
 def _check_search_result(result: dict) -> None:
@@ -273,11 +322,11 @@ def _search_sources(items: list[dict], limit: int) -> list[dict[str, Any]]:
 
 def tool_web_search(
     *, query: str = "", queries: Any = None, top_k: int = 5, categories: str = "",
-    time_range: str = "", page: int = 1, audience: str = "",
+    time_range: str = "", page: int = 1, audience: str = "", question: str = "",
 ) -> dict[str, Any]:
     """Search with the task-scoped language policy owned by this mutable skill."""
     arguments = dict(query=query, queries=queries, top_k=top_k, categories=categories,
-                     time_range=time_range, page=page, audience=audience)
+                     time_range=time_range, page=page, audience=audience, question=question)
     try:
         normalized = normalize_web_tool_arguments("web_search", {"query": query, "queries": queries})
     except WebArgumentFormatError:
@@ -299,6 +348,7 @@ def _tool_web_search_impl(
     time_range: str = "",
     page: int = 1,
     audience: str = "",  # language policy is applied by tool_web_search
+    question: str = "",  # the user's own words, for the reranker
 ) -> dict[str, Any]:
     """Search the web through SearXNG. Returns ranked results
     with title + URL + snippet. Use `web_fetch` after to read a result in full.
@@ -394,7 +444,8 @@ def _tool_web_search_impl(
         per_query: dict[str, list[dict]] = {}
         query_errors: dict[str, str] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(query_list), _WEB_BATCH_WORKERS)) as ex:
-            futs = {ex.submit(_run_search, q, limit, cat, tr): q for q in query_list}
+            pool = _rerank_pool(limit, cat)
+            futs = {ex.submit(_run_search, q, pool, cat, tr): q for q in query_list}
             for f in concurrent.futures.as_completed(futs):
                 try:
                     per_query[futs[f]] = f.result()
@@ -408,14 +459,29 @@ def _tool_web_search_impl(
                     for warning in getattr(per_query.get(q, []), "engine_warnings", [])]
         warning = search_warning_text(warnings)
         warning_payload = {"engine_warnings": warnings} if warnings else {}
-        seen: set[str] = set()
-        merged: list[dict] = []
-        for q in query_list:  # preserve query order for stable output
-            for item in per_query.get(q, []):
-                u = (item.get("href") or item.get("url") or "").strip()
-                if u and u not in seen:
-                    seen.add(u)
-                    merged.append(item)
+        found = len({(item.get("href") or item.get("url") or "").strip()
+                     for rows in per_query.values() for item in rows} - {""})
+        best = (_best_for_question(question or " ".join(query_list),
+                                   [list(per_query.get(q, [])) for q in query_list],
+                                   min(_RERANK_KEEP, limit * len(query_list)))
+                if pool > limit else None)
+        if best is not None:
+            kept = {(item.get("href") or item.get("url") or "").strip() for item in best}
+            per_query = {q: [item for item in rows
+                             if (item.get("href") or item.get("url") or "").strip() in kept]
+                         for q, rows in per_query.items()}
+            merged = list(best)
+        else:
+            # Without a reranker answer: the engine order, exactly as before.
+            per_query = {q: list(rows[:limit]) for q, rows in per_query.items()}
+            seen: set[str] = set()
+            merged = []
+            for q in query_list:  # preserve query order for stable output
+                for item in per_query.get(q, []):
+                    u = (item.get("href") or item.get("url") or "").strip()
+                    if u and u not in seen:
+                        seen.add(u)
+                        merged.append(item)
         sources = _search_sources(merged, _WEB_BATCH_MAX * limit)
         ids_by_url = {source["url"]: source["id"] for source in sources}
         # Tool-owned discovery provenance, separate from presentation: each
@@ -423,7 +489,7 @@ def _tool_web_search_impl(
         query_sources = [{
             "query": q,
             "source_ids": list(dict.fromkeys(
-                ids_by_url[url] for item in per_query.get(q, [])[:limit]
+                ids_by_url[url] for item in per_query.get(q, [])
                 if (url := (item.get("href") or item.get("url") or "").strip()) in ids_by_url
             )),
         } for q in query_list]
@@ -443,7 +509,10 @@ def _tool_web_search_impl(
                 "query_sources": query_sources,
                 **warning_payload,
             }
-        header = f"Found {len(merged)} results across {len(query_list)} parallel queries{focus}:"
+        header = (f"Found {len(merged)} results across {len(query_list)} parallel queries{focus}:"
+                  if best is None else
+                  f"Best {len(merged)} of {found} results across {len(query_list)} parallel queries"
+                  f"{focus}, ordered by relevance to the question:")
         if errors:
             header += "\nWARNING: incomplete search; " + _search_failure_summary(errors)
         if warning:
@@ -451,7 +520,8 @@ def _tool_web_search_impl(
         return {
             "text": _bounded_search_results(merged, header, _WEB_BATCH_MAX * limit,
                                             category=cat, time_range=tr,
-                                            queries=query_list, per_query=per_query),
+                                            queries=query_list,
+                                            per_query=per_query if best is None else None),
             "ok": True,
             **failure_payload,
             **_image_media_payload(cat, merged, _WEB_BATCH_MAX * limit),
@@ -472,9 +542,10 @@ def _tool_web_search_impl(
     except Exception as exc:  # pragma: no cover - import path
         return {"text": f"ERROR: web search unavailable: {exc}", "ok": False}
     try:
+        pool = _rerank_pool(limit, cat)
         result = search_web(
             cleaned,
-            max_results=limit,
+            max_results=pool,
             categories=cat or None,
             time_range=tr or None,
         )
@@ -483,6 +554,9 @@ def _tool_web_search_impl(
         return {"text": f"ERROR: web search unavailable: {_search_error_reason(exc)}", "ok": False,
                 **_search_error_metadata(exc)}
     sources = result.get("sources") or []
+    best = _best_for_question(question or cleaned, [sources], min(_RERANK_KEEP, limit)) if pool > limit else None
+    found = len(sources)
+    sources = best if best is not None else sources[:limit]
     warnings = result.get("engine_warnings") or []
     warning = search_warning_text(warnings)
     warning_payload = {"engine_warnings": warnings} if warnings else {}
@@ -493,7 +567,9 @@ def _tool_web_search_impl(
     return {
         "text": _bounded_search_results(
             sources,
-            f"Found {len(sources)} results via {engines}{focus}:" + ("\n" + warning if warning else ""),
+            (f"Found {len(sources)} results via {engines}{focus}:" if best is None else
+             f"Best {len(sources)} of {found} results via {engines}{focus}, ordered by relevance to the question:")
+            + ("\n" + warning if warning else ""),
             limit,
             category=cat, time_range=tr,
         ),

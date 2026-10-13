@@ -552,7 +552,12 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertEqual(args.max_results, 5)
         with patch.object(self.cli._web, 'tool_web_search', return_value={'ok': True}) as call:
             self.assertTrue(self.cli.execute(args)['ok'])
-        call.assert_called_once_with(queries=['one', 'два'], top_k=5, categories='', time_range='', audience='global')
+        call.assert_called_once_with(queries=['one', 'два'], top_k=5, categories='', time_range='', audience='global',
+                                     question='')
+        args = parser.parse_args(['search', '--query', 'one', '--question', 'Что нового в nginx?'])
+        with patch.object(self.cli._web, 'tool_web_search', return_value={'ok': True}) as call:
+            self.cli.execute(args)
+        self.assertEqual(call.call_args.kwargs['question'], 'Что нового в nginx?')
 
     def test_fetch_cli_requires_url_and_preserves_single_and_batch(self):
         parser = self.cli.parser()

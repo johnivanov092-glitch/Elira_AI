@@ -82,3 +82,41 @@ def embed_text(text: str):
         return vector if len(vector) == 1024 else None
     except (requests.RequestException, ValueError, TypeError, KeyError, IndexError):
         return None
+
+
+def is_local_rerank_enabled() -> bool:
+    return os.environ.get('LOCAL_RERANK_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}
+
+
+def rerank_scores(query: str, documents: list[str]):
+    """Relevance of each document to the query from the local reranker (John 2026-10-13).
+
+    None means "no reranker answer": switched off, slow, unreachable or malformed —
+    the caller keeps the search engine's order.
+    """
+    import requests
+    from urllib.parse import urlsplit
+    url = os.environ.get('LOCAL_RERANK_BASE_URL', 'http://192.168.88.15:8007/v1')
+    host = urlsplit(url).hostname or ''
+    import ipaddress
+    try:
+        local = ipaddress.ip_address(host).is_private
+    except ValueError:
+        local = host in {'localhost', 'ai-server'}
+    if not local:
+        raise ValueError('only the configured local rerank server is allowed')
+    if not is_local_rerank_enabled() or not query.strip() or not documents:
+        return None
+    try:
+        response = requests.post(url.rstrip('/') + '/rerank',
+            headers={'Authorization': 'Bearer ' + os.environ.get('LOCAL_RERANK_API_KEY', 'local')},
+            json={'query': query, 'documents': documents,
+                  'model': os.environ.get('LOCAL_RERANK_MODEL', 'local-rerank')},
+            timeout=float(os.environ.get('LOCAL_RERANK_TIMEOUT_SECONDS', '4')))
+        response.raise_for_status()
+        scores = [None] * len(documents)
+        for row in response.json()['results']:
+            scores[int(row['index'])] = float(row['relevance_score'])
+        return scores if all(score is not None for score in scores) else None
+    except (requests.RequestException, ValueError, TypeError, KeyError, IndexError):
+        return None

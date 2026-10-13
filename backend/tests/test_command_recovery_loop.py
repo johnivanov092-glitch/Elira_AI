@@ -140,3 +140,35 @@ def test_recovery_accepts_observed_diagnosis_and_changed_external_result(tmp_pat
     assert "ready" in command_results[-1]["result"]
     assert events[-1]["stop_reason"] == "answer"
     assert not any(e.get("status") == "blocked" for e in events)
+
+
+def test_words_around_a_call_in_the_answer_only_turn_are_not_the_answer(tmp_path, monkeypatch):
+    # KZ run dbd2b141: "Собираю информацию…" plus a written web_search became the answer.
+    from app.application.agent_kernel.executor import ToolExecutionResult
+    from app.application.code_agent import agent_loop
+
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent_loop, "_kernel_exec", lambda request, **kwargs: ToolExecutionResult(
+        status="ok", output={"ok": True, "text": "Нашлось: шторм в Алматы 12.10."}))
+    search = {"queries": ["ЧП Казахстан неделя"], "audience": "regional:Kazakhstan", "mode": "deep"}
+    no_tool_turns = 0
+
+    def chat(**kwargs):
+        nonlocal no_tool_turns
+        if not kwargs.get("tools"):
+            no_tool_turns += 1
+            if no_tool_turns == 1:
+                return {"message": {"content": "Собираю информацию о ЧП за неделю.", "tool_calls": [{
+                    "id": "late", "type": "function", "function": {"name": "web_search", "arguments": search}}]}}
+            return {"message": {"content": "Нашла: шторм в Алматы 12.10. Больше подтверждённого нет.",
+                                "tool_calls": []}}
+        return {"message": {"content": "", "tool_calls": [{
+            "id": "s", "type": "function", "function": {"name": "web_search", "arguments": search}}]}}
+
+    events = list(stream_code_agent(
+        user_message="Найди в интернете ЧП в Казахстане за неделю.", project_root=tmp_path,
+        model="test-model", chat_fn=chat, run_id="answer-only-preamble",
+        auto_remember=False, permission_mode="bypass", thinking=False,
+    ))
+    final = next(e for e in events if e["type"] == "final_response")
+    assert final["text"].startswith("Нашла: шторм") and no_tool_turns == 2

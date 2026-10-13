@@ -227,8 +227,11 @@ def _article_links(url: str, links: list[dict[str, Any]], limit: int = 12) -> li
 
 def tool_web_search(project_root: Path, *, queries: list[str], audience: str = "global",
                     time_range: str = "", categories: str = "", mode: str = "quick") -> dict[str, Any]:
+    # The user's own question orders the results when the reranker is on.
+    question = str(current_runtime_context().get("user_question") or "")[:1000]
     result = _call(project_root, "search", ["--mode", mode, "--audience", audience,
         "--time-range", time_range, "--categories", categories,
+        *(["--question", question] if question.strip() else []),
         *[part for query in queries for part in ("--query", query)]])
     ledger = _load_ledger(project_root)
     for source in result.get("sources") or []:

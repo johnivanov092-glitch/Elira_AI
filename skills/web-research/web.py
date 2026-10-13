@@ -28,6 +28,7 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument('--time-range', default='')
     search.add_argument('--audience', default='')
     search.add_argument('--mode', choices=['quick', 'deep'], default='quick')
+    search.add_argument('--question', default='')
     fetch = sub.add_parser('fetch')
     fetch.add_argument('--url', action='append', required=True)
     fetch.add_argument('--max-chars', type=int, default=8000)
@@ -95,7 +96,8 @@ def verify(answer_file: Path) -> dict:
 def execute(args) -> dict:
     if args.action == 'search':
         return _web.tool_web_search(queries=args.query, top_k=args.max_results,
-            categories=args.categories, time_range=args.time_range, audience=args.audience)
+            categories=args.categories, time_range=args.time_range, audience=args.audience,
+            question=getattr(args, 'question', ''))
     if args.action == 'fetch':
         return _web.tool_web_fetch(url=args.url[0] if len(args.url) == 1 else '',
             urls=args.url if len(args.url) > 1 else None, max_chars=args.max_chars,

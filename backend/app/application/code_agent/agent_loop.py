@@ -914,26 +914,28 @@ def _stream_code_agent_core(
             # loop still works.
             content, tool_calls = recover_tool_calls(content, tool_calls, _inline_tool_names)
             if answer_only and tool_calls:
-                # This turn has no tools: a call the model still wrote is never run.
+                # This turn has no tools: a call the model still wrote is never run,
+                # and the words around it ("Собираю информацию…", KZ run dbd2b141)
+                # announce more work — they are not the answer.
                 tool_calls = []
                 answer_only_misses += 1
-                content = _strip_tool_call_markup(content)
-                if not content.strip():
-                    if answer_only_misses >= 3:
-                        yield _incomplete_model_output(
-                            step=step, error_code="empty_model_response",
-                            error="Модель не вернула содержательный ответ. Запуск можно продолжить.",
-                        )
-                        return
-                    turn_context.messages.append({
-                        "role": "user",
-                        RUNTIME_BLOCK_KEY: "tool_trace_correction",
-                        "content": (
-                            "[internal correction] Tools are off for this turn. Answer the user "
-                            "in plain text from what you already have."
-                        ),
-                    })
-                    continue
+                if answer_only_misses >= 3:
+                    yield _incomplete_model_output(
+                        step=step, error_code="empty_model_response",
+                        error="Модель не вернула содержательный ответ. Запуск можно продолжить.",
+                    )
+                    return
+                turn_context.messages.append({
+                    "role": "user",
+                    RUNTIME_BLOCK_KEY: "tool_trace_correction",
+                    "content": (
+                        "[internal correction] Tools are off: do not call tools and do not announce "
+                        "more work. Write the final answer to the user now from what you already "
+                        "read: what you found, with its sources, what you could not find, and what "
+                        "you suggest next."
+                    ),
+                })
+                continue
 
             # Reconsider a generated proposal before starting any of its tools.
             # Existing tool batches finish normally; no second executor or
@@ -1121,6 +1123,8 @@ def _stream_code_agent_core(
                 runtime_context: dict[str, str] = {"step": str(step)}
                 if name == "web_fetch":
                     runtime_context["user_urls"] = _web_user_urls
+                if name == "web_search":
+                    runtime_context["user_question"] = turn_context.raw_user_message
                 recovery = observations.before_dispatch(name, call_arguments, root=root, model_turn=step)
                 if recovery is not None:
                     # Count attempted calls even when a later policy denies dispatch.

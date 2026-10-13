@@ -35,6 +35,7 @@ for the measured state, CPU/GPU split and verification limits.
 | Vision | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | MiniCPM-V 4.6 Q5 + F16 projector, ctx 8192 | GPU (ROCm); projector CPU |
 | TTS | systemd service | `http://192.168.88.15:8005` | Silero v5_5_ru HTTP API | CPU |
 | STT | `elira-stt` | `http://192.168.88.15:8006` | Faster Whisper Large v3 HTTP API | CPU |
+| Web reranker | `elira-llama-rerank` | `http://192.168.88.15:8007/v1/rerank` | bge-reranker-v2-m3 Q8_0 (`local-rerank`), added 2026-10-13 | CPU |
 
 LAN integrations on the same host are separate from model inference:
 
@@ -67,6 +68,10 @@ LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
 LOCAL_EMBED_MODEL=local-embed
 LOCAL_EMBED_API_KEY=local
 LOCAL_EMBED_TIMEOUT_SECONDS=30
+LOCAL_RERANK_ENABLED=true
+LOCAL_RERANK_BASE_URL=http://192.168.88.15:8007/v1
+LOCAL_RERANK_MODEL=local-rerank
+LOCAL_RERANK_TIMEOUT_SECONDS=4
 
 OCR_URL=http://192.168.88.15:8002/ocr
 SEARXNG_URL=http://192.168.88.15:8003
