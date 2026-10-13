@@ -27,6 +27,14 @@ from app.application.context.compaction import RUNTIME_BLOCK_KEY
 
 logger = logging.getLogger(__name__)
 
+MEMORY_ANSWER_NOTE = "_Взято из памяти: в интернете для этого ответа не искала._"
+# Tools that cannot bring anything from outside; any other one (run_bash, MCP,
+# browser, SSH…) may have, so its answer is not called "from memory".
+_LOCAL_ONLY_TOOLS = frozenset({
+    "todo_update", "capability_load", "ask_user", "memory", "recall", "library",
+    "read_file", "glob", "grep", "project_map", "write_file", "edit_file", "math",
+})
+
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 
 
@@ -286,6 +294,8 @@ class AnswerAcceptance:
             final_text, removed_points = remove_unverified_points(
                 final_text, points, unread_urls | run_evidence.web_index_pages, strict=strict_web)
             unread_links_marked = strict_web and removed_points > 0
+            if removed_points:
+                logger.info("run %s: web answer lost %d unverified points or links", run_id, removed_points)
             final_text = date_read_links(final_text, run_evidence.web_page_dates)
         except Exception:  # a missing/broken web skill must not lose the answer
             logger.warning("unread web link check unavailable", exc_info=True)
@@ -308,4 +318,9 @@ class AnswerAcceptance:
         task_outcome.verify_answer(final_text, run_evidence, code_input_epoch,
                                    persistence_policy=persistence_policy,
                                    user_request=raw_user_message or str(durable_task or task_outcome.contract.get("goal") or ""))
+        # John 2026-10-13: the user asked for the web and this answer used none —
+        # the chat says it came from memory (run 815801cc wrote "я нашла" over invented CVEs).
+        if (strict_web and not run_evidence.web_researched and not run_evidence.sources
+                and run_evidence.tool_names <= _LOCAL_ONLY_TOOLS and final_text.strip() and not runtime_echo):
+            final_text = MEMORY_ANSWER_NOTE + "\n\n" + final_text
         return AcceptanceDecision("accept", final_text, answer_status=answer_status)

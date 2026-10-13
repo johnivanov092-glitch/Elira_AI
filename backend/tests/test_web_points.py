@@ -46,7 +46,7 @@ def test_an_article_older_than_the_asked_week_is_out_of_period():
     cleaned, removed = remove_unverified_points(digest, point_problems(
         digest, TEXTS, DATES, "Новости Казахстана за последнюю неделю", TODAY), set())
     assert removed == 1 and "## ЧП" not in cleaned and "Каспии" not in cleaned  # empty section goes too
-    assert cleaned.startswith("## Политика\n- Король прилетел") and "Убрано пунктов: 1" in cleaned
+    assert cleaned.startswith("## Политика\n- Король прилетел") and "Убрано пунктов" not in cleaned
 
 
 def test_acceptance_asks_once_then_marks_the_point():
@@ -75,7 +75,7 @@ def test_acceptance_asks_once_then_marks_the_point():
     second = evaluate(5)
     assert second.action == "accept" and second.answer_status == "degraded"
     assert second.text.split("\n")[0].endswith(f"[zakon.kz, 11.10.2026]({ROYAL}).")  # the page's date
-    assert "хуситов" not in second.text and "Убрано пунктов: 1" in second.text
+    assert "хуситов" not in second.text and "Убрано пунктов" not in second.text
     # A quick search (SWE run 16109bde, +7 s past 20 s) gets no extra model call: the point goes at once.
     quick = RunEvidence()
     quick.record_tool_result(

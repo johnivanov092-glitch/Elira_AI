@@ -62,7 +62,7 @@ def test_points_resting_on_unread_pages_are_removed():
     assert f"Давка на концерте в Шымкенте, возбуждено уголовное дело. [NUR.KZ]({READ})" in decision.text
     for gone in ("кабельная шахта", "вратарь", "Король Бельгии", FAILED, DISCOVERED, INVENTED):
         assert gone not in decision.text
-    assert decision.text.endswith("_Убрано пунктов: 3 — не подтверждены прочитанными статьями или вне запрошенного периода._")
+    assert "Убрано пунктов" not in decision.text  # John 2026-10-13: the count goes to the log
 
 
 def test_answer_without_web_research_is_untouched():
@@ -196,3 +196,33 @@ def test_pages_open_by_label_and_unknown_labels_are_refused(tmp_path: Path, fake
     refused = _web.tool_web_fetch(tmp_path, urls=["L99"])
     assert refused["error"] == "url_not_from_sources" and "L99" in refused["text"]
     assert [urls for action, urls in calls if action == "fetch"] == [[HOME], [ARTICLES[2]["url"]]]
+
+
+def test_a_web_request_answered_without_the_web_says_it_came_from_memory():
+    # John 2026-10-13 (run 815801cc: "я нашла" over invented CVEs, no search at all).
+    from app.application.code_agent.answer_acceptance import MEMORY_ANSWER_NOTE
+
+    text = "Последние уязвимости NGINX: CVE-2026-33052."
+    request = "Найди в интернете последние уязвимости NGINX и укажи источники."
+
+    def evaluate(request, evidence):
+        return AnswerAcceptance().evaluate(
+            final_text=text, raw_user_message=request,
+            pending_redirected_jobs=(), active_capability_groups=set(), task_outcome=TaskOutcome(),
+            run_evidence=evidence, code_input_epoch=0, quote_word_limit=None, step=1, run_id="memory")
+
+    assert evaluate(request, RunEvidence()).text == MEMORY_ANSWER_NOTE + "\n\n" + text
+    assert MEMORY_ANSWER_NOTE.startswith("_Взято из памяти") and "в интернете" in MEMORY_ANSWER_NOTE
+    assert MEMORY_ANSWER_NOTE not in evaluate(request, _evidence()).text  # it searched
+    assert evaluate("Что такое NGINX?", RunEvidence()).text == text  # the web was not asked for
+    # A tool that may have reached outside (a skill through run_bash) is not "memory".
+    bash = RunEvidence()
+    bash.record_tool_result(tool_name="run_bash", arguments={"command": "python web.py fetch"},
+                            execution_status="ok", output={"ok": True, "text": "page"},
+                            text_result="page", state_changed=False)
+    assert evaluate(request, bash).text == text
+    # Elira's own memory and local files keep the note.
+    local = RunEvidence()
+    local.record_tool_result(tool_name="memory", arguments={"action": "search"}, execution_status="ok",
+                             output={"ok": True, "text": "nginx"}, text_result="nginx", state_changed=False)
+    assert evaluate(request, local).text.startswith(MEMORY_ANSWER_NOTE)

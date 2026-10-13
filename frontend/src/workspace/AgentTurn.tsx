@@ -155,12 +155,9 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
 
       {!turn.text && turn.media && turn.media.length > 0 && <AnswerMediaGallery media={turn.media} />}
 
-      {!turn.running && turn.answerStatus && turn.answerStatus !== "complete" && (
-        <div className="mt-2 text-[11.5px] text-mut">
-          {turn.answerStatus === "needs_input"
-            ? "Статус: нужен ответ пользователя"
-            : "Статус: ответ с ограничениями из-за нехватки данных"}
-        </div>
+      {/* John 2026-10-13: a degraded status is for the log (task ledger), not the chat. */}
+      {!turn.running && turn.answerStatus === "needs_input" && (
+        <div className="mt-2 text-[11.5px] text-mut">Статус: нужен ответ пользователя</div>
       )}
 
       {!turn.running && (turn.text || downloads.length > 0) && (

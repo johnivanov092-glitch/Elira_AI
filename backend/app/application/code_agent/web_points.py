@@ -438,9 +438,8 @@ def remove_unverified_points(answer_text: str, problems: list[dict[str, Any]],
     if not verified:  # nothing left to structure: the headings go too
         result = [line for line in result if not _heading_level(line)]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(reversed(result))).strip()
-    if verified:
-        text += f"\n\n_Убрано пунктов: {removed} — не подтверждены прочитанными статьями или вне запрошенного периода._"
-    else:
+    # John 2026-10-13: the count of removed points goes to the log, not into the chat.
+    if not verified:  # nothing confirmed is left: without this line the answer would say nothing
         text += (f"\n\n_Подтверждённых пунктов нет: все {removed} убраны — не подтверждены прочитанными статьями "
                  "или вне запрошенного периода._")
     return text, removed + stripped

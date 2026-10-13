@@ -125,6 +125,22 @@ describe("AgentTurn structured analysis status", () => {
     expect(html).not.toContain("Думает…");
   });
 
+  it("keeps a degraded status out of the chat", () => {
+    const turn: AgentTurnData = {
+      kind: "agent",
+      id: "agent-degraded",
+      toolCalls: [],
+      text: "Сводка по прочитанным статьям.",
+      running: false,
+      answerStatus: "degraded",
+    };
+
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+
+    expect(html).toContain("Сводка по прочитанным статьям.");
+    expect(html).not.toContain("Статус:");
+  });
+
   it("labels a needs-input answer for the user", () => {
     const turn: AgentTurnData = {
       kind: "agent",

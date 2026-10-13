@@ -607,6 +607,11 @@ class RunEvidence:
             "проверьте визуальное превью или повторите генерацию с document QA."
         )
 
+    @property
+    def tool_names(self) -> frozenset[str]:
+        """Tools this run called (as recorded, up to the operation limit)."""
+        return frozenset(operation["tool_name"] for operation in self._tool_operations)
+
     def _record_operation(self, tool, arguments, execution_status, output, state_changed):
         if len(self._tool_operations) >= _TOOL_OPERATION_LIMIT:
             self._operations_complete = False
