@@ -305,3 +305,25 @@ def test_autostart_base_schemas_keep_full_inventory_and_on_demand_dispatch(
     )
     assert expected <= {item["function"]["name"] for item in expanded.schemas}
     assert "playwright__browser_console_messages" in expanded.registry.known_tools()
+
+
+def test_a_server_without_cwd_works_in_its_data_folder_not_the_release(runtime, monkeypatch, tmp_path):
+    # 2026-10-12: Playwright wrote .playwright-mcp/ into the backend folder of the
+    # sealed release; the broken seal stopped Foundation from starting Elira.
+    seen = []
+
+    class Recorder(Client):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            seen.append(kwargs.get("cwd"))
+
+    monkeypatch.setattr(runtime, "McpClient", Recorder)
+    own = tmp_path / "own"
+    own.mkdir()
+    runtime.save_servers([spec("playwright"), spec("installed", cwd=str(own)), spec("../escape")])
+    for server_id in ("playwright", "installed", "../escape"):
+        assert runtime.start_server(server_id)["ok"]
+    assert seen[0] == str((tmp_path / "mcp" / "playwright").resolve())
+    assert (tmp_path / "mcp" / "playwright").is_dir()
+    assert seen[1] == str(own)
+    assert seen[2] == str((tmp_path / "mcp" / "_shared").resolve())

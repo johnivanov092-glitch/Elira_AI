@@ -413,9 +413,19 @@ def _tool_discovery_failure(
     }
 
 
-def _resolve_cwd(value: str | None) -> str | None:
+def _resolve_cwd(value: str | None, server_id: str = "") -> str | None:
     if not value:
-        return None
+        if not server_id:
+            return None
+        # A server writes its own files (Playwright: .playwright-mcp/ snapshots and
+        # logs) into its working folder. Inherited, that is the backend's folder
+        # inside the sealed release: on 2026-10-12 two such files broke the seal and
+        # Foundation refused to start Elira. Without its own cwd a server works in
+        # data/mcp/<id>/, next to the servers installed there.
+        safe = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", server_id) and ".." not in server_id
+        folder = CONFIG_PATH.parent / "mcp" / (server_id if safe else "_shared")
+        folder.mkdir(parents=True, exist_ok=True)
+        return str(folder.resolve())
     path = Path(value)
     return str(path if path.is_absolute() else (CONFIG_PATH.parent / path).resolve())
 
@@ -502,7 +512,7 @@ def _start_server(
                     if _STARTING.get(server_id) is token:
                         _LAST_ERROR[server_id] = msg
                 return {"ok": False, "error": msg}
-            cwd = _resolve_cwd(spec.get("cwd"))
+            cwd = _resolve_cwd(spec.get("cwd"), server_id)
             if cwd and not Path(cwd).is_dir():
                 msg = f"MCP cwd does not exist: {cwd}"
                 with _LOCK:
