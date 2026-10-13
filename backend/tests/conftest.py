@@ -15,6 +15,7 @@ for _import_path in (_REPO_ROOT / "backend", _REPO_ROOT / "skills/math", _REPO_R
 _LOCAL_PROVIDER_DEFAULTS = {
     "LLAMA_SERVER_ENABLED": "false",
     "LOCAL_EMBED_ENABLED": "false",
+    "LOCAL_RERANK_ENABLED": "false",
 }
 
 os.environ["ELIRA_SKILLS_ROOT"] = str(_REPO_ROOT / "skills")

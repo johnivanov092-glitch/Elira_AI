@@ -10,3 +10,4 @@ def isolated_skill(tmp_path, monkeypatch):
     context.configure(tmp_path)
     monkeypatch.setattr(store, '_DB_PATH_OVERRIDE', str(tmp_path/'web.sqlite3'))
     monkeypatch.setenv('LOCAL_EMBED_ENABLED', 'false')
+    monkeypatch.setenv('LOCAL_RERANK_ENABLED', 'false')
