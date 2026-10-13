@@ -3,12 +3,20 @@
 Call identity is independent of output and code mutations. Terminal command
 results retain their separate epoch-scoped evidence; a job poll is not another
 execution in that ledger. Both survive Resume in the existing run journal.
+
+John 2026-10-12: only the Web tools are counted. Every other tool runs without
+a repeat limit, as before 2026-10-11 — a skill run with the same command line
+and a rewritten --input file is new work, not a loop. The limit steers: the
+repeat is not executed and the model answers from what it already has; the
+notice is never the answer.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 from typing import Any
+
+REPEAT_LIMITED_TOOLS = frozenset({"web_search", "web_fetch"})
 
 
 def command_digest(command: str, *, argv: list[str] | None = None) -> str:
@@ -23,47 +31,6 @@ def _digest(value: Any) -> str:
 
 
 _VOLATILE_RESULT_FIELDS = {"record_path", "record_sha256", "started_at", "finished_at"}
-
-
-def _canonical_command(value: str) -> str:
-    """Collapse only unquoted spaces/tabs; preserve data and shell newlines."""
-    chars: list[str] = []
-    quote = ""
-    escaped = False
-    pending_space = False
-    for char in value:
-        if not quote and not escaped and char in {" ", "\t"}:
-            pending_space = True
-            continue
-        if pending_space:
-            if chars:
-                chars.append(" ")
-            pending_space = False
-        if escaped:
-            chars.append(char)
-            escaped = False
-        elif char in {"\\", "^"}:
-            chars.append(char)
-            escaped = True
-        elif quote:
-            chars.append(char)
-            if char == quote:
-                quote = ""
-        elif char in {"'", '"'}:
-            chars.append(char)
-            quote = char
-        else:
-            chars.append(char)
-    return "".join(chars)
-
-
-def _canonical_arguments(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: (_canonical_command(item) if key == "command" and isinstance(item, str)
-                      else _canonical_arguments(item)) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_canonical_arguments(item) for item in value]
-    return value
 
 
 def _normalized_result(value: Any) -> Any:
@@ -84,7 +51,7 @@ def _normalized_result(value: Any) -> Any:
 
 
 def _call_key(tool_name: str, arguments: Any) -> str:
-    return _digest({"tool": tool_name, "arguments": _canonical_arguments(arguments)})
+    return _digest({"tool": tool_name, "arguments": arguments})
 
 
 def _valid_digest(value: Any) -> bool:
@@ -196,8 +163,10 @@ class CommandProgress:
         self, tool_name: str, arguments: Any, *, cwd: str, epoch: str | int = 0,
         model_turn: int | None = None,
     ) -> dict[str, Any] | None:
-        """Warn on call three; stop before call five in a row or six overall."""
+        """Web only: warn on call three; refuse call five in a row or six overall."""
         self._sync_epoch(epoch)
+        if tool_name not in REPEAT_LIMITED_TOOLS:
+            return None
         key = _call_key(tool_name, arguments)
         if self._call_notice.get("key") != key:
             self._call_notice.clear()
@@ -220,13 +189,11 @@ class CommandProgress:
             f"{consecutive} подряд" if consecutive >= 5 else f"{count} за прогон")
         text = (
             f"[ВОССТАНОВЛЕНИЕ ХОДА ЗАДАЧИ] Повтор {tool_name} не исполнен: {limit}. "
-            "Задача не завершена: повторная стратегия исчерпана. "
-            "Уже полученные результаты сохранены; их корректность не оценивалась. "
-            "Прогон приостановлен (blocked), Resume доступен: измени запрос/способ "
-            "либо добавь новые данные и продолжи по уже полученному."
+            "Инструменты на этот ход отключены. Ответь пользователю текстом по уже полученному: "
+            "что нашла, чего найти не удалось и что предлагаешь сделать дальше."
         )
         self._call_notice = {"key": key, "text": text}
-        return {"status": "blocked", "reason": "repeated_tool_call", "call_sha256": key,
+        return {"status": "answer_only", "reason": "repeated_tool_call", "call_sha256": key,
                 "call_count": count, "consecutive_calls": consecutive, "alternating_cycle": alternating,
                 "business_outcome": "not_assessed", "text": text}
 

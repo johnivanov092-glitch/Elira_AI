@@ -112,51 +112,70 @@ def test_incomplete_or_rejected_receipts_are_not_inferred_from_text() -> None:
     assert restored.observe("run_server", {}, _job("a")) is None
 
 
-def test_call_warning_and_stop_ignore_changed_results_and_code_epochs() -> None:
+def test_call_warning_and_answer_only_ignore_changed_results_and_code_epochs() -> None:
     tracker = CommandProgress()
-    args = {"command": "find evidence"}
+    args = {"queries": ["nginx 1.27 changes"]}
     for index in range(4):
-        assert tracker.before_dispatch("run_bash", args, cwd="D:/work", epoch=index) is None
-        hint = tracker.observe("run_bash", args,
-                               {"exit_code": 0, "stdout": str(index), "stderr": ""},
+        assert tracker.before_dispatch("web_search", args, cwd="D:/work", epoch=index) is None
+        hint = tracker.observe("web_search", args, {"ok": True, "text": str(index)},
                                cwd="D:/work", epoch=index)
         assert bool(hint) == (index == 2)
         if hint:
             assert "3 раза" in hint and "измени запрос/способ" in hint
     tracker = CommandProgress.from_snapshot(json.loads(json.dumps(tracker.snapshot())))
-    recovery = tracker.before_dispatch("run_bash", args, cwd="D:/work", epoch=10)
-    assert recovery["status"] == "blocked" and recovery["consecutive_calls"] == 5
+    recovery = tracker.before_dispatch("web_search", args, cwd="D:/work", epoch=10)
+    # John 2026-10-12: the limit steers — no "blocked" end, the model answers.
+    assert recovery["status"] == "answer_only" and recovery["consecutive_calls"] == 5
     assert recovery["business_outcome"] == "not_assessed"
-    assert "Resume" in recovery["text"] and "Задача не завершена" in recovery["text"]
-    assert tracker.before_dispatch("run_bash", {"command": "different"}, cwd="D:/work") is None
+    assert "Ответь пользователю" in recovery["text"]
+    assert "Задача не завершена" not in recovery["text"] and "blocked" not in recovery["text"]
+    assert tracker.before_dispatch("web_search", {"queries": ["different"]}, cwd="D:/work") is None
     tracker.apply_user_clarification()
-    assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
+    assert tracker.before_dispatch("web_search", args, cwd="D:/work") is None
+
+
+@pytest.mark.parametrize("name, args", [
+    ("run_bash", {"command": "python admin.py ssh --input plex_query.json --workspace ."}),
+    ("read_file", {"path": "state.txt"}),
+    ("capability_load", {"group": "project"}),
+    ("ask_user", {"question": "Как продолжить?"}),
+    ("playwright__browser_snapshot", {}),
+])
+def test_non_web_tools_are_never_counted_or_refused(name, args) -> None:
+    # The Plex run 2026-10-12: one skill command line with a rewritten --input
+    # file is six different SSH scripts, not six repeats.
+    tracker = CommandProgress()
+    for _ in range(12):
+        assert tracker.before_dispatch(name, args, cwd="D:/work") is None
+        assert tracker.observe(name, args, {"ok": True, "text": "same"}) is None
+    assert tracker.snapshot()["calls"] == {}
+    assert tracker.context() == ""
 
 
 def test_total_call_count_spans_intervening_tools_and_resume() -> None:
     tracker = CommandProgress()
-    args = {"group": "project"}
+    args = {"url": "https://nginx.org/en/CHANGES"}
     for index in range(5):
-        assert tracker.before_dispatch("capability_load", args, cwd="D:/work") is None
-        tracker.observe("capability_load", args, {"ok": True, "text": str(index)})
-        assert tracker.before_dispatch("read_file", {"path": f"input-{index}.txt"}, cwd="D:/work") is None
-        tracker.observe("read_file", {"path": f"input-{index}.txt"}, {"text": "new"})
+        assert tracker.before_dispatch("web_fetch", args, cwd="D:/work") is None
+        tracker.observe("web_fetch", args, {"ok": True, "text": str(index)})
+        assert tracker.before_dispatch("web_search", {"queries": [f"q{index}"]}, cwd="D:/work") is None
+        tracker.observe("web_search", {"queries": [f"q{index}"]}, {"text": "new"})
         tracker = CommandProgress.from_snapshot(json.loads(json.dumps(tracker.snapshot())))
-    recovery = tracker.before_dispatch("capability_load", args, cwd="D:/work")
-    assert recovery["status"] == "blocked" and recovery["call_count"] == 6
+    recovery = tracker.before_dispatch("web_fetch", args, cwd="D:/work")
+    assert recovery["status"] == "answer_only" and recovery["call_count"] == 6
     assert recovery["consecutive_calls"] == 1 and not recovery["alternating_cycle"]
 
 
-def test_alternating_calls_and_polls_use_the_same_all_tool_counter() -> None:
+def test_alternating_web_calls_use_the_same_counter() -> None:
     tracker = CommandProgress()
-    cycle = [("capability_load", {"group": "project"}), ("run_server", {"action": "logs", "pid": 123})]
+    cycle = [("web_search", {"queries": ["a"]}), ("web_fetch", {"url": "https://example.org"})]
     for index in range(5):
         name, args = cycle[index % 2]
         assert tracker.before_dispatch(name, args, cwd="D:/work") is None
         tracker.observe(name, args, {"ok": True})
     name, args = cycle[1]
     recovery = tracker.before_dispatch(name, args, cwd="D:/work")
-    assert recovery["status"] == "blocked" and recovery["alternating_cycle"]
+    assert recovery["status"] == "answer_only" and recovery["alternating_cycle"]
     assert recovery["call_count"] == 3
 
 
@@ -237,22 +256,21 @@ def _search_output(text: str = "Found 3 results across 4 parallel queries") -> d
     return {"ok": True, "text": text, "sources": []}
 
 
-def test_call_identity_canonicalizes_key_order_and_only_safe_command_spaces() -> None:
+def test_web_call_identity_ignores_key_order_only() -> None:
     tracker = CommandProgress()
     variants = [
-        {"command": '  python   script.py  --label "a  b"  ', "timeout": 20},
-        {"timeout": 20, "command": 'python\tscript.py --label "a  b"'},
-        {"command": 'python script.py --label "a  b"', "timeout": 20},
+        {"queries": ["a  b"], "mode": "quick"},
+        {"mode": "quick", "queries": ["a  b"]},
+        {"queries": ["a  b"], "mode": "quick"},
     ]
     for index, args in enumerate(variants):
-        assert tracker.before_dispatch("run_bash", args, cwd="D:/work") is None
-        hint = tracker.observe("run_bash", args, {"error": "dispatch"}, execution_status="error")
+        assert tracker.before_dispatch("web_search", args, cwd="D:/work") is None
+        hint = tracker.observe("web_search", args, {"error": "dispatch"}, execution_status="error")
         assert bool(hint) == (index == 2)
     assert list(tracker.snapshot()["calls"].values()) == [3]
-    # Whitespace in quoted business data and shell newlines remains meaningful.
-    for command in ('python script.py --label "a b"', 'python\nscript.py --label "a  b"'):
-        assert tracker.before_dispatch("run_bash", {"command": command, "timeout": 20}, cwd="D:/work") is None
-    assert len(tracker.snapshot()["calls"]) == 3
+    # Spaces inside the query are data: a different query is a different call.
+    assert tracker.before_dispatch("web_search", {"queries": ["a b"], "mode": "quick"}, cwd="D:/work") is None
+    assert len(tracker.snapshot()["calls"]) == 2
 
 
 def test_command_result_hash_ignores_nested_skill_receipt_metadata() -> None:

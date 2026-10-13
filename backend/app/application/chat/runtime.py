@@ -103,6 +103,8 @@ def run_agent(
     workflow_approval: dict[str, Any] | None = None,
     on_event: Any = None,
     read_only: bool = False,
+    base_tools: tuple[str, ...] | list[str] | None = None,
+    resource_refs: list[dict[str, Any]] | None = None,
     **_ignored_legacy_options: Any,
 ) -> dict[str, Any]:
     """Run the universal code-agent core and return the historical dict shape.
@@ -135,6 +137,8 @@ def run_agent(
         workflow_approval=workflow_approval,
         on_event=on_event,
         read_only=read_only,
+        base_tools=base_tools,
+        resource_refs=resource_refs,
     )
     answer = str(result.get("response") or "")
     error = str(result.get("error") or "")

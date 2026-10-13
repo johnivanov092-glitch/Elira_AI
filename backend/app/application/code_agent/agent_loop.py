@@ -593,6 +593,8 @@ def _stream_code_agent_core(
                                           RUNTIME_BLOCK_KEY: "plan"})
 
         step = 0
+        answer_only = False  # set by the Web repeat limit: answer with what is known
+        answer_only_misses = 0
         try:
             turn_context.initialize_skills(resume=resume)
         except SkillRestoreError as exc:
@@ -649,6 +651,8 @@ def _stream_code_agent_core(
                 step_schemas.append(_ASK_USER_SCHEMA)
                 if activation.has_optional_tools:
                     step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
+            if answer_only:
+                step_schemas = []
             command_progress.observe("", {}, {}, epoch=observations.progress_epoch())
             turn_context.add_guidance(schemas=step_schemas, download_requested=download_requested,
                                       task_instructions=task_instructions, step=step,
@@ -909,6 +913,27 @@ def _stream_code_agent_core(
             # content instead of structured tool_calls. Recover them so the
             # loop still works.
             content, tool_calls = recover_tool_calls(content, tool_calls, _inline_tool_names)
+            if answer_only and tool_calls:
+                # This turn has no tools: a call the model still wrote is never run.
+                tool_calls = []
+                answer_only_misses += 1
+                content = _strip_tool_call_markup(content)
+                if not content.strip():
+                    if answer_only_misses >= 3:
+                        yield _incomplete_model_output(
+                            step=step, error_code="empty_model_response",
+                            error="Модель не вернула содержательный ответ. Запуск можно продолжить.",
+                        )
+                        return
+                    turn_context.messages.append({
+                        "role": "user",
+                        RUNTIME_BLOCK_KEY: "tool_trace_correction",
+                        "content": (
+                            "[internal correction] Tools are off for this turn. Answer the user "
+                            "in plain text from what you already have."
+                        ),
+                    })
+                    continue
 
             # Reconsider a generated proposal before starting any of its tools.
             # Existing tool batches finish normally; no second executor or
@@ -1108,18 +1133,11 @@ def _stream_code_agent_core(
                            "ok": False, "error": recovery["reason"], "dispatched": False,
                            "state_changed": False, "execution_status": "rejected",
                            "command_progress": command_progress.snapshot()}
-                    if recovery["status"] == "blocked":
-                        if _history_checkpoint:
-                            _history_checkpoint(turn_context.messages, final_text=recovery["text"])
-                        yield {"type": "final_response", "step": step, "text": recovery["text"],
-                               "answer_state": "accepted", "answer_status": "degraded",
-                               "task_outcome": task_outcome.snapshot()}
-                        yield {"type": "done", "ok": False, "steps": step,
-                               "stop_reason": "blocked", "resumable": True,
-                               "answer_status": "degraded", "error": recovery["reason"],
-                               "command_progress": command_progress.snapshot(),
-                               **_completion_fields(criteria, terminated_incomplete=True)}
-                        return
+                    if recovery["status"] == "answer_only":
+                        # John 2026-10-12: the limit steers, it never ends the run
+                        # with its own notice — the next turn has no tools, so the
+                        # model answers from what it already has.
+                        answer_only = True
                     continue
                 argument_error = validate_builtin_arguments(name, call_arguments)
                 if argument_error is not None:

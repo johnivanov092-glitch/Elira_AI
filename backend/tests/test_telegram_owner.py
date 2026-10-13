@@ -45,6 +45,7 @@ def bot(tmp_path, monkeypatch):
         requests_made.append((method, dict(data or {})))
         return {"ok": True, "result": {"message_id": 9}}
     monkeypatch.setattr(tg_rt, "tg_request", tg_request)
+    monkeypatch.setattr(tg_rt, "_spawn", lambda target: target())  # the turn runs inline here
     return {"sent": sent, "sessions": store, "requests": requests_made}
 
 
@@ -159,3 +160,104 @@ def test_a_ticked_user_talks_without_actions(bot):
         tg_rt.process_message("t", _message(STRANGER, "привет"))
     assert calls[0]["read_only"] is True and calls[0].get("permission_mode", "ask") != "bypass"
     assert calls[0]["reasoning_effort"] == "low" and "session_id" not in calls[0]  # not the owner's chat
+
+
+# ── /stop, voice, photos and files (John 2026-10-12) ──────────────────────────
+
+def _media(chat_id: int, **fields) -> dict:
+    return {"chat": {"id": chat_id}, "from": {"username": f"u{chat_id}"}, **fields}
+
+
+def test_stop_cancels_the_running_task_and_a_second_message_waits(bot, monkeypatch):
+    from app.application.code_agent import run_control
+
+    tg_store.set_config_value("owner_chat_id", str(OWNER))
+    cancelled = []
+    monkeypatch.setattr(run_control, "request_cancel", lambda run_id: cancelled.append(run_id) or True)
+    tg_rt.process_message("t", _message(OWNER, "/stop"))
+    assert bot["sent"][-1] == (OWNER, "Сейчас ничего не выполняется.") and not cancelled
+    entry = {"run_id": "run-1", "stopped": False}
+    tg_rt._active[OWNER] = entry
+    try:
+        tg_rt.process_message("t", _message(OWNER, "ещё вопрос"))
+        assert "Ещё работаю" in bot["sent"][-1][1]
+        tg_rt.process_message("t", _message(OWNER, "/stop"))
+        assert cancelled == ["run-1"] and entry["stopped"] and "Останавливаю" in bot["sent"][-1][1]
+    finally:
+        tg_rt._active.pop(OWNER, None)
+
+
+def test_a_finished_or_failed_turn_frees_the_chat(bot):
+    tg_store.set_config_value("owner_chat_id", str(OWNER))
+    with patch("app.application.chat.runtime.run_agent", lambda **kwargs: {
+            "ok": False, "answer": "", "tool_results": [], "meta": {"stop_reason": "cancelled"}}):
+        tg_rt.process_message("t", _message(OWNER, "долгая задача"))
+    assert OWNER not in tg_rt._active
+    assert bot["sent"][-1] == (OWNER, "⏹ Задача остановлена.")
+
+
+def test_the_owners_voice_note_is_the_message_text(bot, monkeypatch):
+    tg_store.set_config_value("owner_chat_id", str(OWNER))
+    monkeypatch.setattr(tg_rt, "_download", lambda token, file_id: b"OggS")
+    heard = []
+    monkeypatch.setattr(tg_rt, "_transcribe", lambda data, suffix: heard.append(suffix) or "проверь свободное место")
+    calls = []
+    with patch("app.application.chat.runtime.run_agent",
+               lambda **kwargs: calls.append(kwargs) or {"ok": True, "answer": "Свободно 120 ГБ.", "tool_results": []}):
+        tg_rt.process_message("t", _media(OWNER, voice={"file_id": "v1", "duration": 3}))
+    assert heard == [".ogg"]
+    assert calls[0]["user_input"] == "проверь свободное место" and calls[0]["resource_refs"] is None
+    assert bot["requests"][0][1]["text"] == "🎤 Слушаю голосовое…"
+    turns = bot["sessions"]["s1"]["turns"]
+    assert turns[0]["text"] == "🎤 проверь свободное место" and turns[1]["text"] == "Свободно 120 ГБ."
+
+
+def test_the_owners_photo_is_attached_like_the_apps_plus_and_stays_in_history(bot, monkeypatch):
+    tg_store.set_config_value("owner_chat_id", str(OWNER))
+    monkeypatch.setattr(tg_rt, "_download", lambda token, file_id: b"\xff\xd8\xff jpeg bytes")
+    calls = []
+    with patch("app.application.chat.runtime.run_agent",
+               lambda **kwargs: calls.append(kwargs) or {"ok": True, "answer": "На фото роутер.", "tool_results": []}):
+        tg_rt.process_message("t", _media(OWNER, caption="что это?", photo=[
+            {"file_id": "small", "file_size": 10}, {"file_id": "big", "file_size": 20}]))
+        tg_rt.process_message("t", _message(OWNER, "а модель какая?"))
+    first, second = calls
+    ref = first["resource_refs"][0]
+    assert ref["kind"] == "image" and ref["name"].startswith("photo_")
+    assert "resource_process" in first["base_tools"]
+    assert first["user_input"].startswith("что это?") and "[Прикреплённые ресурсы этого запроса" in first["user_input"]
+    assert first["memory_query"] == "что это?"
+    turns = bot["sessions"]["s1"]["turns"]
+    assert turns[0]["resources"] == [{"resource_id": ref["resource_id"]}] and turns[0]["text"] == "что это?"
+    # The next message keeps the photo, as the app's history does.
+    assert "этого сообщения из истории" in second["history"][0]["content"]
+    assert second["resource_refs"][0]["resource_id"] == ref["resource_id"]
+    assert second["user_input"] == "а модель какая?"
+
+
+def test_files_only_from_the_owner_and_not_over_twenty_megabytes(bot, monkeypatch):
+    tg_store.set_config_value("owner_chat_id", str(OWNER))
+    tg_store.register_user(STRANGER, username="guest")
+    tg_store.toggle_user_access(STRANGER, True)
+    monkeypatch.setattr(tg_rt, "_download", lambda token, file_id: pytest.fail("must not download"))
+    with patch("app.application.chat.runtime.run_agent", lambda **kwargs: pytest.fail("must not run")):
+        tg_rt.process_message("t", _media(STRANGER, document={"file_id": "d", "file_name": "a.pdf"}))
+        assert "только от владельца" in bot["sent"][-1][1]
+        tg_rt.process_message("t", _media(OWNER, document={"file_id": "d", "file_name": "big.iso",
+                                                            "file_size": 30 * 1024 * 1024}))
+        assert "больше 20 МБ" in bot["sent"][-1][1]
+
+
+def test_transcription_gives_plain_words_without_timecodes(monkeypatch):
+    import subprocess
+
+    def run(argv, **kwargs):
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "voice.txt").write_text(
+            "Расшифровка аудио: voice.ogg\nДлительность: ~0.1 мин (4 с).\nТаймкоды: [HH:MM:SS]\n"
+            + "=" * 60 + "\n\n[00:00:00] Привет, Элира.\n[00:00:02] Проверь диск.\n", encoding="utf-8")
+        assert Path(argv[1]).name == "transcribe.py" and Path(argv[2]).read_bytes() == b"OggS"
+        return subprocess.CompletedProcess(argv, 0, "[summary] готово 1 из 1", "")
+    monkeypatch.setattr(tg_rt.subprocess, "run", run)
+    assert tg_rt._transcribe(b"OggS", ".ogg") == "Привет, Элира. Проверь диск."
