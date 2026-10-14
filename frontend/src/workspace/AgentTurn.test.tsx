@@ -85,7 +85,7 @@ describe("AgentTurn structured analysis status", () => {
     expect(html).not.toContain("[[source:w_writer]]");
   });
 
-  it("lists pages that did not open under an accepted answer only", () => {
+  it("keeps pages that did not open out of the chat", () => {
     const failed = {
       id: "f1", origin_run_id: "r", tool: "web_fetch", url: "https://www.reddit.com/r/x/1", title: "",
       status: "failed" as const, fetched_at: null, content_hash: "", excerpt_hash: "", doc_id: "",
@@ -97,16 +97,10 @@ describe("AgentTurn structured analysis status", () => {
       answerState: "accepted", stopReason: "answer", sources: [failed],
     };
     const html = renderToStaticMarkup(<AgentTurnView turn={accepted} />);
-    expect(html).toContain("data-unopened-sources");
-    expect(html).toContain("Не открылись: ");
-    expect(html).toContain(">reddit.com</a>");
-    expect(html).toContain("403 — доступ закрыт");
-    for (const turn of [
-      { ...accepted, running: true, answerState: "draft" as const },
-      { ...accepted, text: "Ответ.\n\nНе открылись: reddit.com (403)." },
-    ]) {
-      expect(renderToStaticMarkup(<AgentTurnView turn={turn} />)).not.toContain("data-unopened-sources");
-    }
+    expect(html).toContain("Ответ по прочитанному.");
+    expect(html).not.toContain("Не открылись");
+    expect(html).not.toContain("reddit.com");
+    expect(html).not.toContain("доступ закрыт");
   });
 
   it("shows the live planning phase instead of a generic spinner", () => {
