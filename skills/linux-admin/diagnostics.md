@@ -10,7 +10,7 @@ load_state=not-found означает, что unit не найден; inactive/d
 перезапусков; историю завершений/рестартов проверяют журналами, а не этим снимком.
 содержимое unit и журналы этим сценарием не читаются. Если systemd отсутствует,
 проверь настоящий supervisor; это не доказательство падения приложения.
-Дополнительные логи — через ssh, пример args.json:
+Дополнительные логи — через ssh, пример args-N.json (новый файл на вызов):
 
 ```json
 {"tool_name":"ssh_run","args":{"host":"alias","command":"hostname; id; systemctl show nginx.service -p ActiveState,SubState,MainPID,ExecMainStatus; journalctl -u nginx.service --since '-15 minutes' -n 40 --no-pager","timeout":30}}

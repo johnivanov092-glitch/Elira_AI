@@ -6,7 +6,7 @@
 {"tool_name":"ssh_run_ps","args":{"host":"alias","script":"$PSVersionTable.PSVersion; hostname; whoami","timeout":30}}
 ```
 
-Сохрани JSON и выполни `python "<skills>/linux-admin/admin.py" ssh --input args.json
+Сохрани JSON в новый файл на каждый вызов (args-1.json, args-2.json…) и выполни `python "<skills>/linux-admin/admin.py" ssh --input args-N.json
 --workspace "<папка задачи>"` (одна строка). Транспорт сам выполняет EncodedCommand.
 windows_inventory с {"target":"alias"} — общее состояние; для одного симптома
 выбери целевую команду ниже. Примеры имён замени настоящими; пользовательские строки
