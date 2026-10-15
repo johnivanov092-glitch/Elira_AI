@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.application.code_agent import tool_policy
+from app.core.persona_defaults import DEFAULT_PROFILE
 
 
 BASE_SYSTEM_PROMPT_TEMPLATE = """{persona_section}
@@ -91,11 +92,11 @@ def _shell_guidance(platform: str | None = None) -> str:
 _CODE_AGENT_BASE_TOOLS = tool_policy.BASE_TOOLS
 
 
-def _persona_section(model_name: str = "", profile_name: str = "Инженерный") -> str:
+def _persona_section(model_name: str = "", profile_name: str = DEFAULT_PROFILE) -> str:
     try:
         from app.application.persona.service import build_persona_prompt
 
-        prompt = build_persona_prompt(profile_name or "Инженерный", model_name)
+        prompt = build_persona_prompt(profile_name or DEFAULT_PROFILE, model_name)
     except Exception:
         prompt = (
             "Ты — Elira, AI-ассистентка пользователя в Elira AI.\n"
@@ -109,7 +110,7 @@ def _build_base_system_prompt(
     project_root: Path,
     active_tools: tuple[str, ...] | list[str] | None = None,
     model_name: str = "",
-    profile_name: str = "Инженерный",
+    profile_name: str = DEFAULT_PROFILE,
 ) -> str:
     # Root, schemas and task data belong after history, never in this prefix.
     return BASE_SYSTEM_PROMPT_TEMPLATE.format(
@@ -122,7 +123,7 @@ def _build_system_prompt(
     working_dir: Path | str | None = None,
     active_tools: tuple[str, ...] | list[str] | None = None,
     model_name: str = "",
-    profile_name: str = "Инженерный",
+    profile_name: str = DEFAULT_PROFILE,
     task_text: str = "",
     memory_query: str = "",
     resource_refs: list[dict[str, Any]] | None = None,
@@ -137,7 +138,7 @@ def _build_turn_context(
     working_dir: Path | str | None = None,
     active_tools: tuple[str, ...] | list[str] | None = None,
     model_name: str = "",
-    profile_name: str = "Инженерный",
+    profile_name: str = DEFAULT_PROFILE,
     task_text: str = "",
     memory_query: str = "",
     resource_refs: list[dict[str, Any]] | None = None,

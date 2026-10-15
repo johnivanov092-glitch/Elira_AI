@@ -11,7 +11,6 @@ from app.api.routes.media_routes import router as media_router
 from app.api.routes.mcp_routes import router as mcp_router
 from app.api.routes.models import router as models_router
 from app.api.routes.persona import router as persona_router
-from app.api.routes.profiles import router as profiles_router
 from app.api.routes.release_routes import router as release_router
 from app.api.routes.skills_routes import router as skills_router
 from app.api.routes.telegram_routes import router as telegram_router
@@ -23,7 +22,6 @@ ALL_ROUTERS = (
     elira_state_router,
     chat_agent_router,
     models_router,
-    profiles_router,
     release_router,
     persona_router,
     library_sqlite_router,

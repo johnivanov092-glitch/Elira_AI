@@ -182,9 +182,6 @@ export type CodeAgentRunArgs = {
   sessionId?: string;
   sourceRunIds?: string[];
   historyRunId?: string;
-  /** Compatibility field. The UI always sends "Авто"; backend domain and
-   *  evidence routers select internal policies per request. */
-  profileName?: string;
   /** Approval policy for this run (composer permission selector). Omitted → the
    *  backend default "ask". See {@link PermissionMode}. */
   permissionMode?: PermissionMode;
@@ -415,7 +412,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     sessionId,
     sourceRunIds,
     historyRunId,
-    profileName,
     permissionMode,
     reasoningEffort,
     runId,
@@ -446,7 +442,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
           ...(role === "user" && refs?.length ? { resources: refs.map(toWireResource) } : {}),
         })),
         run_id: runId,
-        ...(profileName ? { profile_name: profileName } : {}),
         ...(permissionMode ? { permission_mode: permissionMode } : {}),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         ...(sessionId ? { session_id: sessionId } : {}),

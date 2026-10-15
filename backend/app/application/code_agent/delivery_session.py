@@ -39,6 +39,7 @@ from app.application.code_agent.loop_helpers import (
     session_user_inputs,
 )
 from app.application.code_agent.run_journal import RunJournal
+from app.core.persona_defaults import DEFAULT_PROFILE
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.application.code_agent.taskspec import derive_task_spec
 
@@ -321,7 +322,7 @@ def build_continuation_kwargs(
         "chat_fn": chat_fn,
         "chat_stream_fn": chat_stream_fn,
         "resume": True,
-        "profile_name": str(req.get("profile_name") or "Инженерный"),
+        "profile_name": DEFAULT_PROFILE,
         "permission_mode": str(req.get("permission_mode") or "ask"),
         "thinking": thinking,
         "reasoning_effort": reasoning_effort,
@@ -346,7 +347,7 @@ def stream_delivery_session(
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
-    profile_name: str = "Инженерный",
+    profile_name: str = DEFAULT_PROFILE,
     permission_mode: str = "ask",
     thinking: bool = False,
     reasoning_effort: str | None = None,

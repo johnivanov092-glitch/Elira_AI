@@ -559,10 +559,6 @@ export type SendArgs = {
   model: string;
   /** Durable resources attached to this message (uploaded, not processed). */
   resources?: ResourceAttachment[];
-  /** Active UI persona profile (the `agent_profile` global setting). Threaded
-   *  into the code-agent stream so the user's selected mode reaches Elira's
-   *  persona prompt; undefined falls back to the backend default. */
-  profileName?: string;
   /** Approval policy picked in the composer's permission selector; undefined →
    *  backend default "ask". */
   permissionMode?: PermissionMode;
@@ -574,7 +570,7 @@ export type SendArgs = {
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, reasoningEffort } = args;
+  const { sessionId, text, mode, projectRoot, model, resources, permissionMode, reasoningEffort } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running || stopUnconfirmed(entry.snapshot)) return;
@@ -665,7 +661,7 @@ export function send(args: SendArgs): void {
   // (resource_id only); the agent reads their content via resource_process. The
   // session id retains provenance; historical IDs stay on their original turns.
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort, runId: entry.runId || undefined,
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, permissionMode, reasoningEffort, runId: entry.runId || undefined,
       historyRunId,
       sourceRunIds: entry.snapshot.turns.filter((t): t is AgentTurnData => t.kind === "agent" && isAcceptedAnswer(t) && Boolean(t.citations?.length && t.runId)).map(t => t.runId!).slice(-8),
       ...handlers }));

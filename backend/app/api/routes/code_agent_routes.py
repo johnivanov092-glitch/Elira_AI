@@ -50,13 +50,13 @@ from app.application.code_agent.archive import (
     FolderNotFound,
     build_folder_archive,
 )
-from app.application.chat.local_chat import resolve_persona_mode
 from app.application.media.resource_context import (
     inject_resource_context, resolve_resource_refs, with_resource_tools,
 )
 from app.application.library.runtime import inject_library_context
 from app.application.persona.service import PersonaPostTurnObservation
 from app.core.data_files import data_subdir
+from app.core.persona_defaults import DEFAULT_PROFILE
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
 logger = logging.getLogger(__name__)
@@ -321,8 +321,8 @@ class CodeAgentRequest(BaseModel):
     source_run_ids: list[str] = Field(default_factory=list, max_length=8)
     history_run_id: Optional[str] = Field(default=None, max_length=128)
     profile_name: str = Field(
-        default="Авто",
-        description="Compatibility field. Elira/Auto selects internal domain policies per request; concrete legacy values no longer lock routing.",
+        default="",
+        description="Ignored: Elira has one live persona; kept so older clients keep working.",
     )
 
 
@@ -607,11 +607,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
         ),
         query=payload.message,
     )
-    profile_name = resolve_persona_mode(
-        payload.profile_name,
-        payload.message,
-        history,
-    )
+    profile_name = DEFAULT_PROFILE  # one live persona; payload.profile_name from old clients is ignored
     persona_observation = _persona_observation(
         dialog_id=run_id,
         session_id=payload.session_id,
@@ -737,7 +733,7 @@ def resume_run(run_id: str) -> StreamingResponse:
     attempt_number = int(state.get("resume_count") or 0) + 2
     root_workflow_run_id = _composer_workflow_run_id(run_id)
     workflow_run_id = _composer_workflow_attempt_run_id(run_id, attempt_number)
-    profile_name = str(request_data.get("profile_name") or "Инженерный")
+    profile_name = DEFAULT_PROFILE
     persona_observation = _persona_observation(
         dialog_id=f"{run_id}:attempt-{attempt_number}",
         session_id=request_data.get("session_id"),

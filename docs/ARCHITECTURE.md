@@ -455,9 +455,10 @@ the same ToolExecutor and handler.
 downloadable file (it adds file-delivery guidance); `task_outcomes.py` owns
 model-declared delivery and current publication receipts. The former domain
 routing (domain groups, domain guidance, evidence reasons) never fired and was
-removed in track 4 (2026-10-07). The HTTP adapter's
-`application/chat/local_chat.py:resolve_persona_mode()` returns `DEFAULT_PROFILE`,
-which the agent loop also applies. No hint grants permission
+removed in track 4 (2026-10-07). Elira has one live persona: the persona
+modes and `/api/profiles` were removed (2026-10-15); the HTTP adapter and the
+agent loop use `DEFAULT_PROFILE` and ignore a `profile_name` sent by old
+clients. No hint grants permission
 or creates an executor/provider. TCP checks use `itops_network_inventory` with an
 explicit per-connect timeout and concurrency, not sequential shell
 `Test-NetConnection`.
@@ -603,7 +604,7 @@ templates and inherit `ask`, `accept_edits`, or `bypass`.
 - `/api/media`
 - `/api/lib`
 - `/api/chat-agent`
-- `/api/models`, `/api/profiles`, `/api/persona`
+- `/api/models`, `/api/persona`
 - `/api/skills`, `/api/voice`, `/api/elira`, `/api/drift`
 
 Direct public execution/administration routers for Telegram, IT Ops, Terminal,

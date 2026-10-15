@@ -26,8 +26,12 @@ def resolve_resource_refs(resource_ids: Iterable[str]) -> list[dict[str, Any]]:
 
 
 def with_resource_tools(tools: Iterable[str]) -> tuple[str, ...]:
-    """Attachment processing joins the request's base tools."""
-    return tuple(dict.fromkeys([*tools, "resource_process"]))
+    """Attachment processing joins the request's base tools.
+
+    The attachment note names all three; without materialize the model searched the
+    disk and read another chat's copy of the file (run 0f1ab653, 2026-10-15).
+    """
+    return tuple(dict.fromkeys([*tools, "resource_process", "resource_materialize", "resource_publish"]))
 
 
 def inject_resource_context(

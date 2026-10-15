@@ -280,7 +280,6 @@ export default function WorkspaceShell() {
             projectRoot: project,
             model,
             resources,
-            profileName: "Авто",
             permissionMode,
             reasoningEffort,
           });

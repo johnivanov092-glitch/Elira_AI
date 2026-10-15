@@ -11,7 +11,6 @@ from app.core.persona_defaults import (
     DEFAULT_MODEL_CALIBRATION,
     DEFAULT_PROFILE,
     ELIRA_PERSONA_BASE_PAYLOAD,
-    PROFILE_UI,
 )
 from app.infrastructure.db.connection import connect_sqlite
 from app.application.elira_memory.service import DB_PATH, init_db as init_state_db
@@ -399,7 +398,6 @@ def get_persona_status() -> dict[str, Any]:
         "previous_version": previous_version,
         "latest_traits": latest_traits,
         "model_consistency": model_consistency,
-        "profiles": PROFILE_UI,
     }
 
 

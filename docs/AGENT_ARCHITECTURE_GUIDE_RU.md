@@ -814,7 +814,7 @@ Qwen chat template с ошибкой `System message must be at the beginning`.
 | `/api/media` | durable resource intake |
 | `/api/lib` | curated library |
 | `/api/chat-agent` | memory compatibility API |
-| `/api/models`, `/api/profiles`, `/api/persona` | model/persona reads |
+| `/api/models`, `/api/persona` | model/persona reads |
 | `/api/skills` | document/SQL/HTTP/skill endpoints |
 | `/api/mcp` | ручной статус и start/stop/restart настроенных MCP через прежний runtime |
 | `/api/voice` | STT/TTS |

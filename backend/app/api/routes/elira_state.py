@@ -14,6 +14,7 @@ from app.application.elira_memory.service import (
 )
 from app.application.elira_memory.settings import get_settings, save_settings
 from app.application.local_models import list_local_models
+from app.core.persona_defaults import DEFAULT_PROFILE
 
 router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 
@@ -37,7 +38,7 @@ class ChatMessageRequest(BaseModel):
 class SettingsRequest(BaseModel):
     context_window: int = 131072
     default_model: str = "local-model"
-    agent_profile: str = "Авто"
+    agent_profile: str = DEFAULT_PROFILE
     route_model_map: dict | None = None
     orchestration_enabled: bool = False
 

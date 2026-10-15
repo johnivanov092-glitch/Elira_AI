@@ -16,9 +16,8 @@ from app.application.code_agent.capabilities import (
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.tool_schemas import build_tool_schemas
 from app.application.code_agent.tools._capability import tool_capability_load
-from app.application.chat.local_chat import resolve_persona_mode
 from app.application.tool_providers.runtime_registry import build_runtime_tool_registry
-from app.core.persona_defaults import AUTO_PROFILE
+from app.core.persona_defaults import DEFAULT_PROFILE
 
 
 def _tool_names(registry) -> set[str]:
@@ -391,15 +390,13 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
             seen_system_prompts.append(str(kwargs["messages"][0]["content"]))
             return {"message": {"content": "Проверка завершена.", "tool_calls": []}}
 
-        effective_profile = resolve_persona_mode(AUTO_PROFILE, message)
-        assert effective_profile == "Баланс"
         events = list(stream_code_agent(
             user_message=message,
             project_root=tmp_path,
             run_id=f"persona-tool-route-{profile_index}",
             chat_fn=fake_chat,
             auto_remember=False,
-            profile_name=effective_profile,
+            profile_name=DEFAULT_PROFILE,
             permission_mode="ask",
         ))
 
@@ -408,66 +405,9 @@ def test_auto_leaves_domains_to_main_agent_with_tools_available(tmp_path) -> Non
         assert "Режим работы:" not in seen_system_prompts[0]
         run_started = next(event for event in events if event["type"] == "run_started")
         assert run_started["profile_name"] == "Баланс"
-        assert run_started["ui_profile_name"] == "Elira / Auto"
+        assert run_started["ui_profile_name"] == "Elira"
         assert run_started["runtime_activation"]["capability_groups"] == []
         assert run_started["runtime_activation"]["itops"] is False
-
-
-def test_auto_routes_an_explicit_absolute_filesystem_path_to_engineering() -> None:
-    assert resolve_persona_mode(
-        AUTO_PROFILE,
-        r"Проект не подключён. Прочитай D:\Data\sample\README.md по абсолютному пути.",
-    ) == "Баланс"
-
-
-def test_auto_routes_explicit_ssh_commands_to_infrastructure() -> None:
-    assert resolve_persona_mode(
-        AUTO_PROFILE,
-        "Подключись по SSH к серверу и выполни `uname -s`.",
-    ) == "Баланс"
-    assert resolve_persona_mode(
-        AUTO_PROFILE,
-        "Подключись к Windows SSH-хосту и выполни `Write-Output OK`.",
-    ) == "Баланс"
-
-
-def test_auto_keeps_ssh_client_code_work_in_engineering() -> None:
-    assert resolve_persona_mode(
-        AUTO_PROFILE,
-        "Исправь баг в Python SSH-клиенте и добавь тест.",
-    ) == "Баланс"
-
-
-def test_auto_routes_developer_integrations_to_engineering() -> None:
-    for message in (
-        "Проверь подключение открытого редактора Unity.",
-        "Получи статус Blender через интеграцию.",
-        "Найди репозиторий через GitHub.",
-    ):
-        assert resolve_persona_mode(AUTO_PROFILE, message) == "Баланс"
-
-
-def test_auto_routes_a_user_memory_request_to_personal() -> None:
-    assert resolve_persona_mode(
-        AUTO_PROFILE,
-        "Сохрани важный факт в долговременную память и затем вспомни его.",
-    ) == "Баланс"
-
-
-def test_auto_routes_an_explicit_scientific_research_request_to_science() -> None:
-    assert resolve_persona_mode(
-        AUTO_PROFILE,
-        "Проведи научную проверку страницы https://example.com и приведи источник.",
-    ) == "Баланс"
-
-
-def test_legacy_explicit_profile_no_longer_locks_auto_route() -> None:
-    assert resolve_persona_mode("Медицина", "Исправь баг в коде") == "Баланс"
-    history = [
-        {"role": "user", "content": "Просканируй TCP-порты в локальной сети"},
-        {"role": "assistant", "content": "Начинаю диагностику."},
-    ]
-    assert resolve_persona_mode(AUTO_PROFILE, "Продолжай", history) == "Баланс"
 
 
 def test_explicit_runtime_activation_survives_resume(tmp_path) -> None:

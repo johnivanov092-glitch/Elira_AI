@@ -10,7 +10,6 @@ from app.core.persona_defaults import (
     DEFAULT_PROFILE,
     ELIRA_PERSONA_BASE_PAYLOAD,
     PERSONA_PROMOTION_RULES,
-    PROFILE_MODE_OVERLAYS,
 )
 
 
@@ -297,11 +296,7 @@ def observe_dialogue(
     outcome_ok: bool = True,
 ) -> dict[str, Any]:
     persona_store.bootstrap_if_needed()
-    profile_key = (
-        profile_name
-        if profile_name in PROFILE_MODE_OVERLAYS
-        else DEFAULT_PROFILE
-    )
+    profile_key = DEFAULT_PROFILE  # one live persona; old clients may still send a profile name
     active = persona_store.get_persona_version()
     version_id = int(active.get("version", 1) or 1)
     extracted = extract_signals(profile_key, user_input, answer_text)

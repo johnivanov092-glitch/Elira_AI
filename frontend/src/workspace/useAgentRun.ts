@@ -37,7 +37,7 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
   }, [model, sessionId]);
 
   const send = useCallback((text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => {
-    bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName: "Авто", permissionMode, reasoningEffort });
+    bg.send({ sessionId, text, mode, projectRoot, model, resources, permissionMode, reasoningEffort });
   }, [sessionId, projectRoot, model]);
 
   const resume = useCallback((agentId: string, runId: string) => {

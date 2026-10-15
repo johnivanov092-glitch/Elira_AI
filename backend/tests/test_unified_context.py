@@ -6,9 +6,7 @@ import pytest
 
 from _runtime_roles import base_system, runtime_section, user_texts
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.chat.local_chat import resolve_persona_mode
-from app.application.persona.service import build_persona_prompt, mode_temperature
-from app.core.persona_defaults import PERSONA_MODES
+from app.application.persona.service import build_persona_prompt
 
 
 def capture(tmp_path, query, **extra):
@@ -32,11 +30,15 @@ def names(call):
     return {s["function"]["name"] for s in call["tools"]}
 
 
-def test_legacy_profiles_do_not_switch_identity_or_sampling():
-    prompts = {build_persona_prompt(mode, "local-model") for mode in PERSONA_MODES}
+def test_old_profile_names_do_not_switch_identity():
+    prompts = {build_persona_prompt(name, "local-model") for name in ("Баланс", "Медицина", "Авто", "")}
     assert len(prompts) == 1
-    assert len({mode_temperature(mode) for mode in PERSONA_MODES}) == 1
-    assert {resolve_persona_mode(mode, "Напиши код проверки сервера") for mode in PERSONA_MODES} == {"Баланс"}
+
+
+def test_persona_does_not_relate_document_people_to_the_user():
+    prompt = build_persona_prompt("Баланс", "local-model")
+    assert "твоя жена" not in prompt
+    assert "не приписывай им родство с собеседником" in prompt
 
 
 @pytest.mark.parametrize("query", [

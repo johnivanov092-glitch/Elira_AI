@@ -31,7 +31,7 @@ def test_image_resource_tools_are_available_without_tool_search() -> None:
     tools = routes._base_tools_for_request("code", refs)
 
     assert tools is not None
-    assert "resource_process" in tools
+    assert {"resource_process", "resource_materialize", "resource_publish"} <= set(tools)
     assert "read_image" not in tools
 
 

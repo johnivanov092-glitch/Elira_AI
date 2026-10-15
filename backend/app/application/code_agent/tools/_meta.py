@@ -5,6 +5,8 @@ from copy import deepcopy
 import json
 from typing import Any
 
+from app.core.persona_defaults import DEFAULT_PROFILE
+
 DELEGATE_TASK_ROLES = {"explore", "plan", "verify", "review"}
 DELEGATE_MAX_DEPTH = 1
 DELEGATE_READ_TOOLS = frozenset({"read_file", "glob", "grep", "project_map"})
@@ -243,7 +245,7 @@ def tool_delegate_task(
             project_root=project_root,
             working_dir=parent_request.get("working_dir"),
             model=str(parent_request.get("model") or "auto"),
-            profile_name=str(parent_request.get("profile_name") or "Инженерный"),
+            profile_name=DEFAULT_PROFILE,
             thinking=bool(parent_request.get("thinking")),
             reasoning_effort=parent_request.get("reasoning_effort"),
             agent_id=f"subagent-{normalized_role}",

@@ -7,9 +7,7 @@ from app.application.persona import evolution as persona_evolution
 from app.application.persona import store as persona_store
 from app.core.persona_defaults import (
     DEFAULT_MODEL_CALIBRATION,
-    ELIRA_TEMPERATURE,
     ELIRA_PERSONA_BASE_PAYLOAD,
-    PROFILE_MODE_OVERLAYS,
 )
 
 
@@ -82,11 +80,6 @@ class PersonaPostTurnObservation:
             )
 
 
-def mode_temperature(name: str):
-    """Legacy profile names no longer change live sampling."""
-    return ELIRA_TEMPERATURE
-
-
 get_persona_version = persona_store.get_persona_version
 get_model_calibration = persona_store.get_model_calibration
 list_persona_candidates = persona_store.list_persona_candidates
@@ -94,15 +87,6 @@ get_persona_status = persona_store.get_persona_status
 init_persona_store = persona_store.init_persona_store
 observe_dialogue = persona_evolution.observe_dialogue
 rollback_persona = persona_evolution.rollback_persona
-
-
-def _short_profile_line(profile_key: str) -> str:
-    """Packed first-sentence instruction for the selected persona mode."""
-    overlay = PROFILE_MODE_OVERLAYS.get(profile_key, "")
-    # Mode overlays deliberately keep the full load-bearing instruction before
-    # the first period; any explanatory tail stays out of the live prompt.
-    first = overlay.split(".", 1)[0].strip()
-    return first if first else "Режим работы: универсальный"
 
 
 def _calibration_pragma(payload: dict) -> str:
@@ -211,8 +195,9 @@ def build_persona_prompt(
             "В личном разговоре отвечай тепло и естественно, без перечисления своих функций "
             "и навязывания задач. В свободной беседе — короткие обычные фразы без заголовков "
             "и списков; структурированный формат оставь для рабочих задач. "
-            "Обращайся к собеседнику напрямую: «ты», «твоя жена», "
-            "а не «пользователь».",
+            "Обращайся к собеседнику напрямую: «ты», а не «пользователь». "
+            "Людей из документов и рассказов называй как там названо и не приписывай им "
+            "родство с собеседником, пока он сам не сказал.",
             "Ласковые обращения воспринимай как дружелюбие и отвечай тепло. "
             "Не поясняй без запроса статус AI и романтические границы. "
             "На прямые вопросы о себе отвечай честно.",
