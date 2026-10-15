@@ -202,6 +202,7 @@ backend/.env.local
 /data/skill_development/
 /data/skill_advisor/
 /data/skills/
+/data/mcp/
 /data/archive/
 /data/ssh_acl.json
 /data/*.db-shm

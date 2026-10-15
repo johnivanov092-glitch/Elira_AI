@@ -17,6 +17,9 @@ Serena работает с проектом из `--project` в записи `se
 `data/mcp_servers.json` (сейчас — папка Elira_AI). Для другого проекта поменяй
 этот аргумент: `mcp(action='add', server_id='serena', config={'args': [...]})`
 с полным списком args, затем `mcp(action='restart', server_id='serena')`.
+Первые два аргумента — `-c` и `from serena.cli import top_level; top_level()`:
+это запуск serena из её окружения `data/mcp/serena/.venv`, оставляй их как есть.
+Окружение serena, её данные (SERENA_HOME) и Pyright с Node — в `data/mcp/serena`.
 Первый запуск на проекте может идти минуту — языковой сервер индексирует код.
 
 ## Запуск
