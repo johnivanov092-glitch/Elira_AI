@@ -4,26 +4,21 @@ import type { AgentTurnData } from "../workspace/types";
 
 export type CompanionState = "idle" | "listening" | "looking" | "thinking" | "speaking";
 
-export interface CompanionView {
-  state: CompanionState;
-  /** The finished answer of the latest turn, when it should be on screen. */
-  answer: string;
-  /** Why the latest turn has no answer (error, stop, a request that needs the chat). */
+/** One line of the conversation shown in the bubble. */
+export interface ThreadItem {
+  id: string;
+  role: "user" | "agent";
+  /** The question, or the accepted answer of an agent turn. */
+  text: string;
+  running: boolean;
+  /** What a running agent turn is doing now (its latest step note). */
+  note: string | null;
+  /** Why a finished agent turn has no answer. */
   notice: string | null;
-  /** The turn the answer or notice belongs to. */
-  turnId: string | null;
 }
 
-export interface ViewInput {
-  snapshot: RunSnapshot | null;
-  capturing: boolean;
-  inputOpen: boolean;
-  /** Turns the companion must not show: present at start or closed by the user. */
-  hiddenTurnIds: ReadonlySet<string>;
-  /** The answer is still being "spoken" (typed out) until this time. */
-  speakingUntil: number;
-  now: number;
-}
+/** The last exchanges in the bubble; older ones stay in the chat. */
+export const THREAD_LIMIT = 6;
 
 export function lastAgentTurn(snapshot: RunSnapshot | null): AgentTurnData | undefined {
   const turns = snapshot?.turns ?? [];
@@ -43,21 +38,51 @@ export function noticeFor(turn: AgentTurnData): string {
   return "Ответа нет — открой разговор в чате, там видно, на чём остановилась.";
 }
 
-/** What the companion shows, from the run snapshot and its own local flags. */
-export function deriveView({ snapshot, capturing, inputOpen, hiddenTurnIds, speakingUntil, now }: ViewInput): CompanionView {
-  const idle: CompanionView = { state: inputOpen ? "listening" : "idle", answer: "", notice: null, turnId: null };
-  if (capturing) return { ...idle, state: "looking" };
-  const turn = lastAgentTurn(snapshot);
-  if (!turn) return idle;
-  if (turn.running) return { state: "thinking", answer: "", notice: null, turnId: turn.id };
-  if (hiddenTurnIds.has(turn.id)) return idle;
-  if (isAcceptedAnswer(turn) && turn.text.trim()) {
-    return { state: now < speakingUntil ? "speaking" : inputOpen ? "listening" : "idle", answer: turn.text, notice: null, turnId: turn.id };
-  }
-  return { ...idle, notice: noticeFor(turn), turnId: turn.id };
+/** The latest step note of a running turn, shortened for the bubble. */
+export function stepNote(turn: AgentTurnData | undefined): string | null {
+  const note = turn?.running ? turn.stepNotes?.at(-1)?.text.trim() : "";
+  if (!note) return null;
+  const line = note.split("\n")[0];
+  return line.length > 90 ? `${line.slice(0, 89)}…` : line;
 }
 
-/** How long the answer is "spoken": a short typing animation, capped so long answers do not drag. */
+/** Turns of this companion conversation the bubble shows: not hidden, user and agent only. */
+export function threadOf(snapshot: RunSnapshot | null, hiddenIds: ReadonlySet<string>): ThreadItem[] {
+  const items: ThreadItem[] = [];
+  for (const turn of snapshot?.turns ?? []) {
+    if (hiddenIds.has(turn.id)) continue;
+    if (turn.kind === "user") {
+      items.push({ id: turn.id, role: "user", text: turn.text, running: false, note: null, notice: null });
+    } else if (turn.kind === "agent") {
+      const answered = !turn.running && isAcceptedAnswer(turn) && Boolean(turn.text.trim());
+      items.push({
+        id: turn.id, role: "agent", text: answered ? turn.text : "", running: turn.running, note: stepNote(turn),
+        notice: turn.running || answered ? null : noticeFor(turn),
+      });
+    }
+  }
+  return items.slice(-THREAD_LIMIT);
+}
+
+export interface StateInput {
+  snapshot: RunSnapshot | null;
+  capturing: boolean;
+  inputOpen: boolean;
+  /** Reading the answer aloud right now. */
+  aloud: boolean;
+  /** A fresh answer is typed out until this time. */
+  speakingUntil: number;
+  now: number;
+}
+
+export function deriveState({ snapshot, capturing, inputOpen, aloud, speakingUntil, now }: StateInput): CompanionState {
+  if (capturing) return "looking";
+  if (lastAgentTurn(snapshot)?.running) return "thinking";
+  if (aloud || now < speakingUntil) return "speaking";
+  return inputOpen ? "listening" : "idle";
+}
+
+/** How long a fresh answer is typed out: short, capped so long answers do not drag. */
 export function speakingMs(answer: string): number {
   return Math.min(6000, 700 + answer.length * 14);
 }

@@ -1,8 +1,9 @@
 // Desktop companion (John 2026-10-15, variant B): Elira stands at the screen edge in a small
 // transparent window. A click opens a question box, Ctrl+Shift+E (or the eye button) explains the
-// window the user is looking at. Questions go to the same agent run in its own chat «Компаньон».
+// window the user is looking at. The bubble keeps the last exchanges with a reply box, so the
+// conversation goes on; everything runs in the same agent, in its own chat «Компаньон».
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, Eye, MessageSquare, ScanEye, Send, Volume2, X } from "lucide-react";
+import { Copy, Eye, MessageSquare, ScanEye, Send, Square, Volume2, X } from "lucide-react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { createCodeSession, getCodeSession, patchCodeSession, type ReasoningEffort } from "../api/codeAgent";
 import { uploadResource, type ResourceAttachment } from "../api/resources";
@@ -10,9 +11,9 @@ import type { PermissionMode } from "../api/workflows";
 import * as bg from "../workspace/backgroundRuns";
 import { deserializeTurns, serializeTurns } from "../workspace/turnCodec";
 import { isAcceptedAnswer } from "../workspace/answerLifecycle";
-import { speak } from "../workspace/voice";
+import { speak, stop as stopSpeech } from "../workspace/voice";
 import { FIGURE_X, FRAMES, HEAD_CLIP, useLiveFace } from "./companionFrames";
-import { deriveView, lastAgentTurn, speakingMs, type CompanionState } from "./companionState";
+import { deriveState, lastAgentTurn, speakingMs, stepNote, threadOf, type CompanionState } from "./companionState";
 import { captureScreen, inTauri, onExplainScreen, openMainChat, pngFile, setHitRegions, startWindowDrag, type HitRegion } from "./tauriBridge";
 import "./companion.css";
 
@@ -48,18 +49,23 @@ function readReasoningEffort(): ReasoningEffort {
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const turnIds = (snapshot: bg.RunSnapshot) => snapshot.turns.map((turn) => turn.id);
 
 export default function CompanionApp() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<bg.RunSnapshot | null>(null);
   const [inputOpen, setInputOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [reply, setReply] = useState("");
   const [capturing, setCapturing] = useState(false);
   const [localNotice, setLocalNotice] = useState<string | null>(null);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const [speaking, setSpeaking] = useState<{ turnId: string; start: number; until: number } | null>(null);
+  const [aloud, setAloud] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const rootRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const replyRef = useRef<HTMLInputElement>(null);
   const sessionRef = useRef<string | null>(null);
   const capturingRef = useRef(false);
   const spokenRef = useRef<string | null>(null);
@@ -82,7 +88,7 @@ export default function CompanionApp() {
     });
   }, []);
 
-  // Reopen the companion's chat; its last answer stays in the chat, not on screen.
+  // Reopen the companion's chat; its earlier turns stay in the chat, not on screen.
   useEffect(() => {
     let stored: string | null = null;
     try { stored = localStorage.getItem(SESSION_KEY); } catch { /* private mode */ }
@@ -93,8 +99,7 @@ export default function CompanionApp() {
         const saved = await getCodeSession(id);
         if (!saved) return;
         bg.seed(id, deserializeTurns(saved.turns), saved.task_ledger || [], saved.context_state || null);
-        const last = lastAgentTurn(bg.getSnapshot(id));
-        if (last) setHidden(new Set([last.id]));
+        setHidden(new Set(turnIds(bg.getSnapshot(id))));
         attach(id);
       } catch { /* backend not up yet: the first question loads or creates the chat */ }
     })();
@@ -113,7 +118,11 @@ export default function CompanionApp() {
       if (bg.isRunning(known)) return known;
       const saved = await getCodeSession(known).catch(() => undefined);
       if (saved) {
+        const before = new Set(turnIds(bg.getSnapshot(known)));
         bg.seed(known, deserializeTurns(saved.turns), saved.task_ledger || [], saved.context_state || null);
+        // Turns written elsewhere (the main window) are history, not part of this bubble.
+        const fresh = turnIds(bg.getSnapshot(known)).filter((id) => !before.has(id));
+        if (fresh.length) setHidden((previous) => new Set([...previous, ...fresh]));
         return known;
       }
       if (saved === undefined) return known; // backend hiccup: keep the chat we have
@@ -126,6 +135,8 @@ export default function CompanionApp() {
   }, [attach]);
 
   const ask = useCallback(async (text: string, resources?: ResourceAttachment[]) => {
+    stopSpeech();
+    setAloud(false);
     const id = await ensureSession();
     bg.send({
       sessionId: id, text, mode: "code", projectRoot: "", model: "auto", resources,
@@ -166,16 +177,16 @@ export default function CompanionApp() {
     return () => { cancelled = true; off(); };
   }, []);
 
-  const submit = async () => {
-    const text = draft.trim();
-    if (!text || running) return;
-    setDraft("");
+  const send = async (text: string, clear: () => void) => {
+    const question = text.trim();
+    if (!question || running || capturing) return;
+    clear();
     setInputOpen(false);
     setLocalNotice(null);
-    try { await ask(text); } catch (error) { setLocalNotice(`Не получилось отправить: ${errorText(error)}`); }
+    try { await ask(question); } catch (error) { setLocalNotice(`Не получилось отправить: ${errorText(error)}`); }
   };
 
-  // A fresh answer is "spoken": typed out with lips moving, then it stays in the bubble.
+  // A fresh answer is typed out with lips moving, then it stays in the bubble.
   useEffect(() => {
     const turn = lastAgentTurn(snapshot);
     if (!turn || turn.running || hidden.has(turn.id) || spokenRef.current === turn.id) return;
@@ -195,21 +206,38 @@ export default function CompanionApp() {
     return () => window.clearInterval(timer);
   }, [speaking]);
 
-  const view = deriveView({
-    snapshot, capturing, inputOpen, hiddenTurnIds: hidden,
-    speakingUntil: speaking && speaking.turnId === lastAgentTurn(snapshot)?.id ? speaking.until : 0,
-    now,
-  });
-  const face = useLiveFace(view.state);
-  const notice = view.notice ?? localNotice;
-  const typed = view.state === "speaking" && speaking
-    ? view.answer.slice(0, Math.ceil(view.answer.length * Math.min(1, (now - speaking.start) / Math.max(1, speaking.until - speaking.start))))
-    : view.answer;
+  const thread = threadOf(snapshot, hidden);
+  const lastAgent = lastAgentTurn(snapshot);
+  const speakingUntil = speaking && speaking.turnId === lastAgent?.id ? speaking.until : 0;
+  const state = deriveState({ snapshot, capturing, inputOpen, aloud, speakingUntil, now });
+  const face = useLiveFace(state);
+  const typing = speakingUntil > now && speaking;
+  const latestAnswer = [...thread].reverse().find((item) => item.role === "agent" && item.text)?.text ?? "";
+
+  const typedOf = (text: string, id: string) => (typing && speaking && speaking.turnId === id
+    ? text.slice(0, Math.ceil(text.length * Math.min(1, (now - speaking.start) / Math.max(1, speaking.until - speaking.start))))
+    : text);
+
+  const toggleAloud = () => {
+    if (aloud) { stopSpeech(); setAloud(false); return; }
+    if (!latestAnswer) return;
+    setAloud(true);
+    void speak(latestAnswer).finally(() => setAloud(false));
+  };
 
   const closeBubble = () => {
-    if (view.turnId) setHidden((previous) => new Set(previous).add(view.turnId!));
+    stopSpeech();
+    setAloud(false);
+    setHidden((previous) => new Set([...previous, ...(snapshot ? turnIds(snapshot) : [])]));
     setLocalNotice(null);
   };
+
+  const bubble = thread.length > 0 || Boolean(localNotice);
+
+  useEffect(() => {
+    const element = threadRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  });
 
   // Tell the native side where the companion takes the mouse; elsewhere clicks go through.
   useEffect(() => {
@@ -232,23 +260,47 @@ export default function CompanionApp() {
     return () => cancelAnimationFrame(frame);
   });
 
-  const bubble = Boolean(view.answer || notice);
+  const thinkingLine = stepNote(lastAgent) ?? LABEL.thinking;
   return (
-    <div className={`cmp-root cmp--${view.state}`} ref={rootRef}>
+    <div className={`cmp-root cmp--${state}`} ref={rootRef}>
       {bubble ? (
         <div className="cmp-bubble" data-hit="bubble">
           <button className="cmp-icon cmp-close" onClick={closeBubble} aria-label="Закрыть"><X size={14} /></button>
-          {view.answer
-            ? <div className="cmp-text"><MarkdownRenderer content={typed} />{view.state === "speaking" && <span className="cmp-caret" />}</div>
-            : <p className="cmp-text">{notice}</p>}
+          <div className="cmp-thread" ref={threadRef}>
+            {thread.map((item) => item.role === "user" ? (
+              <p key={item.id} className="cmp-q">{item.text}</p>
+            ) : (
+              <div key={item.id} className="cmp-a">
+                {item.running
+                  ? <p className="cmp-progress"><span className="cmp-dots"><i /><i /><i /></span>{item.note ?? LABEL.thinking}</p>
+                  : item.text
+                    ? <div className="cmp-text"><MarkdownRenderer content={typedOf(item.text, item.id)} />{typing && speaking?.turnId === item.id && <span className="cmp-caret" />}</div>
+                    : <p className="cmp-text cmp-notice">{item.notice}</p>}
+              </div>
+            ))}
+            {localNotice && <p className="cmp-text cmp-notice">{localNotice}</p>}
+          </div>
           <div className="cmp-actions">
-            {view.answer && <button className="cmp-chip" onClick={() => void speak(view.answer)}><Volume2 size={13} /> Озвучить</button>}
-            {view.answer && <button className="cmp-chip" onClick={() => void navigator.clipboard?.writeText(view.answer)}><Copy size={13} /> Копировать</button>}
+            {latestAnswer && (
+              <button className="cmp-chip" onClick={toggleAloud}>
+                {aloud ? <><Square size={12} /> Остановить</> : <><Volume2 size={13} /> Озвучить</>}
+              </button>
+            )}
+            {latestAnswer && <button className="cmp-chip" onClick={() => void navigator.clipboard?.writeText(latestAnswer)}><Copy size={13} /> Копировать</button>}
             <button className="cmp-chip" onClick={() => void openMainChat(sessionId)}><MessageSquare size={13} /> Открыть в чате</button>
           </div>
+          <form className="cmp-reply" onSubmit={(event) => { event.preventDefault(); void send(reply, () => setReply("")); }}>
+            <input
+              ref={replyRef} value={reply} placeholder={running ? "Элира отвечает…" : "Ответить…"} disabled={running || capturing}
+              onChange={(event) => setReply(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Escape") closeBubble(); }}
+            />
+            <button type="submit" className="cmp-icon" disabled={!reply.trim() || running || capturing} aria-label="Отправить"><Send size={15} /></button>
+            <button type="button" className="cmp-icon" disabled={running || capturing} onClick={() => void explainScreen()} title="Объясни экран (Ctrl+Shift+E)"><ScanEye size={15} /></button>
+          </form>
         </div>
       ) : inputOpen ? (
-        <form className="cmp-input" data-hit="input" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <form className="cmp-input" data-hit="input" onSubmit={(event) => { event.preventDefault(); void send(draft, () => setDraft("")); }}>
           <input
             autoFocus value={draft} placeholder="Спроси Элиру…"
             onChange={(event) => setDraft(event.target.value)}
@@ -257,9 +309,11 @@ export default function CompanionApp() {
           <button type="submit" className="cmp-icon" disabled={!draft.trim()} aria-label="Отправить"><Send size={15} /></button>
           <button type="button" className="cmp-icon" onClick={() => void explainScreen()} title="Объясни экран (Ctrl+Shift+E)"><ScanEye size={15} /></button>
         </form>
-      ) : (view.state === "looking" || view.state === "thinking") && (
+      ) : (state === "looking" || state === "thinking") && (
         <div className="cmp-thought" data-hit="thought">
-          {view.state === "looking" ? <><Eye size={15} /><span>{LABEL.looking}</span></> : <><span className="cmp-dots"><i /><i /><i /></span><span>{LABEL.thinking}</span></>}
+          {state === "looking"
+            ? <><Eye size={15} /><span>{LABEL.looking}</span></>
+            : <><span className="cmp-dots"><i /><i /><i /></span><span>{thinkingLine}</span></>}
         </div>
       )}
       <div
@@ -276,7 +330,9 @@ export default function CompanionApp() {
         onPointerUp={() => {
           const current = press.current;
           press.current = null;
-          if (current && !current.dragging && !running && !capturing) setInputOpen((open) => !open);
+          if (!current || current.dragging || capturing) return;
+          if (bubble) replyRef.current?.focus();
+          else if (!running) setInputOpen((open) => !open);
         }}
       >
         <span className="cmp-aura" />
@@ -286,7 +342,7 @@ export default function CompanionApp() {
         </div>
       </div>
       <div className="cmp-dock" data-hit="dock">
-        <button className="cmp-dock-btn" onClick={() => setInputOpen((open) => !open)} title="Спросить"><MessageSquare size={15} /></button>
+        <button className="cmp-dock-btn" onClick={() => (bubble ? replyRef.current?.focus() : setInputOpen((open) => !open))} title="Спросить"><MessageSquare size={15} /></button>
         <button className="cmp-dock-btn" onClick={() => void explainScreen()} title="Объясни экран (Ctrl+Shift+E)"><ScanEye size={15} /></button>
       </div>
     </div>
