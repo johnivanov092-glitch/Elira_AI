@@ -95,6 +95,24 @@ describe("step notes", () => {
     expect(new Set(getSnapshot(sessionId).turns.map(turn => turn.id)).size).toBe(getSnapshot(sessionId).turns.length);
     await stop(sessionId);
   });
+
+  it("puts the closing report into the work activity after the last tool", async () => {
+    const sessionId = "step-notes-report";
+    send({ sessionId, text: "объясни отчёт", mode: "code", projectRoot: "", model: "auto" });
+    const handler = fake.handlers.at(-1)!;
+    handler.onRunId?.("report-run");
+    handler.onEvent?.({ type: "tool_call", step: 1, tool: "read_file", arguments: {}, result: "ok", ok: true });
+    handler.onEvent?.({ type: "step_started", step: 2 });
+    handler.onEvent?.({ type: "delta", step: 2, text: "Сделано: прочитала.\n\nВ отчёте очаг L4." });
+    handler.onEvent?.({ type: "step_note", step: 2, note_id: "report", text: "Сделано: прочитала." });
+    handler.onEvent?.({ type: "final_response", step: 2, text: "В отчёте очаг L4." });
+    expect(getSnapshot(sessionId).turns.at(-1)).toMatchObject({
+      text: "В отчёте очаг L4.",
+      stepNotes: [{ id: "report", step: 2, text: "Сделано: прочитала.", toolCallIndex: 1 }],
+      answerState: "accepted",
+    });
+    await stop(sessionId);
+  });
 });
 
 describe("updates to a live run", () => {

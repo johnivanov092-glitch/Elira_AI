@@ -81,6 +81,28 @@ def test_scan_pdf_reports_ocr_required_without_running_network(tmp_path):
     assert result["ocr_required"] == [1]
 
 
+def test_pdf_page_with_only_footer_and_images_is_named(tmp_path):
+    pytest.importorskip("reportlab")
+    from PIL import Image
+    from reportlab.pdfgen.canvas import Canvas
+    image = tmp_path / "scan.png"
+    Image.new("RGB", (200, 200), "gray").save(image)
+    pdf = tmp_path / "report.pdf"
+    canvas = Canvas(str(pdf))
+    for number in (1, 2, 3):
+        if number == 2:
+            canvas.drawImage(str(image), 100, 400, width=200, height=200)
+        else:
+            canvas.drawString(72, 700, f"Conclusion item {number}: focus without activity.")
+        canvas.drawString(72, 60, "Patient Test 01.01.1970")
+        canvas.drawString(500, 60, str(number))
+        canvas.showPage()
+    canvas.save()
+    code, result = run_script("document-read", "read_document.py", pdf)
+    assert code == 0 and result["complete"] is True and result["ocr_required"] == []
+    assert result["no_body_text"] == [2]
+
+
 def test_zip_reads_text_without_extracting_traversal_paths(tmp_path):
     source = tmp_path / "archive.zip"
     with zipfile.ZipFile(source, "w") as archive:

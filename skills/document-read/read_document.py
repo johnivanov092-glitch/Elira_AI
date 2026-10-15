@@ -4,10 +4,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import tempfile
 import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -109,16 +111,32 @@ def read_pdf(path: Path) -> dict[str, Any]:
                     tables.append({"page": number, "index": index, "rows": rows})
             except Exception as exc:
                 errors.append({"page": number, "code": "table_extraction_failed", "message": str(exc)})
-            pages.append({"page": number, "text": text, "method": method, "chars": len(text)})
+            try:
+                images = len(source.images)
+            except Exception:
+                images = 0
+            pages.append({"page": number, "text": text, "method": method, "chars": len(text), "images": images})
     missing = [item["page"] for item in pages if not item["text"].strip()]
     return {"text": "\n\n".join(f"=== Страница {p['page']} ===\n{p['text']}" for p in pages),
-            "pages": pages, "tables": tables, "ocr_required": missing, "errors": errors,
-            "complete": not missing and not errors}
+            "pages": pages, "tables": tables, "ocr_required": missing, "no_body_text": no_body_text(pages),
+            "errors": errors, "complete": not missing and not errors}
+
+
+PAGE_NUMBER = re.compile(r"[-–—\s]*(?:(?:стр|страница|page)\.?\s*)?\d+(?:\s*(?:из|of|/)\s*\d+)?[-–—\s]*", re.I)
+
+
+def no_body_text(pages: list[dict[str, Any]]) -> list[int]:
+    """Pages whose only text is a page number or a header/footer repeated on most pages."""
+    page_lines = [{line.strip() for line in page["text"].splitlines() if line.strip()} for page in pages]
+    counts = Counter(line for lines in page_lines for line in lines)
+    running = {line for line, count in counts.items() if count >= 2 and count * 2 > len(pages)}
+    return [page["page"] for page, lines in zip(pages, page_lines)
+            if lines and all(line in running or PAGE_NUMBER.fullmatch(line) for line in lines)]
 
 
 def read_document(path: Path, encoding: str = "utf-8-sig") -> dict[str, Any]:
     extension = path.suffix.lower()
-    result: dict[str, Any] = {"text": "", "tables": [], "errors": [], "ocr_required": [], "complete": True}
+    result: dict[str, Any] = {"text": "", "tables": [], "errors": [], "ocr_required": [], "no_body_text": [], "complete": True}
     if extension == ".pdf":
         result.update(read_pdf(path))
     elif extension == ".docx":
@@ -274,7 +292,7 @@ def main() -> int:
         if args.json_output:
             args.json_output.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8", newline="\n")
         end = args.offset + args.max_chars
-        summary = {key: result[key] for key in ("ok", "source", "format", "complete", "ocr_required", "errors")}
+        summary = {key: result[key] for key in ("ok", "source", "format", "complete", "ocr_required", "no_body_text", "errors")}
         summary.update(text=text[args.offset:end], total_chars=len(text), offset=args.offset,
                        truncated=end < len(text), next_offset=end if end < len(text) else None,
                        page_count=len(result.get("pages", [])), table_count=len(result["tables"]),

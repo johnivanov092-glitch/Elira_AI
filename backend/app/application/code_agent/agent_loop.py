@@ -179,6 +179,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _truncate,
     _truncate_for_llm,
     _try_remember_turn,
+    split_status_report,
     task_persistence_policy,
     persistence_policy_from_state,
     run_persistence_policy,
@@ -1005,6 +1006,7 @@ def _stream_code_agent_core(
                         yield correction_event
                     continue
                 final_text, answer_status = answer_decision.text, answer_decision.answer_status
+                final_text, status_report = split_status_report(final_text)
                 criteria.finalize_conditionals()
                 # Background processes are reported, never auto-stopped on a healthy
                 # final answer. Explicit run_server(stop) or Workflow Stop owns
@@ -1047,6 +1049,8 @@ def _stream_code_agent_core(
                     final_message["reasoning_content"] = final_reasoning
                 if _history_checkpoint:
                     _history_checkpoint([*turn_context.messages, final_message], final_text=final_text)
+                if status_report:
+                    yield {"type": "step_note", "step": step, "note_id": uuid.uuid4().hex, "text": status_report}
                 yield {
                     "type": "final_response", "step": step, "text": final_text,
                     "answer_state": "accepted",

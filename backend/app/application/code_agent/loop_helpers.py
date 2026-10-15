@@ -92,6 +92,42 @@ def _strip_think_blocks(text: str) -> str:
     return _THINK_BLOCK_RE.sub("", text or "")
 
 
+# John 2026-10-15: the «Сделано / Проверено / Осталось» report the prompt asks for
+# after tools is shown in the work activity, not in the answer. Only a block at the
+# start or the end of the answer counts; an answer that is nothing but the report
+# stays the answer.
+_STATUS_LINE = re.compile(r"^\s*\W{0,6}?(?:Сделано|Проверено|Осталось)\**\s*:", re.IGNORECASE)
+_STATUS_ITEM = re.compile(r"^\s*(?:[-*•–]|\d+[.)])\s+")
+_RULE_LINE = re.compile(r"\s*([-*_])\1{2,}\s*")
+
+
+def split_status_report(text: str) -> tuple[str, str]:
+    """Return (answer, report): the report lines leave the answer text."""
+    lines = (text or "").split("\n")
+    in_report = [False] * len(lines)
+    inside = False
+    for index, line in enumerate(lines):
+        if _STATUS_LINE.match(line):
+            inside = True
+        elif not (inside and _STATUS_ITEM.match(line)):
+            inside = False
+        in_report[index] = inside
+    def edge(index: int) -> bool:  # report line, blank line or a separator rule next to the report
+        return in_report[index] or not lines[index].strip() or bool(_RULE_LINE.fullmatch(lines[index]))
+
+    start, end = 0, len(lines)
+    while start < end and edge(start):
+        start += 1
+    while end > start and edge(end - 1):
+        end -= 1
+    report = [line.strip() for index, line in enumerate(lines)
+              if in_report[index] and not start <= index < end]
+    answer = "\n".join(lines[start:end]).strip()
+    if not report or not answer:
+        return text, ""
+    return answer, "\n".join(report)
+
+
 # --- Grounding across turns -------------------------------------------------
 # conversation_history carries only user + assistant TEXT (tool results are
 # dropped — see history._coerce_history). So facts the agent learned via tools
