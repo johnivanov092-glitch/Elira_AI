@@ -6,7 +6,7 @@
 D:\AIWork\Elira_AI
 ├─ backend/       FastAPI + Python agent/runtime
 ├─ frontend/      React + Vite + TypeScript UI
-├─ src-tauri/     Windows desktop shell and native UAC bridge
+├─ src-tauri/     Windows desktop shell, native UAC bridge, desktop companion window
 ├─ integrations/  isolated portal utilities
 ├─ docs/          current architecture and operating docs
 ├─ data/          machine-local runtime data (mostly ignored)

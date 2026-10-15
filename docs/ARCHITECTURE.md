@@ -420,6 +420,14 @@ Windows elevation is executed by the Tauri native bridge in
 `src-tauri/src/main.rs`, which opens UAC and binds the result to the Workflow
 request. The backend does not require permanent administrator rights.
 
+The desktop companion (`src-tauri/src/companion.rs`, `frontend/src/companion/`) is a
+second, transparent always-on-top window with Elira standing at the screen edge;
+the same frontend bundle renders it by window label. Clicks pass through it except
+over the regions the page reports. A click asks a question; Ctrl+Shift+E (or the
+eye button) captures the window the user is looking at, uploads it as an ordinary
+resource and asks the same code-agent run, which reads it with the `vision` skill.
+Its turns persist in the chat «Компаньон»; it adds no agent path of its own.
+
 Compute placement is chosen by the agent from the task and observed client
 hardware/runtime. An explicit user device is passed as a strict target; delegated
 choice or `bypass` does not trigger a mandatory placement question. The loop no

@@ -9,9 +9,14 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 # Living Persona step C — desktop OS notifications for scheduled proactivity.
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2.5.4"
+# Desktop companion: global hotkey for "explain the screen" and the capture of that window.
+tauri-plugin-global-shortcut = "2"
+xcap = "0.9"
+base64 = "0.22"

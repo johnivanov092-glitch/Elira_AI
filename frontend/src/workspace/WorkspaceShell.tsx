@@ -16,6 +16,7 @@ import {
   stopProjectWatcher,
 } from "../api/codeAgent";
 import type { Turn } from "./types";
+import { deserializeTurns, serializeTurns } from "./turnCodec";
 import { pickFolder } from "../pickFolder";
 import { cn } from "../ui/cn";
 import { deriveArtifacts, fileArtifactKey, downloadArtifactKey, serverArtifactKey } from "./artifacts";
@@ -109,6 +110,24 @@ export default function WorkspaceShell() {
     }, 6000);
     return () => window.clearInterval(timer);
   }, [connected]);
+
+  // The desktop companion's «Открыть в чате» brings this window forward on its chat.
+  const selectSessionRef = useRef(selectSession);
+  selectSessionRef.current = selectSession;
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      const { isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      const { listen } = await import("@tauri-apps/api/event");
+      const stop = await listen<string>("companion://open-session", (event) => {
+        if (typeof event.payload === "string" && event.payload) void selectSessionRef.current(event.payload);
+      });
+      if (cancelled) stop(); else unlisten = stop;
+    })();
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // Map from a run key (draft id or server id) to its server session id, for
   // sessions whose run finished while off-screen. Lets background persistence
@@ -553,26 +572,4 @@ function deriveTitle(turns: Turn[]): string {
   const first = turns.find((t) => t.kind === "user");
   const text = first && first.kind === "user" ? first.text : "";
   return text.trim().slice(0, 48) || "Новый чат";
-}
-
-/** Drop transient fields (running flag, active tool, blob URLs) before saving. */
-function serializeTurns(turns: Turn[]): unknown[] {
-  return turns.map((t) => {
-    if (t.kind === "agent") return { ...t, running: false, activeTool: undefined };
-    if (t.kind === "files") return { ...t, files: t.files.map((f) => ({ ...f, url: undefined })) };
-    return t;
-  });
-}
-
-/** Parse stored turns back into the live shape; tolerant of legacy/unknown rows. */
-function deserializeTurns(raw: unknown[]): Turn[] {
-  if (!Array.isArray(raw)) return [];
-  const out: Turn[] = [];
-  for (const x of raw) {
-    if (!x || typeof x !== "object" || !("kind" in x)) continue;
-    const t = x as Turn;
-    if (t.kind === "user" || t.kind === "files") out.push(t);
-    else if (t.kind === "agent") out.push({ ...t, running: false, activeTool: undefined });
-  }
-  return out;
 }

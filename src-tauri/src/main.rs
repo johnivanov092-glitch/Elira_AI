@@ -5,6 +5,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
+mod companion;
+
 struct BackendState {
     child: Mutex<Option<Child>>,
 }
@@ -354,6 +356,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(companion::plugin())
+        .manage(companion::HitRegions::default())
         .manage(BackendState {
             child: Mutex::new(None),
         })
@@ -361,7 +365,10 @@ fn main() {
             start_backend,
             stop_backend,
             backend_status,
-            run_elevated_command
+            run_elevated_command,
+            companion::companion_capture,
+            companion::companion_set_regions,
+            companion::companion_open_main
         ])
         .setup(|app| {
             // When ELIRA_EXTERNAL_BACKEND=1 the launcher script (run_tauri_dev.bat or
@@ -384,9 +391,20 @@ fn main() {
                     }
                 }
             }
+            if let Err(error) = companion::setup(app) {
+                eprintln!("[Elira] Companion window is not available: {error}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Only the main window owns the application lifetime; the companion just hides.
+            if window.label() != "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                return;
+            }
             if foundation_managed() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     // Foundation drains work and closes its owned UI/backend.
