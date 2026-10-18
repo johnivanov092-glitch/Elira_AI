@@ -3,14 +3,20 @@
 How the engineering skills should consume this repo's domain documentation when
 exploring the codebase. Layout: **single-context**.
 
-## Before exploring, read these
+## Before exploring
+
+Use Atlas passports and current decisions for code discovery; the files below
+are the maintained domain vocabulary. Source review on 2026-10-18 replaced old
+accumulated runtime descriptions. Historical material lives only in the archive.
+
+## Canonical references
 
 This repo has no `CONTEXT.md` yet — its domain language and architecture live in:
 
 - **`docs/ARCHITECTURE.md`** — backend/frontend/runtime architecture + contracts.
 - **`docs/PROJECT_MAP.md`** — repo structure, ownership, where to change things.
 - **`docs/AGENT_ARCHITECTURE_GUIDE_RU.md`** — unified agent/runtime boundary.
-- **`docs/SERVER.md`** — the AI inference server (host, endpoints, models).
+- **`docs/SERVER.md`** — client contracts and the separate inference-server boundary.
 - **`AGENTS.md`** (root) — working rules incl. the UTF-8/no-mojibake contract.
 
 If a `CONTEXT.md` / `docs/adr/` is later added, read those too. This project
@@ -20,8 +26,9 @@ task-specific work in `.scratch/<feature>/`. Historical continuation lists are
 under `docs/archive/`; they are not the active task queue. The completed D1-D3
 track is historical and lives in `docs/archive/DEFERRED_TRACK.md`.
 
-If any referenced file doesn't exist, **proceed silently** — don't flag its
-absence or suggest creating it upfront.
+If a canonical path is missing, locate its current owner through Atlas and Git.
+Do not invent a replacement or treat a missing source as verified. Report the
+specific uncertainty when it affects the task; do not create placeholder docs.
 
 ## File structure (single-context)
 

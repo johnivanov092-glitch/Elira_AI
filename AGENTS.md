@@ -38,6 +38,19 @@ encoding — fix it, don't suppress the test.
   new icon set.
 - Prefer minimal, focused changes; match surrounding style.
 
+## Atlas and Git state
+
+- Before a structural edit, use `atlas_contract` / `atlas_file` and read
+  `atlas_decisions` for that area; use `atlas_find` to locate the owner.
+- Before completion/commit, read fresh `atlas_check` and `atlas_tests` results.
+  Worktree checks need their `code_root`; main-checkout calls omit it.
+- Do not switch the live checkout away from `main`; use a named worktree branch.
+- Check current refs, ancestry and diffs before calling work unmerged. A leftover
+  worktree, detached HEAD or old branch list alone does not establish that fact.
+- Keep disposable worktree dependencies independent; Windows junctions to live
+  `.venv` / `node_modules` are unsafe during recursive worktree cleanup.
+- Record the user's lasting code/behavior decisions in Atlas as instructed.
+
 ## Gates (run before finishing)
 ```powershell
 cd D:\AIWork\Elira_AI

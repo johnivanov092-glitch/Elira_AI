@@ -1,178 +1,127 @@
 # Project Map
 
+Owners checked against the source tree on 2026-10-18. This maps the repository;
+current installed release, mutable skill revision and external service state
+need their own verification. Use Atlas passports/decisions before edits.
+
 ## Repository
 
 ```text
-D:\AIWork\Elira_AI
-├─ backend/       FastAPI + Python agent/runtime
-├─ frontend/      React + Vite + TypeScript UI
-├─ src-tauri/     Windows desktop shell, native UAC bridge, desktop companion window
-├─ integrations/  isolated portal utilities
-├─ docs/          current architecture and operating docs; history in archive/
-├─ assets/        branding/AI.svg and voice-sample documentation
-├─ data/          machine-local runtime data (mostly ignored)
-├─ .agent/runs/   durable code-agent journals
-├─ .scratch/      local issue tracker/work notes
-└─ scripts/       maintenance, dev/build and isolated test launchers
+Elira_AI/
+├─ backend/       FastAPI application, domain and infrastructure
+├─ frontend/      React/Vite UI, workspace and companion
+├─ src-tauri/     Native desktop shell, UAC bridge and companion window
+├─ shared/        elira_common used by application and skill code
+├─ skills/        Factory skill folders
+├─ .agents/       Repository engineering skills, not Elira's skill catalog
+├─ assets/        Branding and voice-sample documentation
+├─ scripts/       Development, build, checks and release owners
+├─ integrations/  Isolated portal utilities
+├─ docs/          Current docs; dated history under archive/
+├─ data/          Machine-local application/skill state (mostly ignored)
+├─ .agent/        Local run/evaluation evidence
+├─ .scratch/      Local tasks, notes and implementation evidence
+└─ .runtime/      Dependencies, release state/candidates and logs
 ```
 
-The sibling `D:\AIWork\Elira_AI_Server` owns llama.cpp/model serving. Do not
-move Elira's backend state or tools into that repository.
+The sibling `Elira_AI_Server` owns serving/host operations. It does not own a
+second copy of this application's agent, tools or user databases.
 
-## Backend owners
+## Agent and execution owners
 
-| Area | Canonical owner |
-|---|---|
-| FastAPI app/lifecycle | `backend/app/main.py` |
-| Mounted routers | `backend/app/api/routes/registry.py` |
-| Code-agent HTTP/SSE | `backend/app/api/routes/code_agent_routes.py` |
-| Chat sessions and shared folder layout | `backend/app/application/code_agent/sessions.py` |
-| Workflow HTTP/API | `backend/app/api/routes/workflow_routes.py` |
-| Durable event SSE | `backend/app/api/routes/event_bus_routes.py` |
-| Sub-agent tool | `backend/app/application/code_agent/tools/_meta.py` (`delegate_task`) |
-| Agent coordinator, public stream/sync and journal adapters | `backend/app/application/code_agent/agent_loop.py` |
-| Live-run control, upstream cancel and Workflow rendezvous | `backend/app/application/code_agent/run_control.py` |
-| One model exchange and heartbeat | `backend/app/application/code_agent/model_turn.py` |
-| Run-local tool activation and schema visibility | `backend/app/application/code_agent/runtime_activation.py` |
-| Turn messages, work-phase guidance, skill/input context and pinned packing | `backend/app/application/code_agent/turn_context.py` |
-| Selected tool call and Workflow execution branches | `backend/app/application/code_agent/tool_execution.py` |
-| Ordered evidence/outcome/recovery/criteria accounting | `backend/app/application/code_agent/run_observations.py` |
-| Final-answer acceptance and correction state | `backend/app/application/code_agent/answer_acceptance.py` |
-| Context rollover | `backend/app/application/code_agent/delivery_session.py` |
-| Context compaction and pinned runtime blocks | `backend/app/application/context/compaction.py` |
-| File working set across compaction (read/changed files, unchanged re-read) | `backend/app/application/code_agent/working_set.py` |
-| Durable run state and Resume | `backend/app/application/code_agent/run_journal.py` |
-| Planning | `backend/app/application/code_agent/planning.py` |
-| Prompts/schemas | `backend/app/application/code_agent/prompts.py`, `tool_schemas.py` |
-| Capability groups and compatibility/evidence hints | `backend/app/application/code_agent/capabilities.py` |
-| Observed tool/web evidence | `backend/app/application/code_agent/run_evidence.py` |
-| Model-owned task decisions, current checks and file-delivery receipts | `backend/app/application/code_agent/task_outcomes.py` |
-| Built-in tool implementations | `backend/app/application/code_agent/tools/` |
-| Price-list/BOM check (factory skill) | `skills/bom-check/` |
-| MCP tool (`mcp`) | `backend/app/application/code_agent/tools/_mcp.py` |
-| MCP config + lifecycle (`data/mcp_servers.json`) | `backend/app/application/tool_providers/mcp_runtime.py` |
-| MCP instruction skills (factory, `<id>-mcp`, `mcp-install`) | `skills/*-mcp/`, `skills/mcp-install/` |
-| Memory, Library, Telegram, IT Ops registry tools | `backend/app/application/code_agent/tools/_memory.py`, `_telegram.py`, `_itops.py` |
-| Skills folder (catalog, pinned SKILL.md, git history; seeds from `skills/`) | `backend/app/application/code_agent/task_skills.py` |
-| Integration result contract (`run_operation`) | `backend/app/application/code_agent/tools/_tool_contract.py` |
-| Tool executor | `backend/app/application/agent_kernel/executor.py` |
-| Workflow impact classification | `backend/app/application/agent_kernel/impact_policy.py` |
-| Workflow engine | `backend/app/application/workflows/` |
-| Workflow interval triggers | `backend/app/application/workflows/triggers.py` |
-| Workflow request lifecycle/recovery/validation | `backend/app/application/workflows/request_lifecycle.py`, `request_recovery.py`, `request_validation.py` |
-| Workflow step execution | `backend/app/domain/workflows/step_executor.py` |
-| Runtime provider registry | `backend/app/application/tool_providers/runtime_registry.py` |
-| SSH/MCP/IT Ops providers | `backend/app/application/tool_providers/` |
-| Settings MCP lifecycle API | `backend/app/api/routes/mcp_routes.py` |
-| Settings Telegram API | `backend/app/api/routes/telegram_routes.py` |
-| Reprocenter operator pagination | `integrations/reprocenter/operator_pagination.py` |
-| Tool inventory | `backend/app/application/tool_registry/` |
-| LLM client | `backend/app/infrastructure/llm/openai_compatible.py` |
-| Portable vault | `backend/app/infrastructure/secrets/vault.py` |
-| IT Ops persistence | `backend/app/infrastructure/it_ops/store.py` |
-| Durable SSH-only MikroTik onboarding/inventory | `backend/app/application/it_ops/mikrotik_registry.py`, `mikrotik_runtime.py` |
-| Memory facade | `backend/app/application/memory/facade.py` |
-| Model-written memory provenance and trust | `backend/app/application/memory/tool_provenance.py`, `policy.py` |
-| Curated memory storage, origin-aware dedup and correction | `backend/app/application/smart_memory/store.py` |
-| Library upload/import, full-text paging and bounded relevance context | `backend/app/application/library/runtime.py`, `api/routes/library_sqlite.py` |
-| Project Corpus ingestion/recall | `backend/app/application/code_agent/indexing.py` + existing `application/rag_memory` |
-| Durable finite-job recovery | `backend/app/application/code_agent/tools/_run.py`, `_background_jobs.py`, `_job_worker.py` |
-| Core/integration/IT Ops live Harness + scripted Workflow/Stop/Resume + durable audit | `backend/tests/smokes/routing_eval.py`, `routing_cases.json`, `journal_audit.py`, `driver.py` |
-| Deterministic memory Harness | `backend/tests/smokes/memory_eval.py` |
-| SQLite helper | `backend/app/infrastructure/db/connection.py` |
+| Area | Canonical source |
+| --- | --- |
+| FastAPI lifecycle and mounted routers | [main.py](../backend/app/main.py), [registry.py](../backend/app/api/routes/registry.py) |
+| Agent HTTP/SSE, cancel, resume and chat inputs | [code_agent_routes.py](../backend/app/api/routes/code_agent_routes.py) |
+| Single coordinator and public adapters | [agent_loop.py](../backend/app/application/code_agent/agent_loop.py) |
+| Delivery slices and automatic/manual continuation | [delivery_session.py](../backend/app/application/code_agent/delivery_session.py) |
+| Live cancellation and Workflow rendezvous | [run_control.py](../backend/app/application/code_agent/run_control.py) |
+| One model exchange | [model_turn.py](../backend/app/application/code_agent/model_turn.py) |
+| Messages, skills, inputs and pinned packing | [turn_context.py](../backend/app/application/code_agent/turn_context.py) |
+| Schema visibility and configured MCP autostart selection | [runtime_activation.py](../backend/app/application/code_agent/runtime_activation.py) |
+| Base tools, groups and schemas | [tool_policy.py](../backend/app/application/code_agent/tool_policy.py), [capabilities.py](../backend/app/application/code_agent/capabilities.py), [tool_schemas.py](../backend/app/application/code_agent/tool_schemas.py) |
+| One call and Workflow branches | [tool_execution.py](../backend/app/application/code_agent/tool_execution.py) |
+| Sole executor and permission policy | [executor.py](../backend/app/application/agent_kernel/executor.py), [impact_policy.py](../backend/app/application/agent_kernel/impact_policy.py) |
+| Builtin dispatch | [tools/_dispatch.py](../backend/app/application/code_agent/tools/_dispatch.py) |
+| Builtin + MCP aggregation | [runtime_registry.py](../backend/app/application/tool_providers/runtime_registry.py) |
+| Checklist and delegation tool | [tools/_meta.py](../backend/app/application/code_agent/tools/_meta.py) |
+| Shell, persistent servers and finite jobs | [tools/_run.py](../backend/app/application/code_agent/tools/_run.py), [tools/_background_jobs.py](../backend/app/application/code_agent/tools/_background_jobs.py) |
+| Durable run state/events and past-task hints | [run_journal.py](../backend/app/application/code_agent/run_journal.py) |
+| Chat sessions and folders | [sessions.py](../backend/app/application/code_agent/sessions.py) |
+| Terminal panel process/session owner | [terminal/sessions.py](../backend/app/application/terminal/sessions.py) |
 
-Do not create another loop, executor, registry, provider stack or DB facade.
-The seven code-agent modules are leaves of the existing coordinator. Result
-accounting before a yield and criterion/message updates after it remain distinct
-stages; see `docs/ARCHITECTURE.md` for the Workflow and cancellation boundaries.
+The current registry has no separate SSH/IT Ops/Telegram provider path. Their
+skills/API services are not additional capability groups. Full runtime boundaries
+are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-The release state machine is `scripts/elira_release.py`. Its Windows service
-adapter is `scripts/foundation_service.py`; `foundation_windows.py` owns Windows
-tokens, processes and authenticated IPC, `foundation_storage.py` publishes
-protected bytes, and `foundation_client.py` is the user CLI. The installer is
-`scripts/install_foundation.ps1`. `check_foundation.py` and the proof-only
-`foundation_fixture.py` exercise the isolated Windows installation. Candidate
-backend/UI code remains separate. See `docs/RELEASE_LIFECYCLE.md` for deployment
-status and the legacy launcher path.
+## Answers, skills and state
 
-## Frontend owners
+| Area | Canonical source |
+| --- | --- |
+| Ordered answer checks/corrections | [answer_acceptance.py](../backend/app/application/code_agent/answer_acceptance.py) |
+| Run observations and source/tool evidence | [run_observations.py](../backend/app/application/code_agent/run_observations.py), [run_evidence.py](../backend/app/application/code_agent/run_evidence.py) |
+| User task requirements and observed publications | [task_outcomes.py](../backend/app/application/code_agent/task_outcomes.py) |
+| Web URL/label ledger and CLI transport | [tools/_web.py](../backend/app/application/code_agent/tools/_web.py) |
+| Web point/source checks | [web_points.py](../backend/app/application/code_agent/web_points.py), [web_answers.py](../backend/app/application/skill_services/web_answers.py) |
+| Skill catalog, instruction snapshots and Git history | [task_skills.py](../backend/app/application/code_agent/task_skills.py) |
+| Application-to-skill module resolution | [skill_modules.py](../backend/app/core/skill_modules.py), [skill_services/](../backend/app/application/skill_services/) |
+| Factory domain implementations | [skills/](../skills/README.md) |
+| Shared arithmetic, calendar, files and quote rules | [elira_common/](../shared/elira_common/) |
+| Resource store/context and metadata inspection | [media/](../backend/app/application/media/) |
+| Materialization, publication and document QA call | [tools/_resources.py](../backend/app/application/code_agent/tools/_resources.py) |
+| Context profile, usage and compression | [context/](../backend/app/application/context/) |
+| File working set | [working_set.py](../backend/app/application/code_agent/working_set.py) |
+| Memory facade/provenance | [memory/facade.py](../backend/app/application/memory/facade.py), [memory/tool_provenance.py](../backend/app/application/memory/tool_provenance.py) |
+| Curated facts | [smart_memory/store.py](../backend/app/application/smart_memory/store.py) |
+| Library extraction/search/paging | [library/runtime.py](../backend/app/application/library/runtime.py) |
+| Project Corpus | [indexing.py](../backend/app/application/code_agent/indexing.py), [rag_memory/](../backend/app/application/rag_memory/) |
+| Persona/evolution and voice client | [persona/](../backend/app/application/persona/), [voice/runtime.py](../backend/app/application/voice/runtime.py) |
+| Local model/embedding client | [openai_compatible.py](../backend/app/infrastructure/llm/openai_compatible.py) |
+| Workflow state and requests | [workflows/](../backend/app/application/workflows/) |
+| Vault | [secrets/vault.py](../backend/app/infrastructure/secrets/vault.py) |
 
-```text
-frontend/src
-├─ App.tsx
-├─ api/
-│  ├─ codeAgent.ts       code-agent SSE/client types
-│  ├─ chatFolders.ts     shared chat-folder state and atomic operations
-│  ├─ workflows.ts       Workflow requests/events/UAC bridge
-│  └─ project.ts         projects API
-└─ workspace/
-   ├─ WorkspaceShell.tsx application workspace
-   ├─ Composer.tsx       permission/reasoning controls
-   ├─ backgroundRuns.ts  one owner for live run state
-   ├─ chatFolders.ts     server-confirmed folder store and legacy-cache migration
-   ├─ AgentTurn.tsx      agent result rendering
-   ├─ WorkflowRequestCard.tsx
-   ├─ useWorkflowRequestEvents.ts
-   └─ Settings.tsx       minimal user settings
-```
+## Integrations, UI and native shell
 
-Do not create a second SSE reader inside a component. `backgroundRuns.ts` and
-`useWorkflowRequestEvents.ts` own the live streams.
+MCP lifecycle/configuration is
+[tool_providers/mcp_runtime.py](../backend/app/application/tool_providers/mcp_runtime.py);
+Settings uses [mcp_routes.py](../backend/app/api/routes/mcp_routes.py).
+`data/mcp_servers.json` is its machine-local configuration source.
+Telegram Settings/bot API remains in
+[telegram_routes.py](../backend/app/api/routes/telegram_routes.py); the model's
+Telegram actions use the [telegram skill](../skills/telegram/SKILL.md).
 
-## Desktop owner
+| UI/native owner | Responsibility |
+| --- | --- |
+| [WorkspaceShell.tsx](../frontend/src/workspace/WorkspaceShell.tsx) | Workspace composition |
+| [Composer.tsx](../frontend/src/workspace/Composer.tsx) | User input, permission/reasoning controls |
+| [backgroundRuns.ts](../frontend/src/workspace/backgroundRuns.ts) | Agent run stream ownership |
+| [turnCodec.ts](../frontend/src/workspace/turnCodec.ts) | Persisted turn conversion and event state |
+| [useWorkflowRequestEvents.ts](../frontend/src/workspace/useWorkflowRequestEvents.ts) | Durable Workflow request events |
+| [companion/](../frontend/src/companion/) | Companion view/state/bridge |
+| [src-tauri/src/main.rs](../src-tauri/src/main.rs) | Native command registration and UAC bridge |
+| [companion.rs](../src-tauri/src/companion.rs) | Companion window/hotkey/capture plumbing |
 
-`src-tauri/src/main.rs` registers native commands. `run_elevated_command` is the
-only Windows UAC execution bridge. It launches a separate elevated helper for a
-single Workflow request; Elira itself stays under the current user token.
+Do not add a second SSE reader in a component or another tool executor in a UI
+adapter. Respect [UI_BASELINE.md](UI_BASELINE.md) and later explicit decisions.
 
 ## Runtime data
 
-Default location: `data/`; override: `ELIRA_DATA_DIR`.
+`ELIRA_DATA_DIR` owns application DBs, user facts, Library, resources, skill
+folders, MCP configuration and portable vault. `ELIRA_AGENT_RUNS_DIR` can redirect
+run journals. `.agent/evals/` and `.scratch/` normally contain local evidence.
+The native Web CLI has run-scoped workspace state; an old root
+`data/web_corpus.sqlite3` must not be assumed to be its current cache owner.
+Use the actual skill/context configuration to find that state.
 
-```text
-data/
-├─ workflow_engine.db        templates, runs, requests, interval triggers
-├─ tool_registry.db
-├─ task_planner.db
-├─ code_agent_sessions.db
-├─ agent_monitor.db
-├─ event_bus.db
-├─ it_ops.sqlite3
-├─ integrations.db
-├─ smart_memory.db
-├─ rag_memory.db             facts, embeddings, Project Corpus chunks + manifest
-├─ library.db
-├─ projects.db
-├─ web_corpus.sqlite3
-├─ elira_state.db
-├─ drift_facts.db
-├─ portable_vault.json       encrypted vault; backup includes smart/rag memory
-├─ background_jobs/          machine-local job journal/spec/launch/result sidecars
-├─ skills/                   Elira's skills: <name>/SKILL.md, scripts, .venv; own git
-├─ archive/                  retired data folders (e.g. skill_development, skill_advisor)
-├─ mcp_servers.json
-├─ ssh_acl.json          legacy filename; saved SSH shortcuts
-└─ resources/
-```
+Ignored caches, environments and DBs are not tracked source. Installed skills
+may differ from factory copies, and a clean Git status says nothing about their
+current versions. Do not delete these folders merely to get an empty file list.
 
-Never commit DB snapshots, vaults, resources, secrets, logs, model weights or
-machine-local `.env.local` values.
+## Releases, tests and docs
 
-## Documentation
-
-- `docs/AGENT_ARCHITECTURE_GUIDE_RU.md`: full readable agent map.
-- `docs/ARCHITECTURE.md`: canonical invariants and boundaries.
-- `docs/archive/README.md`: historical plans, audits, acceptance reports and experiments.
-- `docs/TASK_SKILLS.md`: package lifecycle, verified outcomes and learned hints.
-- `docs/ANSWER_CONTRACT.md`: accepted answers, file delivery and web provenance.
-- `docs/RELEASE_LIFECYCLE.md`: managed application updates and recovery limits.
-- `docs/UI_BASELINE.md`: approved visual baseline.
-- `docs/SERVER.md`: inference server boundary.
-
-## Final repository gate
-
-```powershell
-npm --prefix frontend run typecheck
-npm --prefix frontend run build
-backend\.venv\Scripts\python.exe -m pytest -q
-```
+Release manager/service owners and deployment proof are in
+[RELEASE_LIFECYCLE.md](RELEASE_LIFECYCLE.md). Current docs are indexed in
+[README.md](README.md); historical plans, snapshots and measurements are under
+[archive/](archive/README.md). Checks and their limits are in
+[AGENT_EVALS.md](AGENT_EVALS.md); final repository gates are in
+[AGENTS.md](../AGENTS.md).

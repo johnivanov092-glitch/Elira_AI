@@ -24,8 +24,9 @@ The screenshot is a local visual reference. The commit is the durable code
 reference if the screenshot is moved.
 
 This document records approved visual constraints; it does not certify the
-latest release or every screen. Current release and isolated browser acceptance
-status are tracked in [the autonomy acceptance report](archive/research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
+latest release or every screen. The [autonomy acceptance report](archive/research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md)
+is dated historical evidence. Current installation is checked through the owner
+described in [RELEASE_LIFECYCLE.md](RELEASE_LIFECYCLE.md).
 A browser fixture, native build and visual check of the actual Tauri window
 are separate forms of evidence.
 
@@ -85,6 +86,13 @@ infer direction; the hidden reserve remains absent from the public status.
 - Data wiring that does not change layout, spacing, colors or control order.
 - Correct loading/error/disabled states inside an existing control footprint.
 - Accessibility attributes and non-visual fixes.
+
+User-approved companion, 2026-10-15: a transparent full-body Elira at the screen
+edge, with state/answer bubbles, speech/copy and explicit screen explanation.
+The implementation is in `frontend/src/companion/` and
+`src-tauri/src/companion.rs`. Screen capture is on request. The six-frame avatar
+is a sprite implementation; a layered Cubism/Live2D rig remains separate future
+work. This approved addition does not authorize a surrounding workspace redesign.
 
 ## Requires explicit user approval first
 

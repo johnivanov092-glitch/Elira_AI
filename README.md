@@ -1,190 +1,125 @@
 # Elira AI
 
-Self-hosted AI workspace with a Tauri desktop shell, FastAPI backend,
-React/TypeScript frontend, local project tools, memory, approvals, and local
-inference through OpenAI-compatible endpoints.
+Local AI workspace: Tauri 2, React/Vite/TypeScript and FastAPI/Python. The client
+PC owns tools, conversations, resources and orchestration. A LAN server supplies
+OpenAI-compatible local inference. Start with [the documentation index](docs/README.md)
+and [repository working rules](AGENTS.md).
 
-Agent state, orchestration and local tools stay on the main PC. The AI server
-provides model inference and auxiliary APIs; see [the service map](docs/SERVER.md).
+## Source and installed application
 
-## Current Runtime
+Normal Windows entry point: `Elira.bat`. When Windows Foundation is registered,
+the launcher uses its protected client. Without Foundation it can use the
+configured legacy release supervisor or development fallback.
 
-- Desktop shell: `src-tauri/` (Tauri 2.x).
-- Backend API: `backend/app` (FastAPI, layered `application` / `domain` /
-  `infrastructure`).
-- Frontend: `frontend/` (React 18, Vite, TypeScript).
-- Local model provider: OpenAI-compatible llama-server endpoint.
-- Embeddings provider: OpenAI-compatible embeddings endpoint.
-- Runtime data: root `data/` SQLite DBs and generated/user files.
+Editing, merging or pulling this checkout does not update a separately installed
+release. The release workflow and proof requirements are in
+[RELEASE_LIFECYCLE.md](docs/RELEASE_LIFECYCLE.md).
 
-Only the OpenAI-compatible local provider path is active in the current
-architecture.
+## Development setup
 
-## Local Provider Environment
-
-Put local machine secrets and provider settings in
-`backend/.env.local` only. Do not commit that file.
-
-```env
-LLAMA_SERVER_ENABLED=true
-LLAMA_SERVER_BASE_URL=http://192.168.88.15:8000/v1
-LLAMA_SERVER_MODEL=local-model
-LLAMA_SERVER_API_KEY=local
-LLAMA_SERVER_TIMEOUT_SECONDS=600
-LLAMA_SERVER_CONTEXT_WINDOW=131072
-
-LOCAL_EMBED_ENABLED=true
-LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
-LOCAL_EMBED_MODEL=local-embed
-LOCAL_EMBED_API_KEY=local
-LOCAL_EMBED_TIMEOUT_SECONDS=30
-```
-
-Defaults are defined in
-`backend/app/infrastructure/llm/openai_compatible.py`.
-
-## API Access (auth)
-
-Loopback callers (the Tauri shell and the dev browser on `127.0.0.1`) are
-trusted and need no token. Any non-local caller (LAN / mobile) must send a
-bearer token, which closes the unauthenticated-command-execution path when the
-backend is bound to `0.0.0.0` in mobile mode.
-
-- The token is read from `ELIRA_API_TOKEN`; if unset it is auto-generated once
-  into `data/elira_api_token` (untracked). Read that file to get the token.
-- Mobile/LAN frontend: set `VITE_ELIRA_API_TOKEN` to the same value so the UI
-  sends `Authorization: Bearer <token>`.
-- Set `ELIRA_API_AUTH=off` to disable enforcement (trusted networks only).
-
-## Setup
+The current Windows development environment uses Python 3.10. The following
+commands assume a working Python on PATH, Node/npm, and a backend development
+environment with the test packages needed for the selected tests:
 
 ```powershell
-# Backend
-cd D:\AIWork\Elira_AI\backend
-python -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
-
-# Frontend
-cd D:\AIWork\Elira_AI\frontend
-npm install
+cd D:\AIWork\Elira_AI
+python -m venv backend\.venv
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+npm ci
+npm --prefix frontend ci
 ```
 
-`requirements.txt` is the human-edited core dependency list (bounded ranges).
-`requirements.lock` is the fully pinned, resolved core set for reproducible
-installs (`pip install -r requirements.lock`). Regenerate after editing
-`requirements.txt`:
+`backend/requirements.txt` is the current bounded core dependency list.
+`requirements-optional.txt` adds the listed optional application integrations.
+Browser/document/admin skill dependencies belong to their own skill environment
+and requirements, not to an assumed second builtin runtime.
+
+`backend/requirements.lock` is an older pinned snapshot: it currently omits the
+`pywinpty`/`pyte` entries present in `requirements.txt`. It is not a verified lock
+for the current core and must not be advertised as its reproducible installer.
+Updating dependency pins is separate from this documentation change.
+
+Do not link a disposable worktree's dependency directories to the live checkout
+with Windows junctions. Give it its own environments or invoke an external
+interpreter explicitly; cleanup of a linked tree can affect the target files.
+
+For PDF rendering, keep the complete Poppler distribution in `.runtime/poppler/`
+(or an appropriate installation on PATH), including its DLLs/resources. OCR and
+Web/browser dependencies follow the corresponding mutable skill instructions;
+local Tesseract is not a universal application prerequisite.
+
+## Configuration and access
+
+Keep machine values and credentials out of Git. The primary settings and their
+source owners are listed in [SERVER.md](docs/SERVER.md). Configure the actual
+endpoint, model ID and authorization; example names/default URLs are not a live
+connection receipt.
+
+For direct Python startup, `app.main` loads backend `.env` and then `.env.local`
+without overwriting existing environment values. BAT launchers also parse these
+files according to their own code. Avoid duplicate keys across the two files;
+verify the effective process configuration when changing the launch path.
+`ELIRA_CONFIG_ROOT` can select another backend configuration directory.
+
+API authentication is implemented in `backend/app/core/auth.py`. Non-local
+callers use `ELIRA_API_TOKEN` (or the generated, ignored `data/elira_api_token`).
+The LAN UI uses the matching `VITE_ELIRA_API_TOKEN`. Browser Origin checks also
+apply; loopback alone is not a promise that an arbitrary web page is trusted.
+`ELIRA_API_AUTH=off` explicitly disables enforcement for a configured trusted setup.
+
+## Development launchers
+
+| Entry point | Purpose |
+| --- | --- |
+| `Elira.bat` | Normal application/release entry point |
+| `Elira_Mobile.bat` | LAN/mobile launcher |
+| `kill_elira.bat` | Existing process-stop helper |
+| `scripts\run_tauri_dev.bat` | Backend preflight/start and Tauri development |
+| `scripts\build_exe.bat` | Tauri installer build |
+| `scripts\Elira_Autonomy_Test.bat` | Historical isolated autonomy-trial launcher |
+
+For browser development, start these in separate terminals:
 
 ```powershell
-cd D:\AIWork\Elira_AI\backend
-.\.venv\Scripts\pip install pip-tools
-.\.venv\Scripts\python.exe -m piptools compile requirements.txt -o requirements.lock --strip-extras
-```
-
-Optional heavy capabilities are installed separately:
-
-```powershell
-cd D:\AIWork\Elira_AI\backend
-.\.venv\Scripts\pip install -r requirements-optional.txt
-playwright install chromium
-```
-
-On Windows, keep the complete Poppler distribution in `.runtime/poppler/`
-(executables at `.runtime/poppler/Library/bin/`). PDF previews, OCR rasterization,
-and document visual checks use this project copy explicitly. Keep the bundled
-DLLs and resource directories together; `.runtime/` is excluded from Git.
-If the project copy is absent, other installations can use Poppler from `PATH`.
-OCR also requires a separate Tesseract installation.
-
-## Run
-
-For normal Windows use, launch `Elira.bat` from the repository root. When
-`.runtime/releases/enabled` exists, it starts the installed, verified release
-through the supervisor. Editing or pulling this checkout does **not** update that
-installed release. See [release preparation, verification and activation](docs/RELEASE_LIFECYCLE.md).
-
-To hide the launcher console:
-
-```powershell
-Start-Process -FilePath $env:ComSpec `
-  -ArgumentList '/d','/c','D:\AIWork\Elira_AI\Elira.bat' `
-  -WorkingDirectory 'D:\AIWork\Elira_AI' -WindowStyle Hidden
-```
-
-Release logs are in `.runtime/releases/logs/`. A stored `active` release ID alone
-does not prove the application is running; check `/health` for the expected
-`release_id`, `admitted=true` and `draining=false`.
-
-The commands below start development processes directly. Use them when working
-on source; they do not perform managed release activation. Install root npm
-dependencies with `npm install` before using the Tauri CLI for the first time.
-
-```powershell
-# Backend
 cd D:\AIWork\Elira_AI\backend
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-
-# Frontend browser UI
-cd D:\AIWork\Elira_AI\frontend
-npm run dev
-
-# Desktop shell, from repo root
-cd D:\AIWork\Elira_AI
-npm run tauri dev
 ```
 
-Windows launchers:
+```powershell
+cd D:\AIWork\Elira_AI
+npm --prefix frontend run dev
+```
 
-- `Elira.bat` - managed release launcher when enabled; otherwise development startup.
-- `scripts/run_tauri_dev.bat` - dev launcher.
-- `scripts/build_exe.bat` - Tauri installer build.
-- `scripts/Elira_Autonomy_Test.bat` - isolated historical autonomy-trial launcher.
-- `Elira_Mobile.bat` - LAN/mobile launcher.
-- `kill_elira.bat` - stops Elira processes.
+The Tauri development wrapper owns its backend startup and sets the existing
+external-backend flag. It is not a release activation command.
 
 ## Verification
 
-Follow [AGENTS.md](AGENTS.md) and Atlas impact checks. Run the full backend
-suite last, after all questions about the change are resolved.
+Use Atlas and focused tests while work has open questions. The final repository
+gates from [AGENTS.md](AGENTS.md) run in this order; full pytest is last:
 
 ```powershell
-cd D:\AIWork\Elira_AI
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
 backend\.venv\Scripts\python.exe -m pytest -q
 git diff --check
 ```
 
-Backend import smoke:
+A failed check remains a failure in the report. Build success does not certify a
+live model task, native UI acceptance or installed-release admission.
+[AGENT_EVALS.md](docs/AGENT_EVALS.md) distinguishes these forms of evidence.
 
-```powershell
-cd D:\AIWork\Elira_AI\backend
-.\.venv\Scripts\python.exe -c "from app.main import app; print(len(app.routes), len(app.openapi().get('paths', {})))"
-```
+## Repository layout
 
-## Documentation
+[PROJECT_MAP.md](docs/PROJECT_MAP.md) maps current owners. Keep the root for
+entry points, instructions and tool/build configuration; docs live in `docs/`,
+helpers in `scripts/`, visual sources in `assets/`, history in `docs/archive/`.
 
-- [Documentation index](docs/README.md).
-- [Architecture and contracts](docs/ARCHITECTURE.md).
-- [Repository map and ownership](docs/PROJECT_MAP.md).
-- [Inference server](docs/SERVER.md).
-- [Historical reports and experiments](docs/archive/README.md).
+Runtime DATA, journals, uploads, secrets, dependencies, caches and model weights
+are intentionally ignored. A clean Git status does not mean those folders are
+empty. A worktree or old branch name does not prove unmerged work: compare current
+refs, ancestry and diffs against `main` before reporting it.
 
-The dedicated inference server has its own repo, `Elira_AI_Server`, in the same
-parent folder; its full operational docs live at the local checkout path
-`../Elira_AI_Server/Server/ACCESS.md` (outside this GitHub repository).
-
-## Repository Rules
-
-- Keep runtime DBs, uploads, generated files, logs, models, caches, env
-  files, and secrets out of git.
-- `data/elira_secret.key` and `data/elira_api_token` are per-machine secrets:
-  they auto-generate at runtime and must stay untracked (committing the Fernet
-  key would let anyone with the repo decrypt stored data).
-- Keep the existing `data/plugins_config.json` tracked intentionally; runtime
-  plugin implementations were retired.
-- Extend the existing agent executor, tool registry, model provider, and DB
-  modules instead of adding parallel runtimes.
-- Work in a named branch in a separate worktree; keep the live checkout on `main`.
-- Commit, merge and push only when the user requests them.
-- Keep the root for entry points and build/tool configuration; documentation goes
-  in `docs/`, developer helpers in `scripts/`, visual assets in `assets/`.
+Work in a named branch in a separate worktree; do not switch the live checkout
+away from `main`. Commit/merge/push follow the user's authorization. Release
+activation has its separate confirmation contract.

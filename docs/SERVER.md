@@ -1,121 +1,80 @@
-# AI Inference Server
+# Локальный inference server
 
-Elira uses a dedicated LAN host for model inference. The same physical host also
-runs independently managed LAN integrations such as SearXNG and Home Assistant;
-they do not expand the inference server's ownership into a second agent runtime.
-The Tauri UI, backend, orchestration, tools, memory, and approvals stay on the
-main PC.
+Сверено с клиентским кодом 18.10.2026. Этот репозиторий владеет приложением,
+инструментами, памятью и состоянием пользователя. Серверный репозиторий
+`Elira_AI_Server` владеет моделями и эксплуатацией LAN-сервисов.
 
-This page is a self-contained summary for working inside the `Elira_AI` repo.
-The authoritative operational docs (hardware, ROCm, Docker ops, model
-selection, network/security, troubleshooting) live in the sibling repo
-`Elira_AI_Server` (same parent folder), e.g. `../Elira_AI_Server/README.md` and
-`../Elira_AI_Server/Server/ACCESS.md`. Do not duplicate that operational detail
-here, and do not store keys, passwords, or tokens here.
+Полные инструкции находятся в соседнем checkout: `../Elira_AI_Server/README.md`,
+`../Elira_AI_Server/Server/ACCESS.md`, `../Elira_AI_Server/docs/README.md`.
+Они лежат вне данного Git-репозитория. Hardware/model/process state здесь
+не дублируется как подтверждённая текущая конфигурация.
 
-## Host
+## Клиентский контракт
 
-- LAN IP: `192.168.88.15` (LAN-only; no public exposure)
-- OS / stack: Ubuntu + ROCm + Docker
-- GPU: AMD Radeon AI Pro R9700, 32 GB VRAM
-- CPU / RAM: Ryzen 9 5900X / 32 GB
+[openai_compatible.py](../backend/app/infrastructure/llm/openai_compatible.py)
+реализует один локальный OpenAI-совместимый путь. Исторический provider ID
+`llama_server` остаётся именем приложения; он не доказывает конкретный engine.
+Совместимый LAN endpoint llama.cpp/vLLM определяется настройкой и сервером.
+Облачный inference в проекте запрещён.
 
-## Services
+| Настройка | Назначение |
+| --- | --- |
+| `LLAMA_SERVER_ENABLED`, `LLAMA_SERVER_BASE_URL` | Включение и адрес основного локального provider |
+| `LLAMA_SERVER_MODEL`, `LLAMA_SERVER_API_KEY` | Model ID и фактическая авторизация конкретного сервера |
+| `LLAMA_SERVER_TIMEOUT_SECONDS` | Connection timeout клиента |
+| `LLAMA_SERVER_CONTEXT_WINDOW` | Запрошенный/резервный профиль; эффективное окно сверяется с runtime/server |
+| `LOCAL_EMBED_ENABLED`, `LOCAL_EMBED_BASE_URL`, `LOCAL_EMBED_MODEL`, `LOCAL_EMBED_API_KEY` | Отдельный локальный embedding endpoint |
+| `LOCAL_EMBED_TIMEOUT_SECONDS` | Таймаут embedding-запросов |
 
-Last confirmed service topology: 2026-09-26. This is a dated configuration
-summary, not a live health check; see the [model inventory](archive/research/MODEL_INVENTORY_2026-09-26_RU.md)
-for the measured state, CPU/GPU split and verification limits.
+Default main/embedding URLs в клиенте — `http://192.168.88.15:8000/v1` и
+`http://192.168.88.15:8001/v1`. Это defaults исходников, а не результат проверки
+работающего сервера. Chat generation после соединения не имеет обычного HTTP
+read deadline; Stop закрывает cancellable response. Транспортные ошибки и
+фактическое окно контекста остаются отдельными состояниями.
 
-| Service | Runtime | Endpoint | Backing model / contract | Compute |
-|---------|---------|----------|--------------------------|---------|
-| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model`: Qwen3.8-27B Q6_K, ctx 131072 | GPU (ROCm) |
-| Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | Qwen3-Embedding-0.6B Q8, dim 1024, ctx 4096 | CPU |
-| OCR | `elira-ocr` | `http://192.168.88.15:8002/ocr` | PaddleOCR multipart API | CPU |
-| Search | `elira-searxng` | `http://192.168.88.15:8003` | SearXNG JSON search API | CPU |
-| Vision | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | MiniCPM-V 4.6 Q5 + F16 projector, ctx 8192 | GPU (ROCm); projector CPU |
-| TTS | systemd service | `http://192.168.88.15:8005` | Silero v5_5_ru HTTP API | CPU |
-| STT | `elira-stt` | `http://192.168.88.15:8006` | Faster Whisper Large v3 HTTP API | CPU |
-| Web reranker | `elira-llama-rerank` | `http://192.168.88.15:8007/v1/rerank` | bge-reranker-v2-m3 Q8_0 (`local-rerank`), added 2026-10-13 | CPU |
+Значения рабочей машины хранятся в `backend/.env.local` или окружении процесса;
+ключи не копируются в документацию. Пример `local-model` не подтверждает model
+ID, а строка-заглушка не подтверждает авторизацию. При подключении проверяются
+фактические endpoint, credential, model ID и минимальный запрос.
 
-LAN integrations on the same host are separate from model inference:
+## Остальные LAN-клиенты
 
-| Integration | Runtime | Endpoint |
-|-------------|---------|----------|
-| Home Assistant | `homeassistant` | `http://192.168.88.15:8123` |
-| Home Assistant MCP | `hass-mcp` | `http://192.168.88.15:8124` |
+| Контур | Владелец и конфигурация |
+| --- | --- |
+| Web/SearXNG и reranker | `skills/web-research/`; `SEARXNG_URL`, `LOCAL_RERANK_*` читаются реализацией навыка |
+| OCR | `backend/app/infrastructure/llm/vision_ocr.py` и OCR-навык; `OCR_URL` |
+| Vision | [vision skill](../skills/vision/SKILL.md); смотреть параметры установленного клиента |
+| TTS/STT интерфейса | [voice/runtime.py](../backend/app/application/voice/runtime.py); `ELIRA_TTS_URL`, `ELIRA_STT_URL` |
 
-- Monitoring (Netdata): `http://192.168.88.15:19999`
-- Backing models change on swaps. The running service's `/props` or `/health`
-  and its process/configuration identify the served model; sibling operational
-  docs provide access and deployment instructions, not proof of current health.
+Поиск и Home Assistant на той же машине — отдельные интеграции, а не перенос
+agent loop на сервер. Настройки модели и доступность инструментов не дают
+разрешения на внешнее действие. Конфигурация изменяемого навыка может отличаться
+от заводской версии; проверяется используемая `data/skills/`.
 
-## How Elira connects
+## Проверка подключения
 
-- Provider client: `backend/app/infrastructure/llm/openai_compatible.py`
-- Provider names in app state / metrics: `llama_server`, `local_embed_server`
-- Configure `backend/.env.local` (never commit):
-
-```env
-LLAMA_SERVER_ENABLED=true
-LLAMA_SERVER_BASE_URL=http://192.168.88.15:8000/v1
-LLAMA_SERVER_MODEL=local-model
-LLAMA_SERVER_API_KEY=local
-LLAMA_SERVER_TIMEOUT_SECONDS=600
-LLAMA_SERVER_CONTEXT_WINDOW=131072
-
-LOCAL_EMBED_ENABLED=true
-LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
-LOCAL_EMBED_MODEL=local-embed
-LOCAL_EMBED_API_KEY=local
-LOCAL_EMBED_TIMEOUT_SECONDS=30
-LOCAL_RERANK_ENABLED=true
-LOCAL_RERANK_BASE_URL=http://192.168.88.15:8007/v1
-LOCAL_RERANK_MODEL=local-rerank
-LOCAL_RERANK_TIMEOUT_SECONDS=4
-
-OCR_URL=http://192.168.88.15:8002/ocr
-SEARXNG_URL=http://192.168.88.15:8003
-VISION_BASE_URL=http://192.168.88.15:8004/v1
-ELIRA_TTS_URL=http://192.168.88.15:8005
-ELIRA_STT_URL=http://192.168.88.15:8006
-```
-
-For chat, `LLAMA_SERVER_TIMEOUT_SECONDS` is the connection-establishment
-timeout. Once connected, Elira uses no HTTP read/generation deadline; explicit
-Workflow Stop closes the cancellable response. The live server properties remain
-the source of truth for the effective context window after a model swap.
-
-## Access (SSH)
-
-Two separate accounts / aliases; key material lives outside both repos:
-
-- `ai-server` -> user `claude` (automation)
-- `ai-server-codex` -> user `aiadmin` (admin / maintenance)
-
-Full access inventory and smoke tests: `../Elira_AI_Server/Server/ACCESS.md`.
-
-## Smoke test
-
-The repository smoke reads `backend/.env` and `backend/.env.local`, checks all
-ports 8000–8006, validates the 1024-dimensional embedding contract, and performs
-one bounded chat completion:
+[scripts/smoke_agent_endpoints.py](../scripts/smoke_agent_endpoints.py) читает
+те же backend env-файлы, проверяет LLM/embedding HTTP-контракты и, если chat
+probe не отключён его параметрами, действительно делает bounded completion:
 
 ```powershell
+backend\.venv\Scripts\python.exe scripts\smoke_agent_endpoints.py --help
 backend\.venv\Scripts\python.exe scripts\smoke_agent_endpoints.py
 ```
 
-Single chat probe, when needed:
+Это не проверка всех портов OCR/Voice/Web. Текущий smoke ожидает embedding
+размерности 1024; несовпадение требует разбора клиентского контракта/модели,
+а не объявления сервиса исправным по HTTP 200. Состояние других сервисов
+проверяется их собственным клиентом и инструкциями серверного репозитория.
 
-```powershell
-$body = @{model='local-model'; messages=@(@{role='user'; content='Return OK'}); max_tokens=4} | ConvertTo-Json -Depth 6
-Invoke-WebRequest -UseBasicParsing -Uri http://192.168.88.15:8000/v1/chat/completions -Method POST -Headers @{Authorization='Bearer local'} -ContentType 'application/json' -Body $body
-```
+Текущую модель и режим подтверждают server properties/health и конфигурация
+реального процесса. Успешный endpoint probe не подтверждает качество задач,
+Web-relevance, полный UI-путь или установленный релиз Elira.
 
-## Rules
+## История
 
-- LAN-only unless a reverse proxy + TLS are added in front; the in-app bearer
-  token gate (`backend/app/core/auth.py`) already protects non-loopback callers.
-- Stage 1: do not move the Elira backend onto the server; it stays
-  inference-only.
-- Server hardware / ROCm / Docker operations belong to the `Elira_AI_Server`
-  repo, not here.
+Прежние таблицы оборудования, портов, моделей и SSH aliases сохранены
+[в снимке](archive/contracts-20261018/SERVER.md). Измерения от 26.09.2026 находятся
+[в инвентаризации](archive/research/MODEL_INVENTORY_2026-09-26_RU.md). Они сохраняют
+свои даты и не объявляются текущим deployment proof. Секреты и key material
+остаются вне обоих репозиториев.

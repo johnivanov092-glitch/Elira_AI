@@ -1,0 +1,947 @@
+# Архитектура агента Elira — полное простое руководство
+
+> Исторический текст до смысловой сверки 18.10.2026, исходный commit `8a7339e`.
+> Содержит прежние механизмы и датированные результаты; текущая документация —
+> [docs/README.md](../../README.md).
+
+> Основа руководства сверена 27 сентября 2026 года; последующие изменения
+> отмечены в тексте. Канонические границы — [ARCHITECTURE.md](../../ARCHITECTURE.md),
+> владельцы модулей — [PROJECT_MAP.md](../../PROJECT_MAP.md). Датированные прогоны
+> не подтверждают текущую установленную версию.
+> Это описание кода, не подтверждение установленной версии или живой приёмки.
+> Это главный документ: что за что отвечает, куда идёт запрос, где хранятся данные,
+> как работают разрешения, интеграции, Windows, UAC, Stop и локальная модель.
+
+## 1. Самая короткая версия
+
+Elira — не набор отдельных агентов. У неё один исполняющий core и один Workflow
+control plane.
+
+```text
+Пользователь
+    ↓
+Composer в Workflow UI
+    ├─ режим разрешений: ask | accept_edits | bypass
+    └─ режим мышления: none | low | medium | xhigh
+    ↓
+FastAPI: /api/code-agent/stream
+    ↓
+Code-agent core: понять → спланировать → вызвать tool → продолжить → ответить
+    ↓
+Единый ToolExecutor
+    ↓
+Единый Runtime Registry
+    ├─ основные рабочие tools с первого хода
+    ├─ группы tools по запросу LLM
+    ├─ SSH
+    ├─ IT Ops
+    └─ MCP
+    ↓
+Файлы / процессы / LAN / Windows / внешние сервисы
+```
+
+Обратный поток:
+
+```text
+Результат tool / ошибка OS / запрос пользователю
+    ↑
+SSE events + durable Workflow events
+    ↑
+Transcript + Workflow request card
+```
+
+Главное правило архитектуры:
+
+```text
+один agent core
++ один executor
++ один provider registry
++ один Workflow permission selector
+= предсказуемый локальный агент
+```
+
+## 2. Кто за что отвечает
+
+| Слой | Ответственность | Главные файлы |
+|---|---|---|
+| Tauri | Запускает desktop, даёт нативный UAC bridge | `src-tauri/src/main.rs` |
+| React UI | Composer, transcript, Stop, permission/reasoning chips, request cards | `frontend/src/workspace/` |
+| API client | SSE code-agent и Workflow event stream | `frontend/src/api/codeAgent.ts`, `frontend/src/api/workflows.ts` |
+| FastAPI routes | Принимают HTTP, создают stream/run, resume/cancel | `backend/app/api/routes/` |
+| Delivery session | Продолжает тот же run после переполнения контекста | `application/code_agent/delivery_session.py` |
+| Agent core | Единственный координатор, публичные stream/sync и journal adapters | `application/code_agent/agent_loop.py` |
+| Planning | Валидированный структурный план для сложной задачи | `application/code_agent/planning.py` |
+| Workflow | Durable run, step, request, resume, cancel | `application/workflows/` |
+| ToolExecutor | Единственная точка Workflow-разрешения и запуска tool | `application/agent_kernel/executor.py` |
+| Impact policy | Только классифицирует опасность для `accept_edits` | `application/agent_kernel/impact_policy.py` |
+| Runtime registry | Собирает схемы и направляет call владельцу | `application/tool_providers/runtime_registry.py` |
+| Providers | Builtin, SSH, IT Ops, MCP | `application/tool_providers/` |
+| Capability catalog | Группирует необязательные builtin-схемы для загрузки моделью | `application/code_agent/capabilities.py` |
+| MCP | Инструмент `mcp`: список, запуск и настройка MCP-серверов (группа mcp) | `application/code_agent/tools/_mcp.py`, `tool_providers/mcp_runtime.py` |
+| TaskOutcome | Решение о повторном использовании, свежие проверки и receipts выдачи файлов | `application/code_agent/task_outcomes.py` |
+| Навыки | Папка `data/skills`: каталог в промпте, закрепление прочитанного SKILL.md, git-история | `application/code_agent/task_skills.py` |
+| Самообновление | Проверка и переключение цельного backend/UI с восстановлением | `scripts/elira_release.py` стабильной платформы |
+| LLM client | OpenAI-compatible HTTP, reasoning kwargs, prompt cache | `infrastructure/llm/openai_compatible.py` |
+| Vault | Переносимые секреты AES-256-GCM | `infrastructure/secrets/vault.py` |
+| Stores | SQLite/JSON/filesystem persistence | `application/*/store.py`, `infrastructure/*/store.py` |
+
+### 2.1. Внутренние владельцы одного запуска
+
+Координатор использует семь модулей в `application/code_agent/`:
+
+| Модуль | Что хранит или выполняет |
+|---|---|
+| `run_control.py` | Живую регистрацию run, Stop, закрытие upstream и ожидание Workflow response |
+| `model_turn.py` | Один обмен с моделью, reasoning/content и heartbeat |
+| `runtime_activation.py` | Видимость групп (включая ssh/itops) и MCP в текущем run |
+| `turn_context.py` | Messages, skills, уточнения пользователя, pinned blocks и подготовку контекста |
+| `tool_execution.py` | Один выбранный tool call через прежний executor и ветки Workflow |
+| `run_observations.py` | Прежние evidence, TaskOutcome, CommandProgress и CriteriaTracker — по одному экземпляру |
+| `answer_acceptance.py` | Упорядоченные проверки ответа и состояние одноразовых корректировок |
+
+Эти модули не импортируют `agent_loop` и не создают отдельный runtime, provider
+или DB. Следующий ход модели выбирает координатор; journal, planning, compactor
+и права исполнения остаются у прежних владельцев. Публичные `stream_code_agent`
+и `run_code_agent` сохраняются в `agent_loop.py`.
+
+После canonical tool result обновляются evidence, версия входов, outcome,
+recovery и инвалидирование критериев, затем публикуются события результата.
+Поздний criterion verdict и добавление tool message выполняются после yield:
+закрытие stream на этой границе не должно выполнять позднюю стадию.
+Три epoch-счётчика и формат старых журналов сохраняют прежние значения.
+
+## 3. Обычный запуск — по шагам
+
+```mermaid
+sequenceDiagram
+    actor U as Пользователь
+    participant UI as Composer
+    participant API as code-agent route
+    participant WF as Workflow lifecycle
+    participant A as Agent core
+    participant L as LLM server
+    participant E as ToolExecutor
+    participant R as Runtime providers
+    participant OS as Windows/LAN/files
+
+    U->>UI: Отправляет задачу
+    UI->>API: POST /api/code-agent/stream
+    API->>WF: Создаёт durable Workflow run
+    API->>A: stream_delivery_session
+    A->>L: messages + основные рабочие tool schemas
+    L-->>A: текст или tool_call
+    A->>E: ToolExecutionRequest
+    alt UI-разрешение уже позволяет call
+        E->>R: dispatch_raw
+        R->>OS: реальная операция
+        OS-->>R: output/error
+        R-->>A: ToolExecutionResult
+        A->>L: tool result
+    else нужно решение пользователя
+        E-->>WF: item/request(kind=approval)
+        WF-->>UI: WorkflowRequestCard
+        U->>UI: Accept или Reject
+        UI->>WF: resolve request
+        WF->>A: resume того же run/step
+    end
+    A-->>UI: delta/tool_call/final/done
+```
+
+Что важно:
+
+- модель сразу видит базу из 11 рабочих инструментов (файлы, поиск по файлам,
+  shell, фоновые процессы, web_search/web_fetch, список задач, точный calc) плюс
+  `capability_load` и `ask_user`;
+- дополнительные группы builtin tools выбирает сама LLM, а полные схемы группы появляются
+  на следующем model turn;
+- в UI существует одна личность `Elira / Auto` и единая температура; доменные
+  метки нужны только для требований задачи и evidence, без переключения роли;
+- MCP/SSH/IT Ops не подключаются из-за профиля: LLM загружает группу только когда
+  конкретной задаче нужна соответствующая внешняя интеграция;
+- большой MCP не выгружает в LLM все схемы сразу: provider оставляет только
+  релевантный задаче поднабор, а `mcp_tools(server_id, query)` раскрывает другой
+  поднабор без рестарта. Это экономия prompt, а не запрет: provider по-прежнему
+  владеет полным набором advertised tools;
+- отдельного `tool_search`, второго registry или run-scoped authorization
+  allowlist нет;
+- tool call не уходит в параллельный executor;
+- approval не хранится во второй approval-базе;
+- Resume продолжает тот же `run_id`, а не создаёт новую задачу;
+- долгий корректный run не имеет wall-clock timeout или лимита шагов.
+- дочерние shell-процессы и скрипты навыков наследуют текущую среду Elira и права
+  текущего Windows token; отдельной скрытой env-allowlist нет.
+
+### 3.1. Как LLM подгружает инструменты
+
+На первом ходе модель получает одну стабильную личность и основные рабочие
+схемы из `tool_policy.BASE_TOOLS`: файловые инструменты, `run_bash`/`run_server`,
+`web_search`, `web_fetch`, `todo_update`. Их рабочие инструкции стоят перед
+текущим запросом. Минимальный default только с discovery отменён 2026-09-06:
+правильное выполнение важнее TTFT. Старые настройки и журналы читаются,
+профиль не меняет личность или температуру. Остальные возможности подгружаются:
+
+```text
+Запрос пользователя
+    ↓
+Стабильное ядро Elira + история + контекст текущего запроса
+    ↓
+Основные рабочие схемы и инструкции; capability_load для дополнительных групп
+    ↓
+Evidence Router
+    ├─ локальный факт → project/files/system tools
+    ├─ актуальный/внешний факт → Web
+    └─ внешняя/повторная ошибка → evidence recovery с учётом владельца данных
+                                  ↓
+                         тот же Runtime Registry / ToolExecutor
+```
+
+Примеры загрузки возможностей:
+
+| Задача | Группа, выбираемая моделью |
+|---|---|
+| свободная беседа | прямой ответ, без загрузки |
+| файлы, код, тесты | основные tools уже видимы |
+| документы, вложения | `resources` |
+| расчёты, суммы по таблице | `math` |
+| сервер по SSH | `ssh` |
+| сохранённые цели IT Ops, MikroTik | `itops` |
+| MCP-серверы | `mcp` |
+| личная память, Библиотека | `memory` |
+| отправка в Telegram | `telegram` |
+| внешние источники | `web_search`/`web_fetch` уже видимы; `web` для browser и остальных tools |
+
+Legacy `profile_name` остаётся в HTTP/journal для совместимости. Новый run
+начинается с основных рабочих tools; `capability_load` доступен и после ошибочного
+выбора группы. Общие проверки работы и инструкции подключённого проекта
+поступают также для Web/MCP/SSH. Они закреплены через существующие
+`pinned_message_ids` компактора: не теряются при summary/fallback, учитываются
+в бюджете и не меняют стабильный system prefix.
+
+Модель сама вызывает Web для актуальных/внешних данных и первичных источников.
+Evidence Router сохраняет восстановление после первой внешней или повторной
+локальной неудачи; ошибки локальных memory/Library/Workflow/project stores
+остаются у локального владельца. Отдельный проход также исправляет явное ложное
+отрицание доступного Web. Обычная неуверенность, цитаты и примеры в коде сами по
+себе его не запускают. Интернет не заменяет проверку локальных файлов,
+Windows, сервера или сети.
+
+| Группа | Что появляется |
+|---|---|
+| `project` | `project_map`, `recall` (индекс проекта), `delegate_task` (подагент) |
+| `mcp` | `mcp(action=list/start/stop/restart/tools/add/remove)` |
+| `ssh` | ssh_run/ssh_run_ps/ssh_read/ssh_write/ssh_replace/ssh_port_check/ssh_list_hosts |
+| `itops` | `itops_registry` и typed `itops_*` health/inventory |
+| `telegram` | `telegram` (send/messages) |
+| `web` | `web_query`, `http_api`, `browser` |
+| `resources` | вложения, метаданные, materialize, vision, публикация файлов |
+| `memory` | `memory` (факты о пользователе), `library` (Библиотека) |
+| `math` | `calc`, `unit_convert`, `csv` |
+
+Это не permission и не guard. `capability_load` лишь уменьшает prompt: handler
+и ToolExecutor остаются теми же. Если валидный native/inline call скрытого
+builtin всё же пришёл от модели, registry не отвечает `unknown tool`, а передаёт
+его каноническому handler. Группа остаётся видимой до конца текущего `run_id`,
+переживает автоматическое продолжение и Resume. Новый run снова начинается с
+основного рабочего набора; unload внутри run пока не нужен.
+
+Фактический набор и его token cost публикуются в `context_prepared`; статические
+числа в документации намеренно не фиксируются, потому что schemas меняются.
+
+Живой Unity-прогон 2026-08-27 показал эффект MCP schema routing на одной и той
+же read-only задаче: максимум tool-context снизился с 31 058 до 11 917 токенов,
+максимальный TTFT — со 129,8 до 54,3 секунды. Цепочка вызовов и ответ редактора
+остались теми же.
+
+### 3.1.1. Управляемые фоновые задания
+
+`run_server` остаётся одним canonical process runtime, но поддерживает два вида:
+
+```text
+короткая typed-операция
+  → обычный tool call до результата
+
+долгая конечная команда без typed tool
+  → run_server(start, kind=job, command=...)
+  → до Popen: redacted starting-запись в journal
+  → PID возвращается сразу
+  → worker публикует launch sidecar (PID + creation identity)
+  → Windows: отдельная process group + detached console + Job Object breakaway
+  → raw-команда удаляется вместе с коротким spec
+  → worker пишет exit sidecar независимо от backend
+  → run_server(logs, pid) показывает running/completed/failed/cancelled и вывод
+  → run_server(stop, pid) или Workflow Stop убивает дерево процесса
+
+backend restart
+  → data/background_jobs/jobs.json
+  → повреждённый journal уходит в quarantine, а не перезаписывается
+  → сверка PID + creation identity (защита от PID reuse)
+  → повторное подключение к прежнему log/result sidecar
+  → тот же run_server(list/logs/stop), новый executor не создаётся
+
+dev server / watcher
+  → run_server(start, kind=server, command=..., port=...)
+```
+
+Глобального тайм-аута нет. Завершённый job сохраняет финальный лог, exit code и
+terminal-state в ограниченном по TTL/числу machine-local journal, поэтому LLM
+не теряет результат между опросами и рестартами backend. Если PID исчез без
+sidecar, запись честно становится `failed` с неизвестным exit code. При явном
+Stop записывается `cancelled`. Активные jobs не переносятся в portable backup:
+PID и пути относятся только к текущей Windows/Linux-машине.
+Фоновый режим не заменяет транспортные тайм-ауты: например, TCP scanner всё равно
+использует свой `connect_timeout`.
+
+### 3.2. Как агент узнаёт о подключённой папке проекта
+
+Отдельный helper/«второй помощник» не нужен. Путь проходит через один явный
+контракт и попадает в каждый новый запрос модели:
+
+```text
+Пользователь выбирает папку в Composer
+    ↓
+UI сохраняет projectRoot в текущей code-agent session
+    ↓
+Следующий Send передаёт project_root в FastAPI
+    ↓
+backend заново собирает system prompt этого run
+    ├─ «Текущая директория проекта: <абсолютный путь>»
+    └─ «Проект подключён» + правила работы с файлами
+    ↓
+LLM уже на первом ходе знает корень и использует glob/read_file/search/edit
+```
+
+Если папку подключили посреди разговора, сигнал появится со следующим сообщением:
+между сообщениями модель не работает, поэтому отдельное скрытое сообщение ничего
+не ускорит, а только создаст второй источник состояния. Без реального проекта
+backend явно подставляет scratch workspace и противоположный блок «проект не
+подключён».
+
+### 3.3. Результат, навыки и самообновление
+
+Модель ничего не объявляет runtime (`task_decide`/`result_verify` удалены по решению
+Джона 2026-10-07): результат проверяется запуском — тестами, сборкой, самим скриптом
+через `run_bash`; успешный процесс сам по себе не подтверждает содержательную
+правильность. Навыки и их повторное использование: [`TASK_SKILLS.md`](../../TASK_SKILLS.md).
+
+Расшифровку аудио, финансовые расчёты, чтение PDF/Office, OCR и создание документов
+выполняют изменяемые скрипты в `data/skills`, прочитанные по каталогу навыков.
+`document-read` читает нативный текст и таблицы; `ocr` передаёт исходные PDF/изображения
+серверному OCR; `document-create` создаёт документы. Профильные навыки сохраняются.
+Library хранит бинарные файлы без автоматической обработки и отдаёт безопасный
+ResourceRef для явной материализации и запуска навыка; прежние тексты читаются.
+Выдача готового файла в чат — факт `resource_publish`, а не объявление.
+Слова о скачивании ничего не устанавливают: задача сделать кнопку архива не равна
+запросу самого архива в этом чате. Receipt проверяет конкретные байты target и
+канонической опубликованной копии, включая Resume; неудачная попытка публикации и
+выданная download-ссылка без публикации тоже проверяются. Подробнее:
+[`ANSWER_CONTRACT.md`](../../ANSWER_CONTRACT.md).
+
+Самоизменение backend/UI выполняется в отдельном кандидате. Стабильный
+`scripts/elira_release.py` проверяет его, ждёт завершения работы и переключает
+приложение с перезапуском и восстановлением до admission. Сам agent loop входит
+в заменяемое приложение; supervisor не заменяется кандидатом. Это разделение
+lifecycle, не защита от прямой записи с правами того же пользователя.
+Подробные границы: [`RELEASE_LIFECYCLE.md`](../../RELEASE_LIFECYCLE.md).
+
+## 4. Подагент — инструмент, а не режим
+
+Отдельного мультиагентного режима нет (чип «Планирование/Саморевью» и
+`/api/advanced/multi-agent` удалены 2026-10-07). Подагента основной агент
+вызывает сам инструментом `delegate_task`, когда это нужно. Шаги `agent` в
+Workflow-шаблонах идут в тот же core:
+
+```text
+workflow_engine.db: template → run → steps
+    ↓
+step_executor
+    ↓
+chat.runtime compatibility adapter
+    ↓
+тот же run_code_agent
+    ↓
+тот же ToolExecutor и Runtime Registry
+```
+
+Workflow может поставить run в `needs_input`, `needs_secret`, `needs_elevation`
+или `waiting_approval`. После решения карточки coordinator продолжает именно этот
+step. Пока step ждёт, HTTP stream живёт на keepalive и не обрывается по таймеру.
+
+## 5. Единственное продуктовое разрешение
+
+Permission выбирается одним chip в Composer и записывается в Workflow run.
+
+| Режим | Чтение | Обычные изменения | Опасные/неизвестные изменения |
+|---|---:|---:|---:|
+| `ask` | автоматически | Workflow card | Workflow card |
+| `accept_edits` | автоматически | автоматически | Workflow card |
+| `bypass` | автоматически | автоматически | автоматически |
+
+`bypass` означает отсутствие внутренних product approvals. Он не создаёт права
+администратора Windows и не делает недоступный provider доступным.
+
+`accept_edits` использует impact classifier. Он не запрещает действие, а только
+решает, нужна ли карточка Workflow. Примеры высокой опасности: удаление данных,
+форматирование диска, изменение firewall/routes/SSH access, destructive git,
+остановка системных служб, произвольный код в editor bridge.
+
+Удалены как authorization layers:
+
+- internal ApprovalStore;
+- `forbidden` tier;
+- tool activation/deferred tool set;
+- operation scopes;
+- path/asset authorization scopes;
+- SSH/LAN allowlists;
+- feature gates перед tool dispatch;
+- tool execution timeout;
+- run wall-clock timeout;
+- max steps/max iterations/no-progress/repetition self-stop.
+
+Старые колонки `permission`, `scopes`, `timeout_seconds`, `policy_classified` могут
+оставаться в `tool_registry.db` для чтения старой базы. Executor их не использует
+как разрешение или дедлайн.
+
+## 6. Workflow events и запросы
+
+Четыре публичных типа запроса:
+
+| `kind` | Когда нужен | Что возвращает UI |
+|---|---|---|
+| `input` | Не хватает выбора/значения | JSON по указанной schema |
+| `secret` | Нужен пароль/token/key | Только непрозрачный `secret_ref` |
+| `elevation` | Windows требует повышенный token | Подписанный результат Tauri UAC bridge |
+| `approval` | Режим разрешений требует подтверждения | Accept/Reject точного tool call |
+
+Событийная цепочка:
+
+```text
+item/started
+    ↓
+item/request
+    ↓
+Workflow UI card
+    ↓
+serverRequest/resolved
+    ↓
+item/completed
+```
+
+Durable request хранится в `workflow_engine.db`. UI получает его двумя путями:
+
+```text
+snapshot: GET /api/agent-os/workflow-requests?status=actionable
+live:     GET /api/agent-os/events/stream
+```
+
+Это позволяет восстановить карточку после перезапуска UI.
+
+## 7. Stop и реальные причины завершения
+
+Для здорового запуска пользовательский Stop — единственный product-level
+прерыватель.
+
+```text
+Stop
+  ├─ ставит cancel event agent run
+  ├─ отменяет Workflow run
+  ├─ синхронно закрывает upstream HTTP Response модели
+  │  (планирование, сжатие истории или основной ответ)
+  ├─ после ответа cancel endpoint закрывает UI SSE reader
+  └─ убивает зарегистрированное дерево shell-процесса
+```
+
+`run_control` пытается выполнить все cleanup stages даже при ошибке одного из
+них; неполная очистка возвращает ошибку вместо успешного подтверждения Stop.
+Session Stop между delivery slices остаётся у `delivery_session`. При совпадении
+Workflow response и Stop ветка `ask_user` сначала сохраняет принятый ответ как
+`workflow_input`, затем сообщает отмену; approval и остальные ветки сохраняют
+свой приоритет отмены. Ожидание ответа пользователя не получает новый deadline.
+
+Нет:
+
+- `execution timed out after 600s`;
+- SSE inactivity timeout;
+- `max_steps reached`;
+- no-progress/loop/repetition guard stop;
+- auto-stop фонового `run_server` при финальном ответе.
+
+Технически run всё ещё может завершиться по объективной ошибке:
+
+- сервер модели недоступен или оборвал соединение;
+- OS вернула ошибку запуска/доступа;
+- MCP/SSH transport не подключился;
+- запрос не помещается в физическое context window после compaction;
+- provider вернул невалидный protocol payload;
+- приложение/процесс аварийно завершился.
+
+Это не внутренние запреты. Это фактические failure boundaries.
+
+## 8. Интеграции — группы по требованию и UI
+
+С 2026-10-07 (трек «Elira на диете») мега-инструмента с десятками операций нет.
+Каждая интеграция — маленькая группа, которую модель загружает сама через
+`capability_load(group)`; то, что делает человек, живёт в Настройках.
+
+| Что | Как модель это делает | Что в UI |
+|---|---|---|
+| MCP | группа `mcp`: `mcp(action=list/start/stop/restart/tools/add/remove)`; навык `<id>-mcp` на сервер | Настройки → MCP (статус, старт/стоп, вкл./выкл., правка записи, добавить, удалить) |
+| SSH | группа `ssh`: ssh_run, ssh_run_ps, ssh_read, ssh_write, ssh_replace, ssh_port_check, ssh_list_hosts | — |
+| IT Ops | группа `itops`: `itops_registry` (активы, профили, MikroTik) + typed `itops_*` | — |
+| Telegram | группа `telegram`: `telegram(action=send/messages)` | Настройки → Telegram (токен, старт/стоп, пользователи) |
+| Хранилище секретов | только `secret_ref` через карточку Workflow | Настройки → Секреты (создать, разблокировать, копия) |
+| Память, Библиотека | группа `memory`: `memory` (search/list/add/delete), `library` (search/read) | Настройки → Память / Библиотека |
+| Индекс проекта | группа `project`: `recall(action=search/index/status)` | — |
+
+MCP как навыки (трек 2, 2026-10-07). Источник правды — `data/mcp_servers.json`:
+запись `{id, description, command/args/cwd/env | transport=http, url, headers,
+enabled, skill?}`; секреты только ссылками `sref_…` в `env_secret_refs` /
+`secret_header_refs`. Файл читается на каждый вызов, поэтому правка моделью,
+человеком или из UI видна сразу и кандидата релиза не требует; `start` сам
+перезапускает живой процесс, если его запись изменилась. `enabled: false` —
+сервер выключен и не запускается. На каждый сервер — навык `<id>-mcp`
+(заводские лежат в `skills/`, подчёркивание в id становится дефисом): что умеет,
+какие инструменты передать в `query` при `start`, порядок и ограничения; каталог
+навыков в промпте и есть каталог MCP. Новый сервер — навык `mcp-install`: папка
+`data/mcp/<id>/` со своим окружением, `mcp(action=add)` с `cwd`, свой навык,
+проверочный вызов. `mcp(action=add)` меняет только переданные поля записи.
+
+LSP-подсистема и плагины удалены (символы и ссылки по коду — serena MCP по
+требованию; повторно используемые скрипты — навыки в `data/skills`). Операции
+Workflow-шаблонов и расписаний из инструмента модели убраны; сам Workflow-движок
+остаётся владельцем прогонов, одобрений и карточек.
+
+Telegram, IT Ops и MCP возвращают единый envelope, из которого цикл агента
+показывает карточку Workflow для любого инструмента:
+
+```text
+completed(result)
+failed(error.code, error.message, error.retryable)
+needs_input(request.schema)
+needs_secret(write-only card)
+needs_elevation(UAC command)
+waiting_approval(exact tool digest)
+cancelled
+```
+
+Контракт и общий `run_operation` лежат в `_tool_contract.py`; адаптеры —
+`_mcp.py`, `_telegram.py`, `_itops.py`. Они не исполняют чужие
+tools и не создают второй registry.
+
+FastAPI не запускает MCP автоматически. Новый прогон не добавляет схемы
+MCP/SSH/IT Ops по ключевым словам или профилю:
+
+```text
+MCP: навык <id>-mcp из каталога (read_file) → capability_load(mcp)
+  → mcp(action=start, server_id, query)
+  → schemas только выбранного MCP на следующем model turn
+
+SSH: capability_load(ssh) → ssh_list_hosts / ssh_run …
+
+IT Ops: capability_load(itops) → itops_registry(action=list)
+  → typed itops_* по решению LLM
+
+Новый MikroTik: itops_registry(action=mikrotik_upsert, config={host, user, label,
+                               ros_version?, ssh_alias?, identity_file?})
+  → network_device + ssh profile в it_ops.sqlite3
+  → typed SSH probe автоматически определяет/проверяет RouterOS
+  → RouterOS 6 получает legacy algorithms только для этой зарегистрированной цели
+
+Сохранённый MikroTik: itops_registry(action=mikrotik_list)
+  → itops_mikrotik_inventory с точным router_id
+  → произвольная RouterOS CLI-команда через ssh_run
+```
+
+Library в topbar — долговременная база, а не второе чат-вложение. Файл можно
+загрузить прямо в popover или явно сохранить туда из attachment-chip. При
+ингесте сохраняется полный извлечённый текст до физического предела 1 000 000
+символов и индексируется FTS5 внутри существующей `library.db`; в обычный prompt
+попадает только релевантное окно до 2500 символов. Если запрос требует прочитать
+документ целиком, агент вызывает `library(action=search)`, затем
+`library(action=read, id, offset)` с возвращаемым продолжением.
+
+Адрес, имя, версия, key path и параметры всех добавленных MikroTik переживают
+новые чаты и перезапуск приложения. Каноническая запись находится в IT Ops
+store. MikroMCP и `routers.yaml` удалены. Typed SSH использует OpenSSH key или
+ssh-agent; пароль и содержимое private key никогда не передаются модели/tool.
+
+Legacy доменные метки сохраняют подсказки о требованиях задачи, но не раскрывают
+SSH/IT Ops schemas и не меняют личность. После discovery текущего прогона вызов
+проходит через тот же provider, ToolExecutor и режим Workflow.
+Для TCP-проверок модель должна использовать
+`itops_network_inventory` с `/32` для одного IP, явными портами,
+`connect_timeout` и `concurrency`, а не последовательный `Test-NetConnection`
+через shell.
+
+Обычные SSH-команды запускаются с нативным `ssh -n`: если ошибочная удалённая
+команда попробует читать stdin, она сразу получит EOF и не повесит Workflow.
+`ssh_write` отдельно передаёт содержимое через stdin и поэтому не использует `-n`.
+IT Ops использует тот же общий SSH argv-builder, поэтому typed diagnostics также
+получают `-n` и `ConnectTimeout`, а не поддерживают отдельную копию transport flags.
+
+Даже если другой прогон уже держит MCP-процесс запущенным, его сотни схем не
+попадут в текущий prompt без выбора этого `server_id` текущим агентом.
+Выбор записывается в journal прогона и сохраняется между его автоматическими
+продолжениями и Resume; новый прогон начинает с пустого набора интеграций.
+
+Счётчик контекста учитывает не только сообщения, но и точные schemas активных
+tools. Поэтому большой выбранный MCP виден в UI/телеметрии и не маскируется как
+«пустой» чат.
+
+### 8.1. Corpus ingestion — временная RAG-база веб-источников
+
+Corpus не загружает интернет автоматически и не является долговременной памятью.
+Он появляется только по решению модели после загрузки группы `web`:
+
+```text
+web_fetch(url, store=true)
+    ↓ fetch + повторная SSRF-проверка redirects + лимит 8 MB
+HTML / text / PDF / DOCX
+    ↓ очистка и canonical text
+chunks около 1 400 символов
+    ↓
+web_corpus.sqlite3, изоляция по run_id
+    ↓
+web_query(query) → BM25 → optional embedding rerank
+    ↓
+quote + source URL + exact offset/hash verification
+```
+
+Лимиты: до 40 документов/15 MB на run, глобально до 200 документов/60 MB, TTL
+7 дней. Веб-текст всегда помечен как недоверенные данные, а не инструкции. Если
+Corpus пуст, `web_query` честно просит сначала выполнить
+`web_fetch(store=true)`. Нужный источник можно явно закрепить в Library; сам
+Corpus остаётся одноразовым кэшем текущего run.
+
+### 8.2. Project Corpus — постоянный индекс локальных репозиториев
+
+Project Corpus работает отдельно от временного web Corpus и использует уже
+существующий `rag_memory.db`:
+
+```text
+выбранная папка проекта / папка с несколькими repo
+    ↓ рекурсивное обнаружение Git-репозиториев
+git ls-files --cached --others --exclude-standard
+    ↓ tracked + неигнорируемые untracked-файлы
+текстовые source/config/docs до 200 KB
+    ↓ SHA-256 файла + chunks по 80 строк с overlap 10
+embedding endpoint
+    ↓
+rag_items: chunk + vector + source_uri/source_hash
+project_corpus_files: status/hash/mtime/chunk_count
+    ↓
+scoped hybrid search → text + file/lines + repo/commit/language
+```
+
+Корнем corpus считается выбранная папка. Если в ней лежат `repo-a`, `repo-b` и
+`repo-c`, один поиск видит все три, но chunks остаются изолированы от corpus с
+другим `project_root` через стабильный `project_scope_id`.
+
+Повторная кнопка «Индексировать проект» не перестраивает embeddings целиком:
+совпавшие SHA-256 пропускаются. Все chunks одного файла и embeddings сначала
+готовятся в памяти. Runtime повторно проверяет хеш файла и заменяет chunks
+вместе с manifest одной SQLite-транзакцией. Ошибка сохраняет полную прежнюю
+индексированную версию; `failed` записывается, если такой версии нет. Следующий
+запуск повторяет попытку. Поиск использует единый снимок SQLite и исключает
+управляемые chunks с несовпадающими hash/status manifest. Атомарность относится
+к одному файлу, не ко всему corpus; поиск не обещает свежесть без переиндексации.
+Удалённые файлы удаляются из manifest и RAG при reconciliation. Лимит 5000
+chunks ограничивает один проход, а не общий размер corpus: следующий запуск
+пропускает готовые файлы и продолжает дальше. Если Git не смог построить полный
+snapshot, reconciliation не запускается и предыдущий индекс сохраняется.
+
+### 8.3. Память пользователя — жизненный цикл без смешивания stores
+
+```text
+явный факт пользователя
+    ↓ memory facade
+smart_memory.db                  ← curated facts
+    ├─ повтор факта → один id, importance растёт
+    ├─ memory_search → id → user_correction(replaces_id) → старая строка заменяется
+    └─ volatile_fact → не source of truth, удаляется age-prune
+
+эпизод / Project Corpus
+    ↓
+rag_memory.db                    ← semantic/project records
+
+web_fetch(store=true)
+    ↓
+web_corpus.sqlite3               ← временный run-scoped кэш, не память
+```
+
+`memory_prune` объединяет два независимых обслуживания: bounded prune
+семантических `agent_turn/verified_turn` и удаление только устаревших
+`volatile_fact` (по умолчанию старше 7 дней). Обычные пользовательские факты
+эта операция не удаляет. `memory(action=search)` показывает ID
+найденных curated facts, не смешивая этот lookup с индексом проекта (`recall`). Для
+поправки передаются `correction=true` и id записи, но они не повышают доверие к записи.
+`memory(action=add)` по умолчанию сохраняет `agent_note` и ссылку на run.
+Сервер сверяет текст с исходным `memory_query` текущего RunJournal: только
+буквальные слова пользователя или точный остаток его команды «запомни» получают
+`user_command`/`user_correction`. Парафразы, выводы модели, вложения и её
+`config.source` не устанавливают пользовательское происхождение.
+Заметка агента не может заменить доверенный пользовательский факт; dedup
+разделяет эти источники. Замена проверяет профиль и прежнюю строку, чтобы не
+затереть конкурентное изменение. Manual API сохраняет свой контракт;
+исторические записи массово не перемаркируются. Лексический same-topic поиск
+остаётся совместимым fallback для corrections без `replaces_id`.
+
+Детерминированный Harness запускает весь цикл в отдельном временном
+`ELIRA_DATA_DIR`, без LLM, сети и пользовательских баз. Он проверяет шесть
+контрактов: CRUD, correction, dedup, volatile lifecycle, изоляцию трёх контуров
+и encrypted backup/restore.
+
+Любой текст беседы использует тот же рабочий набор, что и работа. Регулярки
+приветствий/комплиментов и отдельный разговорный путь удалены. После рабочего
+run следующая беседа снова получает основные tools и их инструкции. Дополнительные
+инструкции не переносятся в обычную историю ответов; развитие личности, предпочтения и
+релевантная память добавляются отдельно после стабильного начала.
+
+Модуль настроения удалён 06.10.2026. С 15.10.2026 живой prompt использует
+единственную личность Elira; мёртвые режимы и `/api/profiles` удалены. Старое
+поле `profile_name` принимается для совместимости и игнорируется. Развившиеся
+черты и калибровка модели остаются в существующем persona runtime.
+Переключение thinking остаётся отдельной причиной промаха кеша: текущий шаблон
+Qwen вставляет инструкцию reasoning effort в начало system. Стоимость холодного
+запроса и переключения thinking измеряется отдельно; TTFT не ограничивает работу.
+
+DRY-антиповторы ограничены последними 1024 токенами; в коротком ответе это окно
+захватывает и историю. Поэтому допустимая длина повторения увеличена с 2 до 12
+токенов: A/B на одинаковой истории и seed показал, что прежний штраф искажал имя
+Elira при повторных вопросах. Это общая настройка для беседы и работы; длинные
+повторы по-прежнему штрафуются, списков исключений для фраз не добавлено.
+
+## 9. Windows, права и UAC
+
+Обычные действия выполняются с текущим Windows security token процесса Elira.
+
+```text
+Elira запущена обычным пользователем
+    ↓
+tool получает те же права, что Elira
+    ├─ доступ разрешён Windows → выполняется
+    └─ нужен admin token → Access denied / elevation request
+```
+
+Elira не зависит от постоянного запуска «от администратора», Credential Manager
+или DPAPI. Если конкретная команда требует admin token:
+
+```text
+agent → workflow_request(kind=elevation)
+      → UI показывает карточку
+      → Tauri вызывает Windows UAC
+      → отдельный elevated helper выполняет ровно эту команду
+      → результат привязывается к request_id
+      → Workflow продолжает run
+```
+
+UAC нельзя честно «обойти». Можно только запросить у Windows новый повышенный
+token через штатный диалог. Переустановка Windows не ломает данные агента, если
+сохранены runtime data и passphrase/recovery key переносимого vault.
+
+## 10. Секреты и переносимый vault
+
+Активный vault:
+
+- файл: `data/portable_vault.json`;
+- encryption: AES-256-GCM;
+- passphrase KDF: scrypt;
+- в Workflow и tool args передаётся только `sref_...`;
+- plaintext не пишется в events, journal, prompt или SQLite;
+- decrypted data key автоматически удаляется из памяти после периода
+  неактивности (`ELIRA_VAULT_IDLE_TIMEOUT_SECONDS`, по умолчанию 900 секунд);
+- WinCred читается только явной legacy migration операцией.
+- пользовательский backup включает `smart_memory.db` и `rag_memory.db`, поэтому
+  переносит curated/semantic memory и Project Corpus;
+- `web_corpus.sqlite3` в backup не входит: это одноразовый кэш источников run.
+
+```text
+Secret card → vault.write(plaintext) → secret_ref
+                                     ↓
+tool args содержат только secret_ref
+                                     ↓
+owning runtime разрешает ref в памяти перед I/O
+```
+
+## 11. Мышление Qwen
+
+UI всегда показывает четыре значения:
+
+| Chip | Qwen3.8 |
+|---|---|
+| `none` / Выкл | `enable_thinking=false`, effort `none` |
+| `low` / Коротко | `enable_thinking=true`, effort `low` |
+| `medium` / Средне | `enable_thinking=true`, effort `medium` |
+| `xhigh` / Макс | `enable_thinking=true`, effort `xhigh` |
+
+Backend отправляет параметры Qwen:
+
+```text
+Qwen: enable_thinking + reasoning_effort
+```
+
+Выбранный уровень используется и на planning call, и на следующих execution /
+verification calls. MTP у Qwen независим от reasoning chip: это ускорение
+генерации на стороне inference server, а не уровень интеллекта.
+
+В model payload всегда ровно один `system`, и он стоит первым. Сжатая история,
+проверенные факты и вывод tools прошлого хода передаются как явно помеченный
+assistant-shaped runtime context. Это сохраняет данные, но не нарушает строгий
+Qwen chat template с ошибкой `System message must be at the beginning`.
+
+## 12. Prompt cache
+
+Каждый chat payload содержит:
+
+```json
+{"cache_prompt": true}
+```
+
+`n_prompt_tokens_cache=0` не означает, что Elira выключила cache. Это означает,
+что конкретный server request не переиспользовал ни одного prompt token. Частые
+причины:
+
+- первый запрос после загрузки модели;
+- server slot/cache был очищен или заменён;
+- начало prompt изменилось;
+- запрос попал в другой slot;
+- модель/context/template были переключены;
+- сервер не смог совместить текущий prefix с сохранённым prefix.
+
+Исправлять сам флаг нужно в agent LLM client, а качество cache hit — в slot/cache
+на inference server. В текущем агенте флаг уже включён.
+
+## 13. API — что реально смонтировано
+
+Все router owners перечислены в `backend/app/api/routes/registry.py`.
+
+| Prefix | Назначение |
+|---|---|
+| `/api/code-agent` | stream/resume/cancel, sessions, project prompt, RAG helpers |
+| `/api/agent-os` | Workflow templates/runs/requests, event SSE, portable vault |
+| `/api/advanced` | projects, advanced RAG |
+| `/api/media` | durable resource intake |
+| `/api/lib` | curated library |
+| `/api/chat-agent` | memory compatibility API |
+| `/api/models`, `/api/persona` | model/persona reads |
+| `/api/skills` | document/SQL/HTTP/skill endpoints |
+| `/api/mcp` | ручной статус и start/stop/restart настроенных MCP через прежний runtime |
+| `/api/voice` | STT/TTS |
+| `/api/elira` | settings and legacy chat persistence |
+| `/api/drift` | live server-fact drift status |
+
+Прямые публичные routers для tool registry execution, terminal, Telegram, IT Ops,
+assets, plugin execution, Task Planner CRUD, pipelines и change executor удалены
+из active registry. Их capabilities вызываются через Workflow/runtime.
+
+## 14. Базы и файлы данных
+
+Корень: `ELIRA_DATA_DIR`, иначе repo `data/`.
+
+| Store | Что хранит | Владелец |
+|---|---|---|
+| `workflow_engine.db` | templates, runs, steps, requests, interval triggers | `application/workflows` |
+| `tool_registry.db` | tool inventory/metadata и handler names | `application/tool_registry` |
+| `task_planner.db` | checklist и subagent records | `application/task_planner` |
+| `code_agent_sessions.db` | UI sessions и task ledger | `code_agent/sessions.py` |
+| `agent_monitor.db` | metrics и model profiles | `application/monitoring` |
+| `event_bus.db` | durable events/messages/subscriptions | `application/event_bus` |
+| `it_ops.sqlite3` | assets, connection profiles, evidence | `infrastructure/it_ops` |
+| `integrations.db` | Telegram config/users/log | `application/telegram` |
+| `smart_memory.db` | curated facts | `application/smart_memory` |
+| `rag_memory.db` | embeddings/episodic memory + Project Corpus chunks и file manifest | `application/rag_memory` + `code_agent/indexing.py` |
+| `library.db` | attached/curated library records | `infrastructure/db/library_db.py` |
+| `projects.db` | saved project roots | `application/advanced/projects_registry.py` |
+| `web_corpus.sqlite3` | untrusted web documents/chunks | `infrastructure/web_corpus` |
+| `elira_state.db` | settings, persona, legacy chats/messages | `application/elira_memory` |
+| `drift_facts.db` | last verified inference-server facts | `application/drift` |
+
+Другие durable paths:
+
+```text
+.agent/runs/<run_id>/      code-agent journal
+data/resources/            resource blobs + metadata
+data/background_jobs/      machine-local job journal/spec/launch/result sidecars
+data/mcp_servers.json      MCP configuration
+data/ssh_acl.json          legacy filename; saved SSH shortcuts, не ACL gate
+data/portable_vault.json   encrypted portable vault
+```
+
+Не объединять эти stores механически: у Workflow, memory, raw resources, IT Ops
+evidence и audit events разные lifecycle и recovery semantics.
+
+## 15. Что осталось из «защит» и почему это не блокеры
+
+Оставлены только технические проверки корректности:
+
+| Проверка | Зачем нужна |
+|---|---|
+| JSON/schema validation | Не передать provider сломанные аргументы |
+| UTF-8/no-BOM validation | Не испортить русские строки и исходники |
+| Secret redaction | Не записать plaintext в журнал/события |
+| Output truncation | Не переполнить физическое context window одним log dump |
+| Context compaction | Продолжить run в конечном окне модели |
+| API bearer auth для LAN | Не открыть удалённое выполнение любому устройству в сети |
+| UAC result binding | Не принять поддельное `elevated=true` по HTTP |
+| Provider protocol validation | Не считать мусор успешным результатом |
+| File/path syntax validation | Не передавать OS невалидный путь |
+
+Они не создают второй approval и не запрещают валидную цель агента.
+
+## 16. Где менять поведение
+
+| Хочу изменить | Менять здесь |
+|---|---|
+| Permission modes | `agent_kernel/impact_policy.py`, `agent_kernel/executor.py`, `Composer.tsx` |
+| Stop/cancel | `run_control.py`, `delivery_session.py`, `code_agent_routes.py`, `_shell.py` |
+| Reasoning chip | `Composer.tsx`, `agent_loop.py`, `model_turn.py` |
+| LLM payload/cache | `infrastructure/llm/openai_compatible.py` |
+| Новый built-in tool | `capabilities.py` + существующие `tool_schemas.py`/`_dispatch.py`, без второго registry |
+| Новый provider | `application/tool_providers/`, зарегистрировать в runtime registry |
+| Integration tools | `_mcp.py`, `_telegram.py`, `_itops.py`, `_memory.py` |
+| Workflow request | `workflows/request_lifecycle.py`, `request_recovery.py`, `request_validation.py`, `WorkflowRequestCard.tsx` |
+| Vault/UAC | `infrastructure/secrets/vault.py`, `src-tauri/src/main.rs` |
+| API mount | `api/routes/registry.py` |
+
+## 17. Быстрая диагностика
+
+### Агент долго думает
+
+Это нормально для `xhigh`. Смотрите SSE heartbeat и server tokens/sec. Не добавляйте
+run timeout. Для скорости переключите chip на `medium/low`, не ломая runtime.
+
+### `n_prompt_tokens_cache=0`
+
+Проверьте server slot/cache и стабильность prefix. В agent payload `cache_prompt`
+уже включён.
+
+### Tool не появился
+
+Для основного встроенного tool проверьте `tool_policy.BASE_TOOLS` и фактические
+схемы первого запроса; для дополнительного — успешный `capability_load(group)`.
+Для MCP проверьте `mcp(action=list/start)`. В обоих случаях registry
+обновляется на следующем turn; выбранное состояние видно в journal run.
+
+### Windows вернула Access denied
+
+Это граница текущего token. Агент должен запросить `elevation`, а пользователь —
+подтвердить UAC card.
+
+### Stop не убил дочерний процесс
+
+Проверяйте, прошёл ли запуск через canonical `run_bash/run_server` и зарегистрирован
+ли process в run registry. Не добавляйте параллельный `subprocess.run` executor.
+
+## 18. Инварианты для будущих изменений
+
+1. Не добавлять второй agent loop.
+2. Не добавлять второй tool executor.
+3. Не добавлять provider-specific approvals.
+4. Не возвращать internal scopes/allowlists/feature activation gates.
+5. Не добавлять product timeout или max steps.
+6. Интеграции используют существующий Workflow/runtime; ручной MCP lifecycle
+   в Settings делегирует ему, не создавая отдельного исполнителя.
+7. Секрет в model/tool/event payload — только `secret_ref`.
+8. Windows elevation — только через Workflow card + native Tauri UAC bridge.
+9. Основные рабочие tools видимы сразу, дополнительные группы загружает модель.
+   Legacy persona profile не меняет набор основных tools или температуру.
+10. Один финальный ответ или явный Stop; объективная provider/OS error остаётся честной ошибкой.
