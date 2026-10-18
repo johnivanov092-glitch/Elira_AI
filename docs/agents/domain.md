@@ -16,7 +16,8 @@ This repo has no `CONTEXT.md` yet — its domain language and architecture live 
 If a `CONTEXT.md` / `docs/adr/` is later added, read those too. This project
 does not currently use ADRs; architectural decisions live as the `docs/*.md`
 files above — the runtime guardrails in `docs/ARCHITECTURE.md` and the
-forward-looking continuation work in `docs/BACKLOG.md`. The completed D1-D3
+task-specific work in `.scratch/<feature>/`. Historical continuation lists are
+under `docs/archive/`; they are not the active task queue. The completed D1-D3
 track is historical and lives in `docs/archive/DEFERRED_TRACK.md`.
 
 If any referenced file doesn't exist, **proceed silently** — don't flag its
@@ -29,7 +30,7 @@ absence or suggest creating it upfront.
 ├── AGENTS.md
 ├── docs/
 │   ├── ARCHITECTURE.md                      ← architecture + runtime guardrails
-│   ├── BACKLOG.md                           ← continuation work
+│   ├── archive/README.md                   ← dated evidence and past plans
 │   ├── archive/DEFERRED_TRACK.md            ← completed D1-D3 history
 │   ├── PROJECT_MAP.md
 │   ├── AGENT_ARCHITECTURE_GUIDE_RU.md

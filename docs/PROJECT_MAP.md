@@ -8,11 +8,12 @@ D:\AIWork\Elira_AI
 ├─ frontend/      React + Vite + TypeScript UI
 ├─ src-tauri/     Windows desktop shell, native UAC bridge, desktop companion window
 ├─ integrations/  isolated portal utilities
-├─ docs/          current architecture and operating docs
+├─ docs/          current architecture and operating docs; history in archive/
+├─ assets/        branding/AI.svg and voice-sample documentation
 ├─ data/          machine-local runtime data (mostly ignored)
 ├─ .agent/runs/   durable code-agent journals
 ├─ .scratch/      local issue tracker/work notes
-└─ scripts/       maintenance helpers
+└─ scripts/       maintenance, dev/build and isolated test launchers
 ```
 
 The sibling `D:\AIWork\Elira_AI_Server` owns llama.cpp/model serving. Do not
@@ -28,7 +29,7 @@ move Elira's backend state or tools into that repository.
 | Chat sessions and shared folder layout | `backend/app/application/code_agent/sessions.py` |
 | Workflow HTTP/API | `backend/app/api/routes/workflow_routes.py` |
 | Durable event SSE | `backend/app/api/routes/event_bus_routes.py` |
-| Multi-agent HTTP/SSE | `backend/app/api/routes/advanced_routes.py` |
+| Sub-agent tool | `backend/app/application/code_agent/tools/_meta.py` (`delegate_task`) |
 | Agent coordinator, public stream/sync and journal adapters | `backend/app/application/code_agent/agent_loop.py` |
 | Live-run control, upstream cancel and Workflow rendezvous | `backend/app/application/code_agent/run_control.py` |
 | One model exchange and heartbeat | `backend/app/application/code_agent/model_turn.py` |
@@ -161,7 +162,7 @@ machine-local `.env.local` values.
 
 - `docs/AGENT_ARCHITECTURE_GUIDE_RU.md`: full readable agent map.
 - `docs/ARCHITECTURE.md`: canonical invariants and boundaries.
-- `docs/ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md`: historical 2026-08-23 refactor snapshot.
+- `docs/archive/README.md`: historical plans, audits, acceptance reports and experiments.
 - `docs/TASK_SKILLS.md`: package lifecycle, verified outcomes and learned hints.
 - `docs/ANSWER_CONTRACT.md`: accepted answers, file delivery and web provenance.
 - `docs/RELEASE_LIFECYCLE.md`: managed application updates and recovery limits.

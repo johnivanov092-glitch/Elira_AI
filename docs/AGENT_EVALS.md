@@ -343,7 +343,7 @@ Reports are written to `.agent/evals/memory/<suite-id>/report.md` and
 
 These are opt-in harnesses, not evidence that all scenarios passed. Current
 results, failed attempts, developer interventions and pending checks are in
-[AUTONOMY_ADVISOR_ACCEPTANCE_RU.md](research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
+[AUTONOMY_ADVISOR_ACCEPTANCE_RU.md](archive/research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
 Canonical release verification (backend tests, frontend checks, native build and
 staged startup) is distinct from a real Qwen task and native visual acceptance.
 The long task through actual context compaction, Stop, restart and Resume has a

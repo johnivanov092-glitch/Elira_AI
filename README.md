@@ -135,20 +135,22 @@ npm run tauri dev
 Windows launchers:
 
 - `Elira.bat` - managed release launcher when enabled; otherwise development startup.
-- `run_tauri_dev.bat` - dev launcher.
+- `scripts/run_tauri_dev.bat` - dev launcher.
+- `scripts/build_exe.bat` - Tauri installer build.
+- `scripts/Elira_Autonomy_Test.bat` - isolated historical autonomy-trial launcher.
 - `Elira_Mobile.bat` - LAN/mobile launcher.
 - `kill_elira.bat` - stops Elira processes.
 
 ## Verification
 
-Use focused checks for small changes and the full backend suite for cross-cutting
-runtime work.
+Follow [AGENTS.md](AGENTS.md) and Atlas impact checks. Run the full backend
+suite last, after all questions about the change are resolved.
 
 ```powershell
 cd D:\AIWork\Elira_AI
-backend\.venv\Scripts\python.exe -m pytest -q
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
+backend\.venv\Scripts\python.exe -m pytest -q
 git diff --check
 ```
 
@@ -165,8 +167,7 @@ cd D:\AIWork\Elira_AI\backend
 - [Architecture and contracts](docs/ARCHITECTURE.md).
 - [Repository map and ownership](docs/PROJECT_MAP.md).
 - [Inference server](docs/SERVER.md).
-- [Autonomy implementation and acceptance status](docs/research/AUTONOMY_ADVISOR_ACCEPTANCE_RU.md).
-- [Post-server migration record](docs/POST_SERVER_BACKLOG.md).
+- [Historical reports and experiments](docs/archive/README.md).
 
 The dedicated inference server has its own repo, `Elira_AI_Server`, in the same
 parent folder; its full operational docs live at the local checkout path
@@ -179,7 +180,11 @@ parent folder; its full operational docs live at the local checkout path
 - `data/elira_secret.key` and `data/elira_api_token` are per-machine secrets:
   they auto-generate at runtime and must stay untracked (committing the Fernet
   key would let anyone with the repo decrypt stored data).
-- Keep `data/plugins/` and `data/plugins_config.json` tracked intentionally.
+- Keep the existing `data/plugins_config.json` tracked intentionally; runtime
+  plugin implementations were retired.
 - Extend the existing agent executor, tool registry, model provider, and DB
   modules instead of adding parallel runtimes.
-- Prefer small, verified patches and commit only clean working trees.
+- Work in a named branch in a separate worktree; keep the live checkout on `main`.
+- Commit, merge and push only when the user requests them.
+- Keep the root for entry points and build/tool configuration; documentation goes
+  in `docs/`, developer helpers in `scripts/`, visual assets in `assets/`.

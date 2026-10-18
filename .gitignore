@@ -109,13 +109,6 @@ chroma/
 lightning_logs/
 
 # ------------------------------
-# Project specific heavy folders
-# ------------------------------
-backend/.venv/
-frontend/node_modules/
-__pycache__/
-
-# ------------------------------
 # Keep source, ignore generated
 # ------------------------------
 !backend/
@@ -186,13 +179,13 @@ backend/.env.local
 .claude/
 .claire/
 
-# Dead Codex hooks tree (superseded by .claude/hooks; kept local only)
+# Active machine-local Codex lifecycle hooks for Atlas (kept local only)
 .codex/
 
 # Local agent runs and launchers
 /.agent/
 # Local issue notes, private chat traces, benchmarks and source snapshots.
-# Already tracked historical notes stay versioned; publish shared status in docs/.
+# Historical tracked plans live in docs/archive/plans/; shared status goes in docs/.
 /.scratch/
 /.tmp_pytest/
 /Task_Agent.txt

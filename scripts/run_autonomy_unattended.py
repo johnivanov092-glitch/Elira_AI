@@ -35,7 +35,7 @@ def save(path, value):
 
 def require_admin():
     if os.name != "nt" or not ctypes.windll.shell32.IsUserAnAdmin():
-        raise RuntimeError("Run Elira_Autonomy_Test.bat as administrator; Windows policy is not changed.")
+        raise RuntimeError("Run scripts/Elira_Autonomy_Test.bat as administrator; Windows policy is not changed.")
 
 
 def browser_path(explicit: Path | None = None) -> Path:

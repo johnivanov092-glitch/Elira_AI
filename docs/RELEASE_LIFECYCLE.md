@@ -51,7 +51,7 @@ Foundation хранит три успешно запущенных релиза:
 через `scripts/install_foundation.ps1` с правами администратора. Простое наличие
 этих исходников не означает, что служба установлена или приложение перенесено.
 Текущая проверка и развёртывание записаны в
-[отчёте Foundation](research/FOUNDATION_WINDOWS_ACCEPTANCE_RU.md).
+[отчёте Foundation](archive/research/FOUNDATION_WINDOWS_ACCEPTANCE_RU.md).
 Для уже настроенных нестандартных путей DATA/journals установщик требует явные
 `-DataDir` и `-AgentRunsDir`, чтобы установка не скрыла существующую историю
 новой пустой папкой. Он не переносит данные и не меняет UAC самостоятельно.

@@ -23,7 +23,7 @@ here, and do not store keys, passwords, or tokens here.
 ## Services
 
 Last confirmed service topology: 2026-09-26. This is a dated configuration
-summary, not a live health check; see the [model inventory](research/MODEL_INVENTORY_2026-09-26_RU.md)
+summary, not a live health check; see the [model inventory](archive/research/MODEL_INVENTORY_2026-09-26_RU.md)
 for the measured state, CPU/GPU split and verification limits.
 
 | Service | Runtime | Endpoint | Backing model / contract | Compute |

@@ -91,12 +91,14 @@ a successfully completed run.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- The UI exposes one personality: `Elira / Auto`. Qwen3.8-27B sampling follows
+- The UI exposes one personality: Elira. Qwen3.8-27B sampling follows
   its published instruct/thinking profiles, selected by the user's reasoning mode.
-  Legacy profiles remain readable but do not switch identity, tone or sampling.
-  Their evidence/calculation requirements survive as relevant task instructions.
+  Legacy `profile_name` inputs are accepted and ignored. Dead persona modes and
+  `/api/profiles` were removed on 2026-10-15; evidence/calculation rules belong
+  to the relevant skills.
 - Every normal first turn sees the work tools in `tool_policy.BASE_TOOLS`
-  (read/write/edit_file, glob, grep, run_bash, run_server, todo_update, math)
+  (read/write/edit_file, glob, grep, run_bash, run_server, web_search, web_fetch,
+  todo_update, math)
   plus `capability_load` and `ask_user`. Calculations use the mutable MATH skill
   through the `math` tool.
   Workflow questions remain available through the runtime.
