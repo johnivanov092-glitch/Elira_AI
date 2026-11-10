@@ -19,6 +19,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--no-cache', action='store_true')
     p.add_argument('--research', action='store_true', help='Use run-local quick/deep budgets and page cache')
     p.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
+    # Set by Elira once the run has run a command or changed a file: budgets then count per
+    # documentation lookup, not once for the whole run (webskill/research.py).
+    p.add_argument('--lookup', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--step', type=int, default=0)
     sub = p.add_subparsers(dest='action', required=True)
     search = sub.add_parser('search')

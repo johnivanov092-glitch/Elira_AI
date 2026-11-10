@@ -25,6 +25,9 @@ _PAGE_DEADLINE = contextvars.ContextVar('web_page_deadline', default=None)
 _STOP = "Лимит времени исследования 60 с исчерпан — отвечай по прочитанному и отметь непроверенное."
 _WARN = "Прошло 30 с: заверши по прочитанному, перечисли, что не проверено."
 _FIND_LIMIT = {"quick": 2, "deep": 6}  # phrase lookups on pages already read, per run
+# Added to a budget refusal when the web is only a reference in the task.
+_LOOKUP_NOTE = (" В этой задаче веб — справка: продолжай работу инструментами. Следующее обращение "
+                "к документации после шага без веба получит новый лимит.")
 
 
 def remaining_timeout(maximum: float = 20) -> float:
@@ -113,12 +116,28 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
     if requested_mode is not None and requested_mode not in {"quick", "deep"}:
         return {"ok": False, "error": "argument_format", "text": "mode: quick или deep"}
     path = context.data_file("research.json")
-    state = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {
-        "started_at": time.time(), "mode": requested_mode or "quick", "searches": 0, "fetches": 0, "urls": [],
-        "read_urls": [], "failed_urls": [],
-    }
+
+    def fresh_state() -> dict:
+        return {"started_at": time.time(), "mode": requested_mode or "quick", "searches": 0, "fetches": 0,
+                "urls": [], "read_urls": [], "failed_urls": []}
+
+    state = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else fresh_state()
     # Resume old runs without reopening search or changing their existing quota.
     state.pop("language_correction", None)
+    # John 2026-11-10: in a task where the web is a reference for the work (admin
+    # and code tasks), reading documentation must stay possible to the end. Run
+    # bd5f22a0 spent its only 60 s window at step 51 and had six later lookups
+    # refused. A step without web calls between two web calls ends a lookup: the
+    # next one gets its own window and round counters. Elira sets `lookup` only
+    # after the run has executed a command or changed a file, so a run that only
+    # searches and reads keeps its run-wide budget.
+    lookup = bool(getattr(args, "lookup", False))
+    step = int(getattr(args, "step", 0) or 0)
+    last_step = int(state.get("last_step") or 0)
+    if lookup and last_step and step - last_step >= 2:
+        state = {**fresh_state(), "episode": int(state.get("episode") or 1) + 1}
+    if step:
+        state["last_step"] = step
     # The first web call fixes this run's budget, including fetch-only research.
     # Later declarations cannot expand quick or shrink deep.
     mode = state["mode"]
@@ -168,7 +187,7 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
     if getattr(args, 'native', False):
         print(json.dumps({'web_deadline_epoch': _DEADLINE}), flush=True)
     if error:
-        result = {"ok": False, "error": error, "text": hint}
+        result = {"ok": False, "error": error, "text": hint + (_LOOKUP_NOTE if lookup else "")}
     else:
         result = operation()
     if action == "fetch" and not error:
@@ -211,4 +230,5 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
     return {**result, "text": text + ("\n\n" + cache_notice if cache_notice else ""),
             "web_research": {"mode": mode, "elapsed_seconds": round(elapsed, 3), "warning": warning,
                 "stopped": elapsed >= 60, "search_rounds": state["searches"],
-                "read_rounds": state["fetches"], "sites": len(state.get("read_urls", [])), "cached": cached}}
+                "read_rounds": state["fetches"], "sites": len(state.get("read_urls", [])), "cached": cached,
+                **({"lookup": int(state.get("episode") or 1)} if lookup else {})}}

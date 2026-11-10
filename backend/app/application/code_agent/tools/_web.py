@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.application.agent_kernel.runtime_context import current_runtime_context
+from app.application.agent_kernel.runtime_context import WEB_REFERENCE_KEY, current_runtime_context
 from app.application.code_agent.tools._math import _skill_python
 from app.application.code_agent.tools._run import _agent_child_env
 from app.application.code_agent.tools._shell import (
@@ -21,6 +21,31 @@ from app.application.code_agent.tools._shell import (
     register_run_process, run_was_stopped, unregister_run_process,
 )
 from app.core.skill_modules import skill_root
+
+
+_LOOKUP_FLAG = "--lookup"
+_LOOKUP_SUPPORT: dict[tuple[str, int], bool] = {}
+
+
+def _reference_lookup(script: Path) -> bool:
+    """The web is a reference for work already under way in this run.
+
+    John 2026-11-10: documentation must stay readable through a long admin or
+    code task, so the skill then budgets each lookup separately. The loop marks
+    web calls made after a command or a file change; a run that only searches
+    and reads keeps its run-wide budget. The flag goes only to a skill copy that
+    knows it: skills live in data/ and are not replaced by a release, and an
+    unknown argument would break every web call.
+    """
+    if current_runtime_context().get(WEB_REFERENCE_KEY) != "1":
+        return False
+    try:
+        key = (str(script), script.stat().st_mtime_ns)
+        if key not in _LOOKUP_SUPPORT:
+            _LOOKUP_SUPPORT[key] = _LOOKUP_FLAG in script.read_text(encoding="utf-8", errors="replace")
+        return _LOOKUP_SUPPORT[key]
+    except OSError:
+        return False
 
 
 def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]:
@@ -31,6 +56,7 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
     run_id = get_current_run_id()
     command = [_skill_python(root), str(script), "--state-dir",
                str(_state_dir(project_root)), "--research", "--native",
+               *([_LOOKUP_FLAG] if _reference_lookup(script) else []),
                "--step", str(current_runtime_context().get("step") or "0"), action, *options]
     process = None
     try:

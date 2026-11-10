@@ -491,5 +491,90 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         self.assertIn("ERROR", result["text"])
 
 
+# stderr exactly as PowerShell 5.1 writes it when started over ssh without a
+# console (captured 2026-11-10 from `powershell -EncodedCommand`).
+_CLIXML_HEAD = '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+_CLIXML_PROGRESS = (
+    '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T>'
+    '<T>System.Object</T></TN><MS><I64 N="SourceId">1</I64><PR N="Record">'
+    '<AV>Подготовка модулей к первому использованию.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC>'
+    '<T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>'
+)
+_CLIXML_ERROR = (
+    '<S S="Error">Get-Item : Не удается найти путь "C:\\nope_zz", так как он не существует._x000D__x000A_</S>'
+    '<S S="Error">строка:1 знак:1_x000D__x000A_</S>'
+    "<S S=\"Error\">+ Get-Item C:\\nope_zz; 'done'_x000D__x000A_</S>"
+    '<S S="Error">    + CategoryInfo          : ObjectNotFound: (C:\\nope_zz:String) [Get-Item], '
+    'ItemNotFoundException_x000D__x000A_</S>'
+    '<S S="Error">    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand'
+    '_x000D__x000A_</S><S S="Error"> _x000D__x000A_</S>'
+)
+
+
+def _clixml(*records: str) -> bytes:
+    return (_CLIXML_HEAD + "".join(records) + "</Objs>").encode("utf-8")
+
+
+class RemotePowerShellErrorTest(SshProviderTestBase):
+    def _run(self, **process) -> dict:
+        with patch.object(self.ssh, "run_registered_process", return_value=_proc(**process)):
+            return self.ssh.tool_ssh_run_ps(host="media-server", script="Get-Item C:\\nope_zz; 'done'")
+
+    def test_error_record_with_exit_zero_is_a_failure_with_readable_text(self) -> None:
+        result = self._run(stdout=b"done\n", stderr=_clixml(_CLIXML_PROGRESS, _CLIXML_ERROR))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "powershell_error")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("ОШИБКИ POWERSHELL:\nGet-Item : Не удается найти путь", result["text"])
+        self.assertIn("FullyQualifiedErrorId : PathNotFound", result["text"])
+        self.assertIn("exit=0, но в скрипте была ошибка PowerShell", result["text"])
+        self.assertIn("STDOUT:\ndone", result["text"])
+        for raw in ("CLIXML", "_x000D_", "<S S=", "Подготовка модулей"):
+            self.assertNotIn(raw, result["text"])
+
+    def test_progress_noise_alone_is_a_clean_success(self) -> None:
+        result = self._run(stdout=b"quiet\n", stderr=_clixml(_CLIXML_PROGRESS))
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("error", result)
+        for absent in ("CLIXML", "STDERR", "ОШИБКИ", "Подготовка модулей"):
+            self.assertNotIn(absent, result["text"])
+
+    def test_warning_is_shown_and_does_not_fail_the_call(self) -> None:
+        result = self._run(stdout=b"ok\n", stderr=_clixml(_CLIXML_PROGRESS, '<S S="warning">careful</S>',
+                                                          '<S S="verbose">v</S>'))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("ПРЕДУПРЕЖДЕНИЯ POWERSHELL:\ncareful", result["text"])
+        self.assertNotIn("ОШИБКИ", result["text"])
+
+    def test_native_program_stderr_is_not_a_powershell_error(self) -> None:
+        result = self._run(stdout=b"after native\n", stderr=b"ffmpeg version 7.1\r\n")
+
+        self.assertTrue(result["ok"])
+        self.assertIn("STDERR:\nffmpeg version 7.1", result["text"])
+        self.assertNotIn("ОШИБКИ", result["text"])
+
+    def test_nonzero_exit_keeps_its_own_failure_and_gets_decoded_text(self) -> None:
+        result = self._run(returncode=1, stderr=_clixml(_CLIXML_ERROR))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["exit_code"], 1)
+        self.assertNotIn("error", result)
+        self.assertIn("ОШИБКИ POWERSHELL:\nGet-Item", result["text"])
+        self.assertNotIn("exit=0, но", result["text"])
+
+    def test_clixml_escapes_entities_and_a_cut_document_are_decoded(self) -> None:
+        errors, warnings, other = self.ssh._powershell_streams(
+            "plain line\r\n" + _CLIXML_HEAD
+            + '<S S="Error">a &lt; b &amp; file_x005F_name_x000D__x000A_</S><S S="warning">w1</S><S S="warning">w2</S>'
+        )
+
+        self.assertEqual(errors, "a < b & file_name")
+        self.assertEqual(warnings, "w1\nw2")
+        self.assertEqual(other, "plain line")
+
+
 if __name__ == "__main__":
     unittest.main()

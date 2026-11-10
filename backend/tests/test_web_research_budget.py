@@ -12,10 +12,10 @@ from webskill.infrastructure.search.web_runtime import PageFetchResult
 
 
 def args(*, mode=None, urls=None, step=1, find="", store=False,
-         queries=None, audience="global"):
+         queries=None, audience="global", lookup=False):
     return SimpleNamespace(mode=mode, url=urls or [], step=step, find=find, store=store,
                            query=queries if queries is not None else ["English query"],
-                           audience=audience)
+                           audience=audience, lookup=lookup)
 
 
 @pytest.mark.parametrize("queries", [["English query"], ["Русский запрос"]])
@@ -520,3 +520,56 @@ def test_phrase_lookups_on_read_pages_are_bounded():
         assert research.execute("fetch", args(urls=["https://a"], find=phrase), operation)["ok"]
     stopped = research.execute("fetch", args(urls=["https://a"], find="third"), operation)
     assert stopped["error"] == "web_find_budget" and operation.call_count == 3
+
+
+# John 2026-11-10: in a task where the web is a reference for the work, every
+# return to the documentation is a lookup with its own window and rounds.
+def test_reference_lookup_gets_its_own_window_after_a_step_without_web(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(research.time, "time", lambda: now[0])
+    operation = Mock(return_value={"ok": True, "text": "found"})
+    first = research.execute("search", args(step=51, lookup=True), operation)
+    assert first["ok"] and first["web_research"]["lookup"] == 1
+    now[0] = 400.0  # the installation went on for five minutes
+    same = research.execute("search", args(step=52, lookup=True), operation)
+    assert same["error"] == "web_time_budget" and "получит новый лимит" in same["text"]
+    later = research.execute("search", args(step=66, lookup=True), operation)
+    assert later["ok"] and later["web_research"]["lookup"] == 2
+    assert later["web_research"]["search_rounds"] == 1 and later["web_research"]["elapsed_seconds"] == 0
+    # Inside the new lookup the quick rounds still hold: a search loop stays closed.
+    again = research.execute("search", args(step=67, lookup=True), operation)
+    assert again["error"] == "web_round_budget" and operation.call_count == 2
+
+
+def test_reference_fetch_after_work_reads_what_an_earlier_lookup_found(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(research.time, "time", lambda: now[0])
+    research.execute("search", args(step=10, lookup=True), Mock(return_value={"ok": True, "text": "found"}))
+    first = research.execute("fetch", args(step=11, lookup=True, urls=["https://docs/a"]),
+                             lambda: {"ok": True, "pages": [{"url": "https://docs/a", "ok": True}]})
+    assert first["ok"] and first["web_research"]["lookup"] == 1
+    now[0] = 1000.0
+    second = research.execute("fetch", args(step=30, lookup=True, urls=["https://docs/b"]),
+                              lambda: {"ok": True, "pages": [{"url": "https://docs/b", "ok": True}]})
+    assert second["ok"] and second["web_research"]["lookup"] == 2
+    assert second["web_research"]["read_rounds"] == 1 and second["web_research"]["sites"] == 1
+
+
+def test_run_that_only_searches_keeps_the_run_wide_window_at_any_step(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(research.time, "time", lambda: now[0])
+    operation = Mock(return_value={"ok": True, "text": "found"})
+    research.execute("search", args(step=1), operation)
+    now[0] = 400.0
+    late = research.execute("search", args(step=40), operation)
+    assert late["error"] == "web_time_budget" and operation.call_count == 1
+    assert "lookup" not in late["web_research"] and "веб — справка" not in late["text"]
+
+
+def test_lookup_without_step_numbers_never_restarts_the_window(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(research.time, "time", lambda: now[0])
+    operation = Mock(return_value={"ok": True, "text": "found"})
+    research.execute("search", args(step=0, lookup=True), operation)
+    now[0] = 400.0
+    assert research.execute("search", args(step=0, lookup=True), operation)["error"] == "web_time_budget"

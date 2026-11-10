@@ -25,6 +25,7 @@ Runtime model:
 from __future__ import annotations
 
 import base64
+import html
 import json
 import logging
 import re
@@ -265,6 +266,42 @@ def _powershell_remote_command(script: str) -> str:
         "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
         f"-EncodedCommand {b64}"
     )
+
+
+# PowerShell started without a console (ssh, -EncodedCommand) serialises its own
+# streams to stderr as CLIXML: one <S S="Error"> element per line of an error
+# record, <S S="warning">, and <Obj S="progress"> records. A native program run by
+# the script writes plain text to stderr instead (checked on PowerShell 5.1).
+_CLIXML_MARKER = "#< CLIXML"
+_CLIXML_DOCUMENT = re.compile(r"#< CLIXML\s*<Objs\b.*?</Objs>", re.DOTALL)
+_CLIXML_STREAM = re.compile(r'<S S="([A-Za-z]+)">(.*?)</S>', re.DOTALL)
+_CLIXML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def _powershell_streams(stderr: str) -> tuple[str, str, str]:
+    """Split remote PowerShell stderr into (error records, warnings, other text).
+
+    Error records can come with exit code 0: a failed command does not stop a
+    script, and the exit code reflects only its last statement. Progress, verbose
+    and debug records are dropped. Text outside CLIXML is native program output.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    for stream, body in _CLIXML_STREAM.findall(stderr):
+        text = html.unescape(_CLIXML_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)), body))
+        if stream.lower() == "error":
+            errors.append(text)
+        elif stream.lower() == "warning":
+            warnings.append(text + "\n")  # warnings carry no line terminator of their own
+    other = _CLIXML_DOCUMENT.sub("", stderr)
+    cut = other.find(_CLIXML_MARKER)  # a document cut short by a killed process
+    if cut >= 0:
+        other = other[:cut]
+
+    def joined(parts: list[str]) -> str:
+        return "".join(parts).replace("\r\n", "\n").strip()
+
+    return joined(errors), joined(warnings), other.strip()
 
 
 def _powershell_managed_job_command(script: str) -> str:
@@ -801,20 +838,38 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
         return {"text": f"ERROR: {exc}", "ok": False}
 
     _out, _err = decode_console(proc.stdout), decode_console(proc.stderr)
+    ps_errors, ps_warnings, other_err = _powershell_streams(_err)
+    # John 2026-11-10: a PowerShell error with exit code 0 is a failure, not a
+    # success. Runs 3b7e571e and bd5f22a0 took such results for done work.
+    hidden_failure = proc.returncode == 0 and bool(ps_errors)
     parts = [
         f"$ ssh {host} -- powershell -EncodedCommand (script: {len(script)} chars)",
         f"exit={proc.returncode}",
     ]
     if _out:
         parts.append(f"STDOUT:\n{_truncate_for_llm(_out.rstrip())}")
-    if _err:
-        parts.append(f"STDERR:\n{_truncate_for_llm(_err.rstrip())}")
-    return {
+    if ps_errors:
+        parts.append(f"ОШИБКИ POWERSHELL:\n{_truncate_for_llm(ps_errors)}")
+    if ps_warnings:
+        parts.append(f"ПРЕДУПРЕЖДЕНИЯ POWERSHELL:\n{_truncate_for_llm(ps_warnings)}")
+    if other_err:
+        parts.append(f"STDERR:\n{_truncate_for_llm(other_err)}")
+    if hidden_failure:
+        parts.append(
+            "exit=0, но в скрипте была ошибка PowerShell: команда упала, а скрипт пошёл дальше. "
+            "Результат считается сбоем: сначала разберись с ошибкой выше. Ожидаемую ошибку гаси "
+            "-ErrorAction SilentlyContinue; чтобы скрипт останавливался на первой ошибке, начни его "
+            "с $ErrorActionPreference='Stop'."
+        )
+    result: dict[str, Any] = {
         "text": "\n".join(parts),
         "touched_host": host,
         "exit_code": proc.returncode,
-        "ok": proc.returncode == 0,
+        "ok": proc.returncode == 0 and not ps_errors,
     }
+    if hidden_failure:
+        result["error"] = "powershell_error"
+    return result
 
 
 def stop_remote_windows_process_tree(

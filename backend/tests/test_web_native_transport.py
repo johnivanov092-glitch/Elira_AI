@@ -78,6 +78,24 @@ def test_complete_deadline_line_bounds_pending_process_and_kills_its_tree(transp
     transport.unregister.assert_called_once_with("transport-run", transport.process)
 
 
+@pytest.mark.parametrize("context,skill_knows_flag,expected", [
+    ({"step": "7", "web_reference": "1"}, True, True),
+    ({"step": "7"}, True, False),  # a run that only searches and reads
+    ({"step": "7", "web_reference": "1"}, False, False),  # an older skill copy in data/
+])
+def test_reference_lookup_flag_reaches_only_a_skill_that_knows_it(transport, monkeypatch, context,
+                                                                  skill_knows_flag, expected):
+    script = transport.root / "web-research" / "web.py"
+    script.write_text("p.add_argument('--lookup', action='store_true')" if skill_knows_flag else "", encoding="utf-8")
+    monkeypatch.setattr(_web, "current_runtime_context",
+                        lambda: {**context, "user_urls": json.dumps(["https://example.org"])})
+    transport.process.communicate.return_value = (json.dumps({"ok": True, "text": "docs"}).encode(), b"")
+    _web.tool_web_search(transport.root, queries=["jellyfin api library"])
+    command = transport.popen.call_args.args[0]
+    assert ("--lookup" in command) is expected
+    assert command.index("--native") < command.index("--step")  # global options stay before the action
+
+
 def test_complete_frame_shortens_next_wait_and_final_result_keeps_sources(transport):
     frame = b'{"web_deadline_epoch": 100.5}\n'
     result_body = {"ok": True, "text": "Official page", "sources": [{"url": "https://example.org"}]}

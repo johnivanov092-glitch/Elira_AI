@@ -79,6 +79,16 @@ def test_catalog_lists_name_and_description_once_with_the_folder_and_reports_inv
     assert "skill_load" not in text and "skill_create" not in text
 
 
+def test_helper_folders_are_not_reported_as_broken_skills(data):
+    root = skills.ensure_skills_root()
+    for name in ("_shared", "__pycache__"):
+        (root / name).mkdir()
+        (root / name / "cli.py").write_text("# helper code, not a skill\n", encoding="utf-8")
+    catalog = skills.discover_skills()
+    assert catalog["errors"] == [] and "_shared" not in {item["name"] for item in catalog["skills"]}
+    assert "Ошибки навыков" not in skills.catalog_context()
+
+
 def test_model_written_crlf_and_bom_skill_is_still_read(data):
     directory = data / "skills" / "my-tool"
     directory.mkdir(parents=True)

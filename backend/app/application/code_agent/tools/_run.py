@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import textwrap
 import threading
@@ -138,6 +139,30 @@ def _inline_script_argv(command: str) -> list[str] | None:
     return None
 
 
+# Habits from bash that cmd.exe does not have, and what to write instead. Runs
+# 7d9e1a7a, a14fefa0, cdd5f892 (Oct 2026): 20 of 59 failed tool calls in IT tasks
+# were bash syntax handed to cmd.exe; `;`, head/tail and `set X=v &&` had no hint.
+_UNIX_TOOL_HINTS = {
+    "head": "run_bash сам сокращает длинный вывод — убери | head",
+    "tail": "run_bash сам сокращает длинный вывод — убери | tail",
+    "grep": 'вместо grep — findstr /i /c:"текст" или инструмент grep',
+    "cat": "вместо cat — type",
+    "ls": "вместо ls — dir /b",
+    "rm": "вместо rm — del для файла, rmdir /s /q для папки",
+    "cp": "вместо cp — copy /y",
+    "mv": "вместо mv — move /y",
+    "touch": "вместо touch — type nul > файл",
+    "which": "вместо which — where",
+    "export": 'вместо export — set "ИМЯ=значение"',
+    "sleep": "вместо sleep N — ping -n N+1 127.0.0.1 >nul",
+    "pwd": "вместо pwd — cd без аргументов",
+}
+_UNIX_TOOL_AT_COMMAND_START = re.compile(
+    r"(?:^|[|&(])\s*(" + "|".join(_UNIX_TOOL_HINTS) + r")(?=\s|$)", re.IGNORECASE)
+_SEMICOLON_AS_SEPARATOR = re.compile(r";\s+\S")
+_UNQUOTED_SET_BEFORE_AND = re.compile(r"(?:^|[&(])\s*set\s+(?!/)\w+=[^&|\"]*\s&&", re.IGNORECASE)
+
+
 def _cmd_syntax_hint(command: str) -> str:
     """Advisory only: likely cmd syntax errors, never rewrite or block a command."""
     if re.match(r'^\s*(?:"[^"\n]*[/\\])?(?:powershell|pwsh|bash|wsl|ssh)(?:\.exe)?(?:"|\s)',
@@ -150,6 +175,19 @@ def _cmd_syntax_hint(command: str) -> str:
         notes.append("проверь проценты в curl -w; внутри .bat знак % записывается как %%")
     if "/dev/null" in command:
         notes.append("вместо /dev/null используй NUL")
+    # Program code and JSON inside double quotes are data: `;` and tool names there
+    # belong to the quoted program, so the checks below look only outside quotes.
+    outside_quotes = re.sub(r'"[^"\n]*"', '""', command)
+    if _SEMICOLON_AS_SEPARATOR.search(outside_quotes):
+        notes.append("; не разделяет команды — соединяй через & (всегда) или && (после успеха)")
+    for match in _UNIX_TOOL_AT_COMMAND_START.finditer(outside_quotes):
+        tool = match.group(1).lower()
+        note = _UNIX_TOOL_HINTS[tool]
+        # A machine with GNU tools on PATH really has `head`: no advice then.
+        if note not in notes and shutil.which(tool) is None:
+            notes.append(note)
+    if _UNQUOTED_SET_BEFORE_AND.search(outside_quotes):
+        notes.append('в значение переменной перед && попал пробел — пиши set "ИМЯ=значение" && команда')
     # Skip quoted program code/JSON: apostrophes inside a double-quoted argument
     # are data, rather than shell quoting. Multiline interpreter argv is skipped
     # by the caller because it never goes through cmd.

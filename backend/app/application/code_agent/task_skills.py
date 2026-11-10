@@ -169,10 +169,16 @@ def read_package(name: str, directory: Path) -> dict[str, str]:
 
 
 def discover_skills() -> dict[str, Any]:
-    """The catalog of data/skills. Invalid folders stay listed as errors."""
+    """The catalog of data/skills. Invalid folders stay listed as errors.
+
+    Folders starting with `.` or `_` are not skills: `_shared` holds helper code
+    the skill scripts import, `__pycache__` is Python's. Listing them as broken
+    skills put a false "Ошибки навыков" line into every request.
+    """
     skills, errors = [], []
     root = ensure_skills_root()
-    for directory in sorted(item for item in root.iterdir() if item.is_dir() and not item.name.startswith(".")):
+    for directory in sorted(item for item in root.iterdir()
+                            if item.is_dir() and not item.name.startswith((".", "_"))):
         try:
             skill = read_package(directory.name, directory)
             skills.append({key: skill[key] for key in ("name", "title", "description", "path")})

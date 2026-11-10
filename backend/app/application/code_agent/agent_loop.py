@@ -69,6 +69,7 @@ from app.application.code_agent.planning import (
 )
 from app.application.code_agent.taskspec import taskspec_context, taskspec_report, task_spec_from_report
 from app.application.code_agent.run_evidence import EvidenceKind, RunEvidence
+from app.application.agent_kernel.runtime_context import WEB_REFERENCE_KEY, WORK_TOOLS
 from app.application.context.compaction import RUNTIME_BLOCK_KEY
 from app.application.context.usage import get_context_usage
 from app.application.projects.scope import project_scope_id
@@ -349,6 +350,12 @@ def _stream_code_agent_core(
         _web_user_urls = json.dumps(user_message_urls([raw_user_message, *(
             str(message.get("content") or "") for message in initial_turn.messages
             if message.get("role") == "user" and RUNTIME_BLOCK_KEY not in message)]), ensure_ascii=False)
+        # John 2026-11-10: once the run has executed a command or changed a file,
+        # the web is a reference for the work, not the task itself. Web tools are
+        # then told so and budget each documentation lookup on its own. A restored
+        # run starts from the tool results kept in its messages.
+        _work_tool_used = any(message.get("role") == "tool" and message.get("name") in WORK_TOOLS
+                              for message in initial_turn.messages)
         # Bind the completion contract to THIS run's spec/source so every terminal
         # done event carries uniform task-state (FIX-1/8).
         def _completion_fields(crit, *, terminated_incomplete: bool = False) -> dict:
@@ -1129,6 +1136,10 @@ def _stream_code_agent_core(
                     runtime_context["user_urls"] = _web_user_urls
                 if name == "web_search":
                     runtime_context["user_question"] = turn_context.raw_user_message
+                if name in WORK_TOOLS:
+                    _work_tool_used = True
+                elif _work_tool_used and name in ("web_search", "web_fetch"):
+                    runtime_context[WEB_REFERENCE_KEY] = "1"
                 recovery = observations.before_dispatch(name, call_arguments, root=root, model_turn=step)
                 if recovery is not None:
                     # Count attempted calls even when a later policy denies dispatch.
