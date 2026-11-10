@@ -356,6 +356,8 @@ def _stream_code_agent_core(
         # run starts from the tool results kept in its messages.
         _work_tool_used = any(message.get("role") == "tool" and message.get("name") in WORK_TOOLS
                               for message in initial_turn.messages)
+        _last_web_step = 0  # step of the latest web tool call, dispatched or refused
+        _lookup_step = 0  # step at which the current documentation lookup began
         # Bind the completion contract to THIS run's spec/source so every terminal
         # done event carries uniform task-state (FIX-1/8).
         def _completion_fields(crit, *, terminated_incomplete: bool = False) -> dict:
@@ -1138,8 +1140,12 @@ def _stream_code_agent_core(
                     runtime_context["user_question"] = turn_context.raw_user_message
                 if name in WORK_TOOLS:
                     _work_tool_used = True
-                elif _work_tool_used and name in ("web_search", "web_fetch"):
-                    runtime_context[WEB_REFERENCE_KEY] = "1"
+                elif name in ("web_search", "web_fetch"):
+                    if _work_tool_used:
+                        if not _lookup_step or step - _last_web_step >= 2:
+                            _lookup_step = step
+                        runtime_context[WEB_REFERENCE_KEY] = str(_lookup_step)
+                    _last_web_step = step
                 recovery = observations.before_dispatch(name, call_arguments, root=root, model_turn=step)
                 if recovery is not None:
                     # Count attempted calls even when a later policy denies dispatch.

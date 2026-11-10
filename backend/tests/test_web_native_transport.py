@@ -79,20 +79,23 @@ def test_complete_deadline_line_bounds_pending_process_and_kills_its_tree(transp
 
 
 @pytest.mark.parametrize("context,skill_knows_flag,expected", [
-    ({"step": "7", "web_reference": "1"}, True, True),
+    ({"step": "7", "web_reference": "5"}, True, True),
     ({"step": "7"}, True, False),  # a run that only searches and reads
-    ({"step": "7", "web_reference": "1"}, False, False),  # an older skill copy in data/
+    ({"step": "7", "web_reference": "5"}, False, False),  # an older skill copy in data/
+    ({"step": "7", "web_reference": "yes"}, True, False),  # not a lookup number
 ])
 def test_reference_lookup_flag_reaches_only_a_skill_that_knows_it(transport, monkeypatch, context,
                                                                   skill_knows_flag, expected):
     script = transport.root / "web-research" / "web.py"
-    script.write_text("p.add_argument('--lookup', action='store_true')" if skill_knows_flag else "", encoding="utf-8")
+    script.write_text("p.add_argument('--lookup', type=int, default=0)" if skill_knows_flag else "", encoding="utf-8")
     monkeypatch.setattr(_web, "current_runtime_context",
                         lambda: {**context, "user_urls": json.dumps(["https://example.org"])})
     transport.process.communicate.return_value = (json.dumps({"ok": True, "text": "docs"}).encode(), b"")
     _web.tool_web_search(transport.root, queries=["jellyfin api library"])
     command = transport.popen.call_args.args[0]
     assert ("--lookup" in command) is expected
+    if expected:
+        assert command[command.index("--lookup") + 1] == "5"  # the step at which this lookup began
     assert command.index("--native") < command.index("--step")  # global options stay before the action
 
 
@@ -100,7 +103,7 @@ def test_reference_lookup_flag_reaches_only_a_skill_that_knows_it(transport, mon
 def test_expired_window_refusal_tells_a_reference_lookup_it_can_come_back(transport, monkeypatch, reference):
     (transport.root / "web-research" / "web.py").write_text("p.add_argument('--lookup')", encoding="utf-8")
     monkeypatch.setattr(_web, "current_runtime_context", lambda: {
-        "step": "7", "user_urls": "[]", **({"web_reference": "1"} if reference else {})})
+        "step": "7", "user_urls": "[]", **({"web_reference": "7"} if reference else {})})
     transport.process.stdout.readline.return_value = b'{"web_deadline_epoch": 40.0}\n'  # already past
     result = _web.tool_web_search(transport.root, queries=["jellyfin api library"])
     assert result["error"] == "web_time_budget" and result["web_research"] == {"stopped": True}

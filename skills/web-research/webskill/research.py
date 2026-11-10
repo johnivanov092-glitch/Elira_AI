@@ -127,17 +127,13 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
     # John 2026-11-10: in a task where the web is a reference for the work (admin
     # and code tasks), reading documentation must stay possible to the end. Run
     # bd5f22a0 spent its only 60 s window at step 51 and had six later lookups
-    # refused. A step without web calls between two web calls ends a lookup: the
-    # next one gets its own window and round counters. Elira sets `lookup` only
-    # after the run has executed a command or changed a file, so a run that only
-    # searches and reads keeps its run-wide budget.
-    lookup = bool(getattr(args, "lookup", False))
-    step = int(getattr(args, "step", 0) or 0)
-    last_step = int(state.get("last_step") or 0)
-    if lookup and last_step and step - last_step >= 2:
-        state = {**fresh_state(), "episode": int(state.get("episode") or 1) + 1}
-    if step:
-        state["last_step"] = step
+    # refused. Elira numbers the lookups (`--lookup`, the step at which one began)
+    # and sets the number only after the run has executed a command or changed a
+    # file: a new number gets its own window and round counters, while a run that
+    # only searches and reads sends none and keeps its run-wide budget.
+    lookup = int(getattr(args, "lookup", 0) or 0)
+    if lookup and state.get("lookup") != lookup:
+        state = {**fresh_state(), "lookup": lookup}
     # The first web call fixes this run's budget, including fetch-only research.
     # Later declarations cannot expand quick or shrink deep.
     mode = state["mode"]
@@ -231,4 +227,4 @@ def execute(action: str, args, operation: Callable[[], dict]) -> dict:
             "web_research": {"mode": mode, "elapsed_seconds": round(elapsed, 3), "warning": warning,
                 "stopped": elapsed >= 60, "search_rounds": state["searches"],
                 "read_rounds": state["fetches"], "sites": len(state.get("read_urls", [])), "cached": cached,
-                **({"lookup": int(state.get("episode") or 1)} if lookup else {})}}
+                **({"lookup": lookup} if lookup else {})}}

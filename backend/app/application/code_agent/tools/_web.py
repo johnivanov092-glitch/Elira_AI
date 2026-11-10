@@ -31,8 +31,8 @@ _REFERENCE_NOTE = (" В этой задаче веб — справка: про�
 _LOOKUP_SUPPORT: dict[tuple[str, int], bool] = {}
 
 
-def _reference_lookup(script: Path) -> bool:
-    """The web is a reference for work already under way in this run.
+def _reference_lookup(script: Path) -> int:
+    """Id of the documentation lookup this call belongs to; 0 when the web is the task itself.
 
     John 2026-11-10: documentation must stay readable through a long admin or
     code task, so the skill then budgets each lookup separately. The loop marks
@@ -41,15 +41,16 @@ def _reference_lookup(script: Path) -> bool:
     knows it: skills live in data/ and are not replaced by a release, and an
     unknown argument would break every web call.
     """
-    if current_runtime_context().get(WEB_REFERENCE_KEY) != "1":
-        return False
+    marker = str(current_runtime_context().get(WEB_REFERENCE_KEY) or "")
+    if not marker.isdigit() or int(marker) <= 0:
+        return 0
     try:
         key = (str(script), script.stat().st_mtime_ns)
         if key not in _LOOKUP_SUPPORT:
             _LOOKUP_SUPPORT[key] = _LOOKUP_FLAG in script.read_text(encoding="utf-8", errors="replace")
-        return _LOOKUP_SUPPORT[key]
+        return int(marker) if _LOOKUP_SUPPORT[key] else 0
     except OSError:
-        return False
+        return 0
 
 
 def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]:
@@ -63,7 +64,7 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
                    "web_research": {"stopped": True}}
     command = [_skill_python(root), str(script), "--state-dir",
                str(_state_dir(project_root)), "--research", "--native",
-               *([_LOOKUP_FLAG] if lookup else []),
+               *([_LOOKUP_FLAG, str(lookup)] if lookup else []),
                "--step", str(current_runtime_context().get("step") or "0"), action, *options]
     process = None
     try:
