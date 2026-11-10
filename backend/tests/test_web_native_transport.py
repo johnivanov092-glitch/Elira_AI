@@ -96,6 +96,18 @@ def test_reference_lookup_flag_reaches_only_a_skill_that_knows_it(transport, mon
     assert command.index("--native") < command.index("--step")  # global options stay before the action
 
 
+@pytest.mark.parametrize("reference", [True, False])
+def test_expired_window_refusal_tells_a_reference_lookup_it_can_come_back(transport, monkeypatch, reference):
+    (transport.root / "web-research" / "web.py").write_text("p.add_argument('--lookup')", encoding="utf-8")
+    monkeypatch.setattr(_web, "current_runtime_context", lambda: {
+        "step": "7", "user_urls": "[]", **({"web_reference": "1"} if reference else {})})
+    transport.process.stdout.readline.return_value = b'{"web_deadline_epoch": 40.0}\n'  # already past
+    result = _web.tool_web_search(transport.root, queries=["jellyfin api library"])
+    assert result["error"] == "web_time_budget" and result["web_research"] == {"stopped": True}
+    assert ("получит новый лимит" in result["text"]) is reference
+    transport.kill.assert_called_once_with(transport.process)
+
+
 def test_complete_frame_shortens_next_wait_and_final_result_keeps_sources(transport):
     frame = b'{"web_deadline_epoch": 100.5}\n'
     result_body = {"ok": True, "text": "Official page", "sources": [{"url": "https://example.org"}]}

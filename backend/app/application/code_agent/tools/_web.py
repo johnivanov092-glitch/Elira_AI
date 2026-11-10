@@ -24,6 +24,10 @@ from app.core.skill_modules import skill_root
 
 
 _LOOKUP_FLAG = "--lookup"
+_TIME_BUDGET = "Лимит времени исследования исчерпан — отвечай по прочитанному и отметь непроверенное."
+# Same wording as the web skill adds to its own refusals in a reference lookup.
+_REFERENCE_NOTE = (" В этой задаче веб — справка: продолжай работу инструментами. Следующее обращение "
+                   "к документации после шага без веба получит новый лимит.")
 _LOOKUP_SUPPORT: dict[tuple[str, int], bool] = {}
 
 
@@ -54,9 +58,12 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
     if not script.is_file():
         return {"ok": False, "error": "skill_missing", "text": f"ERROR: web-research unavailable: {script}"}
     run_id = get_current_run_id()
+    lookup = _reference_lookup(script)
+    time_budget = {"ok": False, "error": "web_time_budget", "text": _TIME_BUDGET + (_REFERENCE_NOTE if lookup else ""),
+                   "web_research": {"stopped": True}}
     command = [_skill_python(root), str(script), "--state-dir",
                str(_state_dir(project_root)), "--research", "--native",
-               *([_LOOKUP_FLAG] if _reference_lookup(script) else []),
+               *([_LOOKUP_FLAG] if lookup else []),
                "--step", str(current_runtime_context().get("step") or "0"), action, *options]
     process = None
     try:
@@ -85,9 +92,7 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
                     process.communicate()
                     if run_was_stopped(run_id):
                         return {"ok": False, "error": "cancelled", "text": "Прервано пользователем."}
-                    return {"ok": False, "error": "web_time_budget", "text":
-                        "Лимит времени исследования исчерпан — отвечай по прочитанному и отметь непроверенное.",
-                        "web_research": {"stopped": True}}
+                    return dict(time_budget)
                 try:
                     first_line = lines.get(timeout=min(0.25, remaining))
                 except queue.Empty:
@@ -108,9 +113,7 @@ def _call(project_root: Path, action: str, options: list[str]) -> dict[str, Any]
                 if remaining <= 0:
                     _kill_proc_tree(process)
                     process.communicate()
-                    return {"ok": False, "error": "web_time_budget", "text":
-                        "Лимит времени исследования исчерпан — отвечай по прочитанному и отметь непроверенное.",
-                        "web_research": {"stopped": True}}
+                    return dict(time_budget)
                 try:
                     stdout, stderr = process.communicate(timeout=min(1, remaining))
                     break
